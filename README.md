@@ -1,0 +1,245 @@
+# Local evidence-to-draft-PR pilot
+
+**Internal experimental software, not an approved public release.** A local
+durable ledger and deterministic helpers for independent logical agents.
+The primary pilot is manually driven by authenticated Copilot app tools; no
+standalone SDK authentication, listener, account or conversation is needed for
+the offline demo. Live collection, review, dispatch and scheduling default off.
+
+## Account-free quick start
+
+Prerequisites: **Node.js 24 LTS**, npm and Git on PATH. Windows PowerShell is
+the primary supported shell. From a clean checkout of an approved private repo:
+
+```powershell
+Set-Location .\periodic-evidence-agent
+npm ci --ignore-scripts
+npm test
+npm run demo
+```
+
+For the verified local handoff bundle, create that checkout first with
+`git clone --branch master .\periodic-evidence-agent-master.bundle .\periodic-evidence-agent`.
+This is a local clone, not a publication/upload. Distribute the bundle only after
+the sharing decision; do not substitute a copy of the development `.git`.
+
+No Copilot CLI, Azure CLI, WorkIQ sign-in, product checkout or credentials are
+needed for these commands. Dependency download needs access to the configured
+npm registry. Tests and the demo themselves make no live source/model calls.
+Tests use synthetic evidence and disposable temporary Git/SQLite workspaces.
+Node may print an experimental SQLite warning.
+The lockfile uses canonical npm registry URLs and pinned integrity hashes. On
+networks that block the public registry, configure your organization's approved
+npm mirror (for example with `npm_config_registry`) before `npm ci`; do not
+disable TLS verification or copy another user's npm credentials. The development
+host's clean-install verification uses its approved mirror with empty user/global
+npm configuration and a fresh cache; direct public-registry TLS is unavailable
+on that host.
+
+The demo prints JSON with these stable results (paths/timestamps vary):
+
+```json
+{
+  "result": "synthetic-demo-passed",
+  "provenance": "synthetic",
+  "passes": [
+    { "pass": "ado:created", "state": "complete", "evidenceCount": 1 },
+    { "pass": "ado:changed", "state": "complete", "evidenceCount": 1 },
+    { "pass": "workiq:created", "state": "complete", "evidenceCount": 2 },
+    { "pass": "icm:created", "state": "unavailable", "evidenceCount": null }
+  ],
+  "uniqueEvidence": 3,
+  "overallCollectionState": "partial-or-blocked",
+  "workers": 0,
+  "scheduleEnabled": false
+}
+```
+
+`synthetic-demo-passed` means fixture assertions passed, **not** a successful live
+dry run. IcM deliberately stays unavailable; unknown coverage is not zero.
+The demo imports a root and an in-window reply to an older root, replays a batch
+without duplicates, then closes/reopens the ledger. It checks synthetic provenance,
+cursor completeness and absence of dispatch. Each invocation creates only its
+own disposable `.state\demo-*\` directory inside the checkout and returns that
+exact directory and summary path. To clean up, remove only the specific demo
+directory printed by that invocation, never the whole `.state` tree.
+
+## Independent agents and contracts
+
+| Procedure / project skill | Responsibility | Durable handoff |
+|---|---|---|
+| `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
+| `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
+| `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
+| `evidence-office-owner` | Claimed Office RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
+
+The collector/reviewer currently share configured identity
+`excel-evidence-coordinator`; owners use `repo-owner:<repoId>`. These are logical
+roles, not four installed daemons. Skills are procedures, **not permission or
+process boundaries**. Configuration and the local ledger survive conversations.
+App-native sessions are temporary isolated execution contexts, never agent IDs
+or the sole state store. Same-session automation is not the target architecture.
+Agency is deferred.
+
+See [APP-NATIVE.md](APP-NATIVE.md) for exact command/receipt/claim/result contracts,
+[the schema](scaffold/contracts.schema.json) for portable records, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for unassigned workstreams and acceptance criteria.
+New conversations discover existing runs with `app-runs` and inspect them with
+`app-status`; they do not repeat collection or relaunch uncertain assignments.
+Do not use network-shared SQLite. Each colleague owns a protected local ledger.
+
+## Configuring an authorized manual pilot
+
+`pilot.example.json` is portable, inert and uses synthetic identity/channel
+values. It does not authorize source access. Preserve an existing personal file;
+otherwise copy it once:
+
+```powershell
+if (-not (Test-Path .\pilot.local.json)) {
+  Copy-Item .\pilot.example.json .\pilot.local.json
+}
+# Resolve and approve the local configuration before these ledger operations:
+npm run pilot -- app-runs --config .\pilot.local.json
+npm run pilot -- app-status --run RUN_ID --config .\pilot.local.json
+```
+
+Resolve the designated delegated user/tenant/object ID, exact WorkIQ resources,
+explicit UTC window, read/item budgets, protected storage approval/retention,
+and enabled source scopes. Never copy another person's identity or credentials.
+Source reads require separate authorization; importing a local file is not
+proof of independent local authentication. Run configuration hashes are strict:
+do not change an existing run's config. Use its original config to inspect it.
+
+**Intentional product-specific selectors:** the current ADO adapter is fixed to
+`office/OC`, non-Removed Bugs under
+`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
+validation is fixed to query `599514`; actual query filters/access remain
+unverified. These selectors, the 1JS/Office repo URLs and the field names in
+`scaffold` are integration constraints, not anonymous generic examples or access
+grants. A different deployment needs a reviewed adapter/config change, not a
+silent query substitution. The example's Teams IDs are fictitious.
+
+Before code work, resolve repo owner/project binding, routing, base/target
+revisions, permitted write prefixes, commit identity and approved validation
+commands. Primary checkouts are references only; execution must use isolated
+task workspaces. A worktree/clone is **not an OS sandbox**.
+
+## Safety invariants
+
+- All 14 exclusions in the schema apply to **both defect and improvement**
+  handoffs. Excluded evidence is audit-only. Functional classification is not
+  confirmation of a code defect. Unknown ownership stays blocked.
+- Preserve source ID/revision, query/asOf/review times and provenance. Imported
+  app receipts are `app-tool-reported`; directly verified adapter reads are
+  `authenticated-source`; fixtures are `synthetic`; owner exports are
+  `owner-provided`. Never promote fixtures or imports to authenticated access.
+- Scope and budgets are enforced before reads. Created and changed ADO lanes
+  stay separate. Enumerate channel roots and replies, including older threads.
+  Partial/auth-failed passes retain earlier evidence and the prior committed
+  cursor. Only complete passes advance it. Missing data never becomes clean zero.
+- Stop on authentication failure; no retries until supported host refresh and
+  a separately authorized attempt. No Graph fallback, token transfer, credential
+  cache inspection, alternate identity or new grant. App and SDK auth are distinct.
+- Claim assignments atomically before launch; persist handles promptly and
+  reconcile uncertain outcomes. No duplicate workers or validation launches.
+  Code changes require source-bound execution evidence for every approved gate;
+  queued builds or policy checks alone are not validation.
+- Draft PRs only. No merges, auto-completion, incident/ticket/source writes,
+  unauthorized validation retry/cancel/requeue or implicit scheduling.
+  Follow-up is separately bounded to at most one level, not a paging-budget escape.
+
+Null limits are unresolved, not unlimited. Instructions alone are not runtime
+enforcement; app permissions and native validation boundaries must also be
+qualified. The app helpers track external worker outcomes but do not assert
+that a reported draft has passed product validation.
+
+## Validation and sharing gate
+
+| Evidence | Demonstrated | Not established |
+|---|---|---|
+| Offline tests/demo | Synthetic ledger, scope/identity guards, exclusions, cursor retention, dedupe, claims and fixture execution | Live identity, permissions or product correctness |
+| Historical local ADO run | Created 47 / changed 59 (39 changed-only), both passes complete at their recorded snapshots | Another user's access or ongoing coverage |
+| Historical app WorkIQ run | Identity and 20-root metadata page succeeded, then detail read returned `AuthenticationRequired` (500) | Full-day roots/replies/body coverage or auth recovery |
+| IcM | Explicit unavailable status and validated owner-export contract | Authenticated connector or verified saved-query filters |
+| Repo work / PR / periodic operation | Fixture tests and guarded implementation only | Product validation, real PR lifecycle or recurring qualification |
+
+The historical live run remains **partial-or-blocked**. Zero product workers,
+PRs or schedules were launched. Raw receipts, identities and runtime state are
+not part of this package. Offline CI cannot promote this status to live success.
+
+Before calling this a successfully validated live collection pilot, obtain
+complete authorized source coverage within the approved caps, durable receipts
+and restart/replay evidence, and confirm zero unapproved effects. WorkIQ needs
+supported app-host refresh confirmation before any further read. IcM must be
+qualified or explicitly excluded from a separately approved reduced release
+scope; do not silently waive it. Collection-only success still does not qualify
+code-fix/PR automation. Sharing preparation does not itself satisfy this gate.
+
+## Local package and eventual publication
+
+This repository is prepared for **internal experimental collaboration** only.
+It contains code, lockfile, synthetic tests/demo, four skills, contracts and
+offline CI. There is no open-source license grant or legal/public-release approval.
+Use only an approved company-managed **private** repository once the live
+validation/sharing gate and organizational requirements have been resolved.
+
+Before adding a remote or pushing:
+
+1. Confirm approved destination, access membership, content/retention rules and
+   whether experimental code sharing is authorized before live qualification.
+2. Run `npm test`, `npm run demo` and `npm run check:package`. Review
+   `git diff --cached`, `git ls-files` and **all history**, not just `.gitignore`.
+   The package check is a targeted hygiene guard, not a general secret scanner.
+3. Verify personal config, `.state`, SQLite/WAL/SHM files, captures/receipts,
+   `.env*`, logs, credentials, session folders and `node_modules` are absent from
+   the tracked set/history. Do not upload raw evidence or auth support artifacts.
+4. Review author metadata: commits intentionally retain the configured Git
+   identity and required coauthor attribution. Removing a file from HEAD does
+   not remove it from history; do not publish unsuitable history or rewrite it
+   without explicit authorization.
+
+No remote is created and nothing is pushed by installation, tests, demo or CI.
+Do not send the entire working directory as a zip. After review, use Git's
+committed tree/export so ignored personal files cannot be included accidentally.
+Colleagues must configure their own approved identity/scopes/authentication.
+
+**Local-history caveat:** the development checkout contains app checkpoint
+refs under `refs/copilot/checkpoints/` with earlier personal configuration and
+documentation, even though its original `master` had no commits. These refs
+are retained, not rewritten. An empty `git log` is not evidence of an empty
+object history. Consequently `check:package` intentionally fails in that
+original checkout when inspecting all refs. Do not mirror it, copy `.git`, or
+use a local clone optimization that could copy extra objects. The sanitized
+baseline's committed tree can be exported and verified separately; only the
+reviewed clean branch/tree is a publication candidate. The historical-ref
+failure must not be suppressed or described as a clean all-history audit.
+For an authorized local handoff, `git bundle create <output.bundle> master`
+includes only the reviewed branch and its ancestors; never use `--all` or
+`--mirror`. Check `git bundle list-heads <output.bundle>` and `git bundle verify
+<output.bundle>`, then audit a fresh clone of that bundle before distribution.
+Publication must likewise select the verified branch only, not hidden refs.
+
+## Optional legacy SDK mode
+
+Standalone SDK source/review/worker code and offline lifecycle regressions are
+retained, but **not required** for the app-receipt path or demo. App-native config
+rejects legacy network/model/worker/scheduler commands unless explicitly passed
+`--execution-mode standalone-sdk`; that flag does not waive source/activation
+guards. `node .\src\cli.js help` lists commands; use an explicitly approved
+`--config .\pilot.local.json`.
+
+The prior headless WorkIQ OAuth investigation is stopped. Do not use the retained
+`scripts\Workiq-Auth-Repro.mjs --probe` to repair app auth or as a setup step.
+It requires separate authorization. No token refresh, SDK bridging or listener
+is part of this package. `scripts\Register-PilotTask.ps1` is legacy opt-in only;
+do not run it during onboarding. All schedules remain disabled.
+
+## Code map
+
+`src\app-native.js` owns receipt imports and native assignment tracking;
+`ledger.js` owns immutable state and atomic ownership; `sources.js` owns scoped
+collection; `coordinator.js` owns review/routing; `followup.js` and `revisit.js`
+own related/tracked evidence; `workers.js` owns legacy isolated execution,
+validation and ADO draft-only publication; `runtime.js` owns optional SDK
+bindings. `scaffold` contains portable policy/schema inputs, not a second
+runtime configuration format. No app tools are assumed callable by scripts.

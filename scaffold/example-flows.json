@@ -1,0 +1,274 @@
+{
+  "recordType": "examples",
+  "schemaVersion": "1.0",
+  "synthetic": true,
+  "notice": "All identifiers, dates, findings, code revisions, URLs, review outcomes and validation results below are synthetic. No scan, worker, PR or test was executed. Example budgets are not pilot defaults.",
+  "scopes": [
+    { "id": "example-ado", "type": "ado_area", "selector": "example/Quality :: Quality\\Existing Functionality", "verified": true },
+    { "id": "example-icm", "type": "icm_query", "selector": "https://example.invalid/icm/queries/sample", "verified": true }
+  ],
+  "repoIds": ["example-repo"],
+  "records": [
+    {
+      "recordType": "evidence", "schemaVersion": "1.0", "id": "ev-ado-1001-r1",
+      "source": {
+        "kind": "ado", "namespace": "synthetic/example/Quality", "recordId": "1001",
+        "revision": "1", "versionBasis": "Synthetic ADO revision",
+        "provenance": "synthetic", "ownerConfirmation": null
+      },
+      "scopeId": "example-ado",
+      "title": "Existing calculation fails for a supported empty input",
+      "url": "https://example.invalid/ado/bugs/1001",
+      "createdAt": "2026-01-01T09:00:00Z", "queriedAt": "2026-01-02T09:00:00Z", "observedAt": "2026-01-02T09:00:00Z",
+      "snapshotAt": "2026-01-02T09:00:00Z",
+      "queryText": "SYNTHETIC new-Bug cohort: created in [2026-01-01T00:00:00Z, 2026-01-02T00:00:00Z)",
+      "sourceStatus": "Active", "ring": "Dogfood", "discoveryChannel": "E2E",
+      "permittedSummary": "A supported empty input follows a failing execution path; a linked incident reports the same observed symptom, not yet proven the same root cause.",
+      "fields": { "System.WorkItemType": "Bug", "System.Tags": "E2E", "Office.Common.IcMIncidentIDs": "2001" },
+      "missingFields": [],
+      "links": [
+        { "url": "https://example.invalid/icm/incidents/2001", "relation": "Office.Common.IcMIncidentIDs", "evidenceId": "ev-icm-2001", "access": "retrieved-in-scope" },
+        { "url": "https://outside.example.invalid/teams/private-thread", "relation": "description reference", "evidenceId": null, "access": "not-followed-out-of-scope" }
+      ],
+      "discoveredFrom": null, "discoveryReason": "Matched the configured synthetic ADO seed.",
+      "capture": { "artifactRef": null, "sha256": null, "unavailableReason": "Synthetic record; no source payload bytes were captured." }
+    },
+    {
+      "recordType": "evidence", "schemaVersion": "1.0", "id": "ev-icm-2001",
+      "source": {
+        "kind": "icm", "namespace": "synthetic/example-icm", "recordId": "2001",
+        "revision": null, "versionBasis": "Synthetic observation timestamp; no revision claimed",
+        "provenance": "synthetic", "ownerConfirmation": null
+      },
+      "scopeId": "example-icm", "title": "Supported empty input produces an error",
+      "url": "https://example.invalid/icm/incidents/2001",
+      "createdAt": "2026-01-01T10:00:00Z", "queriedAt": "2026-01-02T09:01:00Z", "observedAt": "2026-01-02T09:01:00Z",
+      "snapshotAt": null, "queryText": "SYNTHETIC bounded lookup of explicitly linked incident 2001",
+      "sourceStatus": "Active", "ring": "Production", "discoveryChannel": "Live-site / support",
+      "permittedSummary": "An incident records an empty-input error. The explicit link establishes association, not a confirmed common root cause.",
+      "fields": { "severity": "S2", "linkedAdo": "1001" }, "missingFields": ["rootCause"],
+      "links": [],
+      "discoveredFrom": "ev-ado-1001-r1", "discoveryReason": "Explicit IcM ID in the ADO record; within the allowed incident scope.",
+      "capture": { "artifactRef": null, "sha256": null, "unavailableReason": "Synthetic record; no source payload bytes were captured." }
+    },
+    {
+      "recordType": "investigation", "schemaVersion": "1.0", "id": "inv-empty-input", "version": 1,
+      "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"], "state": "assigned",
+      "observedBehavior": "A supported empty input produces an error.",
+      "expectedBehavior": "Existing product behavior accepts an empty input.",
+      "hypotheses": ["An empty collection is dereferenced before the existing empty-input branch."],
+      "counterEvidence": ["The linked incident may have a different deployment or root cause."],
+      "classification": "functional", "defectConfirmation": "unconfirmed",
+      "reportEligibility": "included", "handoffEligibility": "eligible", "exclusionReasons": [],
+      "rationale": "Evidence concerns failure of an existing supported behavior, not a request for a new feature.",
+      "confidence": 0.8,
+      "review": { "method": "agent-evidence-review", "reviewer": "synthetic-coordinator", "reviewedAt": "2026-01-02T09:10:00Z" },
+      "repoIds": ["example-repo"], "existingFixes": [],
+      "nextAction": "Investigate in the configured repo and propose a draft fix only if RCA supports it."
+    },
+    {
+      "recordType": "assignment", "schemaVersion": "1.0", "id": "assign-empty-input",
+      "investigationId": "inv-empty-input", "investigationVersion": 1,
+      "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"],
+      "repoId": "example-repo", "owner": "synthetic-repo-owner", "intent": "defect-fix",
+      "state": "completed", "execution": "local", "workerHandle": "synthetic-local-session",
+      "workspace": { "isolation": "isolated-task-workspace", "path": "C:\\ExampleOnly\\worktrees\\assign-empty-input", "baseRevision": "synthetic-base-1" },
+      "requiredCapabilities": ["repo-read", "isolated-edit", "targeted-test", "draft-pr"],
+      "questions": ["Which code path produces the error?", "Is the existing empty-input behavior preserved by the fix?"],
+      "acceptanceCriteria": ["Supported empty input no longer fails.", "Nonempty input behavior remains unchanged."],
+      "validationGates": ["targeted-regression", "typecheck"], "dependsOn": [],
+      "bounds": { "allowedScopeIds": ["example-ado", "example-icm"], "maxDepth": 1, "maxItems": 10, "maxToolCalls": 20 },
+      "permissions": { "editCode": true, "createDraftPR": true, "runValidation": true, "merge": false, "mutateEvidenceSources": false, "retryValidation": false, "cancelValidation": false }
+    },
+    {
+      "recordType": "workerResult", "schemaVersion": "1.0", "id": "result-empty-pending",
+      "assignmentId": "assign-empty-input", "attemptId": "attempt-empty-1", "reportedAt": "2026-01-02T10:00:00Z",
+      "outcome": "draft-pr-validation-pending",
+      "findings": "Synthetic RCA: first-element access precedes the existing empty-input branch. A draft proposes moving the guard before access.",
+      "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"], "sourceRevision": "synthetic-head-1",
+      "draftPR": { "url": "https://example.invalid/repos/example-repo/pull/1", "isDraft": true, "headRevision": "synthetic-head-1" },
+      "validation": [
+        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "running", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z" },
+        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "queued", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z" }
+      ],
+      "blocker": null, "nextAction": "The synthetic worker owns monitoring; no requeue or merge."
+    },
+    {
+      "recordType": "workerResult", "schemaVersion": "1.0", "id": "result-empty-validated",
+      "assignmentId": "assign-empty-input", "attemptId": "attempt-empty-1", "reportedAt": "2026-01-02T10:10:00Z",
+      "outcome": "draft-pr-validated",
+      "findings": "Illustrative terminal outcome: both required gates pass for the same draft head. This is not an actual test result.",
+      "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"], "sourceRevision": "synthetic-head-1",
+      "draftPR": { "url": "https://example.invalid/repos/example-repo/pull/1", "isDraft": true, "headRevision": "synthetic-head-1" },
+      "validation": [
+        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "passed", "artifactRefs": ["synthetic://validation/1/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null },
+        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "passed", "artifactRefs": ["synthetic://validation/2/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null }
+      ],
+      "blocker": null, "nextAction": "Leave the PR a draft. Merge policy is undetermined."
+    },
+    {
+      "recordType": "evidence", "schemaVersion": "1.0", "id": "ev-ado-1002-r1",
+      "source": { "kind": "ado", "namespace": "synthetic/example/Quality", "recordId": "1002", "revision": "1", "versionBasis": "Synthetic ADO revision", "provenance": "synthetic", "ownerConfirmation": null },
+      "scopeId": "example-ado", "title": "Request a new export format",
+      "url": "https://example.invalid/ado/bugs/1002",
+      "createdAt": "2026-01-01T11:00:00Z", "queriedAt": "2026-01-02T09:00:00Z", "observedAt": "2026-01-02T09:00:00Z", "snapshotAt": "2026-01-02T09:00:00Z",
+      "queryText": "SYNTHETIC new-Bug cohort", "sourceStatus": "Active", "ring": "unknown",
+      "discoveryChannel": "Customer feedback", "permittedSummary": "Filed as a Bug, but the description requests a new feature rather than restoration of existing behavior.",
+      "fields": { "System.WorkItemType": "Bug" }, "missingFields": [], "links": [],
+      "discoveredFrom": null, "discoveryReason": "Matched the Bug seed before semantic exclusion review.",
+      "capture": { "artifactRef": null, "sha256": null, "unavailableReason": "Synthetic record; no source payload bytes were captured." }
+    },
+    {
+      "recordType": "investigation", "schemaVersion": "1.0", "id": "inv-export-request", "version": 1,
+      "evidenceIds": ["ev-ado-1002-r1"], "state": "closed",
+      "observedBehavior": "A customer requests a format that is not an existing supported feature.",
+      "expectedBehavior": null, "hypotheses": [], "counterEvidence": [],
+      "classification": "nonfunctional", "defectConfirmation": "ruled-out",
+      "reportEligibility": "excluded", "handoffEligibility": "excluded",
+      "exclusionReasons": ["feature_enhancement"],
+      "rationale": "Feature enhancements are excluded from both defect and improvement handoffs.",
+      "confidence": 0.95,
+      "review": { "method": "agent-evidence-review", "reviewer": "synthetic-coordinator", "reviewedAt": "2026-01-02T09:10:00Z" },
+      "repoIds": [], "existingFixes": [],
+      "nextAction": "Retain the audit record. Do not dispatch an improvement assignment."
+    },
+    {
+      "recordType": "evidence", "schemaVersion": "1.0", "id": "ev-ado-1003-r1",
+      "source": { "kind": "ado", "namespace": "synthetic/example/Quality", "recordId": "1003", "revision": "1", "versionBasis": "Synthetic ADO revision", "provenance": "synthetic", "ownerConfirmation": null },
+      "scopeId": "example-ado", "title": "Calculation did not work",
+      "url": "https://example.invalid/ado/bugs/1003",
+      "createdAt": "2026-01-01T12:00:00Z", "queriedAt": "2026-01-02T09:00:00Z", "observedAt": "2026-01-02T09:00:00Z", "snapshotAt": "2026-01-02T09:00:00Z",
+      "queryText": "SYNTHETIC new-Bug cohort", "sourceStatus": "Active", "ring": "unknown",
+      "discoveryChannel": "unknown", "permittedSummary": "The item lacks a repro and expected behavior; its title alone cannot establish a defect.",
+      "fields": { "System.WorkItemType": "Bug" }, "missingFields": ["System.Description", "Microsoft.VSTS.TCM.ReproSteps"],
+      "links": [], "discoveredFrom": null, "discoveryReason": "Matched the configured seed.",
+      "capture": { "artifactRef": null, "sha256": null, "unavailableReason": "Synthetic record; no source payload bytes were captured." }
+    },
+    {
+      "recordType": "investigation", "schemaVersion": "1.0", "id": "inv-unknown", "version": 1,
+      "evidenceIds": ["ev-ado-1003-r1"], "state": "waiting",
+      "observedBehavior": "Only an ambiguous issue title is available.", "expectedBehavior": null,
+      "hypotheses": [], "counterEvidence": [],
+      "classification": "unavailable", "defectConfirmation": "unconfirmed",
+      "reportEligibility": "unavailable", "handoffEligibility": "needs-evidence", "exclusionReasons": [],
+      "rationale": "Missing evidence is not a non-bug conclusion or an Others discovery channel.",
+      "confidence": 0.1,
+      "review": { "method": "agent-evidence-review", "reviewer": "synthetic-coordinator", "reviewedAt": "2026-01-02T09:10:00Z" },
+      "repoIds": [], "existingFixes": [],
+      "nextAction": "Record the missing repro and await in-scope evidence; do not create a PR assignment."
+    },
+    {
+      "recordType": "evidence", "schemaVersion": "1.0", "id": "ev-ado-1001-r2",
+      "source": { "kind": "ado", "namespace": "synthetic/example/Quality", "recordId": "1001", "revision": "2", "versionBasis": "Synthetic changed revision", "provenance": "synthetic", "ownerConfirmation": null },
+      "scopeId": "example-ado", "title": "Empty input regression also affects an adjacent existing path",
+      "url": "https://example.invalid/ado/bugs/1001",
+      "createdAt": "2026-01-01T09:00:00Z", "queriedAt": "2026-01-03T09:00:00Z", "observedAt": "2026-01-03T09:00:00Z", "snapshotAt": "2026-01-03T09:00:00Z",
+      "queryText": "SYNTHETIC explicit revisit of tracked Bug 1001; not the new-item creation-date cohort",
+      "sourceStatus": "Active", "ring": "Dogfood", "discoveryChannel": "E2E",
+      "permittedSummary": "New evidence identifies an adjacent path after the original draft was validated; reconcile with the existing PR.",
+      "fields": { "System.WorkItemType": "Bug" }, "missingFields": [], "links": [],
+      "discoveredFrom": "ev-ado-1001-r1", "discoveryReason": "A configured tracked-item revisit observes a new revision.",
+      "capture": { "artifactRef": null, "sha256": null, "unavailableReason": "Synthetic record; no source payload bytes were captured." }
+    },
+    {
+      "recordType": "investigation", "schemaVersion": "1.0", "id": "inv-empty-input", "version": 2,
+      "evidenceIds": ["ev-ado-1001-r2", "ev-icm-2001"], "state": "waiting",
+      "observedBehavior": "A newly reported adjacent path may need an extension of the existing fix.",
+      "expectedBehavior": "Both existing input paths accept supported empty input.",
+      "hypotheses": ["The same ordering defect may exist in an adjacent path."],
+      "counterEvidence": ["The earlier validation covered the first path, not the new one."],
+      "classification": "functional", "defectConfirmation": "unconfirmed",
+      "reportEligibility": "included", "handoffEligibility": "eligible", "exclusionReasons": [],
+      "rationale": "Preserve the same investigation identity and review the new revision separately.",
+      "confidence": 0.7,
+      "review": { "method": "agent-evidence-review", "reviewer": "synthetic-coordinator", "reviewedAt": "2026-01-03T09:10:00Z" },
+      "repoIds": ["example-repo"], "existingFixes": ["https://example.invalid/repos/example-repo/pull/1"],
+      "nextAction": "Reconcile the existing assignment and draft before a follow-up; do not automatically create a second PR."
+    },
+    {
+      "recordType": "run", "schemaVersion": "1.0", "id": "run-auth-blocked",
+      "sourceId": "synthetic-workiq", "startedAt": "2026-01-02T09:00:00Z", "endedAt": "2026-01-02T09:01:00Z",
+      "status": "blocked-auth", "windowStart": "2026-01-01T00:00:00Z", "windowEndExclusive": "2026-01-02T00:00:00Z",
+      "cursorBefore": "synthetic-cursor-previous", "cursorAfter": "synthetic-cursor-previous",
+      "evidenceIds": [], "gaps": ["Supported host sign-in requires the designated user to reauthenticate."],
+      "owner": "synthetic-pilot-operator", "nextAction": "Pause this source; resume after supported sign-in. No token copying or identity substitution."
+    },
+    {
+      "recordType": "run", "schemaVersion": "1.0", "id": "run-auth-resumed",
+      "sourceId": "synthetic-workiq", "startedAt": "2026-01-02T11:00:00Z", "endedAt": "2026-01-02T11:01:00Z",
+      "status": "complete", "windowStart": "2026-01-01T00:00:00Z", "windowEndExclusive": "2026-01-02T00:00:00Z",
+      "cursorBefore": "synthetic-cursor-previous", "cursorAfter": "synthetic-cursor-complete",
+      "evidenceIds": [], "gaps": [],
+      "owner": "synthetic-pilot-operator",
+      "nextAction": "Illustrative authenticated, fully enumerated zero-result scan after reauthentication; commit the source cursor."
+    },
+    {
+      "recordType": "run", "schemaVersion": "1.0", "id": "run-budget-partial",
+      "sourceId": "synthetic-follow-up", "startedAt": "2026-01-02T09:00:00Z", "endedAt": "2026-01-02T09:02:00Z",
+      "status": "partial", "windowStart": "2026-01-01T00:00:00Z", "windowEndExclusive": "2026-01-02T00:00:00Z",
+      "cursorBefore": "synthetic-follow-up-previous", "cursorAfter": "synthetic-follow-up-previous",
+      "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"],
+      "gaps": ["An additional in-scope related item was not retrieved because the configured tool-call budget was exhausted."],
+      "owner": "synthetic-coordinator", "nextAction": "Persist evidence and the gap; await authorized continuation without presenting coverage as complete."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "functional-defect-to-validated-draft",
+      "recordRefs": ["ev-ado-1001-r1", "ev-icm-2001", "inv-empty-input@1", "assign-empty-input", "result-empty-pending", "result-empty-validated"],
+      "steps": [
+        "Collect the ADO record and explicitly linked in-scope IcM incident.",
+        "Review existing behavior and exclusions; keep code-defect confirmation unconfirmed until RCA.",
+        "Persist assignment as prepared, dispatch once, record the isolated worker handle, then run it.",
+        "The worker proposes a draft and records pending validation before terminal evidence.",
+        "After all required gates pass on the draft head, record the validated result and mark assignment completed."
+      ],
+      "expected": [
+        "One ADO record plus one incident is not asserted to be two unique root causes.",
+        "There is one assignment and one draft PR.",
+        "The assignment record is the final snapshot; pending and passed worker results remain separate immutable events.",
+        "No merge, deployment or incident-resolution claim follows from validation."
+      ]
+    },
+    {
+      "id": "excluded-improvement-candidate",
+      "recordRefs": ["ev-ado-1002-r1", "inv-export-request@1"],
+      "steps": ["Collect a Bug that actually requests a new feature.", "Apply semantic exclusion review before routing."],
+      "expected": ["The evidence and exclusion rationale remain auditable.", "There is no defect or improvement assignment for this investigation."]
+    },
+    {
+      "id": "insufficient-evidence",
+      "recordRefs": ["ev-ado-1003-r1", "inv-unknown@1"],
+      "steps": ["Observe missing description and repro fields.", "Record unavailable classification and a concrete evidence gap."],
+      "expected": ["Do not classify as a confirmed non-bug.", "Do not force a PR or use Others as a missing-evidence bucket."]
+    },
+    {
+      "id": "duplicate-and-updated-evidence",
+      "recordRefs": ["ev-ado-1001-r1", "ev-ado-1001-r2", "inv-empty-input@1", "inv-empty-input@2", "assign-empty-input"],
+      "steps": [
+        "A repeated read of revision 1 resolves to the same source identity and evidence version.",
+        "A later tracked-item revisit observes revision 2 even though creation time is outside a new-item cohort.",
+        "Append investigation version 2, retain version 1, and reconcile the existing draft before follow-up."
+      ],
+      "expected": ["Same-revision replay creates no duplicate assignment.", "New evidence does not automatically create a second PR.", "Changes to the draft head require new source-bound validation."]
+    },
+    {
+      "id": "bounded-cross-source-follow-up",
+      "recordRefs": ["ev-ado-1001-r1", "ev-icm-2001", "run-budget-partial"],
+      "steps": ["Follow the explicit in-scope IcM link.", "Do not read the out-of-scope Teams link.", "Stop at the configured budget and retain unvisited in-scope work."],
+      "expected": ["Discovery provenance records the ADO-to-IcM edge.", "Access permissions do not broaden configured scope.", "Partial collection retains its cursor and reports its coverage gap."]
+    },
+    {
+      "id": "reauthentication-recovery",
+      "recordRefs": ["run-auth-blocked", "run-auth-resumed"],
+      "steps": ["A scan cannot authenticate and pauses without advancing its source cursor.", "The operator completes supported sign-in.", "A new run replays the incomplete interval and completes authenticated enumeration."],
+      "expected": ["The failed call is not reported as an empty success.", "The resumed run begins at the prior cursor.", "Only the completed run commits a new cursor."]
+    },
+    {
+      "id": "dispatch-interrupted-after-acceptance",
+      "recordRefs": ["assign-empty-input"],
+      "steps": ["Persist a prepared assignment before dispatch.", "The host accepts it, but the coordinator stops before saving the handle.", "On restart, look up the existing worker by the stable assignment ID."],
+      "expected": ["Recover the existing handle instead of starting another worker.", "If the host cannot establish acceptance, block for reconciliation rather than blindly resubmit."]
+    }
+  ]
+}

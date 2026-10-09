@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "executionMode": "app-native",
+  "agent": { "id": "excel-evidence-coordinator", "role": "collector-coordinator", "scheduleAuthority": "disabled" },
+  "activation": { "collect": false, "review": false, "dispatch": false },
+  "stateDirectory": ".state",
+  "statePolicy": { "accessApproved": false, "retention": "manual-no-auto-delete" },
+  "identity": {
+    "designatedUser": "collector@example.invalid",
+    "displayName": "Synthetic example - replace before live use",
+    "tenantId": "11111111-1111-4111-8111-111111111111",
+    "objectId": "22222222-2222-4222-8222-222222222222"
+  },
+  "window": { "start": "2026-10-08T00:00:00Z", "end": "2026-10-09T00:00:00Z" },
+  "reviewMethod": "agent-evidence-review",
+  "workerIntent": "defect-fix",
+  "limits": { "maxItems": null, "maxCalls": null, "maxWorkers": 1, "maxAssignments": 2, "workerMinutes": null, "workerMaxToolCalls": null, "maxAiCreditsPerSession": null, "maxFileBytes": 262144 },
+  "dryRun": {
+    "collectionOnly": true,
+    "window": { "start": "2026-10-08T00:00:00Z", "end": "2026-10-09T00:00:00Z" },
+    "limits": { "maxItems": 2000, "maxCalls": 300 },
+    "passes": ["ado:created", "ado:changed", "workiq:created"],
+    "authenticationRefreshRequired": true
+  },
+  "sources": {
+    "ado": { "enabled": false, "scopeApproved": false },
+    "icm": { "enabled": false, "scopeApproved": false, "queryId": "599514", "filtersVerified": false, "ownerExport": null },
+    "workiq": {
+      "enabled": false,
+      "scopeApproved": false,
+      "seeds": [{
+        "id": "synthetic-channel",
+        "kind": "teams-channel",
+        "teamId": "33333333-3333-4333-8333-333333333333",
+        "channelId": "19:synthetic-channel@thread.tacv2",
+        "includeReplies": true,
+        "url": "https://example.invalid/synthetic-channel"
+      }]
+    }
+  },
+  "followUp": { "maxDepth": 1, "maxItems": 50, "maxToolCalls": 100 },
+  "repositories": [
+    {
+      "id": "1js",
+      "projectId": null,
+      "owner": null,
+      "routingApproved": false,
+      "routingRules": [],
+      "referenceCheckout": null,
+      "baseRef": null,
+      "remote": "https://dev.azure.com/office/Office/_git/1JS",
+      "allowedWritePrefixes": [],
+      "commitIdentity": { "name": null, "email": null },
+      "validationGates": [],
+      "pr": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "Office",
+        "repositoryId": "1JS",
+        "targetRef": null
+      }
+    },
+    {
+      "id": "office-src",
+      "projectId": null,
+      "owner": null,
+      "routingApproved": false,
+      "routingRules": [],
+      "referenceCheckout": null,
+      "baseRef": null,
+      "remote": "https://dev.azure.com/office/office/_git/Office",
+      "allowedWritePrefixes": [],
+      "commitIdentity": { "name": null, "email": null },
+      "validationGates": [],
+      "pr": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "office",
+        "repositoryId": "Office",
+        "targetRef": null
+      }
+    }
+  ],
+  "schedule": {
+    "enabled": false,
+    "kind": "daily",
+    "timeZone": "Asia/Shanghai",
+    "hour": 9,
+    "minute": 0,
+    "cohort": "previous-complete-utc-day",
+    "changedEvidencePolicy": "tracked-open-and-area-changed"
+  },
+  "runtime": {
+    "cliPath": "copilot",
+    "workiqPluginDirectory": null,
+    "timeoutMs": 120000
+  }
+}

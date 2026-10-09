@@ -1,0 +1,571 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Periodic evidence-to-PR scaffold contracts",
+  "description": "Version 1.0 portable records and disabled configuration templates. Referential integrity, authorization, lifecycle transitions and adapter readiness require additional checks described in README.md.",
+  "oneOf": [
+    { "$ref": "#/$defs/configuration" },
+    { "$ref": "#/$defs/evidence" },
+    { "$ref": "#/$defs/investigation" },
+    { "$ref": "#/$defs/assignment" },
+    { "$ref": "#/$defs/workerResult" },
+    { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/examples" }
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "nullableText": { "type": ["string", "null"], "minLength": 1 },
+    "texts": { "type": "array", "items": { "$ref": "#/$defs/text" }, "uniqueItems": true },
+    "utc": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "nullableUtc": { "anyOf": [{ "$ref": "#/$defs/utc" }, { "type": "null" }] },
+    "uri": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "nullableUri": { "anyOf": [{ "$ref": "#/$defs/uri" }, { "type": "null" }] },
+    "positiveOrNull": { "type": ["integer", "null"], "minimum": 1 },
+    "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "exclusion": {
+      "enum": [
+        "task", "feature_enhancement", "tracking", "security_governance_only",
+        "accessibility_only", "telemetry_only", "performance_measurement_only",
+        "test_infrastructure", "cosmetic_ui_only", "copy_text_only",
+        "localization_only", "by_design", "confirmed_non_bug", "service_reliability_only"
+      ]
+    },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "selector", "verified"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "type": { "enum": ["ado_area", "icm_query", "sharepoint", "teams", "repository", "owner_export"] },
+        "selector": { "$ref": "#/$defs/text" },
+        "verified": { "type": "boolean" }
+      }
+    },
+    "bounds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowedScopeIds", "maxDepth", "maxItems", "maxToolCalls"],
+      "properties": {
+        "allowedScopeIds": { "$ref": "#/$defs/texts" },
+        "maxDepth": { "type": ["integer", "null"], "minimum": 0 },
+        "maxItems": { "$ref": "#/$defs/positiveOrNull" },
+        "maxToolCalls": { "$ref": "#/$defs/positiveOrNull" }
+      }
+    },
+    "permissions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["editCode", "createDraftPR", "runValidation", "merge", "mutateEvidenceSources", "retryValidation", "cancelValidation"],
+      "properties": {
+        "editCode": { "type": "boolean" },
+        "createDraftPR": { "type": "boolean" },
+        "runValidation": { "type": "boolean" },
+        "merge": { "const": false },
+        "mutateEvidenceSources": { "const": false },
+        "retryValidation": { "const": false },
+        "cancelValidation": { "const": false }
+      },
+      "allOf": [{
+        "if": { "properties": { "editCode": { "const": false } } },
+        "then": { "properties": { "createDraftPR": { "const": false } } }
+      }]
+    },
+    "sourceConfig": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "adapterBinding", "credentialReference", "seedScopeIds", "settings"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "type": { "enum": ["ado", "icm", "workiq"] },
+        "adapterBinding": { "$ref": "#/$defs/nullableText" },
+        "credentialReference": { "$ref": "#/$defs/nullableText" },
+        "seedScopeIds": { "$ref": "#/$defs/texts" },
+        "settings": {
+          "type": "object",
+          "description": "Source-specific settings must be validated by the eventual adapter. This schema checks only the portable envelope."
+        }
+      }
+    },
+    "repoConfig": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repoId", "projectId", "referenceCheckout", "owner", "routingRules", "execution", "dispatchBinding", "capabilities", "validationGates"],
+      "properties": {
+        "repoId": { "$ref": "#/$defs/text" },
+        "projectId": { "$ref": "#/$defs/nullableText" },
+        "referenceCheckout": { "$ref": "#/$defs/nullableText" },
+        "owner": { "$ref": "#/$defs/nullableText" },
+        "routingRules": { "$ref": "#/$defs/texts" },
+        "execution": { "enum": ["local", "hosted"] },
+        "dispatchBinding": { "$ref": "#/$defs/nullableText" },
+        "capabilities": { "$ref": "#/$defs/texts" },
+        "validationGates": { "$ref": "#/$defs/texts" }
+      }
+    },
+    "configuration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "profileId", "activationEnabled", "host", "identity", "schedule", "window", "state", "scopes", "sources", "followUp", "limits", "reviewMethod", "exclusions", "repoRegistry", "permissions", "unresolved"],
+      "properties": {
+        "recordType": { "const": "configuration" },
+        "schemaVersion": { "const": "1.0" },
+        "profileId": { "$ref": "#/$defs/text" },
+        "activationEnabled": { "const": false },
+        "host": {
+          "type": "object", "additionalProperties": false,
+          "required": ["coordinator", "workerDefault", "agencyStatus"],
+          "properties": {
+            "coordinator": { "const": "local-copilot" },
+            "workerDefault": { "const": "local" },
+            "agencyStatus": { "const": "deferred" }
+          }
+        },
+        "identity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["mode", "designatedUser", "credentialBroker", "onReauthentication"],
+          "properties": {
+            "mode": { "const": "delegated-user" },
+            "designatedUser": { "$ref": "#/$defs/nullableText" },
+            "credentialBroker": { "$ref": "#/$defs/nullableText" },
+            "onReauthentication": { "const": "block-affected-scans-preserve-state" }
+          }
+        },
+        "schedule": {
+          "type": "object", "additionalProperties": false,
+          "required": ["enabled", "binding", "cadence", "timeZone"],
+          "properties": {
+            "enabled": { "const": false },
+            "binding": { "$ref": "#/$defs/nullableText" },
+            "cadence": { "$ref": "#/$defs/nullableText" },
+            "timeZone": { "$ref": "#/$defs/nullableText" }
+          }
+        },
+        "window": {
+          "type": "object", "additionalProperties": false,
+          "required": ["startDate", "endDateInclusive", "queryTimeZone", "newItemsField", "changedEvidencePolicy", "overlapPolicy"],
+          "properties": {
+            "startDate": { "type": ["string", "null"], "format": "date" },
+            "endDateInclusive": { "type": ["string", "null"], "format": "date" },
+            "queryTimeZone": { "const": "UTC" },
+            "newItemsField": { "const": "System.CreatedDate" },
+            "changedEvidencePolicy": { "$ref": "#/$defs/nullableText" },
+            "overlapPolicy": { "$ref": "#/$defs/nullableText" }
+          }
+        },
+        "state": {
+          "type": "object", "additionalProperties": false,
+          "required": ["binding", "location", "retentionPolicy", "accessPolicy", "overlapControl", "dispatchRecovery"],
+          "properties": {
+            "binding": { "$ref": "#/$defs/nullableText" },
+            "location": { "$ref": "#/$defs/nullableText" },
+            "retentionPolicy": { "$ref": "#/$defs/nullableText" },
+            "accessPolicy": { "$ref": "#/$defs/nullableText" },
+            "overlapControl": { "$ref": "#/$defs/nullableText" },
+            "dispatchRecovery": { "$ref": "#/$defs/nullableText" }
+          }
+        },
+        "scopes": { "type": "array", "items": { "$ref": "#/$defs/scope" } },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceConfig" } },
+        "followUp": { "$ref": "#/$defs/bounds" },
+        "limits": {
+          "type": "object", "additionalProperties": false,
+          "required": ["concurrentWorkers", "assignmentsPerRun", "creditBudget", "workerDeadlineMinutes"],
+          "properties": {
+            "concurrentWorkers": { "$ref": "#/$defs/positiveOrNull" },
+            "assignmentsPerRun": { "$ref": "#/$defs/positiveOrNull" },
+            "creditBudget": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "workerDeadlineMinutes": { "$ref": "#/$defs/positiveOrNull" }
+          }
+        },
+        "reviewMethod": { "enum": [null, "agent-evidence-review", "human-review"] },
+        "exclusions": {
+          "type": "array", "minItems": 14, "maxItems": 14, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/exclusion" }
+        },
+        "repoRegistry": { "type": "array", "items": { "$ref": "#/$defs/repoConfig" } },
+        "permissions": { "$ref": "#/$defs/permissions" },
+        "unresolved": { "$ref": "#/$defs/texts" }
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "source", "scopeId", "title", "url", "createdAt", "queriedAt", "observedAt", "snapshotAt", "queryText", "sourceStatus", "ring", "discoveryChannel", "permittedSummary", "fields", "missingFields", "links", "discoveredFrom", "discoveryReason", "capture"],
+      "properties": {
+        "recordType": { "const": "evidence" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "namespace", "recordId", "revision", "versionBasis", "provenance", "ownerConfirmation"],
+          "properties": {
+            "kind": { "enum": ["ado", "icm", "workiq"] },
+            "namespace": { "$ref": "#/$defs/text" },
+            "recordId": { "$ref": "#/$defs/text" },
+            "revision": { "$ref": "#/$defs/nullableText" },
+            "versionBasis": { "$ref": "#/$defs/text" },
+            "provenance": { "enum": ["authenticated-source", "app-tool-reported", "owner-provided", "synthetic"] },
+            "ownerConfirmation": {
+              "anyOf": [
+                { "type": "null" },
+                {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["confirmedBy", "confirmedAt", "confirmedScope"],
+                  "properties": {
+                    "confirmedBy": { "$ref": "#/$defs/text" },
+                    "confirmedAt": { "$ref": "#/$defs/utc" },
+                    "confirmedScope": { "$ref": "#/$defs/text" }
+                  }
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "kind": { "const": "ado" } } },
+              "then": { "properties": { "revision": { "$ref": "#/$defs/text" } } }
+            },
+            {
+              "if": { "properties": { "provenance": { "const": "owner-provided" } } },
+              "then": { "properties": { "ownerConfirmation": { "type": "object" } } }
+            }
+          ]
+        },
+        "scopeId": { "$ref": "#/$defs/text" },
+        "title": { "$ref": "#/$defs/nullableText" },
+        "url": { "$ref": "#/$defs/uri" },
+        "createdAt": { "$ref": "#/$defs/nullableUtc" },
+        "queriedAt": { "$ref": "#/$defs/utc" },
+        "observedAt": { "$ref": "#/$defs/utc" },
+        "snapshotAt": { "$ref": "#/$defs/nullableUtc" },
+        "queryText": { "$ref": "#/$defs/text" },
+        "sourceStatus": { "$ref": "#/$defs/nullableText" },
+        "ring": { "enum": ["Dogfood", "MSIT", "Production", "unknown"] },
+        "discoveryChannel": {
+          "enum": ["Bug Bash", "E2E", "OCV / user feedback", "Customer feedback", "Internal feedback", "Feature / vendor testing", "UX / craft review", "Live-site / support", "Code review", "Others", "unknown"]
+        },
+        "permittedSummary": { "$ref": "#/$defs/text" },
+        "fields": { "type": "object", "description": "Permitted source field values; source adapter validates names and types." },
+        "missingFields": { "$ref": "#/$defs/texts" },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["url", "relation", "evidenceId", "access"],
+            "properties": {
+              "url": { "$ref": "#/$defs/uri" },
+              "relation": { "$ref": "#/$defs/text" },
+              "evidenceId": { "$ref": "#/$defs/nullableText" },
+              "access": { "enum": ["retrieved-in-scope", "not-followed-out-of-scope", "not-followed-budget", "unavailable"] }
+            }
+          }
+        },
+        "discoveredFrom": { "$ref": "#/$defs/nullableText" },
+        "discoveryReason": { "$ref": "#/$defs/text" },
+        "capture": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifactRef", "sha256", "unavailableReason"],
+          "properties": {
+            "artifactRef": { "$ref": "#/$defs/nullableText" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "unavailableReason": { "$ref": "#/$defs/nullableText" }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "artifactRef": { "$ref": "#/$defs/text" },
+                "sha256": { "type": "string" },
+                "unavailableReason": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "artifactRef": { "type": "null" },
+                "sha256": { "type": "null" },
+                "unavailableReason": { "$ref": "#/$defs/text" }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [{
+        "if": { "properties": { "source": { "properties": { "kind": { "const": "ado" } } } } },
+        "then": { "properties": { "snapshotAt": { "$ref": "#/$defs/utc" } } }
+      }]
+    },
+    "investigation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "evidenceIds", "state", "observedBehavior", "expectedBehavior", "hypotheses", "counterEvidence", "classification", "defectConfirmation", "reportEligibility", "handoffEligibility", "exclusionReasons", "rationale", "confidence", "review", "repoIds", "existingFixes", "nextAction"],
+      "properties": {
+        "recordType": { "const": "investigation" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "version": { "type": "integer", "minimum": 1 },
+        "evidenceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "state": { "enum": ["triaged", "assigned", "waiting", "blocked", "closed", "reopened"] },
+        "observedBehavior": { "$ref": "#/$defs/text" },
+        "expectedBehavior": { "$ref": "#/$defs/nullableText" },
+        "hypotheses": { "$ref": "#/$defs/texts" },
+        "counterEvidence": { "$ref": "#/$defs/texts" },
+        "classification": { "enum": ["functional", "nonfunctional", "unavailable"] },
+        "defectConfirmation": { "enum": ["unconfirmed", "confirmed", "ruled-out"] },
+        "reportEligibility": { "enum": ["included", "excluded", "unavailable"] },
+        "handoffEligibility": { "enum": ["eligible", "excluded", "needs-evidence"] },
+        "exclusionReasons": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/exclusion" } },
+        "rationale": { "$ref": "#/$defs/text" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "reviewer", "reviewedAt"],
+          "properties": {
+            "method": { "enum": ["agent-evidence-review", "human-review"] },
+            "reviewer": { "$ref": "#/$defs/text" },
+            "reviewedAt": { "$ref": "#/$defs/utc" }
+          }
+        },
+        "repoIds": { "$ref": "#/$defs/texts" },
+        "existingFixes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/uri" } },
+        "nextAction": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "classification": { "const": "nonfunctional" } } },
+          "then": { "properties": { "reportEligibility": { "const": "excluded" }, "handoffEligibility": { "const": "excluded" } } }
+        },
+        {
+          "if": { "properties": { "handoffEligibility": { "const": "eligible" } } },
+          "then": { "properties": { "classification": { "const": "functional" }, "reportEligibility": { "const": "included" } } }
+        },
+        {
+          "if": { "properties": { "reportEligibility": { "const": "included" } } },
+          "then": { "properties": { "classification": { "const": "functional" } } }
+        },
+        {
+          "if": { "properties": { "defectConfirmation": { "const": "confirmed" } } },
+          "then": { "properties": { "classification": { "const": "functional" } } }
+        },
+        {
+          "if": { "properties": { "exclusionReasons": { "minItems": 1 } } },
+          "then": { "properties": { "reportEligibility": { "const": "excluded" }, "handoffEligibility": { "const": "excluded" } } }
+        },
+        {
+          "if": { "properties": { "reportEligibility": { "const": "excluded" } } },
+          "then": { "properties": { "handoffEligibility": { "const": "excluded" } } }
+        },
+        {
+          "if": { "properties": { "handoffEligibility": { "const": "excluded" } } },
+          "then": { "properties": { "exclusionReasons": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "classification": { "const": "unavailable" } } },
+          "then": { "properties": { "reportEligibility": { "const": "unavailable" }, "handoffEligibility": { "const": "needs-evidence" }, "defectConfirmation": { "const": "unconfirmed" } } }
+        }
+      ]
+    },
+    "assignment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "investigationId", "investigationVersion", "evidenceIds", "repoId", "owner", "intent", "state", "execution", "workerHandle", "workspace", "requiredCapabilities", "questions", "acceptanceCriteria", "validationGates", "dependsOn", "bounds", "permissions"],
+      "properties": {
+        "recordType": { "const": "assignment" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "investigationId": { "$ref": "#/$defs/text" },
+        "investigationVersion": { "type": "integer", "minimum": 1 },
+        "evidenceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "repoId": { "$ref": "#/$defs/text" },
+        "owner": { "$ref": "#/$defs/text" },
+        "intent": { "enum": ["rca-only", "defect-fix", "improvement"] },
+        "state": { "enum": ["prepared", "dispatched", "running", "blocked", "completed", "superseded"] },
+        "execution": { "enum": ["local", "hosted"] },
+        "workerHandle": { "$ref": "#/$defs/nullableText" },
+        "workspace": {
+          "type": "object", "additionalProperties": false,
+          "required": ["isolation", "path", "baseRevision"],
+          "properties": {
+            "isolation": { "const": "isolated-task-workspace" },
+            "path": { "$ref": "#/$defs/nullableText" },
+            "baseRevision": { "$ref": "#/$defs/nullableText" }
+          }
+        },
+        "requiredCapabilities": { "$ref": "#/$defs/texts" },
+        "questions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "acceptanceCriteria": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "validationGates": { "$ref": "#/$defs/texts" },
+        "dependsOn": { "$ref": "#/$defs/texts" },
+        "bounds": {
+          "$ref": "#/$defs/bounds",
+          "properties": {
+            "allowedScopeIds": { "minItems": 1 },
+            "maxDepth": { "type": "integer" },
+            "maxItems": { "type": "integer" },
+            "maxToolCalls": { "type": "integer" }
+          }
+        },
+        "permissions": { "$ref": "#/$defs/permissions" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "intent": { "const": "rca-only" } } },
+          "then": { "properties": { "permissions": { "properties": { "editCode": { "const": false }, "createDraftPR": { "const": false } } } } }
+        },
+        {
+          "if": { "properties": { "permissions": { "properties": { "editCode": { "const": true } } } } },
+          "then": { "properties": { "validationGates": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["dispatched", "running", "completed"] } } },
+          "then": { "properties": { "workerHandle": { "$ref": "#/$defs/text" } } }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["running", "completed"] } } },
+          "then": { "properties": { "workspace": { "properties": { "path": { "$ref": "#/$defs/text" }, "baseRevision": { "$ref": "#/$defs/text" } } } } }
+        }
+      ]
+    },
+    "validation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gateId", "sourceRevision", "commandOrRunUrl", "status", "artifactRefs", "owner", "nextCheckAt"],
+      "properties": {
+        "gateId": { "$ref": "#/$defs/text" },
+        "sourceRevision": { "$ref": "#/$defs/text" },
+        "commandOrRunUrl": { "$ref": "#/$defs/text" },
+        "status": { "enum": ["not-run", "queued", "running", "passed", "failed", "blocked"] },
+        "artifactRefs": { "$ref": "#/$defs/texts" },
+        "owner": { "$ref": "#/$defs/text" },
+        "nextCheckAt": { "$ref": "#/$defs/nullableUtc" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "enum": ["queued", "running"] } } },
+          "then": { "properties": { "nextCheckAt": { "$ref": "#/$defs/utc" } } }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["passed", "failed"] } } },
+          "then": { "properties": { "artifactRefs": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "workerResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "assignmentId", "attemptId", "reportedAt", "outcome", "findings", "evidenceIds", "sourceRevision", "draftPR", "validation", "blocker", "nextAction"],
+      "properties": {
+        "recordType": { "const": "workerResult" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "assignmentId": { "$ref": "#/$defs/text" },
+        "attemptId": { "$ref": "#/$defs/text" },
+        "reportedAt": { "$ref": "#/$defs/utc" },
+        "outcome": { "enum": ["investigated", "not-reproducible", "not-actionable", "blocked", "draft-pr-validation-pending", "draft-pr-validation-failed", "draft-pr-validated"] },
+        "findings": { "$ref": "#/$defs/text" },
+        "evidenceIds": { "$ref": "#/$defs/texts" },
+        "sourceRevision": { "$ref": "#/$defs/nullableText" },
+        "draftPR": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["url", "isDraft", "headRevision"],
+              "properties": {
+                "url": { "$ref": "#/$defs/uri" },
+                "isDraft": { "const": true },
+                "headRevision": { "$ref": "#/$defs/text" }
+              }
+            }
+          ]
+        },
+        "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },
+        "blocker": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["reason", "owner", "unblockCondition"],
+              "properties": {
+                "reason": { "$ref": "#/$defs/text" },
+                "owner": { "$ref": "#/$defs/text" },
+                "unblockCondition": { "$ref": "#/$defs/text" }
+              }
+            }
+          ]
+        },
+        "nextAction": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "blocked" } } },
+          "then": { "properties": { "blocker": { "type": "object" } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "enum": ["draft-pr-validation-pending", "draft-pr-validation-failed", "draft-pr-validated"] } } },
+          "then": { "properties": { "draftPR": { "type": "object" }, "sourceRevision": { "$ref": "#/$defs/text" }, "validation": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "draft-pr-validated" } } },
+          "then": { "properties": { "blocker": { "type": "null" }, "validation": { "items": { "properties": { "status": { "const": "passed" } } } } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "draft-pr-validation-failed" } } },
+          "then": { "properties": { "validation": { "contains": { "properties": { "status": { "const": "failed" } }, "required": ["status"] } } } }
+        }
+      ]
+    },
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "sourceId", "startedAt", "endedAt", "status", "windowStart", "windowEndExclusive", "cursorBefore", "cursorAfter", "evidenceIds", "gaps", "owner", "nextAction"],
+      "properties": {
+        "recordType": { "const": "run" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "sourceId": { "$ref": "#/$defs/text" },
+        "startedAt": { "$ref": "#/$defs/utc" },
+        "endedAt": { "$ref": "#/$defs/nullableUtc" },
+        "status": { "enum": ["collecting", "complete", "partial", "blocked-auth", "failed"] },
+        "windowStart": { "$ref": "#/$defs/utc" },
+        "windowEndExclusive": { "$ref": "#/$defs/utc" },
+        "cursorBefore": { "$ref": "#/$defs/nullableText" },
+        "cursorAfter": { "$ref": "#/$defs/nullableText" },
+        "evidenceIds": { "$ref": "#/$defs/texts" },
+        "gaps": { "$ref": "#/$defs/texts" },
+        "owner": { "$ref": "#/$defs/text" },
+        "nextAction": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "enum": ["partial", "blocked-auth", "failed"] } } },
+          "then": { "properties": { "gaps": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "complete" } } },
+          "then": { "properties": { "gaps": { "maxItems": 0 }, "endedAt": { "$ref": "#/$defs/utc" } } }
+        }
+      ]
+    },
+    "examples": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "synthetic", "notice", "scopes", "repoIds", "records", "scenarios"],
+      "properties": {
+        "recordType": { "const": "examples" },
+        "schemaVersion": { "const": "1.0" },
+        "synthetic": { "const": true },
+        "notice": { "$ref": "#/$defs/text" },
+        "scopes": { "type": "array", "items": { "$ref": "#/$defs/scope" } },
+        "repoIds": { "$ref": "#/$defs/texts" },
+        "records": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/evidence" }, { "$ref": "#/$defs/investigation" },
+              { "$ref": "#/$defs/assignment" }, { "$ref": "#/$defs/workerResult" },
+              { "$ref": "#/$defs/run" }
+            ]
+          }
+        },
+        "scenarios": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "recordRefs", "steps", "expected"],
+            "properties": {
+              "id": { "$ref": "#/$defs/text" },
+              "recordRefs": { "$ref": "#/$defs/texts" },
+              "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+              "expected": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

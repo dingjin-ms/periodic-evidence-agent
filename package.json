@@ -1,0 +1,20 @@
+{
+  "name": "periodic-evidence-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "test": "node --test",
+    "demo": "node scripts/demo.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "pilot": "node src/cli.js",
+    "check": "node --check src/cli.js && node --test"
+  },
+  "dependencies": {
+    "@azure/identity": "4.13.1",
+    "@github/copilot-sdk": "1.0.18",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1"
+  }
+}

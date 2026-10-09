@@ -1,0 +1,165 @@
+{
+  "recordType": "configuration",
+  "schemaVersion": "1.0",
+  "profileId": "excel-agent-local-pilot",
+  "activationEnabled": false,
+  "host": {
+    "coordinator": "local-copilot",
+    "workerDefault": "local",
+    "agencyStatus": "deferred"
+  },
+  "identity": {
+    "mode": "delegated-user",
+    "designatedUser": null,
+    "credentialBroker": null,
+    "onReauthentication": "block-affected-scans-preserve-state"
+  },
+  "schedule": {
+    "enabled": false,
+    "binding": null,
+    "cadence": null,
+    "timeZone": null
+  },
+  "window": {
+    "startDate": null,
+    "endDateInclusive": null,
+    "queryTimeZone": "UTC",
+    "newItemsField": "System.CreatedDate",
+    "changedEvidencePolicy": null,
+    "overlapPolicy": null
+  },
+  "state": {
+    "binding": null,
+    "location": null,
+    "retentionPolicy": null,
+    "accessPolicy": null,
+    "overlapControl": null,
+    "dispatchRecovery": null
+  },
+  "scopes": [
+    {
+      "id": "excel-agent-ado",
+      "type": "ado_area",
+      "selector": "office/OC :: OC\\Excel\\Intelligence\\Copilot\\Excel Agent (including subpaths)",
+      "verified": false
+    },
+    {
+      "id": "excel-agent-icm",
+      "type": "icm_query",
+      "selector": "https://portal.microsofticm.com/imp/v5/incidents/queries/599514",
+      "verified": false
+    }
+  ],
+  "sources": [
+    {
+      "id": "ado-excel-agent",
+      "type": "ado",
+      "adapterBinding": null,
+      "credentialReference": null,
+      "seedScopeIds": ["excel-agent-ado"],
+      "settings": {
+        "organization": "office",
+        "project": "OC",
+        "areaPath": "OC\\Excel\\Intelligence\\Copilot\\Excel Agent",
+        "includeSubpaths": true,
+        "wiqlEndpoint": "https://dev.azure.com/office/OC/_apis/wit/wiql?timePrecision=true&api-version=7.1",
+        "batchEndpoint": "https://dev.azure.com/office/OC/_apis/wit/workitemsbatch?api-version=7.1",
+        "wiqlTemplate": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER 'OC\\Excel\\Intelligence\\Copilot\\Excel Agent' AND [System.State] <> 'Removed' AND [System.CreatedDate] >= '<START_UTC>' AND [System.CreatedDate] < '<END_UTC_EXCLUSIVE>' ORDER BY [System.Id]",
+        "maxBatchIds": 200,
+        "errorPolicy": "Fail",
+        "snapshotPolicy": "Preserve WIQL asOf and use it for batch reads; capture id and rev. Do not equate query-time state with historical cutoff state.",
+        "fields": [
+          "System.Id", "System.WorkItemType", "System.Title", "System.State",
+          "System.Reason", "System.CreatedDate", "System.AreaPath", "System.Tags",
+          "Microsoft.VSTS.Common.ResolvedReason", "Microsoft.VSTS.CMMI.HowFound",
+          "Office.Common.FeedbackSources", "Office.Common.CustomerType",
+          "Office.Common.IcMID", "Office.Common.IcMIncidentIDs",
+          "System.Description", "Microsoft.VSTS.TCM.ReproSteps",
+          "Office.Common.IssueType", "Office.Common.LinkedToOCVIssue"
+        ],
+        "attachments": "do-not-download-by-default",
+        "scanPrompt": null
+      }
+    },
+    {
+      "id": "icm-excel-agent",
+      "type": "icm",
+      "adapterBinding": null,
+      "credentialReference": null,
+      "seedScopeIds": ["excel-agent-icm"],
+      "settings": {
+        "queryId": "599514",
+        "queryFiltersVerified": false,
+        "intendedSeverities": ["S0", "S1", "S2", "S2.5"],
+        "intendedProduct": "Excel Agent",
+        "excludePureServiceReliability": true,
+        "rings": ["Dogfood", "MSIT", "Production", "unknown"],
+        "fieldsToPreserve": [
+          "incidentId", "title", "createTime", "severity", "status",
+          "serviceTeam", "impactedProduct", "deploymentRing",
+          "problemDescription", "rootCause", "mitigationOrFix",
+          "linkedAdoOrPR", "directLink"
+        ],
+        "ownerExportPolicy": "Explicitly label owner-provided provenance, confirmed scope and confirmation time. No authenticated-access claim."
+      }
+    },
+    {
+      "id": "workiq-workplace",
+      "type": "workiq",
+      "adapterBinding": null,
+      "credentialReference": null,
+      "seedScopeIds": [],
+      "settings": {
+        "endpoint": "https://workiq.svc.cloud.microsoft/mcp",
+        "capability": "read-only-bounded-retrieval",
+        "requiredForPilot": true,
+        "seedResources": [],
+        "readToolBindings": null,
+        "boundaryEnforcementVerified": false,
+        "mutatingToolsAllowed": false,
+        "emptyScopeBehavior": "unconfigured-block-this-source-not-tenant-wide-search"
+      }
+    }
+  ],
+  "followUp": {
+    "allowedScopeIds": [],
+    "maxDepth": null,
+    "maxItems": null,
+    "maxToolCalls": null
+  },
+  "limits": {
+    "concurrentWorkers": null,
+    "assignmentsPerRun": null,
+    "creditBudget": null,
+    "workerDeadlineMinutes": null
+  },
+  "reviewMethod": null,
+  "exclusions": [
+    "task", "feature_enhancement", "tracking", "security_governance_only",
+    "accessibility_only", "telemetry_only", "performance_measurement_only",
+    "test_infrastructure", "cosmetic_ui_only", "copy_text_only",
+    "localization_only", "by_design", "confirmed_non_bug", "service_reliability_only"
+  ],
+  "repoRegistry": [],
+  "permissions": {
+    "editCode": true,
+    "createDraftPR": true,
+    "runValidation": true,
+    "merge": false,
+    "mutateEvidenceSources": false,
+    "retryValidation": false,
+    "cancelValidation": false
+  },
+  "unresolved": [
+    "Designated user and supported local credential broker; WorkIQ access does not imply ADO or IcM access.",
+    "START_DATE and END_DATE for the first bounded manual collection.",
+    "Workplace seed resources, allowed follow-up boundaries, and adapter-enforced scope.",
+    "Source adapter bindings, actual IcM query filters, and field availability.",
+    "Whether manual review in the supplied prompt requires a human or permits evidence-backed agent review.",
+    "Repository ownership and routing, worker bindings, capabilities, and required validation gates.",
+    "Durable state adapter, protected location, retention, exclusive run ownership, and dispatch reconciliation.",
+    "Numeric discovery and execution limits; null is unresolved, never unlimited.",
+    "Changed-evidence revisit policy distinct from the creation-date cohort query.",
+    "Schedule cadence, scheduler binding, machine availability, and reauthentication qualification."
+  ]
+}

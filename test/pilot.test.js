@@ -1,0 +1,903 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { probeWorkiq } from '../scripts/Workiq-Auth-Repro.mjs';
+import { Ledger } from '../src/ledger.js';
+import { configAt, hash, json, now, exclusions, PilotError, boundedPath, validateRecord } from '../src/common.js';
+import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, area, wiql, adoRecord } from '../src/sources.js';
+import { dryRun } from '../src/dry-run.js';
+import { followRelated } from '../src/followup.js';
+import { revisitTracked } from '../src/revisit.js';
+import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
+import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
+import { makeAssignment, WorkerTools, provision, runValidation, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
+
+function setup(t) {
+  const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
+  const config = configAt('pilot.example.json');
+  config.stateDirectory = join(root, 'state');
+  config.statePolicy.accessApproved = true;
+  config.activation = { collect: true, review: true, dispatch: false };
+  config.identity = { designatedUser: 'synthetic-owner', tenantId: 'synthetic-tenant', objectId: 'synthetic-user' };
+  config.limits = { maxItems: 1000, maxCalls: 30, maxWorkers: 1, maxAssignments: 1, workerMinutes: 1, workerMaxToolCalls: 30, maxFileBytes: 262144 };
+  config.followUp = { maxDepth: 0, maxItems: 50, maxToolCalls: 100 };
+  config.reviewMethod = 'human-review';
+  config.sources.ado.scopeApproved = true;
+  config.sources.ado.enabled = true;
+  config.sources.icm.enabled = false;
+  config.sources.workiq.enabled = false;
+  config.sources.workiq.seeds = [];
+  config.schedule.changedEvidencePolicy = null;
+  const ledger = new Ledger(config.stateDirectory);
+  t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
+  return { root, config, ledger };
+}
+function adoItem(id = 1, rev = 1) {
+  return { id, rev, fields: {
+    'System.Id': id, 'System.WorkItemType': 'Bug', 'System.Title': `Synthetic bug ${id}`,
+    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Active',
+    'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z'
+  } };
+}
+function transport(items = [adoItem()], capture = []) {
+  return async (endpoint, body) => {
+    capture.push({ endpoint, body });
+    if (endpoint === 'wiql') return {
+      asOf: '2026-10-09T01:00:00Z', workItems: body.query.includes('[System.Id] = 0') ? [] : items.map(({ id }) => ({ id }))
+    };
+    return { value: items.filter(i => body.ids.includes(i.id)) };
+  };
+}
+function addEvidence(ledger, id = '1', revision = '1', payload = { text: 'synthetic' }, provenance = 'synthetic') {
+  const record = evidenceEnvelope('ado', 'office/OC', id, revision,
+    `https://dev.azure.com/office/OC/_workitems/edit/${id}`, 'synthetic query', '2026-10-09T01:00:00Z');
+  record.source.provenance = provenance;
+  return ledger.evidence(record, payload, `run-${revision}-${id}`);
+}
+function review(evidence, version = 1) {
+  return {
+    recordType: 'investigation', schemaVersion: '1.0',
+    id: `investigation-${hash(json([evidence.source.namespace, evidence.source.recordId]))}`, version,
+    evidenceIds: [evidence.id], state: 'triaged', observedBehavior: 'Synthetic failure',
+    expectedBehavior: 'Expected behavior', hypotheses: [], counterEvidence: [],
+    classification: 'functional', defectConfirmation: 'unconfirmed', reportEligibility: 'included',
+    handoffEligibility: 'eligible', exclusionReasons: [], rationale: 'Synthetic review only', confidence: 0.8,
+    review: { method: 'human-review', reviewer: 'synthetic-reviewer', reviewedAt: now() },
+    repoIds: [], existingFixes: [], nextAction: 'Investigate source cause'
+  };
+}
+function repoConfig(config, root) {
+  const repo = {
+    id: 'fixture', owner: 'synthetic-owner', routingApproved: true, routingRules: ['synthetic only'],
+    referenceCheckout: join(root, 'reference'), baseRef: 'HEAD', remote: join(root, 'remote.git'),
+    allowedWritePrefixes: ['src', 'test'], validationGates: [], commitIdentity: { name: 'Pilot fixture', email: 'fixture@example.invalid' }
+  };
+  config.repositories = [repo]; return repo;
+}
+async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
+  const ctx = setup(t);
+  const repo = repoConfig(ctx.config, ctx.root);
+  mkdirSync(join(repo.referenceCheckout, 'src'), { recursive: true });
+  writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
+  const g = args => command('git', ['-c', 'core.hooksPath=', ...args], repo.referenceCheckout);
+  await g(['init', '--quiet']);
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'Synthetic fixture']);
+  const evidence = addEvidence(ctx.ledger, '1', '1', { fixture: true, simulatedProvider: true }, provenance);
+  const investigation = review(evidence); investigation.repoIds = [repo.id];
+  ctx.ledger.put(investigation);
+  if (intent !== 'rca-only') repo.validationGates = [{ id: 'source-test', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['--input-type=module', '-e',
+      "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,2)"], timeoutMs: 10000 }];
+  const assignment = makeAssignment(ctx.config, investigation, repo.id, intent);
+  const job = ctx.ledger.prepare(assignment);
+  return { ...ctx, repo, evidence, investigation, assignment, job, g };
+}
+
+test('portable scaffold config and all synthetic example records remain valid', () => {
+  validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
+  validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
+});
+test('portable example uses a fixed UTC fixture window and leaves live permissions unapproved', () => {
+  const config = configAt('pilot.example.json');
+  assert.deepEqual(config.window, { start: '2026-10-08T00:00:00Z', end: '2026-10-09T00:00:00Z' });
+  assert.deepEqual(config.activation, { collect: false, review: false, dispatch: false });
+  assert.equal(config.schedule.enabled, false);
+  assert.equal(config.statePolicy.accessApproved, false);
+  assert.ok(Object.values(config.sources).every(s => !s.enabled && !s.scopeApproved));
+  assert.ok(config.repositories.every(r => !r.projectId && !r.referenceCheckout && !r.routingApproved));
+  assert.match(config.identity.designatedUser, /@example\.invalid$/);
+});
+test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
+  const window = configAt('pilot.example.json').window;
+  assert.match(wiql(window), /\[System.CreatedDate\]/);
+  assert.match(wiql(window, 'changed'), /\[System.ChangedDate\]/);
+  assert.ok(wiql(window).includes(`UNDER '${area}'`));
+  assert.match(wiql(window), /<> 'Removed'/);
+  assert.doesNotMatch(wiql(window), /Bug Bash|Automation/);
+  assert.throws(() => wiql({ start: '2026-10-08', end: window.end }));
+});
+test('ADO batches at most 200, pins snapshot, distinguishes missing fields and retains revisions', async t => {
+  const { config } = setup(t), calls = [], evidence = [];
+  await collectAdo(config, config.window, async e => evidence.push(e), 'created',
+    transport(Array.from({ length: 201 }, (_, i) => adoItem(i + 1)), calls));
+  const batches = calls.filter(c => c.endpoint === 'workitemsbatch');
+  assert.deepEqual(batches.map(c => c.body.ids.length), [200, 1]);
+  assert.ok(batches.every(c => c.body.asOf === '2026-10-09T01:00:00Z' && c.body.errorPolicy === 'Fail'));
+  assert.equal(evidence.length, 201);
+  assert.equal(evidence[0].source.revision, '1');
+  assert.ok(evidence[0].missingFields.includes('Office.Common.IcMID'));
+  assert.equal(evidence[0].discoveryChannel, 'unknown');
+});
+test('ADO missing batches fail instead of treating omissions as empty success', async t => {
+  const { config } = setup(t), real = transport([adoItem()]);
+  await assert.rejects(collectAdo(config, config.window, async () => {}, 'created',
+    (endpoint, body) => endpoint === 'workitemsbatch' ? { value: [] } : real(endpoint, body)), /missing/);
+});
+test('ADO out-of-scope area rejected before evidence acceptance', async t => {
+  const { config } = setup(t), item = adoItem();
+  item.fields['System.AreaPath'] = `${area}Unrelated`;
+  await assert.rejects(collectAdo(config, config.window, async () => {}, 'created', transport([item])), /out-of-scope/);
+});
+test('ADO budget exhaustion is explicit and does not silently truncate', async t => {
+  const { config } = setup(t); config.limits.maxItems = 1;
+  await assert.rejects(collectAdo(config, config.window, async () => {}, 'created', transport([adoItem(1), adoItem(2)])),
+    e => e.code === 'partial');
+});
+test('ADO limit splits the half-open window at one stable asOf', async t => {
+  const { config } = setup(t);
+  const calls = [];
+  let enumerations = 0;
+  const request = async (endpoint, body) => {
+    calls.push(body.query);
+    if (body.query.includes('[System.Id] = 0')) return { asOf: '2026-10-09T01:00:00Z', workItems: [] };
+    if (++enumerations === 1) throw new PilotError('query-limit', 'limit');
+    return { asOf: '2026-10-09T01:00:00Z', workItems: [] };
+  };
+  await collectAdo(config, config.window, async () => {}, 'created', request);
+  assert.equal(calls.length, 4);
+  assert.ok(calls[2].includes('2026-10-08T12:00:00.000Z'));
+  assert.ok(calls[3].includes('2026-10-08T12:00:00.000Z'));
+  assert.ok(calls.slice(1).every(q => q.includes("ASOF '2026-10-09T01:00:00Z'")));
+});
+test('partial source capture is durable, keeps cursor and deduplicates on replay', async t => {
+  const { config, ledger } = setup(t);
+  const adapter = async (c, window, emit) => {
+    const record = evidenceEnvelope('ado', 'office/OC', 1, '1', 'https://example.invalid/1', 'synthetic', now());
+    record.source.provenance = 'synthetic';
+    await emit(record, { raw: 'fixture' });
+    throw new PilotError('blocked-auth', 'Synthetic expired sign-in');
+  };
+  const result = await collect(config, ledger, { adapters: { ado: adapter } });
+  assert.equal(result[0].state, 'blocked-auth');
+  assert.equal(ledger.cursor('ado:created'), null);
+  const skipped = await collect(config, ledger, { adapters: { ado: adapter } });
+  assert.equal(skipped[0].state, 'blocked');
+  assert.equal(ledger.status().runs.length, 1);
+  ledger.unblockSource('ado:created', 'Synthetic reauthentication confirmed');
+  ledger.unblockSource('auth:ado', 'Synthetic reauthentication confirmed');
+  await collect(config, ledger, { adapters: { ado: adapter } });
+  assert.equal(ledger.all('evidence').length, 1);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM observations').get().n, 2);
+});
+test('complete source cursor survives a fresh database connection', async t => {
+  const { config, ledger } = setup(t);
+  await collect(config, ledger, { adapters: { ado: async () => ({ end: config.window.end }) } });
+  const reopened = new Ledger(config.stateDirectory);
+  try { assert.equal(reopened.cursor('ado:created').end, config.window.end); } finally { reopened.close(); }
+});
+test('immutable evidence retains both revision versions and actual capture byte hashes', t => {
+  const { ledger } = setup(t);
+  const first = addEvidence(ledger), second = addEvidence(ledger, '1', '2', { text: 'changed' });
+  assert.notEqual(first.id, second.id);
+  const bytes = ledger.db.prepare('SELECT body FROM captures WHERE hash=?').get(first.capture.sha256).body;
+  assert.equal(hash(bytes), first.capture.sha256);
+  assert.throws(() => ledger.db.prepare("UPDATE records SET body='{}'").run(), /immutable/);
+  assert.throws(() => ledger.put({ ...first, title: 'changed' }), /Immutable/);
+});
+test('older ADO revision does not replace newer evidence on a later historical read', t => {
+  const { ledger } = setup(t);
+  const newest = addEvidence(ledger, '1', '2');
+  addEvidence(ledger, '1', '1', { historical: true });
+  assert.equal(latestEvidence(ledger)[0].id, newest.id);
+});
+test('atomic ownership rejects another connection and wrong release token', t => {
+  const { config, ledger } = setup(t), other = new Ledger(config.stateDirectory);
+  try {
+    const owner = ledger.acquire('collection');
+    assert.throws(() => other.acquire('collection'), e => e.code === 'overlap');
+    other.release('collection', 'wrong');
+    assert.throws(() => other.acquire('collection'));
+    ledger.release('collection', owner);
+    const token = other.acquire('collection'); other.release('collection', token);
+  } finally { other.close(); }
+});
+test('live process lock cannot be recovered even with exact owner', t => {
+  const { ledger } = setup(t), owner = ledger.acquire('collection');
+  assert.throws(() => ledger.recoverLock('collection', owner), /still present/);
+  ledger.release('collection', owner);
+});
+test('owner lock remains exclusive in a separate process', t => {
+  const { ledger, config } = setup(t), owner = ledger.acquire('collection');
+  const script = `import {Ledger} from './src/ledger.js'; const l=new Ledger(${json(config.stateDirectory)}); try{l.acquire('collection');process.exitCode=5}catch(e){process.stdout.write(e.code)}finally{l.close()}`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0); assert.equal(result.stdout, 'overlap');
+  ledger.release('collection', owner);
+});
+test('WorkIQ only accepts exact selected entity paths, never tenant-wide search', () => {
+  const valid = { id: 'seed', path: '/teams/team/channels/channel/messages/message?$select=id,body', url: 'https://teams.microsoft.com/message' };
+  assert.equal(validateSeed(valid), valid);
+  for (const path of ['/me/messages?$select=id', '/me/messages/one?$expand=attachments&$select=id',
+    '/teams/team/channels/channel/messages/../members?$select=id', 'https://graph.microsoft.com/me/messages/one?$select=id',
+    '/me/messages/%2fsecret?$select=id', '/me/messages/one?$select=id&$top=50']) {
+    assert.throws(() => validateSeed({ ...valid, path }));
+  }
+});
+test('empty WorkIQ seeds block instead of broadening', async t => {
+  const { config } = setup(t); config.sources.workiq.scopeApproved = true; config.sources.workiq.identityConfirmed = true;
+  let called = false;
+  await assert.rejects(collectWorkiq(config, config.window, async () => {}, async () => { called = true; }), /no approved/);
+  assert.equal(called, false);
+});
+test('WorkIQ captures only configured seeds and labels current-snapshot coverage', async t => {
+  const { config } = setup(t);
+  config.sources.workiq = { enabled: true, scopeApproved: true, identityConfirmed: true,
+    seeds: [{ id: 'seed', path: '/me/messages/id?$select=id,body', url: 'https://outlook.office.com/mail/id' }] };
+  const captured = [];
+  const cursor = await collectWorkiq(config, config.window, async (e, payload) => captured.push({ e, payload }),
+    async path => path === principalPath ? { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }
+      : { entity: { id: 'seed' }, synthetic: true });
+  assert.equal(captured.length, 1); assert.equal(cursor.coverage[0].kind, 'exact-seed-snapshot-only');
+  assert.equal(captured[0].e.source.revision, null);
+});
+test('IcM has an explicit unverified-query/connector blocker', async t => {
+  const { config } = setup(t);
+  await assert.rejects(collectIcm(config, config.window, async () => {}), /not verified/);
+  config.sources.icm.scopeApproved = true; config.sources.icm.filtersVerified = true;
+  await assert.rejects(collectIcm(config, config.window, async () => {}), /No supported authenticated/);
+});
+test('IcM owner export cannot masquerade as authenticated collection', async t => {
+  const { config, root } = setup(t);
+  const record = evidenceEnvelope('icm', 'icm/query/599514', 1, null, 'https://portal.microsofticm.com/imp/v5/incidents/details/1', '599514');
+  record.createdAt = '2026-10-08T01:00:00Z';
+  const file = join(root, 'icm.json');
+  config.sources.icm = { enabled: true, scopeApproved: true, filtersVerified: true, queryId: '599514', ownerExport: file };
+  writeFileSync(file, json({ queryId: '599514', window: config.window, evidence: [record] }));
+  await assert.rejects(collectIcm(config, config.window, async () => {}), /owner-confirmed/);
+  record.source.provenance = 'owner-provided';
+  record.source.ownerConfirmation = { confirmedBy: 'synthetic-owner', confirmedAt: now(), confirmedScope: 'icm/query/599514' };
+  writeFileSync(file, json({ queryId: '599514', window: config.window, evidence: [record] }));
+  let captured;
+  const cursor = await collectIcm(config, config.window, async e => { captured = e; });
+  assert.equal(captured.source.provenance, 'owner-provided'); assert.equal(cursor.coverage, 'owner-export-only');
+});
+test('review requires configured method, stable identity and full exclusion checklist', t => {
+  const { config, ledger } = setup(t), e = addEvidence(ledger), r = review(e);
+  assert.throws(() => acceptReview(config, ledger, { investigation: r, exclusionsChecked: [] }), /All scanner exclusions/);
+  assert.throws(() => acceptReview(config, ledger, { investigation: { ...r, id: 'random' }, exclusionsChecked: exclusions }), /identity/);
+  const wrong = structuredClone(r); wrong.review.method = 'agent-evidence-review';
+  assert.throws(() => acceptReview(config, ledger, { investigation: wrong, exclusionsChecked: exclusions }), /method/);
+  assert.equal(acceptReview(config, ledger, { investigation: r, exclusionsChecked: exclusions }).defectConfirmation, 'unconfirmed');
+  assert.throws(() => acceptReview(config, ledger, { investigation: r, exclusionsChecked: exclusions }), /version/);
+});
+test('superseded evidence cannot be reviewed using an old version', t => {
+  const { config, ledger } = setup(t), e = addEvidence(ledger);
+  addEvidence(ledger, '1', '2', { changed: true });
+  assert.throws(() => acceptReview(config, ledger, { investigation: review(e), exclusionsChecked: exclusions }), /superseded/);
+});
+for (const exclusion of exclusions) {
+  test(`both defect and improvement handoffs enforce ${exclusion}`, t => {
+    const { config, ledger, root } = setup(t), repo = repoConfig(config, root), r = review(addEvidence(ledger));
+    r.repoIds = [repo.id]; r.exclusionReasons = [exclusion]; r.handoffEligibility = 'excluded'; r.reportEligibility = 'excluded';
+    for (const intent of ['defect-fix', 'improvement']) assert.throws(() => makeAssignment(config, r, repo.id, intent), /Excluded/);
+  });
+}
+test('report distinguishes source candidates, eligibility and code-defect confirmation', t => {
+  const { config, ledger } = setup(t), e = addEvidence(ledger);
+  acceptReview(config, ledger, { investigation: review(e), exclusionsChecked: exclusions });
+  const result = report(ledger);
+  assert.equal(result.summary.functionalIds.length, 1);
+  assert.equal(result.summary.confirmedCodeDefectIds.length, 0);
+  assert.equal(result.issues[0].source.provenance, 'synthetic');
+});
+test('assignment prepare is idempotent and newer review cannot launch duplicate work', async t => {
+  const { config, ledger, assignment, investigation, repo } = await fixture(t);
+  const first = ledger.prepare(assignment), second = ledger.prepare(assignment);
+  assert.equal(first.session_id, second.session_id);
+  const newer = { ...investigation, version: 2 };
+  assert.throws(() => ledger.prepare(makeAssignment(config, newer, repo.id, 'rca-only')), /Prior assignment/);
+});
+test('crash after prepared dispatch is reconciled, not automatically reset to prepared', async t => {
+  const { ledger, job } = await fixture(t);
+  ledger.moveJob(job.id, 'prepared', 'dispatching');
+  const pending = reconcile(ledger).jobs[0];
+  assert.equal(pending.state, 'dispatching'); assert.match(pending.nextAction, /never relaunch/);
+});
+test('provisioning uses separate clone without hardlinked objects or primary changes', async t => {
+  const { config, job, repo, g } = await fixture(t);
+  const before = (await g(['rev-parse', 'HEAD'])).stdout;
+  const result = await provision(config, job, repo);
+  assert.notEqual(result.workspace, repo.referenceCheckout);
+  assert.equal((await g(['status', '--porcelain'])).stdout, '');
+  assert.equal((await g(['rev-parse', 'HEAD'])).stdout, before);
+  assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
+  await assert.rejects(provision(config, job, repo), /already exists/);
+});
+test('worker file callbacks reject traversal, alternate streams, protected paths and links', async t => {
+  const { config, job, repo, assignment, root } = await fixture(t);
+  const { workspace } = await provision(config, job, repo);
+  const editable = structuredClone(assignment); editable.permissions.editCode = true;
+  const tools = new WorkerTools(config, editable, workspace);
+  for (const path of ['..\\outside', '.git\\config', 'src\\x:stream', 'src\\..\\..\\outside', 'src\\..\\README.md']) assert.throws(() => tools.write(path, 'bad'));
+  assert.throws(() => tools.write('other\\value.js', 'bad'), /prefixes/);
+  mkdirSync(join(root, 'outside'));
+  symlinkSync(join(root, 'outside'), join(workspace, 'src', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => tools.write('src\\linked\\value.js', 'bad'), /Symlink/);
+  tools.write('src\\new.js', 'export const value = 2;');
+  assert.ok(existsSync(join(workspace, 'src', 'new.js')));
+  assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
+});
+test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
+  const { config, assignment, job, repo } = await fixture(t);
+  const { workspace } = await provision(config, job, repo);
+  const tools = new WorkerTools(config, assignment, workspace);
+  assert.throws(() => tools.write('src\\value.js', 'bad'), /not permitted/);
+  tools.finish({ outcome: 'investigated', findings: 'Synthetic findings' });
+  assert.throws(() => tools.finish({ outcome: 'investigated', findings: 'again' }), /already submitted/);
+});
+test('SDK configuration exposes no built-in tools and denies unrelated permissions', () => {
+  const config = restrictedSession([{ name: 'pilot_read' }]);
+  assert.deepEqual(config.availableTools.toArray(), ['custom:pilot_read']);
+  assert.equal(config.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
+  assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+});
+test('validation records real terminal command execution at exact fixture HEAD and forbids duplicates', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const current = { ...job, workspace: isolated.workspace };
+  // Only this synthetic fixture authorizes a local test command; no product runner is qualified.
+  repo.validationGates = [{ id: 'synthetic-node', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['--input-type=module', '-e',
+      "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,1)"], timeoutMs: 10000 }];
+  const result = await runValidation(config, ledger, current, repo, isolated.baseRevision);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].sourceRevision, isolated.baseRevision);
+  assert.ok(existsSync(result[0].artifactRefs[0]));
+  await assert.rejects(runValidation(config, ledger, current, repo, isolated.baseRevision), /already started/);
+});
+test('failed validation is terminal evidence, not a success-shaped result', async t => {
+  const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  repo.validationGates = [{ id: 'fail', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['-e', 'process.exit(9)'], timeoutMs: 10000 }];
+  const result = await runValidation(config, ledger, { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision);
+  assert.equal(result[0].status, 'failed');
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.output.exitCode, 9);
+});
+test('source mutation during validation invalidates a successful exit', async t => {
+  const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  repo.validationGates = [{ id: 'mutates', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000 }];
+  const result = await runValidation(config, ledger, { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision, async () => {
+    writeFileSync(join(isolated.workspace, 'src', 'value.js'), 'changed');
+    return { stdout: '', stderr: '' };
+  });
+  assert.equal(result[0].status, 'blocked');
+});
+test('validation requires approved runner and never inherits credential environment values', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.validationGates = [{ id: 'unqualified', executable: process.execPath, args: [], timeoutMs: 1000 }];
+  await assert.rejects(runValidation(config, ledger, job, repo, 'abc'), /approved repo-native runner/);
+  process.env.PILOT_TEST_SECRET = 'not-a-real-secret';
+  try { assert.equal(minimalEnvironment().PILOT_TEST_SECRET, undefined); } finally { delete process.env.PILOT_TEST_SECRET; }
+});
+test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.remote = 'https://dev.azure.com/test/project/_git/fixture';
+  repo.pr = { provider: 'ado', organization: 'test', project: 'project', repositoryId: 'fixture', targetRef: 'refs/heads/main' };
+  const calls = [], revision = 'a'.repeat(40);
+  const pr = { pullRequestId: 5, isDraft: true, status: 'active', sourceRefName: `refs/heads/pilot/${job.id}`,
+    targetRefName: 'refs/heads/main', lastMergeSourceCommit: { commitId: revision } };
+  const result = await createAdoDraft(config, ledger, job, repo, revision, { title: 'Fixture', description: 'Synthetic' },
+    async (method, suffix, body) => { calls.push({ method, suffix, body }); return method === 'GET' ? { value: [] } : pr; });
+  assert.equal(calls[1].body.isDraft, true);
+  assert.equal(calls[1].body.completionOptions, undefined);
+  assert.equal(result.isDraft, true);
+  let writes = 0;
+  await createAdoDraft(config, ledger, job, repo, revision, {}, async method => {
+    if (method !== 'GET') writes++; return { value: [pr] };
+  });
+  assert.equal(writes, 0);
+});
+test('uncertain PR creation cannot be retried and non-draft heads are rejected', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.remote = 'https://dev.azure.com/test/project/_git/fixture';
+  repo.pr = { provider: 'ado', organization: 'test', project: 'project', repositoryId: 'fixture', targetRef: 'refs/heads/main' };
+  ledger.operation(`${job.id}:draft`, job.id, 'draft-pr', {});
+  await assert.rejects(createAdoDraft(config, ledger, job, repo, 'a'.repeat(40), {}, async () => ({ value: [] })), /already started/);
+  await assert.rejects(createAdoDraft(config, ledger, job, repo, 'a'.repeat(40), {}, async () => ({ value: [{ isDraft: false }] })), /not an active draft/);
+});
+test('disabled schedule cannot perform any scan', async t => {
+  const { config, ledger } = setup(t);
+  await assert.rejects(tick(config, ledger), /disabled/);
+  assert.equal(ledger.status().runs.length, 0);
+});
+test('unresolved changed-evidence policy blocks recurring collection', async t => {
+  const { config, ledger } = setup(t); config.schedule.enabled = true;
+  ledger.qualify('manual-run', { fingerprint: readinessFingerprint(config) });
+  await assert.rejects(tick(config, ledger), /changed-evidence policy/);
+});
+test('complete controller path: simulated adapter/model/PR, real isolated edit commit source-test and local push', async t => {
+  const { config, ledger, job, repo, g, root } = await fixture(t, 'authenticated-source', 'defect-fix');
+  config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
+  await command('git', ['init', '--bare', '--quiet', repo.remote], root);
+  const primaryHead = (await g(['rev-parse', 'HEAD'])).stdout;
+  let modelCalls = 0, draftCalls = 0;
+  const result = await dispatch(config, ledger, job.id, {
+    runModel: async (c, l, current, assignment, investigation, toolkit) => {
+      modelCalls++;
+      assert.match(toolkit.read('src\\value.js'), /value = 1/);
+      toolkit.write('src\\value.js', 'export const value = 2;\n');
+      toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic reproduction and source correction',
+        title: 'Synthetic fixture correction', description: 'Simulated PR, not workplace evidence.' });
+    },
+    createDraft: async (c, l, current, r, revision) => {
+      draftCalls++;
+      const remoteHead = (await command('git', ['--git-dir', repo.remote, 'rev-parse', `refs/heads/pilot/${job.id}`], root)).stdout.trim();
+      assert.equal(remoteHead, revision);
+      return { url: 'https://example.invalid/synthetic-draft/1', isDraft: true, headRevision: revision };
+    }
+  });
+  assert.equal(result.outcome, 'draft-pr-validated');
+  assert.equal(result.validation[0].sourceRevision, result.draftPR.headRevision);
+  assert.equal(ledger.job(job.id).state, 'completed');
+  assert.equal(ledger.all('workerResult').length, 1);
+  assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
+  await assert.rejects(dispatch(config, ledger, job.id), /never-dispatched/);
+  assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
+  assert.equal((await g(['status', '--porcelain'])).stdout, '');
+});
+test('interrupted worker persists blocked result and cannot relaunch', async t => {
+  const { config, ledger, job } = await fixture(t, 'authenticated-source');
+  config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
+  await assert.rejects(dispatch(config, ledger, job.id, {
+    runModel: async () => { throw new PilotError('blocked-auth', 'Synthetic Copilot reauthentication required'); }
+  }), /reauthentication/);
+  assert.equal(ledger.job(job.id).state, 'blocked');
+  const result = ledger.all('workerResult')[0];
+  assert.equal(result.outcome, 'blocked');
+  assert.match(result.blocker.reason, /reauthentication/);
+  await assert.rejects(dispatch(config, ledger, job.id), /never-dispatched/);
+});
+test('synthetic provenance cannot be dispatched through the live entrypoint', async t => {
+  const { config, ledger, job } = await fixture(t);
+  config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
+  await assert.rejects(dispatch(config, ledger, job.id), /Synthetic evidence/);
+  assert.equal(ledger.job(job.id).state, 'prepared');
+});
+test('new unreviewed evidence prevents dispatch of an earlier prepared assignment', async t => {
+  const { config, ledger, job } = await fixture(t, 'authenticated-source');
+  config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
+  addEvidence(ledger, '1', '2', { newer: true }, 'authenticated-source');
+  await assert.rejects(dispatch(config, ledger, job.id), /New source evidence/);
+  assert.equal(ledger.job(job.id).state, 'prepared');
+});
+
+test('dry-run budgets are scoped and no-network preflight never touches production state', async t => {
+  const { config, ledger } = setup(t);
+  config.limits.maxItems = null; config.limits.maxCalls = null;
+  const before = json(ledger.status());
+  let calls = 0;
+  const result = await dryRun(config, { adapters: { ado: async () => { calls++; } } });
+  assert.equal(result.error.code, 'awaiting-auth-refresh');
+  assert.equal(calls, 0);
+  assert.equal(result.collectionLimits.maxItems, 2000);
+  assert.equal(result.collectionLimits.maxCalls, 300);
+  assert.equal(result.collectionLimits.recurringDefault, false);
+  assert.equal(config.limits.maxItems, null);
+  assert.equal(json(ledger.status()), before);
+  assert.ok(result.stateDirectory.startsWith(join(config.stateDirectory, 'dry-runs')));
+  assert.equal(JSON.parse(readFileSync(join(result.stateDirectory, 'summary.json'))).dryRunId, result.dryRunId);
+  const unrefreshed = await dryRun(config, { collectRequested: true });
+  assert.equal(unrefreshed.error.code, 'awaiting-auth-refresh');
+});
+
+test('dry-run executes only mocked source passes in isolated ledger and separates cohort counts', async t => {
+  const { config, ledger } = setup(t);
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  config.activation.dispatch = true; config.activation.review = true; config.schedule.enabled = true;
+  config.sources.workiq.enabled = true;
+  const calls = [];
+  const adapters = {
+    ado: async (c, window, emit, lane) => {
+      assert.deepEqual(c.activation, { collect: true, review: false, dispatch: false });
+      assert.equal(c.schedule.enabled, false);
+      assert.equal(c.limits.maxItems, 2000); assert.equal(c.limits.maxCalls, 300);
+      calls.push(`ado:${lane}`);
+      const item = adoItem(lane === 'created' ? 1 : 2);
+      if (lane === 'changed') item.fields['System.CreatedDate'] = '2026-09-01T00:00:00Z';
+      const record = adoRecord(item, 'mocked dry run', now());
+      record.source.provenance = 'synthetic';
+      await emit(record, item);
+      return { end: window.end };
+    },
+    workiq: async () => { calls.push('workiq:created'); return { coverage: 'synthetic-empty' }; }
+  };
+  const before = json(ledger.status());
+  const result = await dryRun(config, { collectRequested: true, authRefreshed: true, adapters });
+  assert.deepEqual(calls, ['ado:created', 'workiq:created', 'ado:changed']);
+  assert.equal(result.report.summary.newCohortIds.length, 1);
+  assert.equal(result.report.summary.changedOnlyIds.length, 1);
+  assert.equal(result.report.summary.reviewedIds.length, 0);
+  assert.equal(result.workerDispatches, 0); assert.equal(result.externalWrites, 0);
+  assert.equal(json(ledger.status()), before);
+  const isolated = new Ledger(result.stateDirectory);
+  try {
+    assert.equal(isolated.status().jobs.length, 0);
+    assert.equal(isolated.qualification('manual-run'), null);
+    assert.equal(isolated.db.prepare('SELECT COUNT(*) AS n FROM assignment_budgets').get().n, 0);
+  } finally { isolated.close(); }
+});
+
+test('dry-run auth failure suppresses changed-lane retries in the same run', async t => {
+  const { config } = setup(t);
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  let calls = 0;
+  const result = await dryRun(config, { collectRequested: true, authRefreshed: true,
+    adapters: { ado: async () => { calls++; throw new PilotError('blocked-auth', 'Synthetic auth failure'); } } });
+  assert.equal(calls, 1);
+  assert.equal(result.collection.find(r => r.lane === 'created').state, 'blocked-auth');
+  assert.equal(result.collection.find(r => r.lane === 'changed').state, 'blocked');
+});
+
+function channelConfig(config) {
+  const seed = { id: 'synthetic-channel', kind: 'teams-channel', teamId: 'synthetic-team',
+    channelId: 'synthetic-channel', url: 'https://teams.microsoft.com/synthetic', includeReplies: true };
+  config.sources.workiq = { enabled: true, scopeApproved: true, seeds: [seed] };
+  return seed;
+}
+function message(id, createdDateTime = '2026-10-08T01:00:00Z') {
+  return { id, createdDateTime, lastModifiedDateTime: createdDateTime, etag: '1', body: { content: 'Synthetic' } };
+}
+function principal(config) {
+  return { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser };
+}
+
+test('WorkIQ validates exact success envelope and rejects runtime identity mismatch before source reads', async t => {
+  const { config } = setup(t); channelConfig(config);
+  assert.deepEqual(unwrapWorkiq({ resultType: 'success',
+    textResultForLlm: json({ results: [{ statusCode: 200, data: principal(config) }] }) }), principal(config));
+  assert.throws(() => unwrapWorkiq({ resultType: 'success',
+    textResultForLlm: json({ results: [{ statusCode: 403, data: {} }] }) }), e => e.code === 'blocked-auth');
+  const reads = [];
+  await assert.rejects(collectWorkiq(config, config.window, async () => assert.fail('No evidence expected'),
+    async path => { reads.push(path); return { id: 'different', userPrincipalName: 'wrong' }; }), /principal/);
+  assert.deepEqual(reads, [principalPath]);
+});
+
+test('WorkIQ exhausts root and reply pages, including new reply to old root', async t => {
+  const { config } = setup(t), seed = channelConfig(config), root = channelRoot(seed), reads = [], captured = [];
+  const cursor = await collectWorkiq(config, config.window, async record => captured.push(record), async path => {
+    reads.push(path);
+    if (path === principalPath) return principal(config);
+    const url = new URL(path, 'https://scope.invalid');
+    if (url.pathname === root && !url.searchParams.has('$skiptoken'))
+      return { value: [message('old', '2026-10-07T00:00:00Z')], '@odata.nextLink': `${root}?$skiptoken=next` };
+    if (url.pathname === `${root}/old/replies`) return { value: [message('reply')] };
+    if (url.pathname === root) return { value: [message('new')] };
+    if (url.pathname === `${root}/new/replies`) return { value: [] };
+    assert.fail(`Unexpected synthetic path ${path}`);
+  });
+  assert.deepEqual(captured.map(r => r.source.recordId), ['reply', 'new']);
+  assert.equal(captured[0].fields.parentContext.id, 'old');
+  assert.equal(cursor.coverage[0].messagesExamined, 3);
+  assert.equal(reads.length, 5);
+});
+
+test('WorkIQ paging rejects scope escape and cycles; item exhaustion preserves partial evidence and cursor', async t => {
+  const { config, ledger } = setup(t), seed = channelConfig(config), root = channelRoot(seed);
+  config.sources.ado.enabled = false; config.limits.maxItems = 1;
+  assert.throws(() => nextWorkiqPage(config, '/teams/other/channels/other/messages?$skiptoken=x', root), /escaped/);
+  assert.throws(() => nextWorkiqPage(config, 'https://unapproved.invalid/page', root), /authority/);
+  const reader = async path => path === principalPath ? principal(config) :
+    new URL(path, 'https://scope.invalid').pathname === root ? { value: [message('one'), message('two')] } : { value: [] };
+  const results = await collect(config, ledger, { adapters: {
+    workiq: (c, w, emit) => collectWorkiq(c, w, emit, reader)
+  } });
+  assert.equal(results.find(r => r.source === 'workiq').state, 'partial');
+  assert.equal(ledger.all('evidence').length, 1);
+  assert.equal(ledger.cursor('workiq:created'), null);
+  config.limits.maxItems = 100;
+  await assert.rejects(collectWorkiq(config, config.window, async () => {}, async path =>
+    path === principalPath ? principal(config) : { value: [], '@odata.nextLink': path }), /cycle/);
+});
+
+test('one-level follow-up deduplicates links, does not recurse and leaves excess work pending', async t => {
+  const { config, ledger } = setup(t);
+  config.followUp = { maxDepth: 1, maxItems: 1, maxToolCalls: 2 };
+  const root = addEvidence(ledger, '1', '1');
+  root.links = [2, 2, 3].map(id => ({ url: `https://dev.azure.com/office/OC/_workitems/edit/${id}` }));
+  let calls = 0;
+  const result = await followRelated(config, ledger, [root], config.window, { ado: async (c, id, budget) => {
+    calls++; budget.call(); budget.call();
+    const record = adoRecord(adoItem(Number(id)), 'mocked follow-up', now());
+    record.source.provenance = 'synthetic';
+    record.links = [{ url: 'https://dev.azure.com/office/OC/_workitems/edit/4', relation: 'related',
+      evidenceId: null, access: 'not-followed-out-of-scope' }];
+    return { record, payload: { synthetic: id } };
+  } });
+  assert.equal(calls, 1); assert.equal(result.state, 'partial');
+  assert.equal(report(ledger).summary.newCohortIds.length, 1);
+  assert.equal(report(ledger).relatedEvidenceIds.length, 1);
+  assert.ok(ledger.status().discoveries.some(d => d.state === 'pending' && d.url.endsWith('/3')));
+  assert.ok(!ledger.status().discoveries.some(d => d.url.endsWith('/4')));
+});
+
+test('tracked scope disappearance requires reconciliation without changing cohort counts', async t => {
+  const { config, ledger } = setup(t);
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  const evidence = addEvidence(ledger); ledger.put(review(evidence));
+  const result = await revisitTracked(config, ledger, { ado: async () => {
+    throw new PilotError('blocked-scope', 'Synthetic item absent from approved area');
+  } });
+  assert.equal(result[0].state, 'complete');
+  assert.equal(ledger.trackedState(evidence).state, 'reconciliation-required');
+  assert.equal(report(ledger).summary.newCohortIds.length, 1);
+});
+
+test('tracked fixed revision blocks a previously prepared assignment', async t => {
+  const { config, ledger, job, evidence } = await fixture(t, 'authenticated-source');
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  await revisitTracked(config, ledger, { ado: async () => {
+    const item = adoItem(1, 2); item.fields['System.State'] = 'Resolved';
+    return { record: adoRecord(item, 'mocked tracked revisit', now()), payload: item };
+  } });
+  assert.equal(ledger.trackedState(evidence).state, 'reconciliation-required');
+  config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
+  await assert.rejects(dispatch(config, ledger, job.id), /reconciliation|New source evidence/);
+});
+
+test('Shanghai daily wake uses 01:00 UTC and previous complete UTC cohort', () => {
+  const schedule = configAt('pilot.example.json').schedule;
+  assert.equal(nextDailyWake(schedule, new Date('2026-10-09T00:59:00Z')).toISOString(), '2026-10-09T01:00:00.000Z');
+  assert.equal(nextDailyWake(schedule, new Date('2026-10-09T01:00:00Z')).toISOString(), '2026-10-10T01:00:00.000Z');
+  assert.deepEqual(previousUtcDay(new Date('2026-10-09T01:00:00Z')), {
+    start: '2026-10-08T00:00:00.000Z', end: '2026-10-09T00:00:00.000Z'
+  });
+});
+
+test('daily assignment cap persists across connection restart and ignores duplicate prepares', async t => {
+  const { config, ledger, repo } = await fixture(t);
+  const budget = { bucket: json(config.window), maxNew: 2 };
+  const prepare = (store, id) => {
+    const evidence = addEvidence(store, id);
+    const investigation = review(evidence); investigation.repoIds = [repo.id]; store.put(investigation);
+    return store.prepare(makeAssignment(config, investigation, repo.id, 'rca-only'), budget);
+  };
+  const second = prepare(ledger, '2');
+  assert.equal(ledger.prepare(ledger.get('assignment', second.id), budget).id, second.id);
+  prepare(ledger, '3');
+  const reopened = new Ledger(config.stateDirectory);
+  try { assert.throws(() => prepare(reopened, '4'), /Daily new-assignment budget/); }
+  finally { reopened.close(); }
+});
+
+test('WorkIQ runtime diagnostics preserve known safe failure phase and RPC code', () => {
+  const raw = Object.assign(new Error('Request session.mcp.startServer failed with message: MCP server "workiq" requires authentication'), { code: -32603 });
+  const error = workiqRuntimeError(raw, 'mcp-start');
+  assert.equal(error.code, 'blocked-auth');
+  assert.match(error.message, /mcp-start failed; RPC code -32603/);
+  assert.match(error.message, /configured WorkIQ server requires authentication/);
+  assert.match(error.message, /Inspect the matching host authentication context/);
+});
+
+test('WorkIQ runtime diagnostics never echo unknown authentication error content', () => {
+  const error = workiqRuntimeError(new Error('Authentication failed; secret=synthetic-never-echo'), 'fetch');
+  assert.equal(error.code, 'blocked-auth');
+  assert.match(error.message, /fetch failed/);
+  assert.doesNotMatch(error.message, /synthetic-never-echo|secret=/);
+  assert.equal(workiqRuntimeError(new Error('Failed at port 4030'), 'mcp-start').code, 'blocked-runtime');
+  const known = new PilotError('blocked-scope', 'Approved boundary violation');
+  assert.equal(workiqRuntimeError(known, 'fetch'), known);
+});
+
+function workiqLifecycle({ status = 'connected', running = false, afterStart = 'connected', tools = ['fetch'], startError = null } = {}) {
+  const calls = [];
+  return { calls, session: { rpc: {
+    mcp: {
+      listConfigured: async () => { calls.push('status'); return { servers: [{ name: 'workiq', enabled: true, live: { status } }] }; },
+      isServerRunning: async () => { calls.push('running'); return { running }; },
+      startServer: async args => {
+        assert.deepEqual(args, { serverName: 'workiq' });
+        calls.push('start'); if (startError) throw startError; status = afterStart;
+      },
+      listTools: async () => { calls.push('tools/list'); return { tools: tools.map(name => ({ name })) }; }
+    },
+    tools: { initializeAndValidate: async () => { calls.push('initialize'); } }
+  } } };
+}
+
+test('WorkIQ connected server is not started again; tools/list readiness precedes initialization', async () => {
+  const { session, calls } = workiqLifecycle();
+  await prepareWorkiq(session);
+  assert.deepEqual(calls, ['status', 'tools/list', 'initialize']);
+});
+test('WorkIQ pending active transport is not raced with another start', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'pending', running: true });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-readiness');
+  assert.deepEqual(calls, ['status', 'running']);
+});
+test('WorkIQ not-yet-running server starts at most once and verifies status and tools', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'pending' });
+  await prepareWorkiq(session);
+  assert.deepEqual(calls, ['status', 'running', 'start', 'status', 'tools/list', 'initialize']);
+});
+test('WorkIQ enabled effective registration with not_configured live state starts once by name', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'not_configured' });
+  const diagnostics = {};
+  await prepareWorkiq(session, diagnostics);
+  assert.deepEqual(calls, ['status', 'running', 'start', 'status', 'tools/list', 'initialize']);
+  assert.equal(diagnostics.phase, 'ready');
+  assert.deepEqual(diagnostics.calls, {
+    listConfigured: 2, isServerRunning: 1, startServer: 1, listTools: 1, initializeAndValidate: 1
+  });
+  assert.deepEqual(diagnostics.observations.map(o => [o.serverName, o.enabled, o.liveStatus]),
+    [['workiq', true, 'not_configured'], ['workiq', true, 'connected']]);
+});
+test('WorkIQ still not_configured after one start stops without polling or discovery', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'not_configured', afterStart: 'not_configured' });
+  const diagnostics = {};
+  await assert.rejects(prepareWorkiq(session, diagnostics), e => e.code === 'blocked-readiness');
+  assert.deepEqual(calls, ['status', 'running', 'start', 'status']);
+  assert.equal(diagnostics.calls.startServer, 1);
+  assert.equal(diagnostics.calls.listTools, 0);
+});
+test('WorkIQ not_configured with active transport cannot trigger another start', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'not_configured', running: true });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-readiness');
+  assert.deepEqual(calls, ['status', 'running']);
+});
+test('WorkIQ missing, disabled, or differently keyed registration never triggers activation', async () => {
+  for (const servers of [[], [{ name: 'workiq', enabled: false, live: { status: 'not_configured' } }],
+    [{ name: 'synthetic-other-key', enabled: true, live: { status: 'not_configured' } }]]) {
+    const { session, calls } = workiqLifecycle();
+    session.rpc.mcp.listConfigured = async () => { calls.push('status'); return { servers }; };
+    const diagnostics = {};
+    await assert.rejects(prepareWorkiq(session, diagnostics), e => e.code === 'blocked-runtime');
+    assert.deepEqual(calls, ['status']);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /synthetic-other-key/);
+  }
+});
+test('WorkIQ diagnostics project registration without raw plugin fields, errors or tool definitions', async () => {
+  const { session } = workiqLifecycle();
+  session.rpc.mcp.listConfigured = async () => ({ servers: [{
+    name: 'workiq', enabled: true, source: 'plugin', sourcePlugin: 'workiq',
+    sourcePluginVersion: 'synthetic-secret', displayName: 'synthetic-secret',
+    live: { status: 'connected', error: 'synthetic-secret' }
+  }] });
+  session.rpc.mcp.listTools = async () => ({ tools: [{ name: 'fetch', description: 'synthetic-secret' }] });
+  const diagnostics = {};
+  await prepareWorkiq(session, diagnostics);
+  assert.equal(diagnostics.observations[0].pluginSourceMatches, true);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /synthetic-secret/);
+});
+test('WorkIQ post-start pending state cannot reach tool execution', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'pending', afterStart: 'pending' });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-readiness');
+  assert.deepEqual(calls, ['status', 'running', 'start', 'status']);
+});
+test('WorkIQ needs-auth stops without start, discovery or retries', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'needs-auth' });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-auth');
+  assert.deepEqual(calls, ['status']);
+});
+test('WorkIQ connected status without fetch discovery is not principal readiness', async () => {
+  const { session, calls } = workiqLifecycle({ tools: [] });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-readiness');
+  assert.deepEqual(calls, ['status', 'tools/list']);
+});
+test('WorkIQ start authentication failure never proceeds to tools/list or retries', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'pending',
+    startError: Object.assign(new Error('MCP server "workiq" requires authentication'), { code: -32603 }) });
+  await assert.rejects(prepareWorkiq(session), e => e.code === 'blocked-auth' && /mcp-start.*-32603/.test(e.message));
+  assert.deepEqual(calls, ['status', 'running', 'start']);
+});
+
+test('WorkIQ tools/list 401 is an OAuth challenge, not an inferred scope or principal failure', async () => {
+  const { session, calls } = workiqLifecycle();
+  session.rpc.mcp.listTools = async () => {
+    calls.push('tools/list');
+    throw Object.assign(new Error('Request session.mcp.listTools failed with message: Error: MCP OAuth challenge required (HTTP 401)'), { code: -32603 });
+  };
+  await assert.rejects(prepareWorkiq(session), error => {
+    assert.equal(error.code, 'blocked-auth');
+    assert.match(error.message, /mcp-tools-list failed; RPC code -32603/);
+    assert.match(error.message, /OAuth challenge \(HTTP 401\)/);
+    assert.match(error.message, /\/mcp auth workiq/);
+    assert.doesNotMatch(error.message, /missing scopes|expired token|consent denied|principal mismatch/);
+    return true;
+  });
+  assert.deepEqual(calls, ['status', 'tools/list']);
+});
+
+test('WorkIQ standalone probe only discovers tools and closes its own runtime', async () => {
+  const { session, calls } = workiqLifecycle();
+  session.disconnect = async () => { calls.push('disconnect'); };
+  const result = await probeWorkiq({
+    start: async () => { calls.push('client-start'); },
+    createSession: async options => {
+      assert.equal(options.mcpOAuthTokenStorage, 'persistent');
+      assert.equal(options.enableConfigDiscovery, false);
+      assert.deepEqual(options.pluginDirectories, ['synthetic-plugin']);
+      assert.deepEqual(options.onPermissionRequest({}), { kind: 'denied-by-rules' });
+      return session;
+    },
+    stop: async () => { calls.push('stop'); return []; }
+  }, ['synthetic-plugin']);
+  assert.equal(result.status, 'discovery-ready');
+  assert.equal(result.phase, 'discovery-complete');
+  assert.match(result.discovery, /principal and collection still unverified/);
+  assert.deepEqual(calls, ['client-start', 'status', 'tools/list', 'initialize', 'disconnect', 'stop']);
+});
+
+test('WorkIQ standalone probe preserves safe start failure without retry', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'pending',
+    startError: Object.assign(new Error('MCP server "workiq" requires authentication'), { code: -32603 }) });
+  session.disconnect = async () => { calls.push('disconnect'); };
+  const result = await probeWorkiq({
+    start: async () => {}, createSession: async () => session,
+    stop: async () => { calls.push('stop'); return []; }
+  }, ['synthetic-plugin']);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.error.code, 'blocked-auth');
+  assert.match(result.error.message, /mcp-start failed; RPC code -32603/);
+  assert.deepEqual(calls, ['status', 'running', 'start', 'disconnect', 'stop']);
+});
+
+test('WorkIQ standalone dormant registration reports subsequent auth failure at its actual phase', async () => {
+  const { session, calls } = workiqLifecycle({ status: 'not_configured',
+    startError: Object.assign(new Error('MCP server "workiq" requires authentication'), { code: -32603 }) });
+  session.disconnect = async () => { calls.push('disconnect'); };
+  const result = await probeWorkiq({
+    start: async () => {}, createSession: async () => session,
+    stop: async () => { calls.push('stop'); return []; }
+  }, ['synthetic-plugin']);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.phase, 'mcp-start');
+  assert.equal(result.error.code, 'blocked-auth');
+  assert.equal(result.lifecycle.observations[0].liveStatus, 'not_configured');
+  assert.equal(result.lifecycle.calls.startServer, 1);
+  assert.equal(result.lifecycle.calls.listTools, 0);
+  assert.match(result.error.message, /RPC code -32603/);
+  assert.deepEqual(calls, ['status', 'running', 'start', 'disconnect', 'stop']);
+});
+
+test('WorkIQ standalone probe suppresses raw exception names and returned cleanup errors', async () => {
+  const result = await probeWorkiq({
+    start: async () => { throw Object.assign(new Error('synthetic-secret'), { name: 'synthetic-secret' }); },
+    stop: async () => [new Error('synthetic-secret')]
+  }, ['synthetic-plugin']);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.phase, 'client-start');
+  assert.equal(result.stopError.code, 'blocked-runtime');
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-secret/);
+});
+
+test('WorkIQ standalone output isolation discards raw stdout and stderr', t => {
+  const root = mkdtempSync(join(tmpdir(), 'workiq-repro-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const child = join(root, 'synthetic-child.mjs');
+  writeFileSync(child, `console.log('synthetic-secret'); console.error('synthetic-secret'); process.send({status:'not-probed'});`);
+  const moduleUrl = pathToFileURL(join(process.cwd(), 'scripts', 'Workiq-Auth-Repro.mjs')).href;
+  const wrapper = join(root, 'wrapper.mjs');
+  writeFileSync(wrapper, `import { isolatedReport } from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify(await isolatedReport([], ${JSON.stringify(child)})));`);
+  const result = spawnSync(process.execPath, [wrapper], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { status: 'not-probed' });
+  assert.equal(result.stderr, '');
+  assert.doesNotMatch(result.stdout, /synthetic-secret/);
+});

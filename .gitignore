@@ -1,0 +1,17 @@
+node_modules/
+.state/
+pilot.local.json
+*.local.json
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*-wal
+*-shm
+captures/
+receipts/
+.copilot/
+coverage/
+*.log

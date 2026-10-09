@@ -1,0 +1,50 @@
+# Contributing to the internal pilot
+
+All workstreams below are **unassigned**. Logical agent IDs and skills are not
+people/maintainer assignments. Claim a bounded workstream with the team before
+making concurrent changes. No production feature or publication authorization
+is implied by this document.
+
+| Workstream | Main surface | Acceptance criteria |
+|---|---|---|
+| Collector / source coverage | `sources.js`, `app-native.js`, collector skill | Exact identity/scope and UTC windows; pagination including old-thread replies; immutable receipts; true partial/auth/unavailable outcomes; no live retries in tests |
+| Coordinator / state | `ledger.js`, `coordinator.js`, coordinator skill | All 14 exclusions for both intents; explicit routing; atomic claims; restart/replay and dedupe; no duplicate dispatch after uncertainty |
+| 1JS owner integration | 1JS skill, repo configuration | Approved owner/base/write bounds; isolated workspace; evidence-backed RCA; exact-source validation; drafts only; unresolved prerequisites stay blocked |
+| Office owner integration | Office skill, repo configuration | Same owner contract; Office-specific base/validation must be supplied, never guessed from repo name |
+| Qualification / packaging | Tests, demo, CI, docs | Account-free clean checkout passes; inert example; no private payloads; synthetic/live status separated; approved private publication gate |
+
+## Development contract
+
+Use Node 24 and Git. `npm ci --ignore-scripts`, `npm test`, `npm run demo` and
+`npm run check:package` are the offline entrypoints. Tests may create local
+temporary Git repos and execute synthetic validation programs, but must not
+acquire credentials, call services or launch product workers. Add focused
+regressions for behavioral changes and run the complete offline suite before
+handoff. CI uses a read-only token and no live secrets or account login.
+
+For ledger/schema changes, cover immutable versions, transaction rollback,
+idempotency, cursor retention, provenance and uncertain ownership. Do not
+silently migrate or edit a colleague's live config/ledger. Stable agent/run/
+assignment IDs are independent of sessions. Exact JSON handoffs are documented
+in [APP-NATIVE.md](APP-NATIVE.md); shared owner policy lives in
+[repo-owner-procedure.md](.github/skills/repo-owner-procedure.md).
+
+Use synthetic identities/content in fixtures. Keep real captures, authentication
+diagnostics and personal configuration in ignored protected local storage.
+Do not paste source payloads or tokens into issues, PRs, test failures or CI
+artifacts. Sanitized aggregate validation summaries may describe gaps, not imply
+unobserved success. Report sensitive-history findings privately; do not rewrite
+history or publish it as a recovery shortcut.
+
+## Review boundaries
+
+Preserve draft-only/no-merge/no-source-write policy and all source/worker limits.
+No test or contributor may turn a partial run into complete by hiding an
+unavailable source. A new connector, expanded scope, auth flow, validation
+runner, scheduler or permission grant requires explicit owner approval and its
+own qualification. A working offline demo does not authorize any of these.
+
+Publication is an independent decision: see
+[the validation and sharing gate](README.md#validation-and-sharing-gate).
+No open-source license is supplied; confirm company requirements before
+publishing anywhere, including an internal private repository.

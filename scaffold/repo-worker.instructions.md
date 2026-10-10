@@ -12,11 +12,14 @@ and validation gates are available. Excluded records are not eligible for
 defect-fix or improvement work. If prerequisites fail, return a structured
 blocked result with owner and unblock condition.
 
-The current pilot executes locally in an isolated task worktree/project session.
+The controller executes locally in an isolated task worktree/project session and
+attests the exact workspace and base revision before the model starts. Null or
+redacted workspace fields in the assignment are not a blocker and do not require
+the model to independently attest controller-owned state.
 Never edit, build, test, install packages or run repo scripts in a primary
 reference checkout. If the host cannot provide isolation, stop and report the
-blocker. Record the actual workspace and base revision after provisioning;
-never infer that a folder-backed session is isolated.
+blocker only when the controller reports provisioning failure; do not infer a
+failure from the bounded tool surface.
 
 Respect repository instructions and existing tooling. The handoff is not
 permission to broaden source access, weaken validation, modify source tickets,
@@ -62,6 +65,13 @@ permitted for that repository; sensitive incident details need not be copied
 from their source. Keep the PR a draft. Never merge or auto-complete it.
 
 ## Validation and result
+
+The bounded model does not run validation commands. Absence of shell or
+validation tools is expected and is not a blocker: submit a complete proposal
+without claiming validation, then the controller runs the configured repo-native
+gates on the committed head. A complete authored change should report a
+successful skill result with `needsHumanDecision=false` unless an actual product,
+scope, or authoring decision remains.
 
 Use the configured repo-native gates and smallest relevant checks. Preserve the
 actual command or pipeline run URL, exact source revision, terminal status,

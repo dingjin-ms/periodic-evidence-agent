@@ -38,18 +38,21 @@ on that host.
 
 ## Devbox repository setup
 
-After installing this package, initialize machine-local product checkouts and
-read-only repository-skill qualifications with one command:
+From a new clone, install locked dependencies, initialize machine-local product
+checkouts, qualify repository skills, run configuration diagnostics, execute the
+complete offline check and run the synthetic demo with one command:
 
 ```powershell
 npm run setup
 ```
 
-Setup uses `pilot.local.json`, which is ignored by Git. By default it selects
-every configured repository that declares at least one `skillBinding`; no
-OfficeAgent-specific setup code exists. Add another repository and its skill
-bindings to the configuration and the same command includes it automatically.
-Use repeated `--repo` values to select a subset:
+The top-level command runs `npm ci --ignore-scripts`, then delegates repository
+initialization to `npm run setup:repos`, runs `doctor`, `npm run check` and
+`npm run demo`. The repository layer uses `pilot.local.json`, which is ignored
+by Git. By default it selects every configured repository that declares at
+least one `skillBinding`; no OfficeAgent-specific setup code exists. Add another
+repository and its skill bindings to the configuration and the same command
+includes it automatically. Use repeated `--repo` values to select a subset:
 
 ```powershell
 npm run setup -- --repo office-agent --repo another-repo
@@ -61,6 +64,13 @@ selected repository is absent, explicitly allow cloning:
 
 ```powershell
 npm run setup -- --allow-clone --clone-root D:\repos
+```
+
+For diagnostics or development, rerun only the repository layer without
+reinstalling dependencies or running the full offline suite:
+
+```powershell
+npm run setup:repos -- --repo office-agent
 ```
 
 The command verifies Node.js 24+, checkout origins, remote default branches,

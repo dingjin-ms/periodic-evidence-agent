@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
+  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -50,7 +50,7 @@ test('bootstrap reuses an existing configured checkout without cloning', async t
   const result = await bootstrapLocalRepository({ settingsPath, repoId: 'office-agent' });
 
   assert.equal(result.source, 'configured');
-  assert.equal(result.referenceCheckout, resolve(seed));
+  assert.equal(result.referenceCheckout, realpathSync.native(resolve(seed)));
   assert.equal(result.cloned, false);
 });
 
@@ -68,7 +68,7 @@ test('bootstrap discovers a matching checkout and persists only local settings',
   const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
 
   assert.equal(result.source, 'discovered');
-  assert.equal(saved.repositories[0].referenceCheckout, resolve(checkout));
+  assert.equal(saved.repositories[0].referenceCheckout, realpathSync.native(resolve(checkout)));
   assert.equal(saved.repositories[0].baseRef, 'main');
 });
 

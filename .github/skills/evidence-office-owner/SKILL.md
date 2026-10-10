@@ -24,6 +24,11 @@ current execution handle. Read the shared
 - Read instructions in the isolated Office checkout and relevant installed
   Office project knowledge/skills before work. Use only configured repo-native
   build/test/validation gates; do not choose broad builds or pipelines by guess.
+- For a planned test-coverage assignment, require the pinned improvement,
+  coverage plan, capability and qualified skill binding. Invoke only that
+  repo-local skill from the exact isolated checkout revision. The skill may
+  propose edits and structured test metadata, but the controller owns commit,
+  validation, push and draft PR creation.
 
 The pilot's Office base, ownership/write bounds and validation inputs remain
 unresolved until explicitly configured. A skill is not their authorization.

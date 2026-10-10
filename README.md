@@ -70,8 +70,10 @@ directory printed by that invocation, never the whole `.state` tree.
 |---|---|---|
 | `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
 | `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
+| `evidence-improvement-planner` | Aggregate eligible evidence, discover/link coverage and select a qualified repository skill | Versioned areas-to-improve and test-coverage plans |
 | `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
 | `evidence-office-owner` | Claimed Office RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
+| `evidence-oa-owner` | Claimed OfficeAgent test authoring through the repo-native integration-test workflow | Skill execution, source-bound validation and draft PR evidence |
 
 The collector/reviewer currently share configured identity
 `excel-evidence-coordinator`; owners use `repo-owner:<repoId>`. These are logical
@@ -123,6 +125,33 @@ Before code work, resolve repo owner/project binding, routing, base/target
 revisions, permitted write prefixes, commit identity and approved validation
 commands. Primary checkouts are references only; execution must use isolated
 task workspaces. A worktree/clone is **not an OS sandbox**.
+
+Improvement work adds two durable planning records before assignment:
+`areaToImprove` clusters eligible investigations into a stable, versioned theme;
+`testCoveragePlan` records complete/partial/not-run coverage discovery and
+distinguishes linked coverage, a confirmed coverage gap and an unresolved
+search. A planned assignment pins both record versions, capability, requested
+outcome and one qualified repository skill binding. Repository skills execute
+from the exact isolated source revision and cannot grant themselves shell,
+network, commit, push or PR authority.
+
+For OfficeAgent, the qualified router entry is
+`.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
+project root, delegates to `docs/skills/Integration-test-core/workflow.md` and
+auto-discovers the project shell. A read-only qualification can verify the
+configured checkout, origin, base revision and skill content fingerprint before
+routing or writes are enabled:
+
+```powershell
+npm run pilot -- qualify-skill --repo office-agent `
+  --capability integration-test-authoring `
+  --binding oa-integration-test-core `
+  --config .\pilot.local.json
+```
+
+Qualification does not approve ownership, write prefixes, validation gates,
+commit identity, push or draft PR creation. Ambiguous project names remain
+blocked; assignments must pin the repo-relative owner project.
 
 ## Safety invariants
 
@@ -239,7 +268,9 @@ do not run it during onboarding. All schedules remain disabled.
 `src\app-native.js` owns receipt imports and native assignment tracking;
 `ledger.js` owns immutable state and atomic ownership; `sources.js` owns scoped
 collection; `coordinator.js` owns review/routing; `followup.js` and `revisit.js`
-own related/tracked evidence; `workers.js` owns legacy isolated execution,
+own related/tracked evidence; `improvements.js` owns durable improvement and
+coverage planning; `repository-skills.js` owns qualified repo-native skill
+resolution and result normalization; `workers.js` owns legacy isolated execution,
 validation and ADO draft-only publication; `runtime.js` owns optional SDK
 bindings. `scaffold` contains portable policy/schema inputs, not a second
 runtime configuration format. No app tools are assumed callable by scripts.

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configAt, hash, json, now, exclusions } from '../src/common.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, collectAppAdo, listAppRuns } from '../src/app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, listAppRuns } from '../src/app-native.js';
 import { principalPath, channelRoot } from '../src/runtime.js';
 import { wiql, area, adoRecord } from '../src/sources.js';
 
@@ -174,6 +174,53 @@ test('app native assignment claim/bind/result is idempotent and cannot use prima
   assert.equal(appWorker(config, ledger, 'test-run', 'result', result).state, 'completed');
   assert.equal(appWorker(config, ledger, 'test-run', 'result', result).state, 'completed');
   assert.equal(ledger.job(job.id).session_id, 'native-session');
+});
+
+test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
+  const { config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });
+  config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
+    executable: process.execPath, args: [], timeoutMs: 1000 }];
+  config.repositories[0].skillBindings = [{
+    id: 'oa-integration-test-core', capability: 'integration-test-authoring',
+    skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
+    requestedOutcomes: ['add-or-update-tests'],
+    sideEffects: { commit: false, push: false, createDraftPR: false }
+  }];
+  await adoBatch(config, ledger);
+  const evidence = ledger.all('evidence')[0];
+  const investigation = {
+    recordType: 'investigation', schemaVersion: '1.0',
+    id: `investigation-${hash(json([evidence.source.namespace, evidence.source.recordId]))}`, version: 1,
+    evidenceIds: [evidence.id], state: 'triaged', observedBehavior: 'OA behavior lacks integration coverage.',
+    expectedBehavior: 'The behavior is protected by a focused integration test.', hypotheses: [], counterEvidence: [],
+    classification: 'functional', defectConfirmation: 'unconfirmed', reportEligibility: 'included',
+    handoffEligibility: 'eligible', exclusionReasons: [], rationale: 'Test-coverage improvement fixture.',
+    confidence: 0.8, review: { method: config.reviewMethod, reviewer: 'fixture', reviewedAt: now() },
+    repoIds: ['fixture'], existingFixes: [], nextAction: 'Add focused OA integration coverage.'
+  };
+  appReview(config, ledger, 'test-run', { investigation, exclusionsChecked: exclusions });
+  const planned = appPlanImprovement(config, ledger, 'test-run', {
+    improvement: {
+      investigationIds: [investigation.id], category: 'missing-test-coverage',
+      theme: 'OA focused integration coverage', observedBehavior: investigation.observedBehavior,
+      expectedBehavior: investigation.expectedBehavior, rationale: 'Create one durable OA improvement.',
+      priority: 'medium', repoIds: ['fixture'], capabilities: ['integration-test-authoring']
+    },
+    testCoverage: {
+      repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: 'a'.repeat(40),
+      searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
+      unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
+    }
+  });
+  const worker = appWorker(config, ledger, 'test-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'improvement',
+    testCoveragePlanId: planned.testCoveragePlan.id, requestedOutcome: 'add-or-update-tests'
+  });
+  assert.equal(worker.assignment.improvementId, planned.improvement.id);
+  assert.equal(worker.assignment.testCoveragePlanId, planned.testCoveragePlan.id);
+  assert.equal(worker.assignment.skillBindingId, 'oa-integration-test-core');
+  assert.equal(ledger.all('areaToImprove').length, 1);
+  assert.equal(ledger.all('testCoveragePlan').length, 1);
 });
 
 test('app successful run A cursor survives blocked run B in the shared live ledger', async t => {

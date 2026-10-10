@@ -35,6 +35,9 @@ only in the verified isolated product workspace.
 4. For `rca-only`, do not edit code, create PRs or launch validation. For
    authorized defect/improvement work, make the smallest complete change
    within allowed prefixes; preserve unrelated work and add focused tests.
+   When an assignment pins a repository skill binding, use only that skill
+   from the exact isolated checkout revision and return its structured result.
+   The skill cannot grant itself shell, network, commit, push or PR authority.
 5. Execute only approved repo-specific validation for the exact proposed
    revision. Preserve commands, source SHA, run IDs, raw terminal outcomes and
    pending/blocked status. Follow the proactive validation-monitor skill when

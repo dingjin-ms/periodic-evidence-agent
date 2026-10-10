@@ -6,7 +6,9 @@ import { collect, acceptReview, reviewPending, route, report, reconcile, tick, r
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
 import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
+import { planImprovement } from './improvements.js';
+import { qualifyRepositorySkill } from './repository-skills.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
@@ -49,7 +51,10 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-ado --run ID --pass ado:created|ado:changed --collect
   node src\\cli.js app-ado-reconcile --run ID --pass ado:created|ado:changed
   node src\\cli.js app-review --run ID --production --file review.json
+  node src\\cli.js app-plan-improvement --run ID --production --file improvement-plan.json
   node src\\cli.js app-worker --run ID --production --operation prepare|claim|bind|result|uncertain --file action.json
+  node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
+  node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect performs delegated source reads; other app commands are offline.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
@@ -80,6 +85,7 @@ try {
       case 'app-unavailable': result = unavailableApp(ledger, option('--run'), input()); break;
       case 'app-status': result = appStatus(ledger, option('--run')); break;
       case 'app-review': result = appReview(config, ledger, option('--run'), input()); break;
+      case 'app-plan-improvement': result = appPlanImprovement(config, ledger, option('--run'), input()); break;
       case 'app-worker': result = appWorker(config, ledger, option('--run'), option('--operation'), input()); break;
       case 'app-ado':
         requireThat(args.includes('--collect'), 'Live ADO reads require explicit --collect');
@@ -123,6 +129,13 @@ try {
         requireThat(option('--file'), 'review requires --file');
         result = acceptReview(config, ledger, readJson(resolve(option('--file')))); break;
       case 'review-pending': result = await reviewPending(config, ledger); break;
+      case 'plan-improvement': result = planImprovement(ledger, input()); break;
+      case 'qualify-skill': {
+        requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
+        result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
+        ledger.qualify(`repository-skill:${result.repoId}:${result.bindingId}`, result);
+        break;
+      }
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
       case 'report': result = report(ledger); break;
       case 'reconcile': result = reconcile(ledger); break;

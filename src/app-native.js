@@ -4,8 +4,9 @@ import { Ledger } from './ledger.js';
 import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
-import { makeAssignment } from './workers.js';
+import { makeAssignment, makePlannedImprovementAssignment } from './workers.js';
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
+import { planImprovement } from './improvements.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -389,10 +390,16 @@ export function appWorker(config, ledger, runId, action, input) {
     'Native worker activation is disabled for this run');
   noCredentials(input);
   if (action === 'prepare') {
-    object(input, ['investigationId', 'repoId', 'intent']);
+    object(input, ['investigationId', 'repoId', 'intent', 'testCoveragePlanId', 'requestedOutcome'],
+      ['investigationId', 'repoId', 'intent']);
     const investigation = ledger.get('investigation', input.investigationId);
     requireThat(investigation && !['closed', 'blocked', 'waiting'].includes(investigation.state), 'Investigation is not dispatchable');
-    const assignment = makeAssignment(config, investigation, input.repoId, input.intent);
+    const assignment = input.testCoveragePlanId
+      ? makePlannedImprovementAssignment(config, ledger, investigation, input.testCoveragePlanId,
+        input.requestedOutcome ?? 'add-or-update-tests')
+      : makeAssignment(config, investigation, input.repoId, input.intent);
+    requireThat(assignment.repoId === input.repoId && assignment.intent === input.intent,
+      'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
     const latest = new Set(ledger.latestEvidence().map(e => e.id));
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
       ['authenticated-source', 'app-tool-reported'].includes(ledger.get('evidence', id).source.provenance) &&
@@ -420,7 +427,10 @@ export function appWorker(config, ledger, runId, action, input) {
       const current = ledger.get('investigation', value.assignment.investigationId);
       requireThat(current?.version === value.assignment.investigationVersion &&
         !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before native claim', 'blocked-reconciliation');
-      makeAssignment(config, current, value.repoId, value.assignment.intent);
+      if (value.assignment.testCoveragePlanId)
+        makePlannedImprovementAssignment(config, ledger, current, value.assignment.testCoveragePlanId,
+          value.assignment.requestedOutcome);
+      else makeAssignment(config, current, value.repoId, value.assignment.intent);
       const latest = new Set(ledger.latestEvidence().map(e => e.id));
       requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
         !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before native claim', 'blocked-reconciliation');
@@ -464,6 +474,13 @@ export function appWorker(config, ledger, runId, action, input) {
       .run(value.state, value.sessionId, now(), value.id);
     return saveWorker(ledger, value);
   });
+}
+export function appPlanImprovement(config, ledger, runId, input) {
+  const run = getRun(ledger, runId);
+  requireThat(!run.dryRun && run.provenance === 'app-tool' && config.activation.review,
+    'Native improvement planning is disabled for this run');
+  noCredentials(input);
+  return planImprovement(ledger, input);
 }
 export async function collectAppAdo(config, ledger, runId, pass, transportFactory = adoTransport) {
   requireThat(['ado:created', 'ado:changed'].includes(pass), 'Expected an approved ADO pass');

@@ -8,8 +8,10 @@ Role procedures live in `.github\skills` and can be shared with this repository:
 |---|---|
 | `evidence-collector` | Scoped source reads, receipt import, paging and coverage |
 | `evidence-coordinator` | Exclusion review, ownership, atomic assignment and reconciliation |
+| `evidence-improvement-planner` | Area aggregation, test discovery/linking and qualified capability selection |
 | `evidence-1js-owner` | Claimed 1JS RCA/fix/validation work |
 | `evidence-office-owner` | Claimed Office src RCA/fix/validation work |
+| `evidence-oa-owner` | Claimed OfficeAgent integration-test work through its repo-native skill |
 
 Ask a skills-capable Copilot host to use the named skill for the corresponding
 task, for example: "Use evidence-collector to inspect the existing run's status;
@@ -249,6 +251,21 @@ array `[primaryEvidence.source.namespace, primaryEvidence.source.recordId]`.
 The first version is 1; subsequent reviews increment it by one. Use exact
 persisted evidence IDs. Recorded app reviews are `external-app-agent` actions,
 not SDK model execution.
+
+Before `prepare`, `app-plan-improvement --run ID --production --file plan.json`
+can persist a versioned `areaToImprove` and source-bound `testCoveragePlan`.
+Incomplete or empty discovery is `unknown`, not a confirmed gap. Existing test
+links take precedence over proposed additions. A coverage-backed prepare pins
+the exact improvement and plan versions, capability, requested outcome and
+qualified repository skill binding into the assignment.
+
+`qualify-skill` is a read-only repository preflight. It may run while routing
+and the binding remain disabled/unqualified; it verifies the configured
+reference checkout, origin, base revision and skill path and records the exact
+skill content fingerprint. It does not enable the binding or approve source
+writes. OfficeAgent uses the repo-wide
+`.github/skills/integration-test-authoring/SKILL.md` router, which then resolves
+an exact project and project-local integration shell from the isolated checkout.
 
 `app-worker --run ID --production --operation OP --file action.json`:
 

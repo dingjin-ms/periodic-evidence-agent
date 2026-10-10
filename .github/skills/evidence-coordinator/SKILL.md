@@ -43,6 +43,19 @@ requires explicit activation. Do not alter an existing run's configuration.
 
 ## Assignment ownership and dispatch
 
+For a **held evidence-to-test-coverage proposal**, use the separate Stage2
+procedure in [APP-NATIVE.md](../../../APP-NATIVE.md#held-stage2-coverage-handoff)
+before applying production assignment machinery. Run `stage2-handoff` with an
+explicit private source-ledger manifest. The analysis executor must invoke the
+installed `analyze-excel-agent-test-coverage` skill and read its pinned
+`references/coverage-map.md` before classification. Missing skill/reference is
+`blocked-skill`; do not reconstruct the procedure from conversation history.
+Use `stage2-proposal-check` to verify the held output's source-version references,
+skill pins and no-dispatch gates offline. It does not verify semantic analysis,
+ingest a review, qualify an implementation target or authorize a worker.
+Intended-behavior coverage proposals remain non-defect and held; this is not an
+exclusion-policy bypass.
+
 1. Check latest investigation/evidence and tracked eligibility reconciliation.
    Moved, Removed, fixed or superseded evidence must not blindly reassign work.
    Tracked-item and follow-up collection are not implicitly authorized here.

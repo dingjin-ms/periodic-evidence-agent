@@ -10,7 +10,7 @@ import { principalPath, channelRoot } from '../src/runtime.js';
 import { wiql, area, adoRecord } from '../src/sources.js';
 import { skillQualificationId } from '../src/repository-skills.js';
 
-function setup(t, { dry = true, provenance = 'synthetic' } = {}) {
+function setup(t, { dry = true, provenance = 'synthetic', configure = () => {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'app-pilot-'));
   const config = configAt('pilot.example.json'); config.stateDirectory = root;
   config.statePolicy.accessApproved = true;
@@ -21,6 +21,7 @@ function setup(t, { dry = true, provenance = 'synthetic' } = {}) {
   config.repositories = [{ id: 'fixture', projectId: 'test-project', owner: 'test-owner', routingApproved: true,
     referenceCheckout: join(root, 'reference'), remote: 'https://example.invalid/test.git', baseRef: 'HEAD',
     allowedWritePrefixes: ['src'], validationGates: [] }];
+  configure(config);
   beginApp(config, { runId: 'test-run', executorSessionId: 'test-session', dryRun: dry, provenance });
   const { ledger } = openApp(config, 'test-run', dry);
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
@@ -179,15 +180,16 @@ test('app native assignment claim/bind/result is idempotent and cannot use prima
 });
 
 test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
-  const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });
-  config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
-    executable: process.execPath, args: [], timeoutMs: 1000 }];
-  config.repositories[0].skillBindings = [{
-    id: 'oa-integration-test-core', capability: 'integration-test-authoring',
-    skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
-    requestedOutcomes: ['add-or-update-tests'],
-    sideEffects: { commit: false, push: false, createDraftPR: false }
-  }];
+  const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool', configure: config => {
+    config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
+      executable: process.execPath, args: [], timeoutMs: 1000 }];
+    config.repositories[0].skillBindings = [{
+      id: 'oa-integration-test-core', capability: 'integration-test-authoring',
+      skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
+      requestedOutcomes: ['add-or-update-tests'],
+      sideEffects: { commit: false, push: false, createDraftPR: false }
+    }];
+  } });
   const workspace = join(root, 'oa-worktree');
   const skillText = '# Synthetic OA integration skill\n';
   mkdirSync(join(workspace, 'docs', 'skills', 'Integration-test-core'), { recursive: true });

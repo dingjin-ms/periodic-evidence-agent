@@ -83,6 +83,15 @@ only for matching evidence revisions and permitted snapshot semantics.
 
 ## Dispatch eligible work
 
+Evidence-to-test proposals first require the installed
+`analyze-excel-agent-test-coverage` skill and its bundled coverage-map reference,
+through the held Stage2 handoff in `APP-NATIVE.md`. Missing installation is an
+explicit blocker, not a session-history fallback. Preserve exact source versions,
+inspected refs, existing assertions, missing invariant and harness reuse.
+Held proposals (including intended-behavior/non-defect contracts) do not enter
+production reviews or assignments and do not override exclusions. Target/contract
+agreement and the normal worker gates remain separate.
+
 Resolve affected repo ownership from configuration and evidence. Unknown
 ownership, unresolved exclusions or insufficient evidence produce a visible
 blocked/waiting investigation. Do not guess a repo or dispatch an excluded item

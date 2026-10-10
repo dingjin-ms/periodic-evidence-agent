@@ -43,6 +43,11 @@ An approved dry run stays collection-only in its isolated namespace.
    designated identity before collection. Another session's identity receipt
    is evidence of its execution only, not authorization proof for this host.
    Do not use standalone SDK WorkIQ, copy tokens or substitute Graph.
+   An explicitly authorized local WorkIQ CLI run may instead use the binding in
+   APP-NATIVE.md, with its own identity check and distinct `workiq-cli-verified`
+   provenance. Never switch to it automatically after an app auth failure.
+   Preserve earlier blocked runs. Renewal qualification is separately deferred;
+   no auth probe or scheduled retry follows from collection authorization.
 3. Persist exact permitted call responses incrementally with
    `app-append --run RUN_ID --file <receipt-batch>`. Preserve request path,
    tool-call identity, UTC observation time, revisions, asOf and nextLink.
@@ -54,6 +59,19 @@ An approved dry run stays collection-only in its isolated namespace.
    reads leave bodies/revisions unknown. Keep examined-item and read-call counts
    separate from in-window findings. Stop at the approved cap, with pending
    work visible; never use follow-up allowances to extend initial enumeration.
+   A budget stop can only continue in a distinct run after explicit additional
+   budget authorization: use `app-workiq-continue --from-run OLD --run NEW
+   --pass workiq:created --authorize-additional-budget` with the same config.
+   Preparation is offline, reserves one child, and preserves buffered page rows.
+   Source execution is a separate explicitly authorized `app-workiq-cli --collect`
+   command; the old run stays exhausted. Never continue auth/uncertain failures,
+   retry expired nextLinks or restart from the head silently.
+   Use `app-thread-context` for retained examined roots/replies and provenance;
+   out-of-window context is not an eligible finding. `workiq:changed` is a
+   separately authorized full enumeration requiring modified timestamps, not
+   an implicit second pass. No WorkIQ delta contract is established. Root
+   timestamps do not justify skipping reply chains. Exhaustion is not a
+   historical snapshot or proof that concurrent edits/deletions were captured.
 5. For an authorized ADO pass, use `app-ado --run RUN_ID --pass ado:created
    --collect`, then the separately approved `ado:changed` pass. The adapter
    verifies delegated identity and scopes queries. A parser failure after
@@ -62,7 +80,13 @@ An approved dry run stays collection-only in its isolated namespace.
 6. Record unavailable IcM with `app-unavailable`; absence of an approved
    connector is unknown coverage, not zero incidents. Do not follow related
    evidence outside the approved depth/items/calls/scope. These helpers do not
-   automatically perform related-evidence collection.
+   automatically perform related-evidence collection. Connector identity success
+   and team/severity mapping do not establish saved-query timestamp equivalence.
+   `icm-replay` accepts already captured connector receipts **offline**, in a
+   separate audit namespace, under the contract in APP-NATIVE.md. It never
+   launches a connector, advances a source cursor or replaces Source Created
+   Time with incident `createdDate`. Preserve a scope blocker separately from
+   authentication failures.
 7. End by reading `app-status` and handing off its durable summary path and
    run ID. No handoff depends solely on this chat or temporary session files.
 

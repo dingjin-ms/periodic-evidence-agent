@@ -9,7 +9,7 @@ import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeErro
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
 
-const passes = ['ado:created', 'ado:changed', 'workiq:created', 'icm:created'];
+const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
 const receiptKeys = ['id', 'observedAt', 'requestedAt', 'tool', 'request', 'response', 'failure', 'completionEventId', 'actorSessionId'];
 function object(value, keys, required = keys) {
@@ -21,7 +21,7 @@ function identifier(value) {
   requireThat(typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value),
     'Invalid app-native identifier', 'invalid-record');
 }
-function noCredentials(value) {
+export function noCredentials(value) {
   if (typeof value === 'string') requireThat(!/\bBearer\s+[a-zA-Z0-9._~-]+|eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\./.test(value),
     'Credential-shaped content is not permitted in receipts', 'invalid-record');
   if (!value || typeof value !== 'object') return;
@@ -49,16 +49,25 @@ function tables(ledger) {
     CREATE TABLE IF NOT EXISTS app_workers(id TEXT PRIMARY KEY,body TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS app_transport(id TEXT PRIMARY KEY,run_id TEXT NOT NULL,pass TEXT NOT NULL,body TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS app_artifacts(run_id TEXT NOT NULL,ref TEXT NOT NULL,kind TEXT NOT NULL,PRIMARY KEY(run_id,ref));
+    CREATE TABLE IF NOT EXISTS app_workiq_continuations(run_id TEXT PRIMARY KEY,pass TEXT NOT NULL,body TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS app_thread_context(
+      run_id TEXT NOT NULL,pass TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(run_id,pass,id));
     CREATE UNIQUE INDEX IF NOT EXISTS app_worker_handle ON app_workers(json_extract(body,'$.sessionId'))
       WHERE json_extract(body,'$.sessionId') IS NOT NULL;
     CREATE TRIGGER IF NOT EXISTS immutable_app_event BEFORE UPDATE ON app_events
       BEGIN SELECT RAISE(ABORT,'App events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS immutable_workiq_continuation BEFORE UPDATE ON app_workiq_continuations
+      BEGIN SELECT RAISE(ABORT,'WorkIQ continuation bindings are immutable'); END;
   `);
 }
 function getRun(ledger, id) {
   const row = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(id);
   requireThat(row, 'Unknown app-native run', 'invalid-record');
   return JSON.parse(row.body);
+}
+export function workiqContinuation(ledger, runId, pass) {
+  const row = ledger.db.prepare('SELECT body FROM app_workiq_continuations WHERE run_id=? AND pass=?').get(runId, pass);
+  return row ? JSON.parse(row.body) : null;
 }
 export function openApp(config, runId, dry = true) {
   configured(config);
@@ -74,9 +83,10 @@ export function openApp(config, runId, dry = true) {
 }
 export function beginApp(config, input) {
   configured(config);
-  object(input, ['runId', 'executorSessionId', 'dryRun', 'provenance'], ['runId', 'dryRun', 'provenance']);
+  object(input, ['runId', 'executorSessionId', 'dryRun', 'provenance', 'continuationFrom'], ['runId', 'dryRun', 'provenance']);
   identifier(input.runId);
   if (input.executorSessionId) identifier(input.executorSessionId);
+  if (input.continuationFrom !== undefined) identifier(input.continuationFrom);
   requireThat(typeof input.dryRun === 'boolean' && ['app-tool', 'synthetic'].includes(input.provenance), 'Invalid run mode/provenance');
   requireThat(input.dryRun || config.activation.collect, 'Production collection is not activated');
   const limits = input.dryRun ? config.dryRun.limits : config.limits;
@@ -133,7 +143,7 @@ function workiqRequest(config, actual, expected) {
     select.every(field => messageSelect.split(',').includes(field)), 'Unsupported or insufficient projection', 'blocked-scope');
   const normalized = new URL(a);
   normalized.pathname = a.pathname.split('/').map(p => encodeURIComponent(decodeURIComponent(p))).join('/');
-  normalized.searchParams.set('$select', messageSelect);
+  normalized.searchParams.set('$select', config.sources.workiq.projection ?? messageSelect);
   validateWorkiqPath(config, normalized.pathname + normalized.search);
   // Metadata-only app reads are valid evidence with explicit missing body/revision fields.
   a.searchParams.delete('$select'); e.searchParams.delete('$select');
@@ -158,17 +168,30 @@ function identity(config, value) {
     value.userPrincipalName?.toLowerCase() === config.identity.designatedUser.toLowerCase(),
   'Designated delegated identity mismatch', 'blocked-auth');
 }
-async function replay(config, run, pass, calls, principal, directAdoVerified) {
+async function replay(config, run, pass, currentCalls, principal, directAdoVerified, directWorkiqVerified, continuation = null) {
   const local = structuredClone(config);
   local.limits = { ...local.limits, ...run.limits };
+  const inherited = continuation?.calls ?? [];
+  const calls = continuation ? [currentCalls[0], ...inherited, ...currentCalls.slice(1)] : currentCalls;
+  const currentIds = new Set(currentCalls.map(call => call.id));
+  local.limits.maxCalls += inherited.length;
+  local.limits.maxItems += continuation?.examinedRecords ?? 0;
   const firstPage = calls.find(c => c.request?.entityUrls?.[0] !== principalPath && c.request?.entityUrls);
   if (firstPage) local.sources.workiq.projection = new URL(firstPage.request.entityUrls[0], 'https://scope.invalid').searchParams.get('$select');
-  let index = 0, nextRequest = null, active, identityVerified = false;
-  const evidence = [];
+  let index = 0, currentConsumed = 0, nextRequest = null, active, identityVerified = false;
+  const evidence = [], contexts = [], stats = {};
+  const provenance = run.provenance === 'synthetic' ? 'synthetic' : directWorkiqVerified ? 'workiq-cli-verified'
+    : directAdoVerified ? 'authenticated-source' : 'app-tool-reported';
+  const sourceContext = () => ({ runId: continuation?.origins?.[active.id]?.runId ?? run.runId,
+    callId: active.id, query: active.request.entityUrls[0],
+    requestedAt: active.requestedAt ?? null, observedAt: active.observedAt,
+    actorSessionId: active.actorSessionId ?? null,
+    provenance: continuation?.origins?.[active.id]?.provenance ?? provenance });
   const consume = request => {
     nextRequest = request;
     requireThat(index < calls.length, 'Next source response has not been supplied', 'awaiting-receipt');
     active = calls[index++];
+    if (currentIds.has(active.id)) currentConsumed++;
     if (pass.startsWith('workiq')) workiqRequest(config, active.request, request.entityUrls[0]);
     else requireThat(json(active.request) === json(request), 'ADO receipt differs from approved query/batch', 'blocked-scope');
     if (active.failure) throw new PilotError(active.failure.code, 'App source call failed; see structured receipt');
@@ -179,15 +202,17 @@ async function replay(config, run, pass, calls, principal, directAdoVerified) {
     return data;
   };
   const emit = async (record, payload) => {
-    record.queriedAt = active.observedAt; record.observedAt = active.observedAt;
-    record.source.provenance = run.provenance === 'synthetic' ? 'synthetic'
-      : directAdoVerified && pass.startsWith('ado') ? 'authenticated-source' : 'app-tool-reported';
+    if (!pass.startsWith('workiq')) {
+      record.queriedAt = active.observedAt; record.observedAt = active.observedAt;
+      record.source.provenance = provenance;
+    }
     evidence.push({ record, payload });
   };
-  let cursor = null, state, error = null;
+  let cursor = null, state, error = null, budgetStop = false;
   try {
     if (pass.startsWith('workiq')) cursor = await collectWorkiq(local, run.window, emit,
-      async path => consume({ entityUrls: [path] }));
+      async path => consume({ entityUrls: [path] }), pass.split(':')[1],
+      { stats, readContext: sourceContext, onMessage: entry => contexts.push(entry) });
     else {
       requireThat(principal, 'ADO identity receipt is required before collection', 'blocked-auth');
       identity(config, principal);
@@ -200,33 +225,63 @@ async function replay(config, run, pass, calls, principal, directAdoVerified) {
     if (!['awaiting-receipt', 'partial', ...failures].includes(failure.code)) throw failure;
     state = failure.code === 'awaiting-receipt' || failure.code === 'partial' ? 'partial' : failure.code;
     error = safeError(failure);
+    budgetStop = failure.code === 'partial' && [
+      'Tool-call budget exhausted; coverage is partial', 'Item budget exhausted; coverage is partial'
+    ].includes(failure.message);
   }
-  requireThat(index === calls.length, 'Unconsumed receipts exceed the approved traversal or budget', 'blocked-budget');
+  requireThat(currentConsumed === currentCalls.length, 'Unconsumed receipts exceed the approved traversal or budget', 'blocked-budget');
+  requireThat(!continuation || !identityVerified ||
+    (index >= inherited.length + 1 && stats.examined >= continuation.examinedRecords),
+  'Inherited checkpoint no longer reconstructs the recorded examination offset', 'blocked-reconciliation');
   const returned = pass.startsWith('workiq')
-    ? calls.reduce((n, c) => n + (c.response?.results?.[0]?.data?.value?.length ?? 0), 0)
+    ? Math.max(stats.returned, continuation?.returnedRecords ?? 0)
     : calls.reduce((n, c) => n + (c.response?.workItems?.length ?? 0), 0);
-  requireThat(calls.length <= run.limits.maxCalls, 'Imported responses exceed approved read-call limit', 'blocked-budget');
-  const examined = Math.min(returned, run.limits.maxItems);
-  if (returned > run.limits.maxItems) {
+  requireThat(currentCalls.length <= run.limits.maxCalls, 'Imported responses exceed approved read-call limit', 'blocked-budget');
+  const examined = pass.startsWith('workiq')
+    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : Math.min(returned, run.limits.maxItems);
+  if (identityVerified && returned > local.limits.maxItems) {
     state = 'partial'; cursor = null; nextRequest = null;
+    budgetStop = true;
     error = { code: 'partial', message: 'Response exceeds remaining examined-item budget; extra returned records are unexamined' };
   }
-  return { evidence, result: { pass, state, error, cursor, nextRequest: error?.code === 'awaiting-receipt' ? nextRequest : null,
-    readCalls: calls.length, examinedRecords: examined, evidenceCount: evidence.length,
-    returnedRecords: returned, unexaminedReturnedRecords: returned - examined,
-    provenance: run.provenance === 'synthetic' ? 'synthetic' : directAdoVerified ? 'authenticated-source' : 'app-tool-reported',
-    execution: directAdoVerified ? 'delegated-source-adapter' : 'external-app-tool',
-    identityVerification: directAdoVerified ? 'adapter-verified-tenant-and-object-id; UPN is configured binding' : 'validated-app-reported-principal',
+  const inheritedExamined = continuation?.examinedRecords ?? 0;
+  return { evidence, contexts, result: { pass, state, error, cursor, nextRequest: error?.code === 'awaiting-receipt' ? nextRequest : null,
+    readCalls: currentCalls.length, examinedRecords: examined - inheritedExamined, evidenceCount: evidence.length,
+    returnedRecords: returned - (continuation?.returnedRecords ?? 0),
+    ...(!pass.startsWith('workiq') ? { returnedRecords: returned } : {
+      cumulativeReturnedRecords: returned, cumulativeExaminedRecords: examined,
+      inheritedReadCalls: inherited.length, inheritedExaminedRecords: inheritedExamined,
+      inheritedBufferedRecords: continuation ? continuation.returnedRecords - inheritedExamined : 0,
+      duplicateVersions: stats.duplicates, threadContextCount: contexts.length,
+      cumulativeTraversal: { rootVersions: stats.roots, replyVersions: stats.replies, threadsExhausted: stats.threads },
+      continuation: state === 'partial' && budgetStop ? {
+        kind: 'immutable-receipt-replay', newRunAndAdditionalBudgetRequired: true,
+        bufferedRecords: returned - examined, receiptHash: hash(json(calls)),
+        sourceContinuationMayExpire: true
+      } : null,
+      limitations: ['No historical snapshot or complete edit history', 'No delta/watermark optimization established',
+        'Coverage requires all roots and replies, including older roots', 'Absence is not a deletion signal']
+    }),
+    unexaminedReturnedRecords: returned - examined,
+    provenance: run.provenance === 'synthetic' ? 'synthetic' : directWorkiqVerified ? 'workiq-cli-verified' : directAdoVerified ? 'authenticated-source' : 'app-tool-reported',
+    execution: directWorkiqVerified ? 'local-workiq-cli-stdio' : directAdoVerified ? 'delegated-source-adapter' : 'external-app-tool',
+    identityVerification: directWorkiqVerified ? 'cli-fetch-verified-object-id-and-UPN' : directAdoVerified ? 'adapter-verified-tenant-and-object-id; UPN is configured binding' : 'validated-app-reported-principal',
     identityVerified,
     coverage: 'Current source enumeration, not a historical reconstruction',
     classification: 'not-performed', evidenceIds: [] } };
 }
-export async function appendApp(config, ledger, runId, input, { directAdoVerified = false } = {}) {
+export async function appendApp(config, ledger, runId, input, { directAdoVerified = false, directWorkiqVerified = false } = {}) {
   object(input, ['eventId', 'pass', 'calls', 'principal'], ['eventId', 'pass', 'calls']);
   identifier(input.eventId);
   requireThat(passes.includes(input.pass) && input.pass !== 'icm:created', 'Unsupported collection pass');
   requireThat(Array.isArray(input.calls) && input.calls.length > 0, 'Append at least one actual call receipt');
   const run = getRun(ledger, runId);
+  requireThat(run.configHash === hash(json(config)), 'Run configuration changed');
+  const continuation = workiqContinuation(ledger, runId, input.pass);
+  const binding = ledger.db.prepare('SELECT pass FROM app_workiq_continuations WHERE run_id=?').get(runId);
+  requireThat(!run.continuationFrom || continuation?.parentRunId === run.continuationFrom,
+    'Continuation preparation is incomplete; no receipt accepted', 'blocked-reconciliation');
+  requireThat(!binding || binding.pass === input.pass, 'A continuation run is restricted to its bound source pass');
   input.calls.forEach(call => receipt(call, input.pass));
   if (input.principal) identity(config, input.principal);
   const stored = ledger.db.prepare('SELECT body,run_id FROM app_events WHERE id=?').get(input.eventId);
@@ -239,12 +294,19 @@ export async function appendApp(config, ledger, runId, input, { directAdoVerifie
   if (priorPass) {
     const prior = JSON.parse(priorPass.body);
     requireThat(prior.state === 'partial' && prior.nextRequest, 'Pass is terminal or budget exhausted; no retry in this run', 'blocked-reconciliation');
+    if (input.pass.startsWith('workiq')) requireThat(
+      (prior.execution === 'local-workiq-cli-stdio') === directWorkiqVerified,
+      'Cannot change WorkIQ execution binding within a pass');
   }
   const calls = [...oldEvents.flatMap(e => e.calls), ...input.calls];
   requireThat(new Set(calls.map(c => c.id)).size === calls.length, 'Duplicate call receipt identity');
   const principal = input.principal ?? oldEvents.find(e => e.principal)?.principal;
   if (principal) requireThat(oldEvents.every(e => !e.principal || json(e.principal) === json(principal)), 'Principal receipt changed within pass');
-  const replayed = await replay(config, run, input.pass, calls, principal, directAdoVerified);
+  if (continuation) {
+    requireThat(hash(json(continuation.calls)) === continuation.callsHash, 'Continuation receipts changed', 'invalid-record');
+    requireThat(!calls.some(c => continuation.calls.some(old => old.id === c.id)), 'Receipt identity reused across continuation');
+  }
+  const replayed = await replay(config, run, input.pass, calls, principal, directAdoVerified, directWorkiqVerified, continuation);
   ledger.transaction(() => {
     const count = ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE run_id=? AND pass=?').get(runId, input.pass).n;
     requireThat(count === oldEvents.length, 'Concurrent receipt append; refresh before retrying', 'overlap');
@@ -253,6 +315,10 @@ export async function appendApp(config, ledger, runId, input, { directAdoVerifie
     ledger.db.prepare('INSERT OR IGNORE INTO runs(id,source,state,started_at,window) VALUES(?,?,?,?,?)')
       .run(sourceRun, input.pass, 'collecting', run.startedAt, json(run.window));
     for (const item of replayed.evidence) replayed.result.evidenceIds.push(ledger.evidence(item.record, item.payload, sourceRun).id);
+    for (const entry of replayed.contexts) {
+      const id = hash(json([entry.teamId, entry.channelId, entry.rootId, entry.messageId, entry.versionHash, entry.observation.callId]));
+      ledger.db.prepare('INSERT OR IGNORE INTO app_thread_context VALUES(?,?,?,?)').run(runId, input.pass, id, json(entry));
+    }
     ledger.db.prepare('UPDATE runs SET state=?,finished_at=?,error=? WHERE id=?')
       .run(replayed.result.state, now(), replayed.result.error && json(replayed.result.error), sourceRun);
     ledger.db.prepare('INSERT INTO app_passes VALUES(?,?,?) ON CONFLICT(run_id,pass) DO UPDATE SET body=excluded.body')
@@ -261,6 +327,111 @@ export async function appendApp(config, ledger, runId, input, { directAdoVerifie
       .run(`app:${input.pass}`, json(replayed.result.cursor));
   });
   return appStatus(ledger, runId);
+}
+function installWorkiqContinuation(config, input, provenance, continuation) {
+  beginApp(config, { runId: input.runId, dryRun: true, provenance, continuationFrom: input.fromRunId });
+  const { ledger } = openApp(config, input.runId);
+  try {
+    ledger.transaction(() => {
+      const existing = workiqContinuation(ledger, input.runId, input.pass);
+      requireThat(!existing || json(existing) === json(continuation), 'Continuation binding conflict', 'blocked-reconciliation');
+      if (!existing) requireThat(!ledger.db.prepare('SELECT 1 FROM app_events LIMIT 1').get(),
+        'Unbound target already has receipts; inspect before recovery', 'blocked-reconciliation');
+      ledger.db.prepare('INSERT OR IGNORE INTO app_workiq_continuations VALUES(?,?,?)')
+        .run(input.runId, input.pass, json(continuation));
+      for (const call of continuation.calls) {
+        const bytes = Buffer.from(json(call.response)), digest = hash(bytes);
+        ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(digest, bytes);
+        ledger.db.prepare('INSERT OR IGNORE INTO app_artifacts VALUES(?,?,?)')
+          .run(input.runId, `sqlite:capture:${digest}`, 'inherited-workiq-receipt');
+      }
+    });
+    return appStatus(ledger, input.runId);
+  } finally { ledger.close(); }
+}
+export async function prepareWorkiqContinuation(config, input) {
+  object(input, ['fromRunId', 'runId', 'pass', 'additionalBudgetApproved']);
+  identifier(input.fromRunId); identifier(input.runId);
+  requireThat(input.fromRunId !== input.runId && input.additionalBudgetApproved === true,
+    'Continuation requires a distinct run and explicit additional-budget authorization');
+  requireThat(['workiq:created', 'workiq:changed'].includes(input.pass), 'Only WorkIQ passes support continuation');
+  const { ledger: parent, run } = openApp(config, input.fromRunId);
+  let owner, child;
+  const lock = `cli-workiq:${input.fromRunId}`;
+  const operation = `workiq-continuation:${input.fromRunId}:${input.pass}`;
+  try {
+    owner = parent.acquire(lock);
+    requireThat(!parent.db.prepare('SELECT body FROM app_passes WHERE run_id=? AND pass LIKE ?').all(input.fromRunId, 'workiq:%')
+      .some(r => JSON.parse(r.body).state === 'blocked-auth'), 'Parent WorkIQ authentication is blocked; no continuation');
+    const existing = parent.db.prepare('SELECT state,detail FROM operations WHERE id=?').get(operation);
+    if (existing) {
+      const detail = JSON.parse(existing.detail);
+      requireThat(['started', 'prepared'].includes(existing.state) && json(detail.input) === json(input),
+        'Continuation already reserved; reconcile it rather than creating another child', 'blocked-reconciliation');
+      if (existing.state === 'started') {
+        requireThat(detail.continuation &&
+          hash(parent.db.prepare('SELECT body FROM app_passes WHERE run_id=? AND pass=?').get(input.fromRunId, input.pass).body) ===
+            detail.continuation.parentPassHash,
+        'Reserved continuation lacks an unchanged checkpoint; inspect before recovery', 'blocked-reconciliation');
+        const result = installWorkiqContinuation(config, input, run.provenance, detail.continuation);
+        parent.finishOperation(operation, 'prepared', { input, childRunId: input.runId, callsHash: detail.continuation.callsHash });
+        return result;
+      }
+      ({ ledger: child } = openApp(config, input.runId));
+      requireThat(workiqContinuation(child, input.runId, input.pass)?.parentRunId === input.fromRunId,
+        'Prepared continuation binding is missing', 'blocked-reconciliation');
+      return appStatus(child, input.runId);
+    }
+    const priorRow = parent.db.prepare('SELECT body FROM app_passes WHERE run_id=? AND pass=?').get(input.fromRunId, input.pass);
+    const prior = priorRow && JSON.parse(priorRow.body);
+    requireThat(prior?.state === 'partial' && prior.error?.code === 'partial' && !prior.nextRequest,
+      'Only a budget-stopped pass can continue; auth, uncertain and source failures require separate resolution');
+    const pending = parent.db.prepare("SELECT 1 FROM operations WHERE state='started' LIMIT 1").get();
+    requireThat(!pending, 'Parent has unfinished operations; reconcile offline first', 'blocked-reconciliation');
+    const transport = parent.db.prepare('SELECT body FROM app_transport WHERE run_id=? AND pass=?')
+      .all(input.fromRunId, input.pass).map(r => JSON.parse(r.body));
+    requireThat(transport.every(r => r.state === 'received'), 'Parent has uncertain/failed transport; continuation denied');
+    const events = parent.db.prepare('SELECT body FROM app_events WHERE run_id=? AND pass=? ORDER BY rowid')
+      .all(input.fromRunId, input.pass).map(r => JSON.parse(r.body));
+    const currentCalls = events.flatMap(e => e.calls ?? []);
+    requireThat(currentCalls.length && currentCalls.every(c => c.response && !c.failure),
+      'Continuation requires successful immutable source receipts');
+    const previous = workiqContinuation(parent, input.fromRunId, input.pass);
+    const verification = await replay(config, run, input.pass, currentCalls, null, false,
+      prior.execution === 'local-workiq-cli-stdio', previous);
+    requireThat(verification.result.continuation &&
+      verification.result.examinedRecords === prior.examinedRecords &&
+      verification.result.readCalls === prior.readCalls,
+    'Stored budget stop cannot be reconstructed exactly; no continuation prepared', 'blocked-reconciliation');
+    const calls = [...(previous?.calls ?? []), ...currentCalls.slice(1)];
+    const origins = { ...(previous?.origins ?? {}) };
+    for (const call of currentCalls.slice(1)) origins[call.id] = { runId: input.fromRunId, provenance: prior.provenance };
+    const continuation = { parentRunId: input.fromRunId, pass: input.pass, calls, callsHash: hash(json(calls)), origins,
+      parentPassHash: hash(priorRow.body),
+      examinedRecords: verification.result.cumulativeExaminedRecords,
+      returnedRecords: verification.result.cumulativeReturnedRecords,
+      additionalBudget: run.limits, preparedAt: now(), authorization: 'explicit-new-run-additional-budget' };
+    requireThat(!existsSync(join(directory(config, input.runId, true), 'ledger.sqlite')), 'Target run already exists');
+    parent.transaction(() => {
+      requireThat(parent.db.prepare('SELECT body FROM app_passes WHERE run_id=? AND pass=?')
+        .get(input.fromRunId, input.pass).body === priorRow.body, 'Parent changed during continuation preparation', 'overlap');
+      parent.operation(operation, input.fromRunId, 'workiq-continuation-reservation', { input, continuation });
+    });
+    // Recover the same reserved child offline; never reserve a second child after a crash.
+    const result = installWorkiqContinuation(config, input, run.provenance, continuation);
+    parent.finishOperation(operation, 'prepared', { input, childRunId: input.runId, callsHash: continuation.callsHash });
+    return result;
+  } finally {
+    child?.close();
+    if (owner) parent.release(lock, owner);
+    parent.close();
+  }
+}
+export function threadContext(ledger, runId, pass) {
+  getRun(ledger, runId);
+  requireThat(['workiq:created', 'workiq:changed'].includes(pass), 'Invalid thread-context pass');
+  return ledger.db.prepare('SELECT body FROM app_thread_context WHERE run_id=? AND pass=? ORDER BY rowid')
+    .all(runId, pass).map(r => JSON.parse(r.body));
 }
 export function unavailableApp(ledger, runId, input) {
   object(input, ['pass', 'reason']);
@@ -273,7 +444,7 @@ export function unavailableApp(ledger, runId, input) {
 export function blockApp(config, ledger, runId, input) {
   object(input, ['eventId', 'pass', 'call']);
   identifier(input.eventId);
-  requireThat(input.pass === 'workiq:created' && input.call.failure?.code === 'blocked-auth',
+  requireThat(['workiq:created', 'workiq:changed'].includes(input.pass) && input.call.failure?.code === 'blocked-auth',
     'External terminal blocker must be a WorkIQ authentication failure');
   receipt(input.call, input.pass);
   const path = input.call.request?.entityUrls?.[0];
@@ -302,16 +473,30 @@ export function blockApp(config, ledger, runId, input) {
 export function appStatus(ledger, runId) {
   const run = getRun(ledger, runId);
   const outcomes = new Map(ledger.db.prepare('SELECT pass,body FROM app_passes WHERE run_id=?').all(runId).map(r => [r.pass, JSON.parse(r.body)]));
-  const collection = passes.map(pass => outcomes.get(pass) ?? { pass, state: 'not-started', evidenceCount: null });
+  const boundPass = ledger.db.prepare('SELECT pass FROM app_workiq_continuations WHERE run_id=?').get(runId)?.pass;
+  const collection = passes.filter(pass => pass !== 'workiq:changed' || outcomes.has(pass) || boundPass === pass)
+    .map(pass => outcomes.get(pass) ?? { pass, state: 'not-started', evidenceCount: null });
   const summary = { runId, executionMode: 'app-native', provenance: run.provenance, dryRun: run.dryRun,
     agentId: run.agentId, executorSessionId: run.executorSessionId ?? null, window: run.window, limits: run.limits,
     state: collection.every(p => p.state === 'complete') ? 'complete' : 'partial-or-blocked',
     collection, report: report(ledger), workers: ledger.db.prepare('SELECT body FROM app_workers').all().map(r => JSON.parse(r.body)),
+    threadContext: { table: 'app_thread_context',
+      observations: ledger.db.prepare('SELECT COUNT(*) n FROM app_thread_context WHERE run_id=?').get(runId).n,
+      indexedPasses: collection.filter(p => Number.isInteger(p.threadContextCount)).map(p => p.pass),
+      purpose: 'Captured root/reply context only; not independently eligible findings' },
+    continuation: (() => {
+      const row = ledger.db.prepare('SELECT body FROM app_workiq_continuations WHERE run_id=?').get(runId);
+      if (!row) return null;
+      const c = JSON.parse(row.body);
+      return { parentRunId: c.parentRunId, pass: c.pass, inheritedReadCalls: c.calls.length,
+        inheritedExaminedRecords: c.examinedRecords, inheritedBufferedRecords: c.returnedRecords - c.examinedRecords,
+        callsHash: c.callsHash, additionalBudget: c.additionalBudget, preparedAt: c.preparedAt };
+    })(),
     modelCallsByHelper: 0, sourceWritesByHelper: 0, nativeSessionLaunchesByHelper: 0,
     scheduleEnabledByHelper: false, productionLedgerTouched: !run.dryRun,
     sourceArtifacts: ledger.db.prepare('SELECT ref,kind FROM app_artifacts WHERE run_id=?').all(runId),
     sdkWorkiqGate: 'not-applicable; historical SDK auth results are not app-native results',
-    evidenceTrust: 'Locally validated app-tool receipts, not cryptographic proof of external execution',
+    evidenceTrust: 'Use per-pass/evidence provenance: imported app receipts are locally validated; CLI reads verify /me. Neither is cryptographic attestation.',
     summaryPath: join(ledger.directory, `${runId}-summary.json`) };
   writeFileSync(summary.summaryPath, json(summary), { mode: 0o600 });
   return summary;
@@ -403,7 +588,7 @@ export function appWorker(config, ledger, runId, action, input) {
       'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
     const latest = new Set(ledger.latestEvidence().map(e => e.id));
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
-      ['authenticated-source', 'app-tool-reported'].includes(ledger.get('evidence', id).source.provenance) &&
+      ['authenticated-source', 'app-tool-reported', 'workiq-cli-verified'].includes(ledger.get('evidence', id).source.provenance) &&
       !ledger.trackedState(ledger.get('evidence', id))), 'Stale, synthetic or reconciled evidence cannot dispatch');
     return ledger.transaction(() => {
       const job = ledger.prepare(assignment, { bucket: json(run.window), maxNew: config.limits.maxAssignments });

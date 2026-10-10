@@ -46,9 +46,11 @@ sign-in. The app records successful reads and the latest failure locally.
 The standalone SDK's historical auth result is irrelevant to this mode.
 
 Helpers import/validate/report local receipts; they do not call app tools.
-Only `app-ado --collect` performs network reads, using delegated Azure CLI and
+`app-ado --collect` performs network reads, using delegated Azure CLI and
 verifying tenant/object ID before every ADO query. Its UPN is the configured
 directory-ID binding, not a separately returned UPN.
+The separately authorized local CLI path below is another explicit execution
+binding, never an automatic fallback from the app's blocked HTTP connection.
 
 Dry runs cannot review, prepare/claim workers, qualify validation, consume
 production assignment budget or schedule anything. Source writes are absent.
@@ -237,6 +239,300 @@ Accepts `parent-app-source-receipts-v1`: `appSessionId`, matching
 The complete credential-free original bundle is copied into SQLite captures;
 later resumes do not need the original session directory. The final auth
 failure overrides continuation despite prior successful identity/page reads.
+
+## Explicit local WorkIQ CLI collection
+
+This optional binding uses the official `@microsoft/workiq` **1.0.1** native
+executable over stdio MCP, not the Copilot SDK or app HTTP connection. Installation
+and official account sign-in are owner-managed prerequisites; the helper neither
+installs packages nor logs in, changes grants/broker settings, inspects caches or
+copies tokens. Configure `runtime.workiqCli` in a **new ignored local config**:
+`enabled:true`, an absolute `executable` path to the approved installed binary,
+`packageVersion:"1.0.1"` and a positive `timeoutMs`. The package version is an
+operator binding, not a claim derived from MCP's serverInfo version. No global
+MCP configuration changes are made.
+
+Keep the exact authorized identity, channel, UTC window and dry-run limits.
+Choose an approved projection including `body`, for example
+`sources.workiq.projection:"id,createdDateTime,lastModifiedDateTime,body,webUrl"`.
+The original config and failed run must remain unchanged; begin a distinct
+collection-only run with `provenance:"app-tool"` (the envelope's existing real
+execution marker). Actual pass/evidence provenance is **`workiq-cli-verified`**
+and execution is `local-workiq-cli-stdio`, not imported app receipt or SDK success.
+Source/receipt timestamps are current observations, not historical creation times.
+
+```powershell
+npm run pilot -- app-begin --file .\receipts\cli-begin.json --config .\pilot.cli.local.json
+npm run pilot -- app-workiq-cli --run CLI_RUN_ID --collect --config .\pilot.cli.local.json
+npm run pilot -- app-status --run CLI_RUN_ID --config .\pilot.cli.local.json
+```
+
+The helper starts `EXE --account CONFIGURED_UPN mcp`, negotiates MCP and discovers
+`fetch`. Only that read tool is callable; server-initiated client actions are
+rejected. Its first read is the exact `/me` ID/UPN check. All later reads come
+from deterministic channel traversal, including replies to older roots. Identity
+counts against the read cap; returned excess items remain visibly unexamined.
+Raw permitted MCP responses live in SQLite captures, with request intent persisted
+before each read, UTC start/completion times and incremental evidence imports.
+Unstructured stderr and unknown RPC diagnostic text are suppressed.
+
+Auth failures, policy denials, unknown envelopes, scope escapes and exhausted
+caps stop without retries or another client. Coverage stays partial/blocked,
+previous committed cursors remain intact and `pendingRequest` on a terminal
+failure is audit-only, not authorization to continue. A repeated collection
+command cannot launch an already journaled operation. After a process crash,
+inspect/recover its recorded lock only when the process is absent, then
+`app-workiq-cli-reconcile` imports already received receipts **offline** and
+marks any unfinished request uncertain; it never retries the source read.
+If all journaled responses were received and replay reaches a budget stop,
+offline reconciliation retains that budget checkpoint instead of marking a
+completed read uncertain.
+
+### Budget-stopped continuation
+
+An exhausted run stays exhausted. After **separate authorization for another
+bounded tranche**, prepare a distinct collection-only dry run offline:
+
+```powershell
+npm run pilot -- app-workiq-continue --from-run OLD_RUN --run NEW_RUN --pass workiq:created --authorize-additional-budget --config .\pilot.cli.local.json
+# Only after authorization for the new source reads:
+npm run pilot -- app-workiq-cli --run NEW_RUN --pass workiq:created --collect --config .\pilot.cli.local.json
+```
+
+Preparation reserves exactly one child per parent/pass, records explicit
+additional-budget approval, and copies the immutable successful receipt prefix
+into the new ledger with source-run provenance and a content hash. Both runs use
+the same unchanged config/window/scope and configured per-run caps. Preparation
+does not call WorkIQ, raise the parent's limits or advance its cursor. Repeating
+the same preparation is idempotent; a competing child is rejected. If preparation
+was interrupted, the same command can finish its recorded reservation offline
+only while the parent checkpoint is unchanged. Missing/conflicting reservation
+data stops for inspection; it is never discarded or silently replaced.
+
+The new executor verifies its own `/me` before processing cached records.
+Deterministic receipt replay reconstructs pending roots, reply queues, both
+nextLinks and the exact examination offset inside the last returned page.
+Cached source pages are **not fetched again**. Returned-but-unexamined rows
+consume the new item budget before later source pages are requested. The fresh
+identity check consumes a new read; inherited source reads do not. Every returned
+row, including duplicate versions, consumes examination budget. Exact duplicate
+versions do not create duplicate evidence; different payload versions are retained.
+Inherited evidence retains its original observation timestamps and trust level,
+including when a CLI child continues imported app receipts. The inherited page
+projection is preserved; continuation does not silently upgrade metadata to bodies.
+
+Status separates this tranche's `readCalls`, `returnedRecords` and
+`examinedRecords` from `inheritedReadCalls`, `inheritedExaminedRecords`,
+`inheritedBufferedRecords`, `cumulativeReturnedRecords` and
+`cumulativeExaminedRecords`. `evidenceCount`/`evidenceIds` cover the cumulative
+receipt chain in the new ledger; they are not counts of newly reported defects.
+`unexaminedReturnedRecords` is the remaining buffered tail. A checkpoint is a
+local receipt-replay position, **not a delta token or historical snapshot**.
+`cumulativeTraversal` distinguishes root/reply versions and fully examined,
+exhausted threads; receiving a terminal reply page alone does not exhaust a
+thread when that page still contains unexamined rows.
+Replay cost/storage grow with the retained receipt chain; this is a local pilot,
+not a large-volume incremental sync engine.
+
+Only reconstructed **budget** stops qualify. Authentication failures, failed or
+uncertain reads, pagination cycles, incomplete reconciliation and scope errors
+cannot be converted into continuation permission. A source nextLink may expire;
+its failure stays visible with no restart-from-head fallback or automatic retry.
+
+### Channel context and edits
+
+The collector retains an `app_thread_context` index for **all examined** roots
+and replies, including out-of-window context that is not an eligible finding.
+Entries identify team/channel/root/message, content-version hash, source call,
+original run, observation time, request path and parent observation. Full page
+receipts also retain any still-unexamined rows. Evidence includes the parent
+snapshot and corresponding provenance, and flags modifications after the cohort
+end. A reply's supplied `replyToId` must agree with the traversed root.
+
+```powershell
+npm run pilot -- app-thread-context --run RUN_ID --pass workiq:created --config .\pilot.cli.local.json
+```
+
+Context output contains private source bodies; use only approved local storage.
+Existing ledgers are not silently backfilled or reclassified by this feature.
+For older captures, use their immutable source receipts and recorded limitations.
+Status lists `threadContext.indexedPasses`; an absent pass is not evidence of
+zero source messages.
+Analysis executors should open SQLite read-only, not run mutating collection or
+migration commands against a ledger being collected.
+
+An explicitly authorized `--pass workiq:changed` uses `lastModifiedDateTime`
+instead of `createdDateTime` for cohort selection, with separate counters,
+observations and cursor. Its projection must include `lastModifiedDateTime`;
+a missing returned timestamp fails rather than silently omitting edits. It still
+enumerates every root and reply, including older roots. This lane is opt-in and
+is never launched automatically alongside `workiq:created`. It supports the same
+explicit continuation command with `--pass workiq:changed`.
+
+**Supported semantics and limits:** the verified WorkIQ transport provides
+scoped `fetch` and observed nextLinks, not a qualified delta/change feed.
+A separate bounded CLI diagnostic also confirmed that the advertised channel
+`messages/delta()` route can return a current root-message page through
+`call_function`, using a single `{data,statusCode}` envelope. That diagnostic
+stopped with a nextLink, not a terminal deltaLink. Reply-only changes, reply
+delta, removals, checkpoint reuse and expiry remain unqualified. No shared delta
+collector is implemented or enabled; the resumable traversal remains in use.
+Microsoft's [channel listing documentation](https://learn.microsoft.com/en-us/graph/api/channel-list-messages?view=graph-rest-1.0)
+describes ordering by modification of the **entire reply chain**, not the root's
+creation timestamp. Its listing and [reply listing](https://learn.microsoft.com/en-us/graph/api/chatmessage-list-replies?view=graph-rest-1.0)
+do not document date filtering; those Graph contracts are context, not proof
+of additional WorkIQ capabilities. No Graph source client, `$filter`, undocumented
+delta endpoint, notification subscription or root-age cutoff is used here.
+Each new authorized scan starts a full bounded enumeration; each continuation
+finishes the recorded one.
+
+Enumeration can move while pages are read. A completed cursor means observed
+pages/replies were exhausted, not a transactionally consistent snapshot or a
+guarantee that concurrent changes were captured. A previously traversed thread
+is not revisited during the same scan; a later authorized full scan is needed
+to observe later activity. Modified timestamps are not necessarily body edits.
+Only returned tombstones can indicate deletion; absence cannot. Current edited
+bodies do not reconstruct what existed at the cohort end, nor intermediate
+versions that the source no longer returns.
+
+**Renewal qualification is deferred.** Fresh-process success does not establish
+token-expiry, logout/reboot, Conditional Access or unattended readiness.
+No renewal probes, scheduler, review, repo worker or source writes are enabled.
+Historical HTTP auth blocks retain their original meaning. IcM connector
+discovery and approved query mapping are independent; do not run that source
+merely because a connector can initialize.
+
+## Offline IcM connector receipts
+
+```powershell
+npm run pilot -- icm-replay --file .\private\icm-receipts.json --config .\pilot.local.json
+```
+
+This command makes **no connector calls** and rejects `--collect`. It validates
+captured `get_my_icm_context` / `search_incidents` receipts and writes a separate
+`.state\icm-replays\<id>\ledger.sqlite` audit store plus `coverage.json`, never
+an existing source run, production evidence or source cursor. An ID is immutable:
+the same input replays idempotently; changed input requires a distinct ID.
+Partial valid versions and the entire supplied credential-free receipt bundle
+(including unexamined page tails) remain captured with hashes. Malformed/failed
+source envelopes report errors, not empty successful pages.
+
+Bundle shape (all identity/team values below are synthetic):
+
+```json
+{
+  "format": "icm-receipts-v1",
+  "id": "example-icm-audit",
+  "provenance": "app-tool-reported",
+  "window": { "start": "2026-10-08T00:00:00Z", "end": "2026-10-09T00:00:00Z" },
+  "limits": { "maxItems": 2000, "maxCalls": 300 },
+  "mapping": {
+    "owningTeamId": 123,
+    "teamVerified": true,
+    "severity": [1, 2, 25],
+    "severityVerified": true,
+    "top": 50,
+    "timestampContract": null
+  },
+  "calls": []
+}
+```
+
+Each call has `id`, `tool`, `arguments`, `requestedAt`, `observedAt`, and exactly
+one of raw MCP `response` or `failure:{code}`. Failures allow `blocked-auth`,
+`failed-source`, `unavailable`. MCP envelopes must expose `structuredContent` or
+one JSON text-content block. The initial identity response must contain the
+configured user's exact active `contact.alias` / `contact.emailAddress`.
+Imported identity remains app-reported, not authentication by this helper.
+Missing original identity payload cannot be replaced by an invented response.
+
+Search arguments are exactly `incidentAdvancedSearchRequest` with verified
+`owningTeamId`, `severity:[1,2,25]`, `dateRange:{createdAfter,createdBefore}`, `top`
+and `sortBy:[{field:"CreatedDate",direction:"Descending"}]`. Only a returned MCP
+`nextPageToken` may be added on the next page; no partner OData token, offset,
+expanded dates, implicit query ID, retry or head restart is substituted.
+Successful pages contain `success:true`, `value`, optional nonnegative
+`@odata.count` and optional `nextPageToken`. Identity/read and examination limits,
+request equality, returned team/severity/date bounds and token cycles are checked.
+Every row costs an examination, including duplicate versions; changed payloads
+for the same ID remain distinct hashed versions.
+
+`enumeration` is complete/partial/blocked **for the recorded incident-created
+request only**. `state` remains blocked when `timestampContract:null`, even if
+that diagnostic enumeration exhausted pages. `cohortCoverage` and
+`liveActivation` remain blocked in this offline adapter. An explicit
+`timestampContract:"incident-created"` labels diagnostics, not saved-query
+equivalence or live authorization. Source Created Time has no verified input
+mapping and is rejected as a substituted contract. Returned `sourceCreateTime`
+presence is recorded separately; omitted values are not asserted to be null at
+source. `remainingSourceRecords` is unknown until observed exhaustion; a reported
+total is not a stable snapshot. Counts describe the replayed prefix;
+`suppliedReadReceipts` / `unprocessedReadReceipts` identify retained trailing
+receipts after a stop. No automatic continuation is implemented for this adapter.
+Actual saved-query scope, timestamp agreement and separately authorized live
+execution remain prerequisites, not facts established by synthetic tests.
+
+## Held Stage2 coverage handoff
+
+Stage2 proposals are private sidecars, **not production investigations or
+assignments**. No source ledger is opened writable. Use explicit source paths:
+
+```json
+{
+  "format": "stage2-sources-v1",
+  "sources": [{ "ledgerPath": "C:\\private\\run\\ledger.sqlite", "runId": "RUN_ID" }]
+}
+```
+
+```powershell
+npm run pilot -- stage2-handoff --file .\private\sources.json --output .\private\handoff.json --config .\pilot.local.json
+npm run pilot -- stage2-proposal-check --file .\private\proposal.json --handoff .\private\handoff.json --config .\pilot.local.json
+```
+
+The analysis executor must have `analyze-excel-agent-test-coverage` installed.
+Default lookup is its user `.copilot\skills` directory; an explicit
+`stage2.skillDirectory` in a **new local configuration** can bind another
+supported installation. Shared code contains no personal absolute path.
+The user-skill link may point at its canonical KB installation. The helper
+resolves and pins `SKILL.md` plus `references\coverage-map.md`, and includes
+explicit invoke/read instructions in the handoff. Missing/changed skill or
+reference is `blocked-skill`, never generic or session-history fallback.
+Presence and matching hashes alone do not prove the executor ran the procedure.
+
+The private proposal has `schemaVersion:1`, `proposalId`,
+`status:"held-not-dispatched"`, `dispatchAllowed:false`, the handoff's `skill`
+pins, `examinedScope`, `replay` and `candidates`. `replay` includes
+`cohort.window:{start,endExclusive}`, `verifiedIndexRef`, and `baselines` with
+`repository`, exact 40-64 hex `ref` and `approval:"inspected-not-approved"`.
+Each candidate has `id`, `dispatchAllowed:false`, a skill classification
+(`already covered`, `extend existing test`, `new integration/E2E scenario`,
+`configuration/execution gap`, `unknown`), and:
+
+- `evidenceRefs`: exact `{evidenceId,recordId,revision,artifactRef,sha256}`.
+- `behavior` with explicit `runtimeReproduced` boolean; `existingCoverage`,
+  `missingAssertion`, `harnessReuse`, `ownership`, `confidence`, `blockers`,
+  `proposedValidation` (structured explanations or text; blocked holds say why).
+- `target:{repository,inspectedRef,approvedTarget}` matching a baseline.
+  `approvedTarget` starts null. A user-approved direction may instead contain
+  `{repository,baseRef,layer,inspectedBaseline,implementationCommit:null,
+  freshTargetReconciliationRequired:true}`, with matching repository/baseline
+  and `layer` of `integration` or `e2e`. `target.approvalProvenance` records
+  `decision`, `authority`, `relayedBySession`, offset-qualified `receivedAt`,
+  nonempty `contract` controls, `target`, and `excludedAuthorization` containing
+  product edits, test edits, fixes, CI, PRs and dispatch. Direction approval
+  is candidate-specific, not approval of an exact future execution commit.
+
+The checker reopens explicit source ledgers read-only, verifies each capture
+hash/version and unchanged logical source snapshot, validates skill pins and held
+gates, and returns an offline result. It does not establish semantic correctness,
+approve a target, ingest reviews, launch analysis/product sessions, run tests,
+queue CI or bypass exclusions. A non-defect intended-behavior test contract may
+be proposed as held work; it cannot become an automatic defect/improvement
+dispatch. Product implementation stays gated on contract/target agreement and
+the existing worker permissions. A recorded contract/target approval removes
+only that candidate's agreement gate: implementation authorization and fresh
+exact-ref reconciliation remain separate. `candidateGates` in the checker result
+reports this distinction; every candidate remains held with dispatch disabled.
 
 ## Native repo-agent tracking (not activated in this pilot)
 

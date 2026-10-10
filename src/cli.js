@@ -6,7 +6,10 @@ import { collect, acceptReview, reviewPending, route, report, reconcile, tick, r
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
 import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
+import { persistIcmReplay } from './icm-replay.js';
+import { prepareStage2, checkStage2Files } from './stage2.js';
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
@@ -58,13 +61,20 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-status --run ID
   node src\\cli.js app-ado --run ID --pass ado:created|ado:changed --collect
   node src\\cli.js app-ado-reconcile --run ID --pass ado:created|ado:changed
+  node src\\cli.js app-workiq-cli --run ID --pass workiq:created|workiq:changed --collect --config pilot.local.json
+  node src\\cli.js app-workiq-cli-reconcile --run ID --pass workiq:created|workiq:changed --config pilot.local.json
+  node src\\cli.js app-workiq-continue --from-run OLD --run NEW --pass workiq:created|workiq:changed --authorize-additional-budget
+  node src\\cli.js app-thread-context --run ID --pass workiq:created|workiq:changed
+  node src\\cli.js icm-replay --file receipt-bundle.json --config pilot.local.json
+  node src\\cli.js stage2-handoff --file source-ledgers.json --output private-handoff.json
+  node src\\cli.js stage2-proposal-check --file private-proposal.json --handoff private-handoff.json
   node src\\cli.js app-review --run ID --production --file review.json
   node src\\cli.js app-plan-improvement --run ID --production --file improvement-plan.json
   node src\\cli.js app-worker --run ID --production --operation prepare|claim|bind|result|uncertain --file action.json
   node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
   node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
-Only app-ado --collect performs delegated source reads; other app commands are offline.
+Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger;
 try {
@@ -104,14 +114,24 @@ try {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
-    if (!appAction && action !== 'dry-run') ledger = new Ledger(config.stateDirectory);
-    if (appAction && !['app-begin', 'app-runs'].includes(action)) {
+    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check'].includes(action))
+      ledger = new Ledger(config.stateDirectory);
+    if (appAction && !['app-begin', 'app-runs', 'app-workiq-continue'].includes(action)) {
       requireThat(option('--run'), 'App commands require --run');
       ({ ledger } = openApp(config, option('--run'), !args.includes('--production')));
     }
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'icm-replay':
+        requireThat(!args.includes('--collect'), 'IcM replay is offline only; live timestamp contract is unresolved');
+        result = persistIcmReplay(config, input()); break;
+      case 'stage2-handoff':
+        requireThat(option('--output'), 'Stage2 requires an explicit private output path');
+        result = prepareStage2(config, input(), option('--output')); break;
+      case 'stage2-proposal-check':
+        requireThat(option('--file') && option('--handoff'), 'Proposal check requires --file and --handoff');
+        result = checkStage2Files(config, option('--file'), option('--handoff')); break;
       case 'app-begin': result = beginApp(config, input()); break;
       case 'app-runs': result = listAppRuns(config); break;
       case 'app-import-parent': result = await importParentReceipts(config, ledger, option('--run'), input()); break;
@@ -127,13 +147,24 @@ try {
         result = await collectAppAdo(config, ledger, option('--run'), option('--pass')); break;
       case 'app-ado-reconcile':
         result = await reconcileAppAdo(config, ledger, option('--run'), option('--pass')); break;
+      case 'app-workiq-cli':
+        requireThat(args.includes('--collect'), 'Live CLI reads require explicit --collect');
+        result = await collectCliWorkiq(config, ledger, option('--run'), undefined, option('--pass') ?? 'workiq:created'); break;
+      case 'app-workiq-cli-reconcile':
+        result = await reconcileCliWorkiq(config, ledger, option('--run'), option('--pass') ?? 'workiq:created'); break;
+      case 'app-workiq-continue':
+        requireThat(!args.includes('--production'), 'Continuation currently supports collection-only dry runs');
+        result = await prepareWorkiqContinuation(config, { fromRunId: option('--from-run'), runId: option('--run'),
+          pass: option('--pass') ?? 'workiq:created', additionalBudgetApproved: args.includes('--authorize-additional-budget') }); break;
+      case 'app-thread-context':
+        result = threadContext(ledger, option('--run'), option('--pass') ?? 'workiq:created'); break;
       case 'doctor':
         result = {
           node: process.version, activation: config.activation, initialWindow: config.window,
           identityConfigured: Boolean(config.identity.designatedUser && config.identity.tenantId && config.identity.objectId),
           workiqSeeds: config.sources.workiq.seeds.length, repositoryMappings: config.repositories.length,
           reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
-          icm: 'No authenticated connector. Owner-export path only; query filters must be verified.',
+          icm: 'Offline connector receipt replay and owner export supported. Live connector execution is not enabled; exact timestamp/saved-query scope contract required.',
           validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',
           liveAccessVerified: false
         };
@@ -154,7 +185,8 @@ try {
           result.push({ source: 'ado', state: 'authenticated', principalMatched: true, evidenceAccessVerified: false });
         } catch (error) { result.push({ source: 'ado', state: 'blocked', error: safeError(error) }); }
         if (!option('--source') || option('--source') === 'icm')
-          result.push({ source: 'icm', state: 'blocked', error: { code: 'blocked-source', message: 'No supported authenticated connector; query filters unverified' } });
+          result.push({ source: 'icm', state: 'blocked', error: { code: 'blocked-scope',
+            message: 'No IcM authentication call made. Live connector execution is not enabled; timestamp/saved-query scope contract required.' } });
         break;
       }
       case 'status': result = ledger.status(); break;

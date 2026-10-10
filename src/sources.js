@@ -147,71 +147,116 @@ export async function collectAdo(config, window, emit, lane = 'created', transpo
   await scan(window);
   return { end: window.end, snapshot, lane };
 }
-export async function collectWorkiq(config, window, emit, retrieve = null, lane = 'created') {
+export async function collectWorkiq(config, window, emit, retrieve = null, lane = 'created', options = {}) {
   const source = config.sources.workiq;
+  requireThat(['created', 'changed'].includes(lane), 'Unknown WorkIQ collection lane');
   requireThat(source.scopeApproved, 'WorkIQ scope needs approval');
   requireThat(source.seeds.length > 0, 'WorkIQ has no approved exact seeds; broad search is disabled');
   const budget = new Budget(config.limits);
+  const stats = options.stats ?? {};
+  Object.assign(stats, { examined: 0, returned: 0, duplicates: 0, roots: 0, replies: 0, threads: 0 });
+  const context = query => ({ query, observedAt: now(), provenance: 'authenticated-source', ...options.readContext?.() });
   const execute = async read => {
     budget.call();
     verifyPrincipal(config, await read(principalPath));
     const coverage = [];
     for (const seed of source.seeds) {
       if (seed.kind === 'teams-channel') {
-        const root = channelRoot(seed), visited = new Set(), seen = new Set();
+        requireThat(seed.includeReplies, 'Channel collection requires approved reply traversal', 'blocked-scope');
+        const root = channelRoot(seed), visited = new Set(), seen = new Set(), threads = new Set();
+        const examinedBeforeSeed = stats.examined;
         async function* pages(path) {
           let next = path;
           while (next) {
-            requireThat(!visited.has(next), 'WorkIQ pagination cycle; coverage is partial', 'partial');
-            visited.add(next); budget.call();
+            const canonical = new URL(next, 'https://scope.invalid');
+            canonical.searchParams.sort();
+            const key = decodeURIComponent(canonical.pathname) + '?' + canonical.searchParams.toString();
+            requireThat(!visited.has(key), 'WorkIQ pagination cycle; coverage is partial', 'partial');
+            visited.add(key); budget.call();
             const page = await read(next);
             requireThat(Array.isArray(page.value), 'WorkIQ channel response lacks a message collection', 'blocked-protocol');
-            yield { messages: page.value, query: next };
+            stats.returned += page.value.length;
+            yield { messages: page.value, query: next, observation: context(next) };
             next = page['@odata.nextLink'] ? nextWorkiqPage(config, page['@odata.nextLink'], path) : null;
           }
         }
-        async function accept(message, query, parent = null) {
+        async function accept(message, observation, parent = null, parentObservation = null) {
+          // Every returned row costs examination budget, including duplicate versions.
+          budget.item(); stats.examined++;
           requireThat(typeof message.id === 'string' && message.id && !/[\/\\?#]|\.\./.test(message.id),
             'Invalid channel message identity', 'blocked-protocol');
-          const key = json([parent?.id ?? null, message.id]);
-          if (seen.has(key)) return false;
-          seen.add(key); budget.item();
+          if (parent) requireThat(message.replyToId == null || message.replyToId === parent.id,
+            'Reply points outside the enumerated thread', 'blocked-scope');
+          else requireThat(message.replyToId == null, 'Root collection returned a reply', 'blocked-protocol');
           if (message.channelIdentity) requireThat(
             message.channelIdentity.teamId === seed.teamId && message.channelIdentity.channelId === seed.channelId,
             'Message identity is outside the approved channel', 'blocked-scope');
+          const key = json([parent?.id ?? null, message.id, hash(json(message))]);
+          const duplicate = seen.has(key);
+          if (duplicate) stats.duplicates++;
+          else { seen.add(key); stats[parent ? 'replies' : 'roots']++; }
+          await options.onMessage?.({ seedId: seed.id, teamId: seed.teamId, channelId: seed.channelId,
+            rootId: parent?.id ?? message.id, messageId: message.id, isReply: Boolean(parent),
+            message, parentContext: parent, observation, parentObservation, duplicate,
+            versionHash: hash(json(message)) });
+          if (duplicate) return;
           const date = lane === 'changed' ? message.lastModifiedDateTime : message.createdDateTime;
+          requireThat(date != null, `WorkIQ ${lane} timestamp is missing; lane coverage is unknown`, 'blocked-protocol');
           utc(date);
-          if (Date.parse(date) < Date.parse(window.start) || Date.parse(date) >= Date.parse(window.end)) return true;
+          if (Date.parse(date) < Date.parse(window.start) || Date.parse(date) >= Date.parse(window.end)) return;
+          const revision = message.etag ?? message['@odata.etag'] ?? null;
           const record = evidenceEnvelope('workiq', `workiq/${seed.teamId}/${seed.channelId}${parent ? `/thread/${parent.id}` : ''}`,
-            message.id, message.etag ?? null, message.webUrl ?? seed.url, json({ entityUrls: [query], lane, window }));
+            message.id, revision, message.webUrl ?? seed.url, json({ entityUrls: [observation.query], lane, window }));
+          record.queriedAt = observation.observedAt; record.observedAt = observation.observedAt;
+          record.source.provenance = observation.provenance;
           record.scopeId = `workiq:${seed.id}`;
           record.title = message.subject ?? null; record.createdAt = message.createdDateTime ?? null;
-          record.source.versionBasis = message.etag ? 'source-etag' : 'captured-payload-hash';
-          record.fields = { message, parentContext: parent, requestedWindow: window, coverage: 'Current channel enumeration, not a historical snapshot' };
+          record.source.versionBasis = revision ? 'source-etag' : 'captured-payload-hash';
+          record.fields = { message, parentContext: parent, sourceObservation: observation, parentObservation,
+            thread: { teamId: seed.teamId, channelId: seed.channelId, rootId: parent?.id ?? message.id,
+              messageId: message.id, isReply: Boolean(parent) },
+            requestedWindow: window, selectionLane: lane,
+            modifiedAfterWindow: message.lastModifiedDateTime ? Date.parse(message.lastModifiedDateTime) >= Date.parse(window.end) : null,
+            coverage: 'Current channel enumeration, not a historical snapshot' };
           record.missingFields = ['etag', 'webUrl', 'body'].filter(k => message[k] === undefined || message[k] === null);
           record.discoveryReason = parent ? 'In-window reply in the approved channel, with parent context' : 'In-window root message in the approved channel';
           if (parent) record.links = [{ url: parent.webUrl ?? seed.url, relation: 'reply-to', evidenceId: null, access: 'retrieved-in-scope' }];
           await emit(record, { message, parentContext: parent });
-          return true;
         }
         const querySuffix = `?$select=${source.projection ?? messageSelect}&$top=50`;
         for await (const page of pages(`${root}${querySuffix}`)) {
-          const freshParents = [];
+          const freshParents = new Map();
           for (const parent of page.messages) {
-            const fresh = await accept(parent, page.query);
-            if (fresh) freshParents.push(parent);
+            await accept(parent, page.observation);
+            if (!threads.has(parent.id)) freshParents.set(parent.id, parent);
+            else if (freshParents.has(parent.id) &&
+              Date.parse(parent.lastModifiedDateTime ?? parent.createdDateTime) >=
+              Date.parse(freshParents.get(parent.id).lastModifiedDateTime ?? freshParents.get(parent.id).createdDateTime))
+              freshParents.set(parent.id, parent);
+            threads.add(parent.id);
           }
-          for (const parent of freshParents) {
+          for (const parent of freshParents.values()) {
             // An old root can have an in-window reply: do not stop or skip replies based on root age.
             for await (const replies of pages(`${root}/${encodeURIComponent(parent.id)}/replies${querySuffix}`))
-              for (const reply of replies.messages) await accept(reply, replies.query, parent);
+              for (const reply of replies.messages) await accept(reply, replies.observation, parent, page.observation);
+            stats.threads++;
           }
         }
-        coverage.push({ seedId: seed.id, kind: 'channel-pages-and-replies-exhausted', messagesExamined: seen.size, pagesRead: visited.size });
+        coverage.push({ seedId: seed.id, kind: 'channel-pages-and-replies-exhausted',
+          messagesExamined: stats.examined - examinedBeforeSeed, uniqueVersions: seen.size,
+          pagesRead: visited.size, snapshotConsistent: false, incrementalMethod: 'full-enumeration-local-timestamp-filter',
+          limitations: ['No WorkIQ delta contract established', 'Concurrent edits/reordering can move messages across pages',
+            'Only returned tombstones are visible; absent messages do not prove deletion',
+            'Previously traversed threads are not revisited within this enumeration'] });
       } else {
         validateSeed(seed); budget.item(); budget.call();
+        stats.examined++;
         const result = await read(seed.path);
+        stats.returned++;
         const record = evidenceEnvelope('workiq', 'workiq/exact-seeds', seed.id, null, seed.url, json({ entityUrls: [seed.path] }));
+        const observation = context(seed.path);
+        record.queriedAt = observation.observedAt; record.observedAt = observation.observedAt;
+        record.source.provenance = observation.provenance;
         record.fields = { retrieval: result, coverage: 'Exact current entity snapshot; not an exhaustive time-window search', requestedWindow: window };
         record.missingFields = ['sourceRevision', 'sourceCreatedAt'];
         await emit(record, result);

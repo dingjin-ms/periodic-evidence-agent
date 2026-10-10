@@ -1,10 +1,12 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { boundedPath, hash, requireThat } from './common.js';
+import { boundedPath, hash, json, requireThat } from './common.js';
 
 const exec = promisify(execFile);
+export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
+
 async function execute(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
@@ -35,20 +37,73 @@ export function resolveSkillBinding(config, repoId, capability, bindingId = null
   return { repo, binding };
 }
 
-export function loadRepositorySkill(config, assignment, workspace, sourceRevision) {
+export function pinSkillQualification(receipt) {
+  requireThat(receipt?.state === 'qualified-read-only', 'Repository skill qualification receipt is missing',
+    'blocked-config');
+  return {
+    qualificationId: skillQualificationId(receipt.repoId, receipt.bindingId),
+    baseRevision: receipt.baseRevision,
+    skillSha256: receipt.skillSha256,
+    skillPath: receipt.skillPath,
+    remote: receipt.remote
+  };
+}
+
+export function loadRepositorySkill(config, assignment, workspace, sourceRevision, qualification) {
   requireThat(assignment.skillBindingId && assignment.capability,
     'Repository skill execution requires an assignment capability and binding');
   const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability,
     assignment.skillBindingId);
+  const pinned = pinSkillQualification(qualification);
+  requireThat(json(pinned) === json(assignment.skillQualification),
+    'Repository skill qualification changed after assignment preparation', 'blocked-reconciliation');
+  requireThat(qualification.repoId === assignment.repoId &&
+    qualification.bindingId === binding.id &&
+    qualification.capability === binding.capability &&
+    qualification.skillPath === binding.skillPath.replaceAll('\\', '/') &&
+    qualification.remote.toLowerCase() === config.repositories.find(repo => repo.id === assignment.repoId)
+      .remote.replace(/\/$/, '').toLowerCase() &&
+    qualification.baseRevision === sourceRevision,
+  'Repository skill qualification does not match the isolated source revision', 'blocked-reconciliation');
   const path = boundedPath(workspace, binding.skillPath);
   requireThat(statSync(path).isFile() && statSync(path).size <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
+  const instructions = readFileSync(path, 'utf8');
+  requireThat(hash(instructions) === qualification.skillSha256,
+    'Repository skill content changed after qualification', 'blocked-reconciliation');
   return {
     binding,
-    instructions: readFileSync(path, 'utf8'),
+    instructions,
     skillRevision: sourceRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/')
   };
+}
+
+export function verifyRepositorySkillWorkspace(config, assignment, workspace, sourceRevision, qualification) {
+  requireThat(typeof workspace === 'string' && isAbsolute(workspace),
+    'Repository skill workspace must be an absolute path', 'blocked-reconciliation');
+  let head;
+  let remote;
+  try {
+    requireThat(statSync(workspace).isDirectory(), 'Repository skill workspace is not a directory',
+      'blocked-reconciliation');
+    const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+      '-c', 'core.safecrlf=false', ...args], {
+      cwd: workspace, windowsHide: true, encoding: 'utf8', timeout: 30000
+    }).trim();
+    head = git(['rev-parse', '--verify', 'HEAD^{commit}']);
+    remote = git(['remote', 'get-url', 'origin']);
+  } catch {
+    requireThat(false, 'Repository skill workspace is not a readable Git checkout',
+      'blocked-reconciliation');
+  }
+  requireThat(head === sourceRevision,
+    'Repository skill workspace HEAD differs from the bound source revision',
+    'blocked-reconciliation');
+  requireThat(remote.replace(/\/$/, '').toLowerCase() === qualification?.remote.replace(/\/$/, '').toLowerCase(),
+    'Repository skill workspace origin differs from the qualification receipt',
+    'blocked-reconciliation');
+  return loadRepositorySkill(config, assignment, workspace, head, qualification);
 }
 
 export function normalizeSkillResult(loaded, result) {

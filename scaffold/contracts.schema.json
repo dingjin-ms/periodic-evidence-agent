@@ -436,6 +436,30 @@
       },
       "allOf": [
         {
+          "if": {
+            "properties": {
+              "searchStatus": { "const": "complete" }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": { "enum": ["linked", "coverage-gap"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" }
+            }
+          }
+        },
+        {
           "if": { "properties": { "disposition": { "const": "linked" } } },
           "then": { "properties": { "existingTests": { "minItems": 1 } } }
         },
@@ -469,6 +493,17 @@
         "testCoveragePlanId": { "$ref": "#/$defs/text" },
         "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
         "skillBindingId": { "$ref": "#/$defs/text" },
+        "skillQualification": {
+          "type": "object", "additionalProperties": false,
+          "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote"],
+          "properties": {
+            "qualificationId": { "$ref": "#/$defs/text" },
+            "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+            "skillSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "skillPath": { "$ref": "#/$defs/text" },
+            "remote": { "$ref": "#/$defs/text" }
+          }
+        },
         "state": { "enum": ["prepared", "dispatched", "running", "blocked", "completed", "superseded"] },
         "execution": { "enum": ["local", "hosted"] },
         "workerHandle": { "$ref": "#/$defs/nullableText" },
@@ -513,6 +548,13 @@
         {
           "if": { "properties": { "state": { "enum": ["running", "completed"] } } },
           "then": { "properties": { "workspace": { "properties": { "path": { "$ref": "#/$defs/text" }, "baseRevision": { "$ref": "#/$defs/text" } } } } }
+        },
+        {
+          "if": { "required": ["skillBindingId"] },
+          "then": {
+            "required": ["capability", "requestedOutcome", "improvementId", "improvementVersion",
+              "testCoveragePlanId", "testCoveragePlanVersion", "skillQualification"]
+          }
         }
       ]
     },
@@ -622,6 +664,25 @@
         {
           "if": { "properties": { "outcome": { "const": "draft-pr-validation-failed" } } },
           "then": { "properties": { "validation": { "contains": { "properties": { "status": { "const": "failed" } }, "required": ["status"] } } } }
+        },
+        {
+          "if": {
+            "required": ["skillExecution", "outcome"],
+            "properties": {
+              "skillExecution": { "type": "object" },
+              "outcome": { "enum": ["draft-pr-validation-pending", "draft-pr-validation-failed", "draft-pr-validated"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "skillExecution": {
+                "properties": {
+                  "status": { "const": "succeeded" },
+                  "needsHumanDecision": { "const": false }
+                }
+              }
+            }
+          }
         }
       ]
     },

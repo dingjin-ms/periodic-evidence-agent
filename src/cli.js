@@ -8,7 +8,7 @@ import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
 import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
 import { planImprovement } from './improvements.js';
-import { qualifyRepositorySkill } from './repository-skills.js';
+import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 
@@ -78,6 +78,10 @@ try {
       cloneRoot: option('--clone-root'),
       allowClone: args.includes('--allow-clone')
     });
+    const setupConfig = configAt(resolve(configFile));
+    ledger = new Ledger(setupConfig.stateDirectory);
+    for (const qualification of result.qualifications)
+      ledger.qualify(skillQualificationId(qualification.repoId, qualification.bindingId), qualification);
     console.log(JSON.stringify(result, null, 2));
   }
   else if (action === 'bootstrap-repo') {
@@ -164,7 +168,7 @@ try {
       case 'qualify-skill': {
         requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
         result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
-        ledger.qualify(`repository-skill:${result.repoId}:${result.bindingId}`, result);
+        ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;

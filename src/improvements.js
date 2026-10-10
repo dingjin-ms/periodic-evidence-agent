@@ -73,6 +73,10 @@ export function recordTestCoveragePlan(ledger, input) {
   if (existingTests.length) disposition = 'linked';
   else if (input.searchStatus === 'complete' && coverageGaps.length) disposition = 'coverage-gap';
   else if (!unknowns.length) unknowns.push('Repository test coverage was not completely established.');
+  if (input.searchStatus === 'complete' || disposition !== 'unknown')
+    requireThat(/^[a-f0-9]{40,64}$/.test(input.sourceRevision ?? ''),
+      'Complete or linked test coverage must be bound to a repository commit',
+      'blocked-reconciliation');
   const id = `test-plan-${hash(json([improvement.id, improvement.version, input.repoId, input.capability]))}`;
   const previous = ledger.get('testCoveragePlan', id);
   const record = {

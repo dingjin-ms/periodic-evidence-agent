@@ -4,9 +4,10 @@ import { Ledger } from './ledger.js';
 import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
-import { makeAssignment, makePlannedImprovementAssignment } from './workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment } from './workers.js';
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
+import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -427,10 +428,7 @@ export function appWorker(config, ledger, runId, action, input) {
       const current = ledger.get('investigation', value.assignment.investigationId);
       requireThat(current?.version === value.assignment.investigationVersion &&
         !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before native claim', 'blocked-reconciliation');
-      if (value.assignment.testCoveragePlanId)
-        makePlannedImprovementAssignment(config, ledger, current, value.assignment.testCoveragePlanId,
-          value.assignment.requestedOutcome);
-      else makeAssignment(config, current, value.repoId, value.assignment.intent);
+      requireCurrentAssignment(config, ledger, current, value.assignment);
       const latest = new Set(ledger.latestEvidence().map(e => e.id));
       requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
         !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before native claim', 'blocked-reconciliation');
@@ -444,6 +442,9 @@ export function appWorker(config, ledger, runId, action, input) {
         const repo = config.repositories.find(r => r.id === value.repoId);
         requireThat(input.projectId === value.projectId && isAbsolute(input.workspace) &&
           /^[a-f0-9]{40,64}$/.test(input.baseRevision), 'Native session binding lacks project/workspace/source revision');
+        if (value.assignment.skillQualification)
+          verifyRepositorySkillWorkspace(config, value.assignment, input.workspace, input.baseRevision,
+            ledger.qualification(skillQualificationId(value.repoId, value.assignment.skillBindingId)));
         const rel = relative(resolve(repo.referenceCheckout), resolve(input.workspace));
         requireThat(rel && (rel.startsWith('..') || isAbsolute(rel)), 'Native worker cannot use primary checkout');
         if (value.sessionId) {

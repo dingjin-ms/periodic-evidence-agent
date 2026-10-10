@@ -7,7 +7,8 @@ import { Ledger } from '../src/ledger.js';
 import { configAt, hash, json, now } from '../src/common.js';
 import { evidenceEnvelope } from '../src/sources.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
-import { makePlannedImprovementAssignment } from '../src/workers.js';
+import { makePlannedImprovementAssignment, requireCurrentAssignment } from '../src/workers.js';
+import { skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'improvement-planner-'));
@@ -85,6 +86,13 @@ test('coverage planning treats incomplete empty search as unknown, not a confirm
   });
   assert.equal(unknown.disposition, 'unknown');
   assert.match(unknown.unknowns[0], /not completely established/);
+  assert.throws(() => recordTestCoveragePlan(ledger, {
+    improvementId: improvement.id, improvementVersion: improvement.version,
+    repoId: 'office-src', capability: 'integration-test-authoring',
+    sourceRevision: null, searchStatus: 'complete', existingTests: [],
+    coverageGaps: ['A claimed gap without a source revision.'], unknowns: [],
+    rationale: 'This complete result is not source-bound.'
+  }), /bound to a repository commit/);
   const gap = recordTestCoveragePlan(ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: 'office-src', capability: 'integration-test-authoring',
@@ -123,12 +131,43 @@ test('planned OA assignment pins improvement, plan and qualified repository skil
     coverageGaps: ['Missing focused integration coverage.'], unknowns: [],
     rationale: 'Create an OA integration-test assignment.'
   });
+  ledger.qualify(skillQualificationId('office-src', 'oa-integration-test-core'), {
+    state: 'qualified-read-only', repoId: 'office-src', bindingId: 'oa-integration-test-core',
+    capability: 'integration-test-authoring', remote: config.repositories[0].remote,
+    baseRef: 'main', baseRevision: plan.sourceRevision,
+    skillPath: 'docs/skills/Integration-test-core/SKILL.md', skillSha256: 'd'.repeat(64),
+    sideEffects: { commit: false, push: false, createDraftPR: false }
+  });
   const assignment = makePlannedImprovementAssignment(config, ledger, investigation, plan.id);
   assert.equal(assignment.intent, 'improvement');
   assert.equal(assignment.improvementId, improvement.id);
   assert.equal(assignment.testCoveragePlanId, plan.id);
   assert.equal(assignment.skillBindingId, 'oa-integration-test-core');
+  assert.equal(assignment.skillQualification.baseRevision, plan.sourceRevision);
   assert.ok(assignment.requiredCapabilities.includes('repository-skill:oa-integration-test-core'));
+  const superseded = recordTestCoveragePlan(ledger, {
+    improvementId: improvement.id, improvementVersion: improvement.version,
+    repoId: 'office-src', capability: 'integration-test-authoring',
+    sourceRevision: plan.sourceRevision, searchStatus: 'complete', existingTests: [],
+    coverageGaps: ['Missing focused integration coverage.'], unknowns: [],
+    rationale: 'A later source-bound review supersedes the prepared plan.'
+  });
+  assert.equal(superseded.id, plan.id);
+  assert.equal(superseded.version, plan.version + 1);
+  assert.throws(() => requireCurrentAssignment(config, ledger, investigation, assignment), /superseded/);
   config.repositories[0].skillBindings[0].qualification = 'unqualified';
   assert.throws(() => makePlannedImprovementAssignment(config, ledger, investigation, plan.id), /unqualified/);
+});
+
+test('planned assignment rejects incomplete coverage without a pinned source revision', t => {
+  const { ledger, config, investigation } = setup(t);
+  const improvement = recordAreaToImprove(ledger, improvementInput(investigation));
+  const plan = recordTestCoveragePlan(ledger, {
+    improvementId: improvement.id, improvementVersion: improvement.version,
+    repoId: 'office-src', capability: 'integration-test-authoring',
+    sourceRevision: null, searchStatus: 'partial', existingTests: [], coverageGaps: [], unknowns: [],
+    rationale: 'Repository coverage is not source-bound yet.'
+  });
+  assert.throws(() => makePlannedImprovementAssignment(config, ledger, investigation, plan.id),
+    /source-bound coverage revision/);
 });

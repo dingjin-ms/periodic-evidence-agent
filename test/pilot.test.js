@@ -16,6 +16,7 @@ import { collect, acceptReview, report, latestEvidence, reconcile, tick, previou
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, runValidation, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
+import { skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -84,7 +85,8 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   const repo = repoConfig(ctx.config, ctx.root);
   mkdirSync(join(repo.referenceCheckout, 'src'), { recursive: true });
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', ...args], repo.referenceCheckout);
+  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'Synthetic fixture']);
@@ -309,6 +311,11 @@ test('assignment prepare is idempotent and newer review cannot launch duplicate 
   const { config, ledger, assignment, investigation, repo } = await fixture(t);
   const first = ledger.prepare(assignment), second = ledger.prepare(assignment);
   assert.equal(first.session_id, second.session_id);
+  repo.validationGates = [{ id: 'source-test', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 1000 }];
+  const differentIntent = makeAssignment(config, investigation, repo.id, 'defect-fix');
+  assert.notEqual(differentIntent.id, assignment.id);
+  assert.throws(() => ledger.prepare(differentIntent), /different execution semantics/);
   const newer = { ...investigation, version: 2 };
   assert.throws(() => ledger.prepare(makeAssignment(config, newer, repo.id, 'rca-only')), /Prior assignment/);
 });
@@ -495,7 +502,8 @@ test('planned OA skill path creates a source-bound validated draft result throug
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
   writeFileSync(join(repo.referenceCheckout, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
     '# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', ...args], repo.referenceCheckout);
+  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
@@ -514,6 +522,13 @@ test('planned OA skill path creates a source-bound validated draft result throug
     repoIds: [repo.id], capabilities: ['integration-test-authoring']
   });
   const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  ctx.ledger.qualify(skillQualificationId(repo.id, 'oa-integration-test-core'), {
+    state: 'qualified-read-only', repoId: repo.id, bindingId: 'oa-integration-test-core',
+    capability: 'integration-test-authoring', remote: repo.remote, baseRef: repo.baseRef,
+    baseRevision, skillPath: 'docs/skills/Integration-test-core/SKILL.md',
+    skillSha256: hash('# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n'),
+    sideEffects: { commit: false, push: false, createDraftPR: false }
+  });
   const plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
@@ -521,6 +536,36 @@ test('planned OA skill path creates a source-bound validated draft result throug
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });
   const assignment = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id);
+  const rejected = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
+    binding: repo.skillBindings[0],
+    skillPath: repo.skillBindings[0].skillPath,
+    skillRevision: baseRevision
+  });
+  assert.throws(() => rejected.finish({
+    outcome: 'propose-change', findings: 'Skill could not safely complete.',
+    title: 'Must not publish', description: 'Must not publish',
+    skillResult: {
+      status: 'failed', classification: 'missing-coverage',
+      changedFiles: ['test/behavior.test.js'], testsAddedOrUpdated: ['OA behavior'],
+      behaviorCardsAddedOrUpdated: [], unknowns: ['Generation failed'], needsHumanDecision: false
+    }
+  }), /Only a successful repository skill result/);
+  assert.equal(rejected.proposal, null);
+  const needsDecision = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
+    binding: repo.skillBindings[0],
+    skillPath: repo.skillBindings[0].skillPath,
+    skillRevision: baseRevision
+  });
+  assert.throws(() => needsDecision.finish({
+    outcome: 'propose-change', findings: 'Skill needs a human decision.',
+    title: 'Must not publish', description: 'Must not publish',
+    skillResult: {
+      status: 'succeeded', classification: 'missing-coverage',
+      changedFiles: ['test/behavior.test.js'], testsAddedOrUpdated: ['OA behavior'],
+      behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: true
+    }
+  }), /Only a successful repository skill result/);
+  assert.equal(needsDecision.proposal, null);
   const job = ctx.ledger.prepare(assignment);
   ctx.config.activation.dispatch = true;
   ctx.config.limits.maxAiCreditsPerSession = 1;

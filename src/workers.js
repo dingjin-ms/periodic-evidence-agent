@@ -5,14 +5,18 @@ import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { AzureCliCredential } from '@azure/identity';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight } from './common.js';
 import { withClient, restrictedSession, defineTool } from './runtime.js';
-import { loadRepositorySkill, normalizeSkillResult, resolveSkillBinding } from './repository-skills.js';
+import {
+  loadRepositorySkill, normalizeSkillResult, pinSkillQualification, resolveSkillBinding, skillQualificationId
+} from './repository-skills.js';
 
 const exec = promisify(execFile);
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
 async function git(cwd, args) {
-  return (await command('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true', '-c', 'protocol.file.allow=always', ...args], cwd)).stdout.trim();
+  return (await command('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true',
+    '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+    '-c', 'protocol.file.allow=always', ...args], cwd)).stdout.trim();
 }
 async function workspaceChanges(cwd) {
   const tracked = (await git(cwd, ['diff', '--name-only'])).split(/\r?\n/).filter(Boolean);
@@ -39,7 +43,6 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
   if (edits) requireThat(repo.validationGates.length > 0, 'Code changes require configured validation gates');
   const assignment = {
     recordType: 'assignment', schemaVersion: '1.0',
-    id: `assignment-${hash(json([investigation.id, investigation.version, repoId]))}`,
     investigationId: investigation.id, investigationVersion: investigation.version,
     evidenceIds: investigation.evidenceIds, repoId, owner: repo.owner, intent, state: 'prepared', execution: 'local',
     workerHandle: null, workspace: { isolation: 'isolated-task-workspace', path: null, baseRevision: null },
@@ -53,7 +56,9 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
       mutateEvidenceSources: false, retryValidation: false, cancelValidation: false }
   };
   if (plan) {
-    const { skillBindingId, requestedOutcome: selectedOutcome, ...planRecord } = plan;
+    const {
+      skillBindingId, skillQualification, requestedOutcome: selectedOutcome, ...planRecord
+    } = plan;
     validateRecord(planRecord, 'testCoveragePlan');
     requireThat(intent === 'improvement' && plan.repoId === repoId,
       'Test coverage plans can only create matching improvement assignments', 'blocked-scope');
@@ -65,24 +70,58 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
       capability: plan.capability, requestedOutcome,
       improvementId: plan.improvementId, improvementVersion: plan.improvementVersion,
       testCoveragePlanId: plan.id, testCoveragePlanVersion: plan.version,
-      skillBindingId: binding.id
+      skillBindingId: binding.id,
+      skillQualification
     });
     assignment.requiredCapabilities.push(`repository-skill:${binding.id}`);
     assignment.acceptanceCriteria.push('Repository-native skill result is recorded for the exact base revision');
   }
+  assignment.id = `assignment-${hash(json([
+    investigation.id, investigation.version, repoId, intent,
+    assignment.testCoveragePlanId ?? null, assignment.testCoveragePlanVersion ?? null,
+    assignment.requestedOutcome ?? null, assignment.skillBindingId ?? null,
+    assignment.skillQualification ?? null
+  ]))}`;
   validateRecord(assignment);
   return assignment;
 }
-export function makePlannedImprovementAssignment(config, ledger, investigation, planId, requestedOutcome = 'add-or-update-tests') {
-  const plan = ledger.get('testCoveragePlan', planId);
+export function makePlannedImprovementAssignment(config, ledger, investigation, planId,
+  requestedOutcome = 'add-or-update-tests', planVersion = undefined) {
+  const plan = ledger.get('testCoveragePlan', planId, planVersion);
   requireThat(plan, 'Unknown test coverage plan', 'invalid-record');
-  const improvement = ledger.get('areaToImprove', plan.improvementId);
+  const improvement = ledger.get('areaToImprove', plan.improvementId, plan.improvementVersion);
   requireThat(improvement?.version === plan.improvementVersion &&
     improvement.investigationIds.includes(investigation.id),
   'Test coverage plan does not match the current investigation/improvement', 'blocked-reconciliation');
+  requireThat(/^[a-f0-9]{40,64}$/.test(plan.sourceRevision ?? ''),
+    'Planned repository work requires a source-bound coverage revision', 'blocked-reconciliation');
   const binding = resolveSkillBinding(config, plan.repoId, plan.capability).binding;
-  const enriched = { ...plan, skillBindingId: binding.id, requestedOutcome };
+  const qualification = ledger.qualification(skillQualificationId(plan.repoId, binding.id));
+  const pinned = pinSkillQualification(qualification);
+  requireThat(qualification.baseRevision === plan.sourceRevision,
+    'Coverage plan and repository skill qualification use different source revisions',
+    'blocked-reconciliation');
+  const enriched = {
+    ...plan, skillBindingId: binding.id, requestedOutcome,
+    skillQualification: pinned
+  };
   return makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
+}
+export function requireCurrentAssignment(config, ledger, investigation, assignment) {
+  if (assignment.testCoveragePlanId) {
+    const latestPlan = ledger.get('testCoveragePlan', assignment.testCoveragePlanId);
+    const latestImprovement = ledger.get('areaToImprove', assignment.improvementId);
+    requireThat(latestPlan?.version === assignment.testCoveragePlanVersion &&
+      latestImprovement?.version === assignment.improvementVersion,
+    'Assignment plan or improvement was superseded before execution', 'blocked-reconciliation');
+  }
+  const rebuilt = assignment.testCoveragePlanId
+    ? makePlannedImprovementAssignment(config, ledger, investigation,
+      assignment.testCoveragePlanId, assignment.requestedOutcome, assignment.testCoveragePlanVersion)
+    : makeAssignment(config, investigation, assignment.repoId, assignment.intent);
+  requireThat(json(rebuilt) === json(assignment),
+    'Assignment inputs, plan or qualification changed after preparation', 'blocked-reconciliation');
+  return rebuilt;
 }
 export async function provision(config, job, repo) {
   const root = join(config.stateDirectory, 'workspaces');
@@ -140,6 +179,15 @@ export class WorkerTools {
         'blocked-result');
       proposal.skillExecution = normalizeSkillResult(this.loadedSkill, proposal.skillResult);
       delete proposal.skillResult;
+      if (proposal.outcome === 'propose-change')
+        requireThat(proposal.skillExecution.status === 'succeeded' &&
+          proposal.skillExecution.needsHumanDecision === false,
+        'Only a successful repository skill result without a human decision may propose changes',
+        'blocked-result');
+      if (proposal.skillExecution.status !== 'succeeded' || proposal.skillExecution.needsHumanDecision)
+        requireThat(proposal.outcome === 'blocked',
+          'Failed or incomplete repository skill work must return a blocked proposal',
+          'blocked-result');
     }
     this.proposal = structuredClone(proposal);
     return 'Proposal accepted; coordinator owns commit, validation and draft creation.';
@@ -285,10 +333,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   }), 'Tracked source eligibility changed or a fix is recorded; reconcile before dispatch', 'blocked-reconciliation');
   const investigation = ledger.get('investigation', assignment.investigationId);
   requireThat(investigation?.version === assignment.investigationVersion, 'Assignment evidence was superseded');
-  if (assignment.testCoveragePlanId)
-    makePlannedImprovementAssignment(config, ledger, investigation, assignment.testCoveragePlanId,
-      assignment.requestedOutcome);
-  else makeAssignment(config, investigation, assignment.repoId, assignment.intent);
+  requireCurrentAssignment(config, ledger, investigation, assignment);
   const repo = repoFor(config, assignment.repoId);
   const owner = ledger.acquire('dispatch');
   let proposal = null, revision = null, draftPR = null, validation = [];
@@ -299,8 +344,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     const isolated = await provision(config, job, repo);
     ledger.moveJob(id, 'dispatching', 'running', isolated);
     const current = ledger.job(id);
+    const qualification = assignment.skillBindingId
+      ? ledger.qualification(skillQualificationId(assignment.repoId, assignment.skillBindingId))
+      : null;
     const loadedSkill = assignment.skillBindingId
-      ? loadRepositorySkill(config, assignment, current.workspace, current.base_revision)
+      ? loadRepositorySkill(config, assignment, current.workspace, current.base_revision, qualification)
       : null;
     const toolkit = new WorkerTools(config, assignment, current.workspace, loadedSkill);
     await (dependencies.runModel ?? runModel)(config, ledger, current, assignment, investigation, toolkit, loadedSkill);

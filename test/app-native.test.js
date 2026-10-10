@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { configAt, hash, json, now, exclusions } from '../src/common.js';
 import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, listAppRuns } from '../src/app-native.js';
 import { principalPath, channelRoot } from '../src/runtime.js';
 import { wiql, area, adoRecord } from '../src/sources.js';
+import { skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t, { dry = true, provenance = 'synthetic' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'app-pilot-'));
@@ -177,7 +179,7 @@ test('app native assignment claim/bind/result is idempotent and cannot use prima
 });
 
 test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
-  const { config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });
+  const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });
   config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
     executable: process.execPath, args: [], timeoutMs: 1000 }];
   config.repositories[0].skillBindings = [{
@@ -186,6 +188,25 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     requestedOutcomes: ['add-or-update-tests'],
     sideEffects: { commit: false, push: false, createDraftPR: false }
   }];
+  const workspace = join(root, 'oa-worktree');
+  const skillText = '# Synthetic OA integration skill\n';
+  mkdirSync(join(workspace, 'docs', 'skills', 'Integration-test-core'), { recursive: true });
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'), skillText);
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', ...args], { cwd: workspace, windowsHide: true, encoding: 'utf8' }).trim();
+  git(['init', '--quiet']);
+  git(['add', '.']);
+  git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Synthetic OA skill workspace']);
+  git(['remote', 'add', 'origin', config.repositories[0].remote]);
+  const baseRevision = git(['rev-parse', 'HEAD']);
+  ledger.qualify(skillQualificationId('fixture', 'oa-integration-test-core'), {
+    state: 'qualified-read-only', repoId: 'fixture', bindingId: 'oa-integration-test-core',
+    capability: 'integration-test-authoring', remote: config.repositories[0].remote,
+    baseRef: config.repositories[0].baseRef, baseRevision,
+    skillPath: 'docs/skills/Integration-test-core/SKILL.md', skillSha256: hash(skillText),
+    sideEffects: { commit: false, push: false, createDraftPR: false }
+  });
   await adoBatch(config, ledger);
   const evidence = ledger.all('evidence')[0];
   const investigation = {
@@ -207,7 +228,7 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
       priority: 'medium', repoIds: ['fixture'], capabilities: ['integration-test-authoring']
     },
     testCoverage: {
-      repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: 'a'.repeat(40),
+      repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: baseRevision,
       searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
@@ -221,6 +242,19 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
   assert.equal(worker.assignment.skillBindingId, 'oa-integration-test-core');
   assert.equal(ledger.all('areaToImprove').length, 1);
   assert.equal(ledger.all('testCoveragePlan').length, 1);
+  const claimId = 'oa-claim';
+  appWorker(config, ledger, 'test-run', 'claim', {
+    assignmentId: worker.id, claimId, coordinatorAgentId: worker.coordinatorAgentId
+  });
+  assert.throws(() => appWorker(config, ledger, 'test-run', 'bind', {
+    assignmentId: worker.id, claimId, sessionId: 'oa-session', projectId: worker.projectId,
+    workspace: join(root, 'missing-workspace'), baseRevision
+  }), /readable Git checkout/);
+  const bound = appWorker(config, ledger, 'test-run', 'bind', {
+    assignmentId: worker.id, claimId, sessionId: 'oa-session', projectId: worker.projectId,
+    workspace, baseRevision
+  });
+  assert.equal(bound.baseRevision, baseRevision);
 });
 
 test('app successful run A cursor survives blocked run B in the shared live ledger', async t => {

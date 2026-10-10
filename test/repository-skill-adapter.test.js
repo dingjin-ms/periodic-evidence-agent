@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configAt } from '../src/common.js';
+import { configAt, hash } from '../src/common.js';
 import {
-  loadRepositorySkill, normalizeSkillResult, qualifyRepositorySkill, resolveSkillBinding
+  loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill, resolveSkillBinding
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -34,10 +34,24 @@ function setup(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return { root, workspace, config, assignment };
 }
+function qualification(config, assignment, revision, instructions = '# Synthetic OA integration skill\n') {
+  const binding = config.repositories[0].skillBindings[0];
+  const receipt = {
+    state: 'qualified-read-only', repoId: assignment.repoId, bindingId: assignment.skillBindingId,
+    capability: assignment.capability, remote: config.repositories[0].remote,
+    baseRef: config.repositories[0].baseRef, baseRevision: revision,
+    skillPath: binding.skillPath.replaceAll('\\', '/'), skillSha256: hash(instructions),
+    sideEffects: binding.sideEffects
+  };
+  assignment.skillQualification = pinSkillQualification(receipt);
+  return receipt;
+}
 
 test('adapter loads exactly the configured repository skill at the bound source revision', t => {
   const { workspace, config, assignment } = setup(t);
-  const loaded = loadRepositorySkill(config, assignment, workspace, 'a'.repeat(40));
+  const revision = 'a'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
   assert.match(loaded.instructions, /Synthetic OA integration skill/);
   assert.equal(loaded.skillPath, 'docs/skills/Integration-test-core/SKILL.md');
   assert.equal(loaded.skillRevision, 'a'.repeat(40));
@@ -86,19 +100,24 @@ test('read-only qualification verifies an exact repository revision before routi
 test('adapter rejects path traversal and reparse-point skill paths', t => {
   const { root, workspace, config, assignment } = setup(t);
   config.repositories[0].skillBindings[0].skillPath = '..\\outside.md';
-  assert.throws(() => loadRepositorySkill(config, assignment, workspace, 'b'.repeat(40)), /escapes workspace/);
+  const revision = 'b'.repeat(40);
+  let receipt = qualification(config, assignment, revision);
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt), /escapes workspace/);
   const external = join(root, 'external');
   mkdirSync(external);
   writeFileSync(join(external, 'SKILL.md'), '# external\n');
   const linked = join(workspace, 'docs', 'linked');
   symlinkSync(external, linked, process.platform === 'win32' ? 'junction' : 'dir');
   config.repositories[0].skillBindings[0].skillPath = 'docs/linked/SKILL.md';
-  assert.throws(() => loadRepositorySkill(config, assignment, workspace, 'b'.repeat(40)), /Symlink|reparse/);
+  receipt = qualification(config, assignment, revision, '# external\n');
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt), /Symlink|reparse/);
 });
 
 test('skill result normalization is deterministic and rejects success-shaped empty output', t => {
   const { workspace, config, assignment } = setup(t);
-  const loaded = loadRepositorySkill(config, assignment, workspace, 'c'.repeat(40));
+  const revision = 'c'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
   const result = normalizeSkillResult(loaded, {
     status: 'succeeded', classification: 'missing-coverage',
     changedFiles: ['test/new.test.js', 'test/new.test.js'],
@@ -112,4 +131,17 @@ test('skill result normalization is deterministic and rejects success-shaped emp
     changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
     unknowns: [], needsHumanDecision: false
   }), /existing coverage/);
+});
+
+test('adapter rejects missing, changed or source-mismatched qualification receipts', t => {
+  const { workspace, config, assignment } = setup(t);
+  const revision = 'e'.repeat(40);
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, null), /receipt is missing/);
+  const receipt = qualification(config, assignment, revision);
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'), '# changed\n');
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt), /content changed/);
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Synthetic OA integration skill\n');
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, 'f'.repeat(40), receipt),
+    /source revision/);
 });

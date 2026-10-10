@@ -14,7 +14,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, runValidation, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { skillQualificationId } from '../src/repository-skills.js';
 
@@ -335,6 +335,12 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
 });
+test('provisioning skips unrelated Git LFS smudges without mutating the controller environment', () => {
+  const original = process.env.GIT_LFS_SKIP_SMUDGE;
+  const env = checkoutEnvironment();
+  assert.equal(env.GIT_LFS_SKIP_SMUDGE, '1');
+  assert.equal(process.env.GIT_LFS_SKIP_SMUDGE, original);
+});
 test('worker file callbacks reject traversal, alternate streams, protected paths and links', async t => {
   const { config, job, repo, assignment, root } = await fixture(t);
   const { workspace } = await provision(config, job, repo);
@@ -401,7 +407,16 @@ test('validation requires approved runner and never inherits credential environm
   repo.validationGates = [{ id: 'unqualified', executable: process.execPath, args: [], timeoutMs: 1000 }];
   await assert.rejects(runValidation(config, ledger, job, repo, 'abc'), /approved repo-native runner/);
   process.env.PILOT_TEST_SECRET = 'not-a-real-secret';
-  try { assert.equal(minimalEnvironment().PILOT_TEST_SECRET, undefined); } finally { delete process.env.PILOT_TEST_SECRET; }
+  const localAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = 'safe-build-path';
+  try {
+    assert.equal(minimalEnvironment().PILOT_TEST_SECRET, undefined);
+    assert.equal(minimalEnvironment().LOCALAPPDATA, 'safe-build-path');
+  } finally {
+    delete process.env.PILOT_TEST_SECRET;
+    if (localAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = localAppData;
+  }
 });
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -435,6 +450,25 @@ test('ADO draft provider accepts the configured legacy visualstudio.com reposito
     { title: 'Fixture', description: 'Synthetic' },
     async method => method === 'GET' ? { value: [draft] } : draft);
   assert.equal(result.url, 'https://office.visualstudio.com/ISS/_git/OfficeAgent/pullrequest/9');
+});
+test('ADO Git push uses a short-lived bearer header without persisting or exposing the token in arguments', async t => {
+  const { config, repo } = await fixture(t);
+  repo.remote = 'https://office.visualstudio.com/ISS/_git/OfficeAgent';
+  repo.pr = { provider: 'ado', organization: 'office', project: 'ISS', repositoryId: 'OfficeAgent',
+    targetRef: 'refs/heads/main' };
+  const calls = [];
+  const originalGitConfigValue = process.env.GIT_CONFIG_VALUE_0;
+  await pushDraftBranch(config, 'C:\\synthetic-workspace', repo, 'HEAD:refs/heads/pilot/test', {
+    getToken: async () => 'synthetic-sensitive-token',
+    execute: async (cwd, args, env) => calls.push({ cwd, args, env })
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, ['push', 'origin', 'HEAD:refs/heads/pilot/test']);
+  assert.doesNotMatch(json(calls[0].args), /synthetic-sensitive-token/);
+  assert.equal(calls[0].env.GIT_CONFIG_KEY_0, 'http.extraHeader');
+  assert.equal(calls[0].env.GIT_CONFIG_VALUE_0, 'AUTHORIZATION: bearer synthetic-sensitive-token');
+  assert.equal(calls[0].env.GIT_TRACE_CURL, '0');
+  assert.equal(process.env.GIT_CONFIG_VALUE_0, originalGitConfigValue);
 });
 test('uncertain PR creation cannot be retried and non-draft heads are rejected', async t => {
   const { config, ledger, job, repo } = await fixture(t);

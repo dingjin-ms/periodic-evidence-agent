@@ -10,10 +10,12 @@ import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appR
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
+import { setupLocalEnvironment } from './setup.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
-const configFile = configIndex >= 0 ? args[configIndex + 1] : 'pilot.example.json';
+const configFile = configIndex >= 0 ? args[configIndex + 1] :
+  ['setup', 'bootstrap-repo'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
 }
@@ -28,6 +30,7 @@ function failedOutcome(result) {
     ['collection', 'reviews', 'workers'].some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
@@ -66,6 +69,17 @@ No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger;
 try {
   if (action === 'help') console.log(help);
+  else if (action === 'setup') {
+    const result = await setupLocalEnvironment({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoIds: options('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root'),
+      allowClone: args.includes('--allow-clone')
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
   else if (action === 'bootstrap-repo') {
     requireThat(option('--repo'), 'bootstrap-repo requires --repo');
     const result = await bootstrapLocalRepository({
@@ -73,7 +87,8 @@ try {
       templatePath: option('--template') ?? 'pilot.example.json',
       repoId: option('--repo'),
       searchRoots: options('--search-root'),
-      cloneRoot: option('--clone-root')
+      cloneRoot: option('--clone-root'),
+      allowClone: true
     });
     console.log(JSON.stringify(result, null, 2));
   }

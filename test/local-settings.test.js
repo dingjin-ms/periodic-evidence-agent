@@ -89,6 +89,19 @@ test('bootstrap clones when no matching checkout exists', async t => {
     .repositories[0].referenceCheckout, result.referenceCheckout);
 });
 
+test('bootstrap blocks an implicit clone when discovery finds no checkout', async t => {
+  const { root, template } = fixture(t);
+  await assert.rejects(bootstrapLocalRepository({
+    settingsPath: join(root, 'pilot.local.json'),
+    templatePath: template,
+    repoId: 'office-agent',
+    searchRoots: [join(root, 'empty')],
+    cloneRoot: join(root, 'new-checkouts'),
+    allowClone: false
+  }), /rerun setup with --allow-clone/);
+  assert.equal(existsSync(join(root, 'pilot.local.json')), false);
+});
+
 test('bootstrap refuses a settings filename that could be committed', async t => {
   const { root, template } = fixture(t);
   await assert.rejects(bootstrapLocalRepository({

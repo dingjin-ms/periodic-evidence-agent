@@ -100,6 +100,7 @@ export async function bootstrapLocalRepository({
   repoId,
   searchRoots = [],
   cloneRoot = null,
+  allowClone = true,
   runCommand = execute
 }) {
   requireThat(repoId, 'bootstrap-repo requires a repository ID');
@@ -158,6 +159,9 @@ export async function bootstrapLocalRepository({
       };
     }
 
+    requireThat(allowClone,
+      `No matching checkout found for ${repoId}; rerun setup with --allow-clone or configure referenceCheckout`,
+      'blocked-setup');
     const destinationRoot = resolve(cloneRoot ?? join(homedir(), 'Repos'));
     const destination = join(destinationRoot, cloneName(repo.remote, repo.id));
     requireThat(!existsSync(destination),

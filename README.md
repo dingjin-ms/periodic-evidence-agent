@@ -36,6 +36,38 @@ host's clean-install verification uses its approved mirror with empty user/globa
 npm configuration and a fresh cache; direct public-registry TLS is unavailable
 on that host.
 
+## Devbox repository setup
+
+After installing this package, initialize machine-local product checkouts and
+read-only repository-skill qualifications with one command:
+
+```powershell
+npm run setup
+```
+
+Setup uses `pilot.local.json`, which is ignored by Git. By default it selects
+every configured repository that declares at least one `skillBinding`; no
+OfficeAgent-specific setup code exists. Add another repository and its skill
+bindings to the configuration and the same command includes it automatically.
+Use repeated `--repo` values to select a subset:
+
+```powershell
+npm run setup -- --repo office-agent --repo another-repo
+```
+
+Setup reuses a valid configured checkout or discovers one from explicit and
+common local roots. It does not clone implicitly. On a new devbox where a
+selected repository is absent, explicitly allow cloning:
+
+```powershell
+npm run setup -- --allow-clone --clone-root D:\repos
+```
+
+The command verifies Node.js 24+, checkout origins, remote default branches,
+exact base revisions, repository skill paths and skill content fingerprints.
+It does not install product-repository dependencies, authenticate accounts,
+enable routing/write permissions or create PRs.
+
 The demo prints JSON with these stable results (paths/timestamps vary):
 
 ```json
@@ -127,7 +159,8 @@ commands. Primary checkouts are references only; execution must use isolated
 task workspaces. A worktree/clone is **not an OS sandbox**.
 
 Each devbox keeps machine-specific checkout paths in an ignored `*.local.json`
-file. Bootstrap one repository without hard-coding a shared path:
+file. The lower-level command can bootstrap one repository without hard-coding
+a shared path:
 
 ```powershell
 npm run pilot -- bootstrap-repo --repo office-agent `

@@ -196,7 +196,7 @@
             "recordId": { "$ref": "#/$defs/text" },
             "revision": { "$ref": "#/$defs/nullableText" },
             "versionBasis": { "$ref": "#/$defs/text" },
-            "provenance": { "enum": ["authenticated-source", "app-tool-reported", "owner-provided", "synthetic"] },
+            "provenance": { "enum": ["authenticated-source", "app-tool-reported", "workiq-cli-verified", "owner-provided", "synthetic"] },
             "ownerConfirmation": {
               "anyOf": [
                 { "type": "null" },

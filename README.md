@@ -5,6 +5,20 @@ durable ledger and deterministic helpers for independent logical agents.
 The primary pilot is manually driven by authenticated Copilot app tools; no
 standalone SDK authentication, listener, account or conversation is needed for
 the offline demo. Live collection, review, dispatch and scheduling default off.
+An explicitly configured official local WorkIQ CLI transport is also available
+for authorized collection-only runs. It is not a fallback from failed app auth;
+see [the CLI contract](APP-NATIVE.md#explicit-local-workiq-cli-collection).
+Token-renewal and unattended qualification remain deferred.
+Budget-stopped channel scans can prepare a distinct, explicitly authorized
+continuation run without refetching captured pages or losing buffered rows.
+Root/reply context and an opt-in modified-time lane are documented in
+[the continuation contract](APP-NATIVE.md#budget-stopped-continuation). Neither
+feature authorizes additional live reads, automatic schedules or a delta feed.
+IcM connector receipts can be replayed **offline** into a separate audit store;
+live connector execution stays blocked pending an explicit timestamp/scope
+contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
+the installed coverage-analysis skill and pinned reference, read source ledgers
+read-only, and cannot authorize product dispatch.
 
 ## Account-free quick start
 
@@ -113,8 +127,9 @@ do not change an existing run's config. Use its original config to inspect it.
 **Intentional product-specific selectors:** the current ADO adapter is fixed to
 `office/OC`, non-Removed Bugs under
 `OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
-validation is fixed to query `599514`; actual query filters/access remain
-unverified. These selectors, the 1JS/Office repo URLs and the field names in
+validation is fixed to query `599514`; saved-query timestamp equivalence remains
+unverified even when connector identity and team/severity mappings are qualified.
+These selectors, the 1JS/Office repo URLs and the field names in
 `scaffold` are integration constraints, not anonymous generic examples or access
 grants. A different deployment needs a reviewed adapter/config change, not a
 silent query substitution. The example's Teams IDs are fictitious.
@@ -131,12 +146,16 @@ task workspaces. A worktree/clone is **not an OS sandbox**.
   confirmation of a code defect. Unknown ownership stays blocked.
 - Preserve source ID/revision, query/asOf/review times and provenance. Imported
   app receipts are `app-tool-reported`; directly verified adapter reads are
-  `authenticated-source`; fixtures are `synthetic`; owner exports are
+  `authenticated-source`; directly identity-verified local CLI reads are
+  `workiq-cli-verified`; fixtures are `synthetic`; owner exports are
   `owner-provided`. Never promote fixtures or imports to authenticated access.
 - Scope and budgets are enforced before reads. Created and changed ADO lanes
   stay separate. Enumerate channel roots and replies, including older threads.
   Partial/auth-failed passes retain earlier evidence and the prior committed
   cursor. Only complete passes advance it. Missing data never becomes clean zero.
+  WorkIQ modified-time scans are separately selected; budget continuations need
+  a new run and explicit additional-budget approval. Complete enumeration is
+  not a consistent historical snapshot.
 - Stop on authentication failure; no retries until supported host refresh and
   a separately authorized attempt. No Graph fallback, token transfer, credential
   cache inspection, alternate identity or new grant. App and SDK auth are distinct.
@@ -160,7 +179,8 @@ that a reported draft has passed product validation.
 | Offline tests/demo | Synthetic ledger, scope/identity guards, exclusions, cursor retention, dedupe, claims and fixture execution | Live identity, permissions or product correctness |
 | Historical local ADO run | Created 47 / changed 59 (39 changed-only), both passes complete at their recorded snapshots | Another user's access or ongoing coverage |
 | Historical app WorkIQ run | Identity and 20-root metadata page succeeded, then detail read returned `AuthenticationRequired` (500) | Full-day roots/replies/body coverage or auth recovery |
-| IcM | Explicit unavailable status and validated owner-export contract | Authenticated connector or verified saved-query filters |
+| Local CLI WorkIQ continuation | Fresh identity, one bounded continuation; cumulative 4,000 examined / 4,003 returned, eight cohort records, three buffered | Exhausted channel enumeration, historical snapshot, renewal or app-HTTP recovery |
+| IcM | Connector context/team mapping and bounded diagnostics on the pilot host; offline receipt replay/owner-export guards | Saved-query Source Created Time equivalence, live adapter activation or complete incident coverage |
 | Repo work / PR / periodic operation | Fixture tests and guarded implementation only | Product validation, real PR lifecycle or recurring qualification |
 
 The historical live run remains **partial-or-blocked**. Zero product workers,
@@ -169,8 +189,10 @@ not part of this package. Offline CI cannot promote this status to live success.
 
 Before calling this a successfully validated live collection pilot, obtain
 complete authorized source coverage within the approved caps, durable receipts
-and restart/replay evidence, and confirm zero unapproved effects. WorkIQ needs
-supported app-host refresh confirmation before any further read. IcM must be
+and restart/replay evidence, and confirm zero unapproved effects. The blocked
+app-HTTP WorkIQ binding needs supported app-host refresh before further reads.
+Separately authorized local CLI execution does not unblock that connection.
+IcM must be
 qualified or explicitly excluded from a separately approved reduced release
 scope; do not silently waive it. Collection-only success still does not qualify
 code-fix/PR automation. Sharing preparation does not itself satisfy this gate.

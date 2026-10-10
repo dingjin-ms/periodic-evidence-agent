@@ -9,7 +9,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'pilot-package-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const git = args => execFileSync('git', ['-c', 'core.hooksPath=', ...args],
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=',
+    '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args],
     { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git(['init', '--quiet']);
   const inspect = () => spawnSync(process.execPath,

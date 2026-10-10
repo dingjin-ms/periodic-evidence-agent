@@ -36,6 +36,48 @@ host's clean-install verification uses its approved mirror with empty user/globa
 npm configuration and a fresh cache; direct public-registry TLS is unavailable
 on that host.
 
+## Devbox repository setup
+
+From a new clone, install locked dependencies, initialize machine-local product
+checkouts, qualify repository skills, run configuration diagnostics, execute the
+complete offline check and run the synthetic demo with one command:
+
+```powershell
+npm run setup
+```
+
+The top-level command runs `npm ci --ignore-scripts`, then delegates repository
+initialization to `npm run setup:repos`, runs `doctor`, `npm run check` and
+`npm run demo`. The repository layer uses `pilot.local.json`, which is ignored
+by Git. By default it selects every configured repository that declares at
+least one `skillBinding`; no OfficeAgent-specific setup code exists. Add another
+repository and its skill bindings to the configuration and the same command
+includes it automatically. Use repeated `--repo` values to select a subset:
+
+```powershell
+npm run setup -- --repo office-agent --repo another-repo
+```
+
+Setup reuses a valid configured checkout or discovers one from explicit and
+common local roots. It does not clone implicitly. On a new devbox where a
+selected repository is absent, explicitly allow cloning:
+
+```powershell
+npm run setup -- --allow-clone --clone-root D:\repos
+```
+
+For diagnostics or development, rerun only the repository layer without
+reinstalling dependencies or running the full offline suite:
+
+```powershell
+npm run setup:repos -- --repo office-agent
+```
+
+The command verifies Node.js 24+, checkout origins, remote default branches,
+exact base revisions, repository skill paths and skill content fingerprints.
+It does not install product-repository dependencies, authenticate accounts,
+enable routing/write permissions or create PRs.
+
 The demo prints JSON with these stable results (paths/timestamps vary):
 
 ```json
@@ -70,8 +112,10 @@ directory printed by that invocation, never the whole `.state` tree.
 |---|---|---|
 | `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
 | `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
+| `evidence-improvement-planner` | Aggregate eligible evidence, discover/link coverage and select a qualified repository skill | Versioned areas-to-improve and test-coverage plans |
 | `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
 | `evidence-office-owner` | Claimed Office RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
+| `evidence-oa-owner` | Claimed OfficeAgent test authoring through the repo-native integration-test workflow | Skill execution, source-bound validation and draft PR evidence |
 
 The collector/reviewer currently share configured identity
 `excel-evidence-coordinator`; owners use `repo-owner:<repoId>`. These are logical
@@ -123,6 +167,51 @@ Before code work, resolve repo owner/project binding, routing, base/target
 revisions, permitted write prefixes, commit identity and approved validation
 commands. Primary checkouts are references only; execution must use isolated
 task workspaces. A worktree/clone is **not an OS sandbox**.
+
+Each devbox keeps machine-specific checkout paths in an ignored `*.local.json`
+file. The lower-level command can bootstrap one repository without hard-coding
+a shared path:
+
+```powershell
+npm run pilot -- bootstrap-repo --repo office-agent `
+  --config .\pilot.local.json
+```
+
+If `pilot.local.json` already contains a valid checkout with the configured
+origin, it is reused. Otherwise the command searches explicit `--search-root`
+values followed by common per-user checkout roots. If no matching checkout is
+found, it clones into `--clone-root` or the user's `Repos` directory. The
+command records the verified top-level path and the remote default branch in
+the local file; it never enables routing, writes, validation or PR permissions.
+Only filenames ending in `.local.json` are accepted, and the repository
+`.gitignore` excludes those files.
+
+Improvement work adds two durable planning records before assignment:
+`areaToImprove` clusters eligible investigations into a stable, versioned theme;
+`testCoveragePlan` records complete/partial/not-run coverage discovery and
+distinguishes linked coverage, a confirmed coverage gap and an unresolved
+search. A planned assignment pins both record versions, capability, requested
+outcome and one qualified repository skill binding. Repository skills execute
+from the exact isolated source revision and cannot grant themselves shell,
+network, commit, push or PR authority.
+
+For OfficeAgent, the qualified router entry is
+`.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
+project root, delegates to `docs/skills/Integration-test-core/workflow.md` and
+auto-discovers the project shell. A read-only qualification can verify the
+configured checkout, origin, base revision and skill content fingerprint before
+routing or writes are enabled:
+
+```powershell
+npm run pilot -- qualify-skill --repo office-agent `
+  --capability integration-test-authoring `
+  --binding oa-integration-test-core `
+  --config .\pilot.local.json
+```
+
+Qualification does not approve ownership, write prefixes, validation gates,
+commit identity, push or draft PR creation. Ambiguous project names remain
+blocked; assignments must pin the repo-relative owner project.
 
 ## Safety invariants
 
@@ -239,7 +328,9 @@ do not run it during onboarding. All schedules remain disabled.
 `src\app-native.js` owns receipt imports and native assignment tracking;
 `ledger.js` owns immutable state and atomic ownership; `sources.js` owns scoped
 collection; `coordinator.js` owns review/routing; `followup.js` and `revisit.js`
-own related/tracked evidence; `workers.js` owns legacy isolated execution,
+own related/tracked evidence; `improvements.js` owns durable improvement and
+coverage planning; `repository-skills.js` owns qualified repo-native skill
+resolution and result normalization; `workers.js` owns legacy isolated execution,
 validation and ADO draft-only publication; `runtime.js` owns optional SDK
 bindings. `scaffold` contains portable policy/schema inputs, not a second
 runtime configuration format. No app tools are assumed callable by scripts.

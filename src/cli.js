@@ -6,13 +6,21 @@ import { collect, acceptReview, reviewPending, route, report, reconcile, tick, r
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
 import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
+import { planImprovement } from './improvements.js';
+import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
+import { bootstrapLocalRepository } from './local-settings.js';
+import { setupLocalEnvironment } from './setup.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
-const configFile = configIndex >= 0 ? args[configIndex + 1] : 'pilot.example.json';
+const configFile = configIndex >= 0 ? args[configIndex + 1] :
+  ['setup', 'bootstrap-repo'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
+}
+function options(name) {
+  return args.flatMap((value, index) => value === name && args[index + 1] ? [args[index + 1]] : []);
 }
 function failedOutcome(result) {
   if (Array.isArray(result)) return result.some(failedOutcome);
@@ -22,6 +30,8 @@ function failedOutcome(result) {
     ['collection', 'reviews', 'workers'].some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
+  node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -49,13 +59,43 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-ado --run ID --pass ado:created|ado:changed --collect
   node src\\cli.js app-ado-reconcile --run ID --pass ado:created|ado:changed
   node src\\cli.js app-review --run ID --production --file review.json
+  node src\\cli.js app-plan-improvement --run ID --production --file improvement-plan.json
   node src\\cli.js app-worker --run ID --production --operation prepare|claim|bind|result|uncertain --file action.json
+  node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
+  node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect performs delegated source reads; other app commands are offline.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger;
 try {
   if (action === 'help') console.log(help);
+  else if (action === 'setup') {
+    const result = await setupLocalEnvironment({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoIds: options('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root'),
+      allowClone: args.includes('--allow-clone')
+    });
+    const setupConfig = configAt(resolve(configFile));
+    ledger = new Ledger(setupConfig.stateDirectory);
+    for (const qualification of result.qualifications)
+      ledger.qualify(skillQualificationId(qualification.repoId, qualification.bindingId), qualification);
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'bootstrap-repo') {
+    requireThat(option('--repo'), 'bootstrap-repo requires --repo');
+    const result = await bootstrapLocalRepository({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoId: option('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root'),
+      allowClone: true
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
   else {
     const config = configAt(resolve(configFile));
     const appAction = action.startsWith('app-');
@@ -80,6 +120,7 @@ try {
       case 'app-unavailable': result = unavailableApp(ledger, option('--run'), input()); break;
       case 'app-status': result = appStatus(ledger, option('--run')); break;
       case 'app-review': result = appReview(config, ledger, option('--run'), input()); break;
+      case 'app-plan-improvement': result = appPlanImprovement(config, ledger, option('--run'), input()); break;
       case 'app-worker': result = appWorker(config, ledger, option('--run'), option('--operation'), input()); break;
       case 'app-ado':
         requireThat(args.includes('--collect'), 'Live ADO reads require explicit --collect');
@@ -123,6 +164,13 @@ try {
         requireThat(option('--file'), 'review requires --file');
         result = acceptReview(config, ledger, readJson(resolve(option('--file')))); break;
       case 'review-pending': result = await reviewPending(config, ledger); break;
+      case 'plan-improvement': result = planImprovement(ledger, input()); break;
+      case 'qualify-skill': {
+        requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
+        result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
+        ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
+        break;
+      }
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
       case 'report': result = report(ledger); break;
       case 'reconcile': result = reconcile(ledger); break;

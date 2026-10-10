@@ -6,6 +6,8 @@
     { "$ref": "#/$defs/configuration" },
     { "$ref": "#/$defs/evidence" },
     { "$ref": "#/$defs/investigation" },
+    { "$ref": "#/$defs/areaToImprove" },
+    { "$ref": "#/$defs/testCoveragePlan" },
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/workerResult" },
     { "$ref": "#/$defs/run" },
@@ -83,7 +85,7 @@
     },
     "repoConfig": {
       "type": "object", "additionalProperties": false,
-      "required": ["repoId", "projectId", "referenceCheckout", "owner", "routingRules", "execution", "dispatchBinding", "capabilities", "validationGates"],
+      "required": ["repoId", "projectId", "referenceCheckout", "owner", "routingRules", "execution", "dispatchBinding", "capabilities", "skillBindings", "validationGates"],
       "properties": {
         "repoId": { "$ref": "#/$defs/text" },
         "projectId": { "$ref": "#/$defs/nullableText" },
@@ -93,6 +95,30 @@
         "execution": { "enum": ["local", "hosted"] },
         "dispatchBinding": { "$ref": "#/$defs/nullableText" },
         "capabilities": { "$ref": "#/$defs/texts" },
+        "skillBindings": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "capability", "skillPath", "enabled", "qualification", "requestedOutcomes", "sideEffects"],
+            "properties": {
+              "id": { "$ref": "#/$defs/text" },
+              "capability": { "$ref": "#/$defs/text" },
+              "skillPath": { "$ref": "#/$defs/text" },
+              "enabled": { "type": "boolean" },
+              "qualification": { "enum": ["unqualified", "qualified"] },
+              "requestedOutcomes": { "$ref": "#/$defs/texts" },
+              "sideEffects": {
+                "type": "object", "additionalProperties": false,
+                "required": ["commit", "push", "createDraftPR"],
+                "properties": {
+                  "commit": { "type": "boolean" },
+                  "push": { "type": "boolean" },
+                  "createDraftPR": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
         "validationGates": { "$ref": "#/$defs/texts" }
       }
     },
@@ -354,6 +380,99 @@
         }
       ]
     },
+    "areaToImprove": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "aggregationKey", "investigationIds", "evidenceIds", "category", "state", "observedBehavior", "expectedBehavior", "rationale", "priority", "repoIds", "capabilities", "createdAt", "updatedAt"],
+      "properties": {
+        "recordType": { "const": "areaToImprove" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "version": { "type": "integer", "minimum": 1 },
+        "aggregationKey": { "$ref": "#/$defs/text" },
+        "investigationIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "evidenceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "category": { "enum": ["missing-test-coverage", "behavior-drift", "repeated-failure", "test-maintainability", "other"] },
+        "state": { "enum": ["routing-pending", "planned", "assigned", "blocked", "closed"] },
+        "observedBehavior": { "$ref": "#/$defs/text" },
+        "expectedBehavior": { "$ref": "#/$defs/nullableText" },
+        "rationale": { "$ref": "#/$defs/text" },
+        "priority": { "enum": ["low", "medium", "high", "critical"] },
+        "repoIds": { "$ref": "#/$defs/texts" },
+        "capabilities": { "$ref": "#/$defs/texts" },
+        "createdAt": { "$ref": "#/$defs/utc" },
+        "updatedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "testCoveragePlan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "improvementId", "improvementVersion", "repoId", "capability", "sourceRevision", "searchStatus", "disposition", "existingTests", "coverageGaps", "unknowns", "rationale", "createdAt"],
+      "properties": {
+        "recordType": { "const": "testCoveragePlan" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "version": { "type": "integer", "minimum": 1 },
+        "improvementId": { "$ref": "#/$defs/text" },
+        "improvementVersion": { "type": "integer", "minimum": 1 },
+        "repoId": { "$ref": "#/$defs/text" },
+        "capability": { "$ref": "#/$defs/text" },
+        "sourceRevision": { "$ref": "#/$defs/nullableText" },
+        "searchStatus": { "enum": ["not-run", "partial", "complete"] },
+        "disposition": { "enum": ["linked", "coverage-gap", "unknown"] },
+        "existingTests": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["path", "identifier"],
+            "properties": {
+              "path": { "$ref": "#/$defs/text" },
+              "identifier": { "$ref": "#/$defs/text" }
+            }
+          }
+        },
+        "coverageGaps": { "$ref": "#/$defs/texts" },
+        "unknowns": { "$ref": "#/$defs/texts" },
+        "rationale": { "$ref": "#/$defs/text" },
+        "createdAt": { "$ref": "#/$defs/utc" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "searchStatus": { "const": "complete" }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": { "enum": ["linked", "coverage-gap"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "linked" } } },
+          "then": { "properties": { "existingTests": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "coverage-gap" } } },
+          "then": { "properties": { "searchStatus": { "const": "complete" }, "coverageGaps": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "unknown" } } },
+          "then": { "properties": { "unknowns": { "minItems": 1 } } }
+        }
+      ]
+    },
     "assignment": {
       "type": "object", "additionalProperties": false,
       "required": ["recordType", "schemaVersion", "id", "investigationId", "investigationVersion", "evidenceIds", "repoId", "owner", "intent", "state", "execution", "workerHandle", "workspace", "requiredCapabilities", "questions", "acceptanceCriteria", "validationGates", "dependsOn", "bounds", "permissions"],
@@ -367,6 +486,24 @@
         "repoId": { "$ref": "#/$defs/text" },
         "owner": { "$ref": "#/$defs/text" },
         "intent": { "enum": ["rca-only", "defect-fix", "improvement"] },
+        "capability": { "$ref": "#/$defs/text" },
+        "requestedOutcome": { "$ref": "#/$defs/text" },
+        "improvementId": { "$ref": "#/$defs/text" },
+        "improvementVersion": { "type": "integer", "minimum": 1 },
+        "testCoveragePlanId": { "$ref": "#/$defs/text" },
+        "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
+        "skillBindingId": { "$ref": "#/$defs/text" },
+        "skillQualification": {
+          "type": "object", "additionalProperties": false,
+          "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote"],
+          "properties": {
+            "qualificationId": { "$ref": "#/$defs/text" },
+            "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+            "skillSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "skillPath": { "$ref": "#/$defs/text" },
+            "remote": { "$ref": "#/$defs/text" }
+          }
+        },
         "state": { "enum": ["prepared", "dispatched", "running", "blocked", "completed", "superseded"] },
         "execution": { "enum": ["local", "hosted"] },
         "workerHandle": { "$ref": "#/$defs/nullableText" },
@@ -411,6 +548,13 @@
         {
           "if": { "properties": { "state": { "enum": ["running", "completed"] } } },
           "then": { "properties": { "workspace": { "properties": { "path": { "$ref": "#/$defs/text" }, "baseRevision": { "$ref": "#/$defs/text" } } } } }
+        },
+        {
+          "if": { "required": ["skillBindingId"] },
+          "then": {
+            "required": ["capability", "requestedOutcome", "improvementId", "improvementVersion",
+              "testCoveragePlanId", "testCoveragePlanVersion", "skillQualification"]
+          }
         }
       ]
     },
@@ -466,6 +610,28 @@
           ]
         },
         "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },
+        "skillExecution": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["bindingId", "capability", "skillPath", "skillRevision", "status", "classification", "changedFiles", "testsAddedOrUpdated", "behaviorCardsAddedOrUpdated", "unknowns", "needsHumanDecision"],
+              "properties": {
+                "bindingId": { "$ref": "#/$defs/text" },
+                "capability": { "$ref": "#/$defs/text" },
+                "skillPath": { "$ref": "#/$defs/text" },
+                "skillRevision": { "$ref": "#/$defs/text" },
+                "status": { "enum": ["succeeded", "failed", "needs-input", "blocked"] },
+                "classification": { "$ref": "#/$defs/nullableText" },
+                "changedFiles": { "$ref": "#/$defs/texts" },
+                "testsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+                "behaviorCardsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+                "unknowns": { "$ref": "#/$defs/texts" },
+                "needsHumanDecision": { "type": "boolean" }
+              }
+            }
+          ]
+        },
         "blocker": {
           "anyOf": [
             { "type": "null" },
@@ -498,6 +664,25 @@
         {
           "if": { "properties": { "outcome": { "const": "draft-pr-validation-failed" } } },
           "then": { "properties": { "validation": { "contains": { "properties": { "status": { "const": "failed" } }, "required": ["status"] } } } }
+        },
+        {
+          "if": {
+            "required": ["skillExecution", "outcome"],
+            "properties": {
+              "skillExecution": { "type": "object" },
+              "outcome": { "enum": ["draft-pr-validation-pending", "draft-pr-validation-failed", "draft-pr-validated"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "skillExecution": {
+                "properties": {
+                  "status": { "const": "succeeded" },
+                  "needsHumanDecision": { "const": false }
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -547,6 +732,7 @@
           "items": {
             "oneOf": [
               { "$ref": "#/$defs/evidence" }, { "$ref": "#/$defs/investigation" },
+              { "$ref": "#/$defs/areaToImprove" }, { "$ref": "#/$defs/testCoveragePlan" },
               { "$ref": "#/$defs/assignment" }, { "$ref": "#/$defs/workerResult" },
               { "$ref": "#/$defs/run" }
             ]

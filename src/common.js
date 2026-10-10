@@ -76,6 +76,25 @@ export function configAt(path) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');
   }
   requireThat(Array.isArray(config.repositories), 'repositories must be an array');
+  for (const repo of config.repositories) {
+    requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
+    const ids = new Set();
+    for (const binding of repo.skillBindings ?? []) {
+      requireThat(binding && typeof binding.id === 'string' && binding.id.length > 0 && !ids.has(binding.id),
+        `Repository ${repo.id} skill binding IDs must be nonempty and unique`);
+      ids.add(binding.id);
+      requireThat(typeof binding.capability === 'string' && binding.capability.length > 0 &&
+        typeof binding.skillPath === 'string' && binding.skillPath.length > 0 && !isAbsolute(binding.skillPath),
+      `Repository ${repo.id} skill binding ${binding.id} is incomplete`);
+      requireThat(typeof binding.enabled === 'boolean' &&
+        ['unqualified', 'qualified'].includes(binding.qualification) &&
+        Array.isArray(binding.requestedOutcomes) && binding.requestedOutcomes.length > 0,
+      `Repository ${repo.id} skill binding ${binding.id} activation is incomplete`);
+      requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
+        typeof binding.sideEffects[key] === 'boolean'),
+      `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);
+    }
+  }
   config.stateDirectory = resolve(dirname(resolve(path)), config.stateDirectory);
   return config;
 }

@@ -202,7 +202,13 @@ export class Ledger {
     return this.transaction(() => {
       const existing = this.db.prepare('SELECT * FROM jobs WHERE investigation_id=? AND version=? AND repo=?')
         .get(assignment.investigationId, assignment.investigationVersion, assignment.repoId);
-      if (existing) return existing;
+      if (existing) {
+        const stored = this.get('assignment', existing.id);
+        requireThat(stored && json(stored) === json(assignment),
+          'Existing assignment has different execution semantics; reconcile before reuse',
+          'blocked-reconciliation');
+        return existing;
+      }
       const prior = this.db.prepare('SELECT id FROM jobs WHERE investigation_id=? AND repo=? LIMIT 1').get(assignment.investigationId, assignment.repoId);
       requireThat(!prior, 'Prior assignment exists for this investigation/repository; reconcile existing work before any new version', 'blocked-reconciliation');
       if (budget) {

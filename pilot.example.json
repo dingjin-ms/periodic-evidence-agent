@@ -51,6 +51,7 @@
       "baseRef": null,
       "remote": "https://dev.azure.com/office/Office/_git/1JS",
       "allowedWritePrefixes": [],
+      "skillBindings": [],
       "commitIdentity": { "name": null, "email": null },
       "validationGates": [],
       "pr": {
@@ -71,6 +72,7 @@
       "baseRef": null,
       "remote": "https://dev.azure.com/office/office/_git/Office",
       "allowedWritePrefixes": [],
+      "skillBindings": [],
       "commitIdentity": { "name": null, "email": null },
       "validationGates": [],
       "pr": {
@@ -78,6 +80,37 @@
         "organization": "office",
         "project": "office",
         "repositoryId": "Office",
+        "targetRef": null
+      }
+    },
+    {
+      "id": "office-agent",
+      "projectId": null,
+      "owner": null,
+      "routingApproved": false,
+      "routingRules": [],
+      "referenceCheckout": null,
+      "baseRef": null,
+      "remote": "https://office.visualstudio.com/ISS/_git/OfficeAgent",
+      "allowedWritePrefixes": [],
+      "skillBindings": [
+        {
+          "id": "oa-integration-test-core",
+          "capability": "integration-test-authoring",
+          "skillPath": ".github/skills/integration-test-authoring/SKILL.md",
+          "enabled": false,
+          "qualification": "unqualified",
+          "requestedOutcomes": ["add-or-update-tests", "investigate-failure"],
+          "sideEffects": { "commit": false, "push": false, "createDraftPR": false }
+        }
+      ],
+      "commitIdentity": { "name": null, "email": null },
+      "validationGates": [],
+      "pr": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "ISS",
+        "repositoryId": "OfficeAgent",
         "targetRef": null
       }
     }

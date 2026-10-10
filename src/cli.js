@@ -9,12 +9,16 @@ import { dryRun } from './dry-run.js';
 import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts } from './app-native.js';
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
+import { bootstrapLocalRepository } from './local-settings.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
+}
+function options(name) {
+  return args.flatMap((value, index) => value === name && args[index + 1] ? [args[index + 1]] : []);
 }
 function failedOutcome(result) {
   if (Array.isArray(result)) return result.some(failedOutcome);
@@ -24,6 +28,7 @@ function failedOutcome(result) {
     ['collection', 'reviews', 'workers'].some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -61,6 +66,17 @@ No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger;
 try {
   if (action === 'help') console.log(help);
+  else if (action === 'bootstrap-repo') {
+    requireThat(option('--repo'), 'bootstrap-repo requires --repo');
+    const result = await bootstrapLocalRepository({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoId: option('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root')
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
   else {
     const config = configAt(resolve(configFile));
     const appAction = action.startsWith('app-');

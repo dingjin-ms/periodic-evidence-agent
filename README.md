@@ -126,6 +126,23 @@ revisions, permitted write prefixes, commit identity and approved validation
 commands. Primary checkouts are references only; execution must use isolated
 task workspaces. A worktree/clone is **not an OS sandbox**.
 
+Each devbox keeps machine-specific checkout paths in an ignored `*.local.json`
+file. Bootstrap one repository without hard-coding a shared path:
+
+```powershell
+npm run pilot -- bootstrap-repo --repo office-agent `
+  --config .\pilot.local.json
+```
+
+If `pilot.local.json` already contains a valid checkout with the configured
+origin, it is reused. Otherwise the command searches explicit `--search-root`
+values followed by common per-user checkout roots. If no matching checkout is
+found, it clones into `--clone-root` or the user's `Repos` directory. The
+command records the verified top-level path and the remote default branch in
+the local file; it never enables routing, writes, validation or PR permissions.
+Only filenames ending in `.local.json` are accepted, and the repository
+`.gitignore` excludes those files.
+
 Improvement work adds two durable planning records before assignment:
 `areaToImprove` clusters eligible investigations into a stable, versioned theme;
 `testCoveragePlan` records complete/partial/not-run coverage discovery and

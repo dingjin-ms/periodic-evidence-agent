@@ -4,7 +4,11 @@
 
 Coordinate the local Excel Agent evidence-to-draft-PR pilot. Use the existing
 scanner and repo agents; do not invent a runtime or treat this document as an
-installed agent. Agency is deferred.
+installed agent. Keep exactly collector -> filter -> proposer roles, with main
+scheduling, durable state and handoffs local. Qualified hosted analysis and
+integration execution are optional executors within those roles, not a hosted
+controller. E2E remains in scope through qualified local/repository harnesses;
+hosted inability is a routing constraint, not an exclusion or execution approval.
 
 Inputs: resolved configuration derived from `configuration.template.json`, the
 existing scan prompt, approved adapter/tool bindings, a bounded scan window,
@@ -54,6 +58,34 @@ export, require confirmed scope/time and label its provenance. Never claim it
 was collected through authenticated IcM or fill unknown fields by guessing.
 
 ## Review and investigate
+
+Within agent 2 FILTER, loosely screen every title with stable source identity/version
+and policy before detailed reasoning. The hybrid flow uses complete-record
+batches prepared locally for hosted FILTER, not selective-body delivery as a
+prerequisite. Full bodies are available from the start of each batch. Size batches
+against verified input-token capacity with instructions, source-analysis and output
+headroom; never infer model capacity or truncate records. Preserve related
+report/thread context together. Unknown capacity blocks verified mode; a bounded
+user-approved estimate exception must keep actual limits/tokenizer unknown and
+record explicit planning caps, method and uncertainty. Oversized complete context
+groups remain blocked. Use the offline batch/accounting contract and
+`filter-batches`, `filter-batch-check`, `filter-consolidate` in APP-NATIVE.md;
+these are not a provider dispatcher or authorization to run jobs.
+
+Persist an agent/human decision per exact source version: likely-relevant,
+needs-details, no-title, or screen-out. Screen-out requires a confident existing
+exclusion type, reason and exact title quote for an obvious exclusion; retain
+ambiguous and missing titles.
+Do not reject broad keywords such as reliability, security, performance or Voice
+Access. No title alone proves a defect, missing test or executor feasibility.
+The existing title index/decision/materialization helpers are optional audit/export
+tools, not mandatory preselection for full-record batches. The separate batch
+validator checks exact membership/accounting, not semantic truth.
+Full retained bodies still require review.
+Keep excluded title/reason audit separate and original evidence immutable.
+Track exact batch/source hashes and every record through local FILTER consolidation;
+missing, duplicate or conflicting results cannot silently qualify. Collector
+preserves evidence; proposer receives consolidated, source-bound analysis.
 
 Use the configured review method. Until the supplied prompt's manual-review
 requirement is resolved, do not silently substitute agent review for a required

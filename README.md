@@ -52,6 +52,11 @@ on that host.
 
 ## Devbox repository setup
 
+This optional full product-development setup is not a prerequisite for the
+local controller's existing-Agency FILTER path. Account-free pilot checks above
+need no product checkout. Configure product repositories only for authorized
+repository work; E2E setup is separate from the integration-first milestone.
+
 From a new clone, install locked dependencies, initialize machine-local product
 checkouts, qualify repository skills, run configuration diagnostics, execute the
 complete offline check and run the synthetic demo with one command:
@@ -137,7 +142,24 @@ roles, not four installed daemons. Skills are procedures, **not permission or
 process boundaries**. Configuration and the local ledger survive conversations.
 App-native sessions are temporary isolated execution contexts, never agent IDs
 or the sole state store. Same-session automation is not the target architecture.
-Agency is deferred.
+The current upstream milestone uses a local controller/ledger with explicitly
+selected existing Agency FILTER execution and the
+[essential local read-only analysis policy](AGENCY-EXECUTOR.md#essential-local-read-only-filter-policy).
+It does not require shared 1JS runner changes. Missing Agency task selection
+blocks this route rather than invoking a local-model fallback. The endpoint is
+accepted complete-cohort consolidation and the colleague's existing held
+handoff, not proposer execution or a product integration-test pass.
+
+**Observed scope:** one 15-member canary was accepted against exact
+request/result/source-bound execution: 7 reviewed records, 8 title exclusions
+and 5 candidate analyses (2 deferred E2E, 3 integration, including 1 unblocked
+gap). The user reduced execution to that one batch; the remaining 6 batches
+were not run, not failures. There is no complete 94-member cohort handoff,
+product integration-test pass, periodic-readiness or collection-completeness
+claim. Partial workplace-message coverage and unavailable incident coverage
+remain limitations. Unknown publication effects and final checkout observations
+remain unknown, not verified zero effects or a sandbox guarantee. Only this
+sanitized aggregate is published; no private execution artifacts are included.
 
 See [APP-NATIVE.md](APP-NATIVE.md) for exact command/receipt/claim/result contracts,
 [the schema](scaffold/contracts.schema.json) for portable records, and
@@ -244,6 +266,20 @@ The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 
 ## Safety invariants
+
+Agent 2 FILTER owns loose, high-recall title screening. The
+[offline batching flow](APP-NATIVE.md#complete-record-filter-batches)
+uses complete-record batches under explicit verified or user-approved bounded
+estimate budgets, preserving related
+context and consolidating all source-version results locally before proposer
+handoff. Ambiguous and absent titles retain details; only obvious policy
+exclusions may screen out, with typed reasons and title quotes. Titles establish
+neither missing coverage nor executor feasibility. Existing
+[title-first helpers](APP-NATIVE.md#title-first-filter-screening) remain optional
+audit/selective-export tools, not a lazy-input prerequisite. Batch preparation,
+membership checks and consolidation do not launch hosted jobs. Main flow/state remain
+local. E2E execution/setup is deferred independently; relevant E2E findings and
+coverage facts remain in the audit/handoff rather than being excluded.
 
 - All 14 exclusions in the schema apply to **both defect and improvement**
   handoffs. Excluded evidence is audit-only. Functional classification is not
@@ -371,6 +407,50 @@ before push and Draft PR creation. Exhausted failed rounds may create only a
 clearly marked failed Draft PR under the configured policy. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
 network access, push or PR creation.
+
+### FILTER-to-proposer handoff
+
+`submit-filter-handoff` is the production bridge from the complete-record
+`filter-consolidation-v1` flow to the same planning, repository-skill,
+validation, push and Draft PR controller exercised by the reviewed-handoff E2E.
+It accepts only a complete held consolidation with one unblocked selected
+candidate, reloads the exact manifest and result receipts, imports the original
+authenticated evidence and capture bytes, and requires the selected repository
+revision to match the current repository-skill qualification. It never converts
+the result into synthetic fixture evidence and does not accept a caller-supplied
+review, repository or source revision.
+
+The input contains only the immutable FILTER binding and the repository
+capability used for routing:
+
+```json
+{
+  "format": "filter-proposer-handoff-v1",
+  "filter": {
+    "manifestPath": "C:\\private\\filter-batches.json",
+    "resultPaths": [
+      "C:\\private\\filter-result-1.json",
+      "C:\\private\\filter-result-2.json"
+    ]
+  },
+  "routing": {
+    "capability": "integration-test-authoring",
+    "requestedOutcome": "add-or-update-tests"
+  }
+}
+```
+
+Prepare without repository effects:
+
+```powershell
+npm run submit:filter-handoff -- --file .\filter-handoff.local.json --config .\pilot.local.json --prepare
+```
+
+Execution remains a separate operator decision:
+
+```powershell
+npm run submit:filter-handoff -- --file .\filter-handoff.local.json --config .\pilot.local.json --execute --authorize-commit --authorize-push --authorize-draft-pr
+```
 
 Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
 `pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across

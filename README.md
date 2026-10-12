@@ -326,12 +326,15 @@ provenance, reviewer/exclusion/classification decisions and the requested
 repository capability. `src/reviewed-handoff.js` is the production controller
 boundary: it validates the receipt, materializes linked ledger records
 idempotently, invokes normal planning/routing/assignment and dispatch, and owns
-all repository side effects. `src/downstream-e2e.js` is only a thin adapter.
+all repository side effects. `submit-reviewed-handoff` is the production-named
+thin CLI boundary; it does not add orchestration or model permissions.
+`src/downstream-e2e.js` and the `downstream-e2e` command remain compatibility
+adapters for the deterministic E2E.
 
 Prepare the handoff without launching a worker or creating repository effects:
 
 ```powershell
-npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
+npm run submit:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
 ```
 
 An authorized operator may run the real downstream repository path only after
@@ -339,7 +342,7 @@ setup/qualification and separate acknowledgement of synthetic input, commit,
 push and Draft PR effects:
 
 ```powershell
-npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
+npm run submit:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.

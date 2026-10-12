@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { configAt, hash } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
@@ -120,6 +121,22 @@ test('downstream adapter delegates to the production reviewed-handoff controller
   assert.doesNotMatch(source, /ledger\.|recordType|planImprovement|exclusionsChecked/);
   const prepared = prepareReviewedHandoffE2E(config, ledger, fixture);
   assert.equal(prepared.receipt.id, fixture.id);
+});
+
+test('submit-reviewed-handoff CLI uses the production controller path', async t => {
+  const { root, config } = await setup(t);
+  const configPath = join(root, 'pilot.json');
+  const fixturePath = join(root, 'reviewed-handoff.json');
+  writeFileSync(configPath, JSON.stringify(config));
+  writeFileSync(fixturePath, JSON.stringify(fixture));
+  const output = spawnSync(process.execPath, [
+    'src\\cli.js', 'submit-reviewed-handoff',
+    '--file', fixturePath, '--config', configPath, '--prepare'
+  ], { encoding: 'utf8' });
+  assert.equal(output.status, 0, output.stderr);
+  const result = JSON.parse(output.stdout);
+  assert.equal(result.receipt.id, fixture.id);
+  assert.equal(result.job.state, 'prepared');
 });
 
 test('the same reviewed handoff receipt is idempotent', async t => {

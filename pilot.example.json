@@ -51,6 +51,11 @@
       "baseRef": null,
       "qualificationRefresh": "fetch",
       "provisionTimeoutMs": 900000,
+      "sparseCheckoutPaths": [
+        ".github/skills/author-declarative-e2e-test",
+        "ooui/apps/cross-office-client-e2e",
+        "ooui/apps/excel-agent-declarative-e2e"
+      ],
       "remote": "https://dev.azure.com/office/Office/_git/1JS",
       "allowedWritePrefixes": [
         "ooui/apps/cross-office-client-e2e/scenarios",

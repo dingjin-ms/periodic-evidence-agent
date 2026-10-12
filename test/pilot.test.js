@@ -403,6 +403,20 @@ test('repository provisioning timeout must be a positive integer', async t => {
   repo.provisionTimeoutMs = 900000;
   assert.equal(repoFor(config, repo.id).provisionTimeoutMs, 900000);
 });
+test('sparse provisioning materializes configured directories and keeps bounded listings', async t => {
+  const { config, job, repo, assignment, g } = await fixture(t);
+  mkdirSync(join(repo.referenceCheckout, 'unrelated'), { recursive: true });
+  writeFileSync(join(repo.referenceCheckout, 'unrelated', 'large.js'), 'export const unrelated = true;\n');
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Add unrelated fixture']);
+  repo.sparseCheckoutPaths = ['src'];
+  const { workspace } = await provision(config, job, repo);
+  assert.equal(existsSync(join(workspace, 'src', 'value.js')), true);
+  assert.equal(existsSync(join(workspace, 'unrelated', 'large.js')), false);
+  const tools = new WorkerTools(config, assignment, workspace);
+  assert.equal((await tools.list()).includes('src/value.js'), true);
+});
 test('trusted qualification fetches its exact revision before isolated checkout', async t => {
   const { config, job, repo, g } = await fixture(t);
   const revision = (await g(['rev-parse', 'HEAD'])).stdout.trim();

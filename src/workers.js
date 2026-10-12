@@ -37,6 +37,12 @@ export function repoFor(config, id) {
   requireThat(isAbsolute(repo.referenceCheckout) && repo.baseRef && repo.remote, 'Repository reference/base/remote is unresolved');
   if (repo.provisionTimeoutMs !== undefined)
     positive(repo.provisionTimeoutMs, `${id}.provisionTimeoutMs`);
+  if (repo.sparseCheckoutPaths !== undefined)
+    requireThat(Array.isArray(repo.sparseCheckoutPaths) && repo.sparseCheckoutPaths.length > 0 &&
+      repo.sparseCheckoutPaths.every(path => typeof path === 'string' && path.length > 0 &&
+        !isAbsolute(path) && !path.includes(':') && !path.includes('\0') &&
+        !path.split(/[\\/]/).includes('..')),
+    `${id}.sparseCheckoutPaths must contain safe relative directories`);
   requireThat((repo.allowedWritePrefixes?.length || repo.allowedWriteFiles?.length) &&
     Array.isArray(repo.validationGates), 'Repository write bounds and gates are required');
   return repo;
@@ -145,6 +151,13 @@ async function fetchQualifiedRevision(config, workspace, repo, revision,
   await git(workspace, ['fetch', '--no-tags', 'origin', revision], env, timeout);
   await git(workspace, ['cat-file', '-e', `${revision}^{tree}`], process.env, timeout);
 }
+async function configureSparseCheckout(workspace, repo, timeout) {
+  if (!repo.sparseCheckoutPaths?.length) return;
+  await git(workspace, ['sparse-checkout', 'init', '--cone', '--sparse-index'],
+    process.env, timeout);
+  await git(workspace, ['sparse-checkout', 'set', '--cone', '--',
+    ...repo.sparseCheckoutPaths], process.env, timeout);
+}
 export async function provision(config, job, repo, qualification = null, dependencies = {}) {
   const root = join(config.stateDirectory, 'workspaces');
   const timeout = repo.provisionTimeoutMs ?? defaultGitTimeoutMs;
@@ -164,6 +177,7 @@ export async function provision(config, job, repo, qualification = null, depende
   if (qualification?.qualificationSource === 'trusted-remote')
     await (dependencies.fetchQualifiedRevision ?? fetchQualifiedRevision)(
       config, workspace, repo, baseRevision, dependencies.getToken, timeout);
+  await configureSparseCheckout(workspace, repo, timeout);
   await git(workspace, ['checkout', '-b', `pilot/${job.id}`, baseRevision],
     checkoutEnvironment(), timeout);
   return { workspace, baseRevision };
@@ -197,7 +211,9 @@ export class WorkerTools {
   }
   async list() {
     this.use('pilot_list');
-    const paths = (await git(this.workspace, ['ls-files', '-z'])).split('\0').filter(Boolean);
+    const args = this.repo.sparseCheckoutPaths?.length
+      ? ['ls-files', '--sparse', '-z'] : ['ls-files', '-z'];
+    const paths = (await git(this.workspace, args)).split('\0').filter(Boolean);
     requireThat(paths.length <= 200000, 'Repository file list too large', 'blocked-budget');
     return paths;
   }
@@ -361,9 +377,13 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       let cleanupError = null;
       const residualPaths = [];
       try {
+        const timeout = repo.provisionTimeoutMs ?? defaultGitTimeoutMs;
         await git(validationRoot,
-          ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, validationWorkspace]);
-        await git(validationWorkspace, ['checkout', '--detach', revision], checkoutEnvironment());
+          ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, validationWorkspace],
+          process.env, timeout);
+        await configureSparseCheckout(validationWorkspace, repo, timeout);
+        await git(validationWorkspace, ['checkout', '--detach', revision],
+          checkoutEnvironment(), timeout);
         if (privateProfile) {
           mkdirSync(dirname(privateProfile), { recursive: true });
           writeFileSync(privateProfile, profile.bytes, { mode: 0o600 });

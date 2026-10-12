@@ -50,6 +50,7 @@
       "referenceCheckout": null,
       "baseRef": null,
       "qualificationRefresh": "fetch",
+      "provisionTimeoutMs": 900000,
       "remote": "https://dev.azure.com/office/Office/_git/1JS",
       "allowedWritePrefixes": [
         "ooui/apps/cross-office-client-e2e/scenarios",

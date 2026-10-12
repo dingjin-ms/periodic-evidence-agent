@@ -15,13 +15,14 @@ import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserve
 
 const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
+const defaultGitTimeoutMs = 120000;
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
-async function git(cwd, args, env = process.env) {
+async function git(cwd, args, env = process.env, timeout = defaultGitTimeoutMs) {
   return (await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
-    '-c', 'protocol.file.allow=always', ...args], cwd, 120000, env)).stdout.trim();
+    '-c', 'protocol.file.allow=always', ...args], cwd, timeout, env)).stdout.trim();
 }
 async function workspaceChanges(cwd, baseRevision = null) {
   const diffArgs = ['diff', '--name-only'];
@@ -34,6 +35,8 @@ export function repoFor(config, id) {
   const repo = config.repositories.find(r => r.id === id);
   requireThat(repo?.owner && repo.routingApproved === true, `Repository ${id} ownership is unresolved`);
   requireThat(isAbsolute(repo.referenceCheckout) && repo.baseRef && repo.remote, 'Repository reference/base/remote is unresolved');
+  if (repo.provisionTimeoutMs !== undefined)
+    positive(repo.provisionTimeoutMs, `${id}.provisionTimeoutMs`);
   requireThat((repo.allowedWritePrefixes?.length || repo.allowedWriteFiles?.length) &&
     Array.isArray(repo.validationGates), 'Repository write bounds and gates are required');
   return repo;
@@ -134,16 +137,17 @@ export function requireCurrentAssignment(config, ledger, investigation, assignme
   return rebuilt;
 }
 async function fetchQualifiedRevision(config, workspace, repo, revision,
-  getToken = adoAccessToken) {
+  getToken = adoAccessToken, timeout = defaultGitTimeoutMs) {
   const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote);
   const env = adoRemote
     ? adoGitEnvironment(await getToken(config, 'ADO qualified revision fetch'))
     : process.env;
-  await git(workspace, ['fetch', '--no-tags', 'origin', revision], env);
-  await git(workspace, ['cat-file', '-e', `${revision}^{tree}`]);
+  await git(workspace, ['fetch', '--no-tags', 'origin', revision], env, timeout);
+  await git(workspace, ['cat-file', '-e', `${revision}^{tree}`], process.env, timeout);
 }
 export async function provision(config, job, repo, qualification = null, dependencies = {}) {
   const root = join(config.stateDirectory, 'workspaces');
+  const timeout = repo.provisionTimeoutMs ?? defaultGitTimeoutMs;
   mkdirSync(root, { recursive: true });
   const workspace = join(root, job.session_id);
   const relativeToReference = relative(resolve(repo.referenceCheckout), workspace);
@@ -154,12 +158,14 @@ export async function provision(config, job, repo, qualification = null, depende
   requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Invalid base revision');
   if (qualification?.baseRevision)
     await git(repo.referenceCheckout, ['cat-file', '-e', `${qualification.baseRevision}^{commit}`]);
-  await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', repo.referenceCheckout, workspace]);
-  await git(workspace, ['remote', 'set-url', 'origin', repo.remote]);
+  await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', repo.referenceCheckout, workspace],
+    process.env, timeout);
+  await git(workspace, ['remote', 'set-url', 'origin', repo.remote], process.env, timeout);
   if (qualification?.qualificationSource === 'trusted-remote')
     await (dependencies.fetchQualifiedRevision ?? fetchQualifiedRevision)(
-      config, workspace, repo, baseRevision, dependencies.getToken);
-  await git(workspace, ['checkout', '-b', `pilot/${job.id}`, baseRevision], checkoutEnvironment());
+      config, workspace, repo, baseRevision, dependencies.getToken, timeout);
+  await git(workspace, ['checkout', '-b', `pilot/${job.id}`, baseRevision],
+    checkoutEnvironment(), timeout);
   return { workspace, baseRevision };
 }
 export function checkoutEnvironment() {

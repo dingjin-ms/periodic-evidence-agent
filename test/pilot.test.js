@@ -14,7 +14,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
@@ -395,6 +395,13 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, before);
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
+});
+test('repository provisioning timeout must be a positive integer', async t => {
+  const { config, repo } = await fixture(t);
+  repo.provisionTimeoutMs = 0;
+  assert.throws(() => repoFor(config, repo.id), /provisionTimeoutMs must be a positive integer/);
+  repo.provisionTimeoutMs = 900000;
+  assert.equal(repoFor(config, repo.id).provisionTimeoutMs, 900000);
 });
 test('trusted qualification fetches its exact revision before isolated checkout', async t => {
   const { config, job, repo, g } = await fixture(t);

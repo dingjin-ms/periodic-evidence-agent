@@ -20,8 +20,10 @@ async function git(cwd, args, env = process.env) {
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
     '-c', 'protocol.file.allow=always', ...args], cwd, 120000, env)).stdout.trim();
 }
-async function workspaceChanges(cwd) {
-  const tracked = (await git(cwd, ['diff', '--name-only'])).split(/\r?\n/).filter(Boolean);
+async function workspaceChanges(cwd, baseRevision = null) {
+  const diffArgs = ['diff', '--name-only'];
+  if (baseRevision) diffArgs.push(baseRevision);
+  const tracked = (await git(cwd, diffArgs)).split(/\r?\n/).filter(Boolean);
   const untracked = (await git(cwd, ['ls-files', '--others', '--exclude-standard'])).split(/\r?\n/).filter(Boolean);
   return [...new Set([...tracked, ...untracked].map(path => path.replaceAll('\\', '/')))].sort();
 }
@@ -428,7 +430,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       const changedFiles = await workspaceChanges(current.workspace);
       requireThat(changedFiles.length > 0, 'No changes were proposed', 'blocked-result');
       if (proposal.skillExecution)
-        requireThat(json(changedFiles) === json(proposal.skillExecution.changedFiles),
+        requireThat(json(await workspaceChanges(current.workspace, current.base_revision)) ===
+          json(proposal.skillExecution.changedFiles),
           'Repository skill changed-file report does not match the isolated workspace', 'blocked-result');
       requireThat(repo.commitIdentity?.name && repo.commitIdentity?.email, 'Explicit commit identity is required');
       const commitOperation = `${id}:commit:${authoring.round}`;

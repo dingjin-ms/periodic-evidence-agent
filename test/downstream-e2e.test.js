@@ -285,6 +285,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
           assert.deepEqual(authoring.validationFeedback, []);
           toolkit.write('test\\behavior.test.js',
             "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 2));\n");
+          toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
         } else {
           assert.equal(authoring.validationFeedback[0].status, 'failed');
           assert.equal(authoring.validationFeedback[0].exitCode, 1);
@@ -301,9 +302,9 @@ test('controller validation failures feed a bounded repository-skill repair loop
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',
-            changedFiles: ['test/behavior.test.js'],
+            changedFiles: ['test/behavior-card.md', 'test/behavior.test.js'],
             testsAddedOrUpdated: ['fixture behavior'],
-            behaviorCardsAddedOrUpdated: [],
+            behaviorCardsAddedOrUpdated: ['test/behavior-card.md'],
             unknowns: [],
             needsHumanDecision: false
           }

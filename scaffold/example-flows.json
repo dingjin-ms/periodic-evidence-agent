@@ -100,7 +100,7 @@
           ]
         }
       ],
-      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
+      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_search": 0, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
       "skillExecution": null,
       "blocker": null, "nextAction": "The synthetic worker owns monitoring; no requeue or merge."
     },
@@ -124,7 +124,7 @@
           ]
         }
       ],
-      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
+      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_search": 0, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
       "skillExecution": null,
       "blocker": null, "nextAction": "Leave the PR a draft. Merge policy is undetermined."
     },

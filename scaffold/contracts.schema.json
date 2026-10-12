@@ -765,9 +765,10 @@
             "byTool": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["pilot_list", "pilot_read", "pilot_write", "pilot_finish"],
+              "required": ["pilot_list", "pilot_search", "pilot_read", "pilot_write", "pilot_finish"],
               "properties": {
                 "pilot_list": { "type": "integer", "minimum": 0 },
+                "pilot_search": { "type": "integer", "minimum": 0 },
                 "pilot_read": { "type": "integer", "minimum": 0 },
                 "pilot_write": { "type": "integer", "minimum": 0 },
                 "pilot_finish": { "type": "integer", "minimum": 0 }

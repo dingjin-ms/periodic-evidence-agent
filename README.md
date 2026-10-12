@@ -372,11 +372,13 @@ clearly marked failed Draft PR under the configured policy. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
 network access, push or PR creation.
 
-Worker calls to `pilot_list`, `pilot_read`, `pilot_write` and `pilot_finish`
-share one `workerMaxToolCalls` budget across the initial authoring and every
-repair round. Each worker result records the limit, total/remaining calls,
-per-tool counts and per-round usage so operators can replace bootstrap limits
-with an observed percentile plus explicit headroom.
+Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
+`pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
+the initial authoring and every repair round. Search and ranged reads are
+repository-local, read-only and bounded; they do not grant shell or network
+access. Each worker result records the limit, total/remaining calls, per-tool
+counts and per-round usage so operators can replace bootstrap limits with an
+observed percentile plus explicit headroom.
 
 `test/fixtures/reviewed-handoff/validation-repair-drill.json` is the deterministic
 failed-to-passed fixture. Its first revision intentionally fails the repository

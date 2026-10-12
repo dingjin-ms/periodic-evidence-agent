@@ -413,6 +413,9 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   tools.write('src\\new.js', 'export const value = 2;');
   assert.ok(existsSync(join(workspace, 'src', 'new.js')));
   assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
+  assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
+  assert.ok((await tools.search('value = 1', 'src')).some(match =>
+    match.includes('src/value.js')));
 });
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);

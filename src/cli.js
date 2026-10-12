@@ -36,7 +36,7 @@ function failedOutcome(result) {
 const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
-  node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.json [--approve-other-author]
+  node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor

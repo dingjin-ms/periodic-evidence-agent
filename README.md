@@ -294,9 +294,9 @@ findings, validation and residual risks. It contains no source evidence and is
 posted as a structured PR comment through the already authenticated GitHub CLI.
 
 ```powershell
-Copy-Item .\scaffold\pr-review-receipt.example.json .\review-receipt.json
+Copy-Item .\scaffold\pr-review-receipt.example.json .\review-receipt.local.json
 # Fill in the exact PR head/base SHAs and the completed review results.
-npm run pilot -- pr-review-publish --repo OWNER/REPO --pr NUMBER --file .\review-receipt.json
+npm run pilot -- pr-review-publish --repo OWNER/REPO --pr NUMBER --file .\review-receipt.local.json
 npm run pilot -- pr-review-verify --repo OWNER/REPO --pr NUMBER
 ```
 
@@ -304,8 +304,9 @@ Automatic publication is limited to the signed-in user's own PR. Another
 author's PR requires explicit approval plus `--approve-other-author`.
 Verification fails closed when the PR head/base changed, no matching receipt
 exists, blocking findings remain, or any recorded validation failed or was not
-run. The command complements required CI and branch protection; it does not
-merge or alter the PR.
+run. The ignored `*.local.json` name prevents the local receipt from entering
+the package. The command complements required CI and branch protection; it does
+not merge or alter the PR.
 
 ## Local package and eventual publication
 

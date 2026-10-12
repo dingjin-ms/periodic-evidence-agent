@@ -1,4 +1,5 @@
 import { hash, json, now, requireThat, validateRecord } from './common.js';
+import { requireEligibleImprovementInvestigation } from './review-decisions.js';
 
 function texts(values, name) {
   requireThat(Array.isArray(values) && values.length > 0 &&
@@ -18,10 +19,7 @@ export function recordAreaToImprove(ledger, input) {
   const investigationIds = texts(input.investigationIds, 'investigationIds');
   const investigations = investigationIds.map(id => ledger.get('investigation', id));
   requireThat(investigations.every(Boolean), 'Area-to-improve references an unknown investigation', 'invalid-record');
-  requireThat(investigations.every(investigation =>
-    investigation.handoffEligibility === 'eligible' && investigation.reportEligibility === 'included' &&
-    investigation.classification === 'functional' && investigation.exclusionReasons.length === 0),
-  'Excluded or incomplete investigations cannot create an area-to-improve', 'blocked-exclusion');
+  investigations.forEach(requireEligibleImprovementInvestigation);
   requireThat(investigations.every(investigation =>
     ledger.get('investigation', investigation.id)?.version === investigation.version),
   'Area-to-improve references a superseded investigation', 'blocked-reconciliation');

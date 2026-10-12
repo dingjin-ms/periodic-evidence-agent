@@ -1,0 +1,85 @@
+{
+  "format": "reviewed-handoff-v1",
+  "id": "onenote-bootstrap-progress-coverage",
+  "version": 2,
+  "reviewedAt": "2026-10-12T03:00:00.000Z",
+  "source": {
+    "kind": "fixture",
+    "provenance": "synthetic",
+    "namespace": "reviewed-handoff/fixture",
+    "recordId": "onenote-bootstrap-progress-coverage",
+    "revision": "2"
+  },
+  "evidence": {
+    "title": "OneNote bootstrap progress lacks focused app-level integration coverage",
+    "summary": "Synthetic reviewed evidence for exercising the reviewed-handoff repository-change workflow; no production incident or live source access is claimed.",
+    "fields": {
+      "reportedExperience": "OneNote has an observable interval before the first normal Chain-of-Actions event.",
+      "establishedBehavior": "The OneNote app emits gated, static and privacy-safe bootstrap progress updates.",
+      "requestedEvidence": "Protect the established app wiring, gate behavior, lifecycle ordering and transport output with repository-native integration coverage."
+    }
+  },
+  "review": {
+    "method": "agent-evidence-review",
+    "reviewer": "synthetic-reviewed-handoff-fixture",
+    "observedBehavior": "Established OneNote bootstrap-progress behavior lacks a focused app-level integration contract and behavior card.",
+    "expectedBehavior": "Repository-native integration coverage protects the established OneNote bootstrap-progress lifecycle without requiring production behavior changes.",
+    "hypotheses": [
+      "The existing OneNote integration harness can exercise the real app composition and capture progress transport.",
+      "The missing seam is focused integration coverage rather than production implementation."
+    ],
+    "counterEvidence": [
+      "Unit coverage may already protect the emitter and factory in isolation.",
+      "Nearby OneNote integration tests may prove harness reuse without covering bootstrap progress."
+    ],
+    "classification": "functional",
+    "defectConfirmation": "unconfirmed",
+    "reportEligibility": "included",
+    "handoffEligibility": "eligible",
+    "exclusionsChecked": [
+      "task",
+      "feature_enhancement",
+      "tracking",
+      "security_governance_only",
+      "accessibility_only",
+      "telemetry_only",
+      "performance_measurement_only",
+      "test_infrastructure",
+      "cosmetic_ui_only",
+      "copy_text_only",
+      "localization_only",
+      "by_design",
+      "confirmed_non_bug",
+      "service_reliability_only"
+    ],
+    "exclusionReasons": [],
+    "rationale": "The reviewed handoff requests source-bound test coverage for established product behavior and is eligible for the configured repository-native integration-test workflow.",
+    "confidence": 0.95,
+    "repoIds": ["office-agent"],
+    "existingFixes": [],
+    "nextAction": "Use the configured repository-native integration-test authoring skill to inspect current OneNote coverage. If the reviewed gap remains, add the focused contract at agents/office-agent/tests/integration/contracts/apps/onenote/omni-onenote-bootstrap-progress.contract.test.ts and its behavior card at agents/office-agent/tests/integration/behavior-cards/apps/onenote/omni-onenote-bootstrap-progress.behavior-card.md without changing production behavior. Both parent directories already exist on the qualified base revision."
+  },
+  "planning": {
+    "improvement": {
+      "category": "missing-test-coverage",
+      "theme": "OneNote bootstrap progress app-level integration coverage",
+      "rationale": "Protect the established OneNote bootstrap-progress seam with repository-native integration coverage.",
+      "priority": "medium",
+      "repoIds": ["office-agent"],
+      "capabilities": ["integration-test-authoring"]
+    },
+    "testCoverage": {
+      "repoId": "office-agent",
+      "capability": "integration-test-authoring",
+      "sourceRevision": "qualified-base",
+      "searchStatus": "complete",
+      "existingTests": [],
+      "coverageGaps": [
+        "No focused app-level integration contract and behavior card are linked to this reviewed handoff."
+      ],
+      "unknowns": [],
+      "rationale": "The fixture represents a completed review handoff; the repository-native skill must inspect the qualified source revision before proposing changes."
+    },
+    "requestedOutcome": "add-or-update-tests"
+  }
+}

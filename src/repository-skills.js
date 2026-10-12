@@ -3,9 +3,23 @@ import { isAbsolute } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { boundedPath, hash, json, requireThat } from './common.js';
+import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
 export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
+
+export function repositoryValidationContract(repo) {
+  const version = repo.validationContractVersion ?? '1.0';
+  const gates = (repo.validationGates ?? []).map(gate => ({
+    id: gate.id,
+    approved: gate.approved === true,
+    executable: gate.executable,
+    args: gate.args,
+    timeoutMs: gate.timeoutMs,
+    profileSha256: gate.profileSha256 ?? null
+  }));
+  return { version, sha256: hash(json(gates)) };
+}
 
 async function execute(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
@@ -45,7 +59,10 @@ export function pinSkillQualification(receipt) {
     baseRevision: receipt.baseRevision,
     skillSha256: receipt.skillSha256,
     skillPath: receipt.skillPath,
-    remote: receipt.remote
+    remote: receipt.remote,
+    qualificationSource: receipt.qualificationSource,
+    validationContractVersion: receipt.validationContractVersion,
+    validationContractSha256: receipt.validationContractSha256
   };
 }
 
@@ -65,6 +82,11 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
       .remote.replace(/\/$/, '').toLowerCase() &&
     qualification.baseRevision === sourceRevision,
   'Repository skill qualification does not match the isolated source revision', 'blocked-reconciliation');
+  const contract = repositoryValidationContract(
+    config.repositories.find(repo => repo.id === assignment.repoId));
+  requireThat(qualification.validationContractVersion === contract.version &&
+    qualification.validationContractSha256 === contract.sha256,
+  'Repository validation contract changed after skill qualification', 'blocked-reconciliation');
   const path = boundedPath(workspace, binding.skillPath);
   requireThat(statSync(path).isFile() && statSync(path).size <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
@@ -133,25 +155,40 @@ export function normalizeSkillResult(loaded, result) {
   return normalized;
 }
 
-export async function qualifyRepositorySkill(config, repoId, capability, bindingId = null, runCommand = execute) {
+export async function qualifyRepositorySkill(config, repoId, capability, bindingId = null,
+  runCommand = execute, getToken = adoAccessToken) {
   const { repo, binding } = resolveSkillBinding(config, repoId, capability, bindingId,
     { requireQualified: false, requireEnabled: false, requireRouted: false });
   requireThat(isAbsolute(repo.referenceCheckout) && repo.baseRef && repo.remote,
     `Repository ${repoId} reference checkout, base and remote are required for qualification`);
   const run = args => runCommand('git', ['-c', 'core.hooksPath=', ...args], repo.referenceCheckout);
-  const baseRevision = (await run(['rev-parse', '--verify', `${repo.baseRef}^{commit}`])).stdout.trim();
-  requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Repository skill qualification resolved an invalid base revision');
   const remote = (await run(['remote', 'get-url', 'origin'])).stdout.trim().replace(/\/$/, '');
   requireThat(remote.toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
     `Repository ${repoId} origin does not match its configured remote`, 'blocked-scope');
+  const refresh = repo.qualificationRefresh ?? 'local';
+  if (refresh === 'fetch') {
+    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', repo.baseRef];
+    const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(remote);
+    const env = adoRemote
+      ? adoGitEnvironment(await getToken(config, 'ADO repository skill qualification'))
+      : process.env;
+    await runCommand('git', args, repo.referenceCheckout, 120000, env);
+  }
+  const revisionRef = refresh === 'fetch' ? 'FETCH_HEAD' : repo.baseRef;
+  const baseRevision = (await run(['rev-parse', '--verify', `${revisionRef}^{commit}`])).stdout.trim();
+  requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Repository skill qualification resolved an invalid base revision');
   await run(['cat-file', '-e', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`]);
   const content = (await run(['show', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`])).stdout;
   requireThat(Buffer.byteLength(content) <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
+  const validationContract = repositoryValidationContract(repo);
   return {
     repoId, bindingId: binding.id, capability: binding.capability,
     referenceCheckout: repo.referenceCheckout, remote, baseRef: repo.baseRef, baseRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/'), skillSha256: hash(content),
+    qualificationSource: refresh === 'fetch' ? 'trusted-remote' : 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     state: 'qualified-read-only', sideEffects: binding.sideEffects
   };
 }

@@ -15,11 +15,12 @@ import { qualifyRepositorySkill, skillQualificationId } from './repository-skill
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
+import { acceptReviewedHandoff } from './reviewed-handoff.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
-  ['setup', 'bootstrap-repo'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
+  ['setup', 'bootstrap-repo', 'submit-reviewed-handoff'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
 }
@@ -29,15 +30,18 @@ function options(name) {
 function failedOutcome(result) {
   if (Array.isArray(result)) return result.some(failedOutcome);
   if (!result || typeof result !== 'object') return false;
-  return Boolean(result.error) || ['blocked', 'blocked-auth', 'partial', 'partial-or-blocked'].includes(result.state) ||
+  return Boolean(result.error) ||
+    ['blocked', 'blocked-auth', 'partial', 'partial-or-blocked', 'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed'].includes(result.outcome) ||
-    ['collection', 'reviews', 'workers'].some(key => failedOutcome(result[key]));
+    ['collection', 'reviews', 'workers', 'result'].some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
+  node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
+  node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -223,6 +227,23 @@ try {
         requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
         result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
+        break;
+      }
+      case 'submit-reviewed-handoff': {
+        requireThat(args.includes('--prepare') !== args.includes('--execute'),
+          `${action} requires exactly one of --prepare or --execute`);
+        const handoff = input();
+        const handoffOptions = {
+          execute: args.includes('--execute'),
+          authorizeSynthetic: args.includes('--authorize-synthetic'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        };
+        result = await acceptReviewedHandoff(config, ledger, handoff, {
+          ...handoffOptions,
+          source: 'submit-reviewed-handoff'
+        });
         break;
       }
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;

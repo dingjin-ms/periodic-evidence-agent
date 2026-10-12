@@ -33,7 +33,13 @@ try {
     if (stage !== '0') throw new Error('Resolve index conflicts first');
     inspect(path, mode, oid, 'index');
   }
-  const commits = git(['rev-list', '--all']).trim().split(/\s+/).filter(Boolean);
+  let commits = [];
+  try {
+    git(['rev-parse', '--verify', '--quiet', 'HEAD']);
+    commits = git(['rev-list', 'HEAD']).trim().split(/\s+/).filter(Boolean);
+  } catch {
+    // A staged, not-yet-committed package has no HEAD history to inspect.
+  }
   for (const commit of commits) {
     for (const entry of git(['ls-tree', '-r', '-z', commit]).split('\0').filter(Boolean)) {
       const [header, path] = entry.split('\t');

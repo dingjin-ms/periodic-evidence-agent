@@ -215,7 +215,10 @@ For OfficeAgent, the qualified router entry is
 project root, delegates to `docs/skills/Integration-test-core/workflow.md` and
 auto-discovers the project shell. A read-only qualification can verify the
 configured checkout, origin, base revision and skill content fingerprint before
-routing or writes are enabled:
+routing or writes are enabled. Repositories configured with
+`qualificationRefresh: "fetch"` fetch the trusted remote ref first instead of
+assuming the local branch is current. The receipt binds that exact revision,
+the skill SHA-256 and the repository validation contract version/hash:
 
 ```powershell
 npm run pilot -- qualify-skill --repo office-agent `
@@ -226,7 +229,19 @@ npm run pilot -- qualify-skill --repo office-agent `
 
 Qualification does not approve ownership, write prefixes, validation gates,
 commit identity, push or draft PR creation. Ambiguous project names remain
-blocked; assignments must pin the repo-relative owner project.
+blocked; assignments must pin the repo-relative owner project. A changed skill
+or validation profile requires a new qualification and is used only by new
+assignments; an in-progress repair loop never changes contracts mid-run.
+
+The OA skill owns validation intent and failure interpretation: it selects the
+project runner, targeted tests, behavior-card checks and repair procedure. The
+controller owns execution and evidence. A validation gate may bind a versioned
+pipeline script using `profilePath`, `profileSha256` and the `{profile}`
+argument placeholder. The controller verifies the profile hash before every
+run, executes it outside the model tool surface, records the hash in the
+operation artifact and returns bounded diagnostics to the next skill round.
+The checked-in OneNote profile is
+`scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 
 ## Safety invariants
 
@@ -307,6 +322,68 @@ exists, blocking findings remain, or any recorded validation failed or was not
 run. The ignored `*.local.json` name prevents the local receipt from entering
 the package. The command complements required CI and branch protection; it does
 not merge or alter the PR.
+
+### Authorized reviewed-handoff submission
+
+The versioned `ReviewedHandoff` receipt is an upstream review decision, not a
+second review implementation. It carries explicit source-neutral fixture
+provenance, reviewer/exclusion/classification decisions and the requested
+repository capability. `src/reviewed-handoff.js` is the production controller
+boundary: it validates the receipt, materializes linked ledger records
+idempotently, invokes normal planning/routing/assignment and dispatch, and owns
+all repository side effects. `submit-reviewed-handoff` is the production-named
+thin CLI boundary; it does not add orchestration or model permissions. Tests
+invoke this same controller API and CLI rather than a separate E2E adapter.
+
+Prepare the handoff without launching a worker or creating repository effects:
+
+```powershell
+npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
+```
+
+An authorized operator may run the real reviewed-handoff repository path only after
+setup/qualification and separate acknowledgement of synthetic input, commit,
+push and Draft PR effects:
+
+```powershell
+npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
+```
+
+The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
+Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
+explicitly authorized synthetic receipt. A repository worker may follow a
+repository-native skill to author changes, but neither the worker nor skill
+receives shell, Git, network or PR permissions.
+
+After each authored revision, the controller commits it and runs the fixed
+approved validation gates in a fresh temporary checkout of the exact commit. A
+runner cannot validate changes it made during execution: changed source or HEAD
+is blocked and the temporary checkout is discarded. Explicitly classified
+infrastructure blockers may receive at most
+`limits.maxValidationInfrastructureRetries` fresh-checkout attempts; trust,
+profile-hash and policy failures are never auto-approved. A failed revision
+remains immutable validation
+evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
+bounded diagnostic tails to a new repository-skill repair round, commits the
+repair as a new revision and validates again. This is not a retry of the same
+validation operation. The final committed revision is independently validated
+before push and Draft PR creation. Exhausted failed rounds may create only a
+clearly marked failed Draft PR under the configured policy. Merge is always
+prohibited. Offline CI injects external model/PR boundaries and performs no
+network access, push or PR creation.
+
+Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
+`pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
+the initial authoring and every repair round. Search and ranged reads are
+repository-local, read-only and bounded; they do not grant shell or network
+access. Each worker result records the limit, total/remaining calls, per-tool
+counts and per-round usage so operators can replace bootstrap limits with an
+observed percentile plus explicit headroom.
+
+`test/fixtures/reviewed-handoff/validation-repair-drill.json` is the deterministic
+failed-to-passed fixture. Its first revision intentionally fails the repository
+gate; the next skill round consumes controller diagnostics, changes only the
+failing test, and is committed and validated as a distinct passing revision.
 
 ## Local package and eventual publication
 

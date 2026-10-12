@@ -11,6 +11,7 @@
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/workerResult" },
     { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/reviewedHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -217,7 +218,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "namespace", "recordId", "revision", "versionBasis", "provenance", "ownerConfirmation"],
           "properties": {
-            "kind": { "enum": ["ado", "icm", "workiq"] },
+            "kind": { "enum": ["ado", "icm", "workiq", "fixture"] },
             "namespace": { "$ref": "#/$defs/text" },
             "recordId": { "$ref": "#/$defs/text" },
             "revision": { "$ref": "#/$defs/nullableText" },
@@ -242,6 +243,10 @@
             {
               "if": { "properties": { "kind": { "const": "ado" } } },
               "then": { "properties": { "revision": { "$ref": "#/$defs/text" } } }
+            },
+            {
+              "if": { "properties": { "kind": { "const": "fixture" } } },
+              "then": { "properties": { "provenance": { "const": "synthetic" } } }
             },
             {
               "if": { "properties": { "provenance": { "const": "owner-provided" } } },
@@ -380,6 +385,112 @@
         }
       ]
     },
+    "reviewedHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "id", "version", "reviewedAt", "source", "evidence", "review", "planning"],
+      "properties": {
+        "format": { "const": "reviewed-handoff-v1" },
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "provenance", "namespace", "recordId", "revision"],
+          "properties": {
+            "kind": { "const": "fixture" },
+            "provenance": { "const": "synthetic" },
+            "namespace": { "type": "string", "pattern": "^reviewed-handoff/" },
+            "recordId": { "$ref": "#/$defs/text" },
+            "revision": { "$ref": "#/$defs/text" }
+          }
+        },
+        "evidence": {
+          "type": "object", "additionalProperties": false,
+          "required": ["title", "summary", "fields"],
+          "properties": {
+            "title": { "$ref": "#/$defs/text" },
+            "summary": { "$ref": "#/$defs/text" },
+            "fields": { "type": "object" }
+          }
+        },
+        "review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "reviewer", "observedBehavior", "expectedBehavior", "hypotheses",
+            "counterEvidence", "classification", "defectConfirmation", "reportEligibility",
+            "handoffEligibility", "exclusionsChecked", "exclusionReasons", "rationale", "confidence",
+            "repoIds", "existingFixes", "nextAction"],
+          "properties": {
+            "method": { "enum": ["agent-evidence-review", "human-review"] },
+            "reviewer": { "$ref": "#/$defs/text" },
+            "observedBehavior": { "$ref": "#/$defs/text" },
+            "expectedBehavior": { "$ref": "#/$defs/nullableText" },
+            "hypotheses": { "$ref": "#/$defs/texts" },
+            "counterEvidence": { "$ref": "#/$defs/texts" },
+            "classification": { "enum": ["functional", "nonfunctional", "unavailable"] },
+            "defectConfirmation": { "enum": ["unconfirmed", "confirmed", "ruled-out"] },
+            "reportEligibility": { "enum": ["included", "excluded", "unavailable"] },
+            "handoffEligibility": { "enum": ["eligible", "excluded", "needs-evidence"] },
+            "exclusionsChecked": {
+              "type": "array", "minItems": 14, "maxItems": 14, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/exclusion" }
+            },
+            "exclusionReasons": {
+              "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/exclusion" }
+            },
+            "rationale": { "$ref": "#/$defs/text" },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "repoIds": { "$ref": "#/$defs/texts" },
+            "existingFixes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/uri" } },
+            "nextAction": { "$ref": "#/$defs/text" }
+          }
+        },
+        "planning": {
+          "type": "object", "additionalProperties": false,
+          "required": ["improvement", "testCoverage", "requestedOutcome"],
+          "properties": {
+            "improvement": {
+              "type": "object", "additionalProperties": false,
+              "required": ["category", "theme", "rationale", "priority", "repoIds", "capabilities"],
+              "properties": {
+                "category": { "enum": ["missing-test-coverage", "behavior-drift", "repeated-failure", "test-maintainability", "other"] },
+                "theme": { "$ref": "#/$defs/text" },
+                "rationale": { "$ref": "#/$defs/text" },
+                "priority": { "enum": ["low", "medium", "high", "critical"] },
+                "repoIds": { "$ref": "#/$defs/texts" },
+                "capabilities": { "$ref": "#/$defs/texts" }
+              }
+            },
+            "testCoverage": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repoId", "capability", "sourceRevision", "searchStatus", "existingTests",
+                "coverageGaps", "unknowns", "rationale"],
+              "properties": {
+                "repoId": { "$ref": "#/$defs/text" },
+                "capability": { "$ref": "#/$defs/text" },
+                "sourceRevision": { "const": "qualified-base" },
+                "searchStatus": { "enum": ["complete", "partial", "not-run"] },
+                "existingTests": {
+                  "type": "array",
+                  "items": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["path", "identifier"],
+                    "properties": {
+                      "path": { "$ref": "#/$defs/text" },
+                      "identifier": { "$ref": "#/$defs/text" }
+                    }
+                  }
+                },
+                "coverageGaps": { "$ref": "#/$defs/texts" },
+                "unknowns": { "$ref": "#/$defs/texts" },
+                "rationale": { "$ref": "#/$defs/text" }
+              }
+            },
+            "requestedOutcome": { "$ref": "#/$defs/text" }
+          }
+        }
+      }
+    },
     "areaToImprove": {
       "type": "object", "additionalProperties": false,
       "required": ["recordType", "schemaVersion", "id", "version", "aggregationKey", "investigationIds", "evidenceIds", "category", "state", "observedBehavior", "expectedBehavior", "rationale", "priority", "repoIds", "capabilities", "createdAt", "updatedAt"],
@@ -495,13 +606,17 @@
         "skillBindingId": { "$ref": "#/$defs/text" },
         "skillQualification": {
           "type": "object", "additionalProperties": false,
-          "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote"],
+          "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote",
+            "qualificationSource", "validationContractVersion", "validationContractSha256"],
           "properties": {
             "qualificationId": { "$ref": "#/$defs/text" },
             "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
             "skillSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "skillPath": { "$ref": "#/$defs/text" },
-            "remote": { "$ref": "#/$defs/text" }
+            "remote": { "$ref": "#/$defs/text" },
+            "qualificationSource": { "enum": ["local-reference", "trusted-remote"] },
+            "validationContractVersion": { "$ref": "#/$defs/text" },
+            "validationContractSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
           }
         },
         "state": { "enum": ["prepared", "dispatched", "running", "blocked", "completed", "superseded"] },
@@ -560,7 +675,8 @@
     },
     "validation": {
       "type": "object", "additionalProperties": false,
-      "required": ["gateId", "sourceRevision", "commandOrRunUrl", "status", "artifactRefs", "owner", "nextCheckAt"],
+      "required": ["gateId", "sourceRevision", "commandOrRunUrl", "status", "artifactRefs",
+        "owner", "nextCheckAt", "attemptCount", "blockedReason"],
       "properties": {
         "gateId": { "$ref": "#/$defs/text" },
         "sourceRevision": { "$ref": "#/$defs/text" },
@@ -568,7 +684,16 @@
         "status": { "enum": ["not-run", "queued", "running", "passed", "failed", "blocked"] },
         "artifactRefs": { "$ref": "#/$defs/texts" },
         "owner": { "$ref": "#/$defs/text" },
-        "nextCheckAt": { "$ref": "#/$defs/nullableUtc" }
+        "nextCheckAt": { "$ref": "#/$defs/nullableUtc" },
+        "attemptCount": { "type": "integer", "minimum": 1 },
+        "blockedReason": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["runner-timeout", "runner-unavailable", "runner-mutated-source",
+              "validation-workspace-unavailable", "validation-profile-changed",
+              "validation-cleanup-failed"] }
+          ]
+        }
       },
       "allOf": [
         {
@@ -583,7 +708,9 @@
     },
     "workerResult": {
       "type": "object", "additionalProperties": false,
-      "required": ["recordType", "schemaVersion", "id", "assignmentId", "attemptId", "reportedAt", "outcome", "findings", "evidenceIds", "sourceRevision", "draftPR", "validation", "blocker", "nextAction"],
+      "required": ["recordType", "schemaVersion", "id", "assignmentId", "attemptId",
+        "reportedAt", "outcome", "findings", "evidenceIds", "sourceRevision", "draftPR",
+        "validation", "validationAttempts", "toolUsage", "skillExecution", "blocker", "nextAction"],
       "properties": {
         "recordType": { "const": "workerResult" },
         "schemaVersion": { "const": "1.0" },
@@ -610,6 +737,59 @@
           ]
         },
         "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },
+        "validationAttempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["round", "sourceRevision", "validation"],
+            "properties": {
+              "round": { "type": "integer", "minimum": 0 },
+              "sourceRevision": { "$ref": "#/$defs/text" },
+              "validation": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/validation" }
+              }
+            }
+          }
+        },
+        "toolUsage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["limit", "used", "remaining", "byTool", "rounds"],
+          "properties": {
+            "limit": { "type": "integer", "minimum": 1 },
+            "used": { "type": "integer", "minimum": 0 },
+            "remaining": { "type": "integer", "minimum": 0 },
+            "byTool": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pilot_list", "pilot_search", "pilot_read", "pilot_write", "pilot_finish"],
+              "properties": {
+                "pilot_list": { "type": "integer", "minimum": 0 },
+                "pilot_search": { "type": "integer", "minimum": 0 },
+                "pilot_read": { "type": "integer", "minimum": 0 },
+                "pilot_write": { "type": "integer", "minimum": 0 },
+                "pilot_finish": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "rounds": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["round", "used", "cumulativeUsed", "status"],
+                "properties": {
+                  "round": { "type": "integer", "minimum": 0 },
+                  "used": { "type": "integer", "minimum": 0 },
+                  "cumulativeUsed": { "type": "integer", "minimum": 0 },
+                  "status": { "enum": ["completed", "failed"] }
+                }
+              }
+            }
+          }
+        },
         "skillExecution": {
           "anyOf": [
             { "type": "null" },

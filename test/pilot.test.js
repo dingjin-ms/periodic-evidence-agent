@@ -16,7 +16,7 @@ import { collect, acceptReview, report, latestEvidence, reconcile, tick, previou
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
-import { skillQualificationId } from '../src/repository-skills.js';
+import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -105,6 +105,20 @@ test('portable scaffold config and all synthetic example records remain valid', 
   validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
   validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
 });
+test('worker-result audit fields and validation attempt metadata are mandatory', () => {
+  const examples = JSON.parse(readFileSync('scaffold/example-flows.json'));
+  const result = examples.records.find(record => record.recordType === 'workerResult');
+  for (const field of ['validationAttempts', 'toolUsage', 'skillExecution']) {
+    const invalid = structuredClone(result);
+    delete invalid[field];
+    assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
+  }
+  for (const field of ['attemptCount', 'blockedReason']) {
+    const invalid = structuredClone(result);
+    delete invalid.validation[0][field];
+    assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
+  }
+});
 test('portable example uses a fixed UTC fixture window and leaves live permissions unapproved', () => {
   const config = configAt('pilot.example.json');
   assert.deepEqual(config.window, { start: '2026-10-08T00:00:00Z', end: '2026-10-09T00:00:00Z' });
@@ -114,6 +128,35 @@ test('portable example uses a fixed UTC fixture window and leaves live permissio
   assert.ok(Object.values(config.sources).every(s => !s.enabled && !s.scopeApproved));
   assert.ok(config.repositories.every(r => !r.projectId && !r.referenceCheckout && !r.routingApproved));
   assert.match(config.identity.designatedUser, /@example\.invalid$/);
+});
+test('configuration resolves and content-binds relative validation profiles', t => {
+  const root = mkdtempSync(join(tmpdir(), 'profile-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const profile = 'Write-Output profile';
+  const profilePath = join(root, 'scripts', 'validation', 'profile.ps1');
+  mkdirSync(join(root, 'scripts', 'validation'), { recursive: true });
+  writeFileSync(profilePath, profile);
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  const gate = {
+    id: 'profiled', approved: false, isolationVerified: false,
+    profilePath: 'scripts/validation/profile.ps1', profileSha256: hash(profile),
+    executable: null, args: ['-File', '{profile}'], timeoutMs: 10000
+  };
+  config.repositories.find(repo => repo.id === 'office-agent').validationGates.push(gate);
+  const configPath = join(root, 'pilot.json');
+  writeFileSync(configPath, JSON.stringify(config));
+
+  const loaded = configAt(configPath);
+  assert.equal(loaded.repositories.find(repo => repo.id === 'office-agent')
+    .validationGates[0].profilePath, profilePath);
+
+  gate.profileSha256 = '0'.repeat(64);
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => configAt(configPath), /profile hash mismatch/);
+
+  delete gate.profileSha256;
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => configAt(configPath), /bind profilePath and profileSha256 together/);
 });
 test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   const window = configAt('pilot.example.json').window;
@@ -335,6 +378,22 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
 });
+test('trusted qualification fetches its exact revision before isolated checkout', async t => {
+  const { config, job, repo, g } = await fixture(t);
+  const revision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  let fetched = null;
+  const result = await provision(config, job, repo, {
+    baseRevision: revision,
+    qualificationSource: 'trusted-remote'
+  }, {
+    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision) => {
+      fetched = { workspace, repo: currentRepo.id, exactRevision };
+    }
+  });
+  assert.equal(fetched.repo, repo.id);
+  assert.equal(fetched.exactRevision, revision);
+  assert.equal((await command('git', ['rev-parse', 'HEAD'], result.workspace)).stdout.trim(), revision);
+});
 test('provisioning skips unrelated Git LFS smudges without mutating the controller environment', () => {
   const original = process.env.GIT_LFS_SKIP_SMUDGE;
   const env = checkoutEnvironment();
@@ -354,6 +413,9 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   tools.write('src\\new.js', 'export const value = 2;');
   assert.ok(existsSync(join(workspace, 'src', 'new.js')));
   assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
+  assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
+  assert.ok((await tools.search('value = 1', 'src')).some(match =>
+    match.includes('src/value.js')));
 });
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);
@@ -392,15 +454,49 @@ test('failed validation is terminal evidence, not a success-shaped result', asyn
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 9);
 });
-test('source mutation during validation invalidates a successful exit', async t => {
+test('source mutation during validation retries in a clean checkout then blocks', async t => {
   const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
   repo.validationGates = [{ id: 'mutates', approved: true, isolationVerified: true,
     executable: process.execPath, args: [], timeoutMs: 10000 }];
-  const result = await runValidation(config, ledger, { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision, async () => {
-    writeFileSync(join(isolated.workspace, 'src', 'value.js'), 'changed');
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args, cwd) => {
+    attempts++;
+    writeFileSync(join(cwd, 'src', 'value.js'), 'changed');
     return { stdout: '', stderr: '' };
   });
   assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'runner-mutated-source');
+  assert.equal(result[0].attemptCount, 2);
+  assert.equal(result[0].artifactRefs.length, 2);
+  assert.equal(attempts, 2);
+  assert.equal(await command('git', ['status', '--porcelain'], isolated.workspace).then(value => value.stdout.trim()), '');
+});
+test('transient validation timeout retries once in a fresh checkout and can recover', async t => {
+  const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
+  repo.validationGates = [{
+    id: 'transient', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => {
+      attempts++;
+      if (attempts === 1)
+        throw Object.assign(new Error('timed out'), {
+          killed: true, code: null, stdout: '', stderr: 'timeout'
+        });
+      return { stdout: 'passed', stderr: '' };
+    });
+  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].blockedReason, null);
+  assert.equal(result[0].attemptCount, 2);
+  assert.equal(result[0].artifactRefs.length, 2);
+  assert.equal(JSON.parse(readFileSync(result[0].artifactRefs[0])).blockedReason, 'runner-timeout');
 });
 test('validation requires approved runner and never inherits credential environment values', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -417,6 +513,110 @@ test('validation requires approved runner and never inherits credential environm
     if (localAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = localAppData;
   }
+});
+test('validation profiles are content-bound and substituted by the controller', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const profilePath = join(config.stateDirectory, 'validation-profile.ps1');
+  writeFileSync(profilePath, 'Write-Output profile');
+  repo.validationGates = [{
+    id: 'profiled', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['-e', 'process.exit(0)', '{profile}'],
+    profilePath, profileSha256: hash('Write-Output profile'), timeoutMs: 10000
+  }];
+  let observedArgs;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args) => {
+      observedArgs = args;
+      return { stdout: '', stderr: '' };
+    });
+  assert.equal(result[0].status, 'passed');
+  assert.notEqual(observedArgs.at(-1), profilePath);
+  assert.match(observedArgs.at(-1), /validation-profiles/);
+  assert.equal(existsSync(observedArgs.at(-1)), false);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.profileSha256, hash('Write-Output profile'));
+
+  const second = await fixture(t);
+  const secondIsolated = await provision(second.config, second.job, second.repo);
+  second.repo.validationGates = [{
+    ...repo.validationGates[0],
+    profilePath,
+    profileSha256: '0'.repeat(64)
+  }];
+  await assert.rejects(runValidation(second.config, second.ledger,
+    { ...second.job, workspace: secondIsolated.workspace }, second.repo,
+    secondIsolated.baseRevision), /profile hash mismatch/);
+});
+test('validation blocks when a content-bound private profile changes during execution', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
+  const profilePath = join(config.stateDirectory, 'validation-profile.ps1');
+  writeFileSync(profilePath, 'Write-Output profile');
+  repo.validationGates = [{
+    id: 'profile-toctou', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['{profile}'],
+    profilePath, profileSha256: hash('Write-Output profile'), timeoutMs: 10000
+  }];
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args) => {
+      attempts++;
+      writeFileSync(args[0], 'changed-after-verification');
+      return { stdout: '', stderr: '' };
+    });
+  assert.equal(attempts, 1);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-profile-changed');
+  assert.equal(result[0].attemptCount, 1);
+});
+test('validation cleanup failures still finalize blocked evidence and operations', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'cleanup', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => ({ stdout: '', stderr: '' }),
+    () => { throw new Error('synthetic cleanup failure'); });
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-cleanup-failed');
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.match(artifact.output.cleanupError, /Operation failed/);
+  assert.ok(artifact.output.residualPaths.length > 0);
+  const operations = ledger.status().operations;
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].state, 'blocked');
+});
+test('post-run inspection failures preserve runner diagnostics in blocked evidence', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'inspection', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args, cwd) => {
+      rmSync(join(cwd, '.git'), { recursive: true, force: true });
+      const error = new Error('synthetic runner failure');
+      error.code = 9;
+      error.stdout = 'runner stdout';
+      error.stderr = 'runner stderr';
+      throw error;
+    });
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-workspace-unavailable');
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.output.exitCode, 9);
+  assert.equal(artifact.output.stdout, 'runner stdout');
+  assert.equal(artifact.output.stderr, 'runner stderr');
+  assert.match(artifact.output.inspectionError, /Operation failed/);
 });
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -556,11 +756,15 @@ test('planned OA skill path creates a source-bound validated draft result throug
     repoIds: [repo.id], capabilities: ['integration-test-authoring']
   });
   const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  const validationContract = repositoryValidationContract(repo);
   ctx.ledger.qualify(skillQualificationId(repo.id, 'oa-integration-test-core'), {
     state: 'qualified-read-only', repoId: repo.id, bindingId: 'oa-integration-test-core',
     capability: 'integration-test-authoring', remote: repo.remote, baseRef: repo.baseRef,
     baseRevision, skillPath: 'docs/skills/Integration-test-core/SKILL.md',
     skillSha256: hash('# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n'),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
   const plan = recordTestCoveragePlan(ctx.ledger, {
@@ -635,12 +839,21 @@ test('interrupted worker persists blocked result and cannot relaunch', async t =
   const { config, ledger, job } = await fixture(t, 'authenticated-source');
   config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
   await assert.rejects(dispatch(config, ledger, job.id, {
-    runModel: async () => { throw new PilotError('blocked-auth', 'Synthetic Copilot reauthentication required'); }
+    runModel: async (currentConfig, currentLedger, current, assignment, investigation,
+      toolkit) => {
+      toolkit.read('src\\value.js');
+      throw new PilotError('blocked-auth', 'Synthetic Copilot reauthentication required');
+    }
   }), /reauthentication/);
   assert.equal(ledger.job(job.id).state, 'blocked');
   const result = ledger.all('workerResult')[0];
   assert.equal(result.outcome, 'blocked');
   assert.match(result.blocker.reason, /reauthentication/);
+  assert.equal(result.toolUsage.used, 1);
+  assert.deepEqual(result.toolUsage.rounds, [{
+    round: 0, used: 1, cumulativeUsed: 1, status: 'failed'
+  }]);
+  assert.equal(result.skillExecution, null);
   await assert.rejects(dispatch(config, ledger, job.id), /never-dispatched/);
 });
 test('synthetic provenance cannot be dispatched through the live entrypoint', async t => {

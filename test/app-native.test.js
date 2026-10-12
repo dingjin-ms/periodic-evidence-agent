@@ -8,7 +8,7 @@ import { configAt, hash, json, now, exclusions } from '../src/common.js';
 import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, listAppRuns } from '../src/app-native.js';
 import { principalPath, channelRoot } from '../src/runtime.js';
 import { wiql, area, adoRecord } from '../src/sources.js';
-import { skillQualificationId } from '../src/repository-skills.js';
+import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t, { dry = true, provenance = 'synthetic', configure = () => {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'app-pilot-'));
@@ -202,11 +202,15 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     'commit', '--quiet', '-m', 'Synthetic OA skill workspace']);
   git(['remote', 'add', 'origin', config.repositories[0].remote]);
   const baseRevision = git(['rev-parse', 'HEAD']);
+  const validationContract = repositoryValidationContract(config.repositories[0]);
   ledger.qualify(skillQualificationId('fixture', 'oa-integration-test-core'), {
     state: 'qualified-read-only', repoId: 'fixture', bindingId: 'oa-integration-test-core',
     capability: 'integration-test-authoring', remote: config.repositories[0].remote,
     baseRef: config.repositories[0].baseRef, baseRevision,
     skillPath: 'docs/skills/Integration-test-core/SKILL.md', skillSha256: hash(skillText),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
   await adoBatch(config, ledger);

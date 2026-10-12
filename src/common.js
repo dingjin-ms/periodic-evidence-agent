@@ -28,6 +28,10 @@ export function positive(value, name) {
   requireThat(Number.isInteger(value) && value > 0, `${name} must be a positive integer`);
   return value;
 }
+export function nonNegative(value, name) {
+  requireThat(Number.isInteger(value) && value >= 0, `${name} must be a nonnegative integer`);
+  return value;
+}
 export function safeError(error) {
   if (error instanceof PilotError) return { code: error.code, message: error.message };
   // Library errors can contain request headers, source payloads or credentials.
@@ -76,7 +80,23 @@ export function configAt(path) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');
   }
   requireThat(Array.isArray(config.repositories), 'repositories must be an array');
+  config.limits.maxValidationRepairRounds =
+    nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
+  requireThat(config.limits.maxValidationRepairRounds <= 5,
+    'maxValidationRepairRounds must not exceed 5');
+  config.limits.maxValidationInfrastructureRetries =
+    nonNegative(config.limits.maxValidationInfrastructureRetries ?? 0,
+      'maxValidationInfrastructureRetries');
+  requireThat(config.limits.maxValidationInfrastructureRetries <= 2,
+    'maxValidationInfrastructureRetries must not exceed 2');
   for (const repo of config.repositories) {
+    repo.qualificationRefresh ??= 'local';
+    repo.validationContractVersion ??= '1.0';
+    requireThat(['local', 'fetch'].includes(repo.qualificationRefresh),
+      `Repository ${repo.id} qualificationRefresh must be local or fetch`);
+    requireThat(typeof repo.validationContractVersion === 'string' &&
+      repo.validationContractVersion.length > 0,
+    `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
     const ids = new Set();
     for (const binding of repo.skillBindings ?? []) {
@@ -93,6 +113,20 @@ export function configAt(path) {
       requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
         typeof binding.sideEffects[key] === 'boolean'),
       `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);
+    }
+    for (const gate of repo.validationGates ?? []) {
+      requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
+        `Repository ${repo.id} validation gate ${gate.id} must bind profilePath and profileSha256 together`);
+      if (!gate.profilePath) continue;
+      requireThat(!isAbsolute(gate.profilePath) &&
+        /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
+      `Repository ${repo.id} validation gate ${gate.id} needs a relative profilePath and profileSha256`);
+      const profilePath = resolve(dirname(resolve(path)), gate.profilePath);
+      requireThat(existsSync(profilePath) && lstatSync(profilePath).isFile(),
+        `Repository ${repo.id} validation gate ${gate.id} profile does not exist`);
+      requireThat(hash(readFileSync(profilePath)) === gate.profileSha256,
+        `Repository ${repo.id} validation gate ${gate.id} profile hash mismatch`);
+      gate.profilePath = profilePath;
     }
   }
   config.stateDirectory = resolve(dirname(resolve(path)), config.stateDirectory);

@@ -22,6 +22,14 @@ acquire credentials, call services or launch product workers. Add focused
 regressions for behavioral changes and run the complete offline suite before
 handoff. CI uses a read-only token and no live secrets or account login.
 
+The reviewed-handoff integration flow is not a source connector test. Keep its
+fixture source-neutral (`kind: fixture`, `provenance: synthetic`) and keep the
+runner thin: it must call the normal planning, assignment and dispatch modules,
+not reimplement them. Ordinary dispatch must continue rejecting synthetic
+evidence. Real worker, push and Draft PR effects require the dedicated command
+plus both explicit authorization flags; offline tests may inject only external
+model and PR-provider boundaries.
+
 For ledger/schema changes, cover immutable versions, transaction rollback,
 idempotency, cursor retention, provenance and uncertain ownership. Do not
 silently migrate or edit a colleague's live config/ledger. Stable agent/run/
@@ -43,6 +51,31 @@ No test or contributor may turn a partial run into complete by hiding an
 unavailable source. A new connector, expanded scope, auth flow, validation
 runner, scheduler or permission grant requires explicit owner approval and its
 own qualification. A working offline demo does not authorize any of these.
+
+Reviewed handoff submission is a deterministic controller interface, not a new
+AI agent or a second implementation of review policy. The upstream receipt owns
+the review/exclusion/classification decision; shared production helpers enforce
+its consistency and eligibility. The repository-native skill guides authoring,
+while the controller alone owns ledger materialization, commit, validation,
+push and Draft PR operations.
+
+Validation repair rounds never rerun an immutable gate operation on the same
+revision. Each repair produces a new committed revision, preserves the failed
+attempt and artifact, and receives a final independent controller validation.
+Keep the configured repair-round limit small and explicit; exhaustion must
+remain failed or blocked rather than becoming success-shaped.
+
+Infrastructure recovery is distinct from source repair. The controller may
+repeat only an explicitly classified transient validation attempt in a fresh
+checkout of the same revision and within the configured retry limit. It must
+preserve every attempt artifact. Profile/hash, ownership, permission or policy
+changes require reconciliation or approval and may not be cleared by a model.
+
+Repository-skill qualification must bind the exact source revision, skill
+content hash and validation contract version/hash. If trusted-remote refresh is
+configured, fetch before qualification. Do not silently update the skill or
+validation contract for an assignment that has already entered authoring or
+repair.
 
 Before merge, review the final diff and publish a machine-readable receipt bound
 to the exact PR head and base commit SHAs. Start from

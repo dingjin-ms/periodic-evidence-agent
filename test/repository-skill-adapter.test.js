@@ -62,6 +62,27 @@ test('adapter loads exactly the configured repository skill at the bound source 
   assert.equal(loaded.skillRevision, 'a'.repeat(40));
 });
 
+test('adapter uses committed skill bytes when checkout line endings differ', async t => {
+  const { workspace, config, assignment } = setup(t);
+  writeFileSync(join(workspace, '.gitattributes'), '*.md text eol=crlf\n');
+  const run = args => new Promise((resolve, reject) => {
+    import('node:child_process').then(({ execFile }) =>
+      execFile('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+        '-c', 'core.safecrlf=false', ...args], { cwd: workspace }, (error, stdout, stderr) =>
+        error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
+  });
+  await run(['init', '--quiet']);
+  await run(['add', '.']);
+  await run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Fixture']);
+  const revision = (await run(['rev-parse', 'HEAD'])).trim();
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Synthetic OA integration skill\r\n');
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
+  assert.equal(loaded.instructions, '# Synthetic OA integration skill\n');
+});
+
 test('skill binding is fail-closed when disabled, unqualified or ambiguous', t => {
   const { config } = setup(t);
   config.repositories[0].skillBindings[0].enabled = false;

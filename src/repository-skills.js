@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { boundedPath, hash, json, requireThat, validateRecord } from './common.js';
@@ -107,12 +107,29 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
   const path = boundedPath(workspace, binding.skillPath);
   requireThat(statSync(path).isFile() && statSync(path).size <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
-  const instructions = readFileSync(path, 'utf8');
-  requireThat(hash(instructions) === qualification.skillSha256,
+  let source = readFileSync(path);
+  if (existsSync(join(workspace, '.git'))) {
+    try {
+      execFileSync('git', ['-c', 'core.hooksPath=', 'diff', '--quiet', sourceRevision,
+        '--', binding.skillPath.replaceAll('\\', '/')], {
+        cwd: workspace, windowsHide: true, stdio: 'ignore'
+      });
+      source = execFileSync('git', ['-c', 'core.hooksPath=', 'show',
+        `${sourceRevision}:${binding.skillPath.replaceAll('\\', '/')}`], {
+        cwd: workspace, windowsHide: true, maxBuffer: config.limits.maxFileBytes
+      });
+    } catch {
+      requireThat(false, 'Repository skill content changed after qualification',
+        'blocked-reconciliation');
+    }
+  }
+  requireThat(source.length <= config.limits.maxFileBytes,
+    'Repository skill exceeds the configured read limit', 'blocked-budget');
+  requireThat(hash(source) === qualification.skillSha256,
     'Repository skill content changed after qualification', 'blocked-reconciliation');
   return {
     binding,
-    instructions,
+    instructions: source.toString('utf8'),
     skillRevision: sourceRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/')
   };

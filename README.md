@@ -286,6 +286,27 @@ qualified or explicitly excluded from a separately approved reduced release
 scope; do not silently waive it. Collection-only success still does not qualify
 code-fix/PR automation. Sharing preparation does not itself satisfy this gate.
 
+### Head-bound PR review receipt
+
+The pilot includes an auditable merge-preparation receipt for GitHub PRs. The
+receipt records the exact reviewed head and base SHAs, reviewer/session,
+findings, validation and residual risks. It contains no source evidence and is
+posted as a structured PR comment through the already authenticated GitHub CLI.
+
+```powershell
+Copy-Item .\scaffold\pr-review-receipt.example.json .\review-receipt.json
+# Fill in the exact PR head/base SHAs and the completed review results.
+npm run pilot -- pr-review-publish --repo OWNER/REPO --pr NUMBER --file .\review-receipt.json
+npm run pilot -- pr-review-verify --repo OWNER/REPO --pr NUMBER
+```
+
+Automatic publication is limited to the signed-in user's own PR. Another
+author's PR requires explicit approval plus `--approve-other-author`.
+Verification fails closed when the PR head/base changed, no matching receipt
+exists, blocking findings remain, or any recorded validation failed or was not
+run. The command complements required CI and branch protection; it does not
+merge or alter the PR.
+
 ## Local package and eventual publication
 
 This repository is prepared for **internal experimental collaboration** only.

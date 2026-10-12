@@ -100,6 +100,8 @@ test('reviewed handoff fixture prepares real planning and assignment records', a
   assert.equal(prepared.investigation.handoffEligibility, 'eligible');
   assert.equal(prepared.testCoveragePlan.sourceRevision, baseRevision);
   assert.equal(prepared.assignment.skillBindingId, 'oa-integration-test-core');
+  assert.match(prepared.assignment.questions[0],
+    /contracts\/apps\/onenote\/omni-onenote-bootstrap-progress\.contract\.test\.ts/);
   assert.equal(prepared.job.state, 'prepared');
 });
 

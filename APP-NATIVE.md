@@ -472,6 +472,386 @@ receipts after a stop. No automatic continuation is implemented for this adapter
 Actual saved-query scope, timestamp agreement and separately authorized live
 execution remain prerequisites, not facts established by synthetic tests.
 
+## Title-first FILTER screening
+
+Agent 2 FILTER, not the collector or proposer, owns the relevance decision.
+The default hosted input path is complete-record token-budgeted batching
+described below. Title-first is a loose, high-recall reasoning order, not a
+requirement to withhold bodies. The implemented helpers in this section remain
+an optional offline audit/selective-export path. To use that path, start with an
+existing `stage2-sources-v1` source-ledger manifest:
+
+```powershell
+npm run pilot -- filter-title-index --file .\private\sources.json --output .\private\titles.json --config .\pilot.local.json
+```
+
+The immutable `filter-title-index-v1` artifact contains all deduplicated evidence
+IDs, titles, source kind/namespace/record ID/revision/version basis, provenance,
+capture hashes/references, source snapshot fingerprints and the 14-exclusion
+policy. It does not include descriptions, RCA, full bodies or capture content.
+Titles and identity are projected from read-only SQLite; original records and
+cursors are untouched. Missing or whitespace-only titles remain explicit.
+
+An agent or human then writes `filter-title-decisions-v1`; the schema is
+`scaffold/contracts.schema.json#/$defs/filterTitleDecisions`. Required envelope:
+`format`, `indexSha256` (SHA-256 of exact index file bytes), `reviewer`,
+`reviewedAt` (UTC), and `decisions`. Each row contains:
+
+| Field | Contract |
+|---|---|
+| `evidenceId`, `source`, `captureSha256` | Exact indexed ID, full indexed source identity/version object and capture hash |
+| `disposition` | `likely-relevant`, `needs-details`, `no-title`, or `screen-out` |
+| `exclusionType` | Existing exclusion enum for screen-out; otherwise null |
+| `reason` | Nonempty decision rationale |
+| `titleQuote` | Exact nonempty title substring supporting screen-out; otherwise null |
+
+Screen **every** indexed ID exactly once. Screen out only obviously excluded
+titles under the existing policy. Ambiguous titles and absent titles retain full
+evidence; absent/blank titles must use `no-title`. Do not infer defect confirmation
+or missing coverage or executor feasibility from titles. There is no keyword classifier: words such as
+reliability, security, performance and Voice Access are not automatic exclusions.
+Typed reasons and quotes are auditable decisions, not proof of semantic correctness.
+
+```powershell
+npm run pilot -- filter-title-materialize --file .\private\decisions.json --index .\private\titles.json --output .\private\details.json --config .\pilot.local.json
+```
+
+The helper validates the entire decision set and current title/source snapshot
+before reading retained full records. It rejects unknown, duplicate or missing
+IDs, mismatched source versions/hashes, missing reasons, unsupported exclusion
+types and invalid quotes. The immutable `filter-details-v1` output contains only
+retained full evidence and its byte-preserved captures (`contentBase64`, SHA-256,
+artifact reference), plus the complete title/decision audit including screened-out
+rows. All retained provenance, fields, missing fields and parent context remain
+intact; bodies may contain necessary context from related messages. All-excluded
+and empty inputs produce explicit empty detail sets. Conflicting output paths
+are rejected rather than overwritten.
+
+Materialization **does not attest that an agent read the bodies**: title audit
+rows start `detailsRead:false`. The FILTER must read retained bodies before
+RCA, unit/integration/E2E inventory, feasibility and exact coverage-contract review.
+Later exclusions and all source/skill/ownership/dispatch gates still apply.
+This does not grant collection, hosted sharing, product edits or PR authority.
+
+To bind title decisions into the existing held handoff and proposal checker, add
+`"titleScreen":{"indexPath":"<private titles path>","decisionsPath":"<private decisions path>"}`
+to the **same** `stage2-sources-v1` manifest. `stage2-handoff` revalidates the
+screen and includes only retained evidence refs; `stage2-proposal-check` rejects
+screened-out refs and changed decisions. Existing unscreened handoffs remain
+supported; using complete-record batches does not require selective materialization.
+The optional `titleScreen` binding still requires one validated complete decision
+set, not an individual partial batch response.
+
+These commands are local, offline exports. They do not implement hosted deferred
+reads, automatically deliver skills, enforce sensitivity policy or verify
+semantic title judgments. Sending all bodies inline is not context reduction from
+title screening. No private examples or fixed corpus counts are production rules.
+
+### Complete-record FILTER batches
+
+These helpers prepare and check private offline packets; they are **not a provider
+launcher or submission authorization**. Keep exactly
+collector -> filter -> proposer. Scheduling, durable state, batch accounting and
+handoffs remain local. The local main flow prepares complete-record batches for
+qualified hosted FILTER analysis through independent initial inputs. Do not make
+deferred reads, keep-alive or selective-body export a prerequisite. No model,
+numeric token limit, concurrency or job count is selected here.
+
+```powershell
+npm run pilot -- filter-batches --file .\private\batch-request.json --output .\private\batches.json --config .\pilot.local.json
+npm run pilot -- filter-batch-size --file .\private\batch-request.json --output .\private\group-sizes.json --config .\pilot.local.json
+npm run pilot -- filter-batch-check --file .\private\batch-result.json --manifest .\private\batches.json --config .\pilot.local.json
+npm run pilot -- filter-consolidate --file .\private\result-paths.json --manifest .\private\batches.json --output .\private\consolidation.json --config .\pilot.local.json
+```
+
+`filter-batch-request-v1` is defined by `$defs.filterBatchRequest` in
+`scaffold/contracts.schema.json`. It contains `sources` (the existing read-only
+ledger/run refs), complete `instructions`, `groups`, `groupingReview` and `sharing`.
+Each group has `id`, `memberIds`, `contextIds` and `reason`. Every cohort version
+must be a member of exactly one group; optional context-only copies are explicit.
+`groupingReview` records `reviewer`, UTC `reviewedAt` and `rationale`. Same-source
+versions, known thread members and explicit links matching cohort report URLs
+cannot be split. The reviewer must preserve other related-report dependencies;
+the helper does not infer semantic relationships.
+
+`sharing` has `audience`, `approvalRef` and `materials` with `sha256`,
+`eligibility:approved|unknown|denied` and `restrictions`. Every normalized record,
+capture, included thread-context record, instructions and coverage projection
+needs approved eligibility; unknown/denied material blocks preparation.
+Record/coverage hashes use `JSON.stringify(value,null,2)` plus a trailing newline;
+captures retain their original byte hashes; persisted thread-context hashes use
+the ledger's canonical compact JSON. These are operator-approved local receipts,
+not independently attested access or sensitivity decisions.
+
+Each batch provides complete captured records, required provenance and related
+report/thread context from the start, subject to approved sharing/access/retention.
+Missing source fields stay explicitly missing; "complete" does not invent absent
+evidence or mean complete live collection. Keep required related context together
+as an indivisible packing group. If a complete group cannot fit, mark it blocked
+for an explicit handling decision; never drop records, cut bodies or silently
+substitute summaries. This is not authority for new collection.
+
+Packaging removes only provably redundant representations within each standalone
+batch. A capture is `reconstructed-from-full-evidence` only when its original
+bytes and SHA-256 both equal compact `JSON.stringify` of the declared recipe:
+`ado-fields-relations-v1` uses `{id:Number(source.recordId),rev:Number(source.revision),fields,relations:links}`;
+`workiq-message-parent-v1` uses `{message:fields.message,parentContext:fields.parentContext}`.
+Its `evidenceId`, `sha256`, `artifactRef` and `originalByteLength` remain explicit.
+Otherwise the original `contentBase64` remains inline. No original capture is
+rewritten, and no full normalized evidence field is removed.
+
+`sharing.representation:shared-material-policies-v1` stores exact
+`{eligibility,restrictions}` policies once, with each material retaining its SHA-256
+and `policyId`. `sourceCoverage` optionally uses
+`representation:shared-pass-values-v1`, a `shared:[{id,value}]` table and the
+original `sources` structure with identical pass fields replaced by
+`{$coverageValue:id}`. Only exact repeated values of at least 128 compact UTF-8
+bytes are considered; coverage factoring is used only if it reduces serialized
+size. Reserved-marker collisions retain inline coverage. Neither form collapses
+distinct values, source limitations or unknown sensitivity. Expansion helpers
+verify `expandedSha256` against the original pretty JSON plus newline, and packing
+also verifies exact round-trip content. Every job still receives its own complete
+instructions, necessary context and metadata; all representation overhead is
+counted. Execution-bound repo/ref/commit and duration instructions must likewise
+be included in the counted input, not left in inaccessible executor metadata.
+
+Local lossless packing proves representation fidelity, not execution in a worker.
+New Agency FILTER requests explicitly select the
+[local read-only policy](AGENCY-EXECUTOR.md#essential-local-read-only-filter-policy)
+or the optional stronger
+[worker capture policy](AGENCY-EXECUTOR.md#enforced-worker-capture-verification).
+The local policy requires local lossless validation, exact execution bindings and
+explicit assurance limits; it does not require a deployed verifier. Under the
+stronger policy, the terminal gate joins actual pipeline-step proof to retained
+final-result IDs. Missing required worker proof cannot be replaced with prose or
+a local preflight. Neither policy rewrites existing manifests or sealed receipts.
+
+Verify the actual selected model/profile's context and input limits, supported
+token accounting method/version and request overhead. Reserve instruction,
+source/code-analysis, output and required safety capacity before computing the
+evidence allowance; distinguish input limits from total context capacity and
+transport byte limits. Count the exact serialized payload, including repeated
+context, with the verified method. Unknown limits or unverifiable accounting block verified-mode readiness.
+A record-count cap, character heuristic or advertised model family capacity is
+not a verified input-token budget. An explicitly approved bounded estimate-mode
+exception is supported below, without promoting estimates to provider facts.
+
+Configure `filterBatching` in a **new private configuration**: `approved:true`,
+`mode:verified`,
+actual `model`, explicit `profile` (null is allowed for a verified default),
+`tokenizer`, `verifiedBy`, UTC `verifiedAt`, absolute `verificationRef` and its
+`verificationSha256`; positive integers `contextTokens`, `maxInputTokens`,
+`maxPayloadBytes`, `maxBatches`; and nonnegative integer `reserves` for
+`instructions`, `sourceAnalysis`, `output`, `safety`, `requestOverhead`.
+Instructions/source-analysis/output reserves must be positive. Missing values
+block rather than default. The verification receipt must substantiate the actual
+tier/tokenizer/limits; setting `approved` is not evidence of provider capability.
+
+For an explicitly user-approved bounded trial only, `mode:estimated` instead
+requires actual `tokenizer`, `contextTokens` and `maxInputTokens` to be null.
+Record `estimation:{methodId,version,description,planningContextTokens,inputTokenCap,
+approval}`. Its approval includes the exact `decision`, `authority`, UTC
+`receivedAt`, `scope:bounded-replay`, `maxConcurrency:2` and
+`accuracy:estimate-not-provider-token-accuracy`. The pinned verification artifact
+then records approval/method/uncertainty, **not** exact tokenizer qualification.
+Planning caps are positive declared estimate-unit limits, never advertised
+inherent capacity relabeled as an observed tier limit. All reserves, byte limits
+and total batch caps remain explicit. The manifest retains mode, method, approval,
+null actual limits and uncertainty. Dispatch concurrency is enforced by the
+separate executor; this offline helper does not launch workers.
+In estimated mode the measured prompt already contains embedded instructions.
+All five reserves are **additional external/runtime capacity**: the payload limit
+is the smaller of `inputTokenCap` and `planningContextTokens` minus their sum.
+The embedded instruction count is recorded, not compared to the additional
+external instruction reserve. This keeps the approved planning envelope distinct
+from verified-mode provider accounting.
+
+The approved local `counter` contains `approved:true`, absolute `executable`,
+`executableSha256`, fixed `args`, pinned `files:[{path,sha256}]` and `timeoutMs`.
+It receives one stdin JSON object `{text,sha256,model,tokenizer}` and must return
+only `{sha256,model,tokenizer,tokens}` matching that exact input. In estimated mode
+the legacy protocol field `tokenizer` carries `estimation.methodId`, not an actual
+tokenizer identity; the manifest's actual `tokenizer` stays null. Pin all adapter
+code/tokenizer assets in `files`. No shell, login or package installation is
+performed. The helper suppresses raw counter diagnostics and reports failures.
+Use an approved local tokenizer/estimator adapter, not a network model invocation.
+
+Packing measures the exact UTF-8 OUTER JSON prompt, pretty-printed with trailing
+newline: `{payloadSha256:<inner hash>,payload:<exact inner JSON text string>}`.
+The inner string contains complete input including `batchId`, bodies, captures,
+repeated context, instructions and index. Its hash is supplied literally so the
+model never needs to compute an impossible prompt self-hash or read hidden runtime
+metadata. The manifest's `payloadSha256` hashes the outer actual request prompt;
+`analysisPayloadSha256` hashes the exact inner string. Both must remain unchanged.
+Escaping and envelope overhead are included in the measured outer bytes/units.
+In verified mode it also reserves unused instruction allowance, source-analysis and request
+overhead within the input limit, and output/safety within total context.
+Groups are packed in stable ID order; byte and token ceilings are both enforced,
+then the authorized total batch cap. The immutable manifest records exact payload
+strings/hashes and count receipts. Identical reruns produce the same artifact;
+changed inputs require a new output, never overwrite. Counts are local adapter
+receipts, not remote metering attestations.
+
+`filter-batch-size` measures exact outer UTF-8 bytes for each indivisible group
+and for all groups, without selecting a model, applying token limits, approving
+sharing or submitting. It supports cap planning but cannot qualify a provider.
+
+Within each batch FILTER inspects every title/identity first, screening out only
+obvious existing policy exclusions with typed reason and title quote. No local
+historical-preview preselection. Likely, ambiguous and untitled records retain
+full review before RCA, coverage inventory or feasibility claims. Existing
+`filter-title-decisions-v1` stays unchanged inside each result's `titles`, with
+batch metadata outside. `indexSha256` binds the exact pretty-printed per-batch
+`filter-batch-index-v1` object plus newline, not the whole-ledger title index.
+`filter-batch-check` is the separate membership validator; it reconstructs the
+source corpus and exact groups/payload before checking results. The optional
+`validateTitleScreen` remains whole-ledger based. Do not alter original ledgers
+to make subsets appear to be complete source runs.
+
+The batch/result contract retains these bindings:
+
+| Boundary | Required accounting |
+|---|---|
+| Cohort | Immutable cohort/manifest ID and exact-byte SHA-256; complete source-version inventory, source snapshot/capture hashes, provenance and completeness limits |
+| Batch input | Stable batch ID bound to cohort and ordered member inventory; exact input/payload hash, instruction/policy hashes, model/profile and verified budget/method/reserve receipt |
+| Members and context | Each evidence ID with full source identity/version, record-content hash and capture hash; context-group ID, related-context hashes and approved sharing scope; distinguish review members from repeated context-only copies |
+| Batch result | Exact batch/input hash, reviewer and review time, result hash; one disposition per review member, title exclusion audit, explicit detail-review status, source-bound candidate references and blockers |
+| Local consolidation | Every cohort member accounted for as reviewed, screened-out with audit, pending or blocked; batch/result references, duplicate/context-copy map, source-version conflicts and unresolved candidates; no silent omissions |
+
+`filter-batch-result-v1` (`$defs.filterBatchResult`) requires `cohortId`,
+`batchId`, `payloadSha256` (the delivered INNER hash),
+`status:complete|partial|failed|blocked`, `titles`,
+`details` and `candidates`. Detail rows bind `evidenceId`, `recordSha256`,
+`captureSha256`, `status:reviewed|excluded-title|pending|blocked` and `reason`.
+Complete results require every member's title decision and detail accounting.
+Partial/failed/blocked results may report only observed decisions; unreported
+members remain unresolved, without invented title judgments.
+
+Candidates bind exact reviewed member IDs, repository/source revision, test layer,
+existing assertion inventory, missing assertion, harness, coverage status,
+blockers, priority/confidence and ranking rationale. E2E is a supported layer,
+not an exclusion. A structurally checked result is `checked-not-qualified`,
+not proof of semantic review or positive provider completion. Real hosted
+acceptance additionally requires the executor's source/payload-bound positive
+terminal receipt; a green outer pipeline is insufficient.
+
+`result-paths.json` is an array of private result file paths. Consolidation rejects
+foreign/stale members, reports missing/failed/partial/conflicting batches, and
+deduplicates identical result receipts. Candidate dedup uses exact repository,
+source revision, layer and missing-assertion text; it does not merge similar
+symptoms. Disagreement on other candidate claims blocks final selection.
+Ranking is priority descending, confidence descending, then the exact key;
+the original ranking rationale and evidence/batch references remain auditable.
+Only unblocked `coverageStatus:gap` entries may become the single held selection.
+
+The `filter-consolidation-v1` object contains `state:complete-held|partial`,
+`dispatchAllowed:false`, `cohortId`, `manifestSha256`, `accounting`, `duplicates`,
+`conflicts`, `ranking`, `rankingPolicy`, `selected`, `semanticAnalysisVerifiedByHelper`
+and `nextGate`. Each accounting row binds a batch/result hash and every member's
+status. Ranking entries retain the exact candidate `definition`, dedup `key`,
+`evidenceIds`, `batchIds` and `candidateIds`; `selected` is one such entry or null.
+Full source identity/version, record/capture hashes, provenance and source
+coverage remain in the pinned manifest and its source ledgers, not duplicated as
+raw evidence in this object. Result hashes use canonical pretty JSON plus newline.
+Consumers must revalidate these pins rather than accepting an unbound summary.
+
+Structural `complete-held` alone is not execution acceptance. Run the read-only
+[`filter-execution-check`](AGENCY-EXECUTOR.md#source-bound-cohort-and-colleague-handoff)
+against the entire original manifest and exact canonical result bytes. It
+regrades immutable request/job/source/result receipts and exposes consolidation
+only for a complete accepted cohort. One accepted batch cannot release a
+multi-batch cohort. A no-candidate outcome is valid only with the same complete
+accounting; collection completeness remains unknown.
+
+For a held Stage2 handoff, add
+`"batchReview":{"manifestPath":"<batches.json>","resultPaths":["<result.json>"]}`
+to the original source manifest, instead of `titleScreen`. All batches must be
+complete and conflict-free. Stage2 pins the manifest/results/selection and accepts
+only the selected evidence IDs; no candidate means no permitted proposal.
+A selected proposal must carry `filterCandidateKey` and match the selected
+repository, source revision and missing assertion. Existing skill/target checks
+still apply. Changed result files require a new handoff.
+
+Keep immutable batch identities across retries/restarts; a changed payload needs
+a distinct binding, not overwrite. This does not authorize retries. Reject
+unknown members, changed source hashes and duplicate review-member decisions;
+intentional repeated context is labeled and not counted as an extra reviewed
+record. Merge exact source versions locally inside FILTER, retaining cross-source
+links without conflating similar reports. Conflicting decisions or missing batch
+results remain unresolved; never choose the first answer silently or report a
+partial cohort as fully reviewed. Material availability/export is not evidence
+that details were actually read. A batch may return zero or more source-bound
+candidates; it does not independently dispatch a proposer. Account for all batches
+before final selection within FILTER. The current milestone ends at the accepted
+FILTER consolidation and existing held handoff to the colleague-owned proposer.
+Proposer implementation, execution and draft-PR production are outside this
+milestone. Pending/blocked members remain disclosed, not silently treated as irrelevant.
+
+Relevance/exclusions are separate from test-layer and executor routing. E2E
+remains eligible through a qualified local/repository harness and its existing
+validation infrastructure. Agency may handle selected qualified integration
+authoring/validation or supported analysis, not every suite or live-account E2E.
+Hosted inability is a local-routing constraint or blocker, never an exclusion.
+Source/skill/coverage-contract, permissions and draft-only gates remain unchanged.
+No product execution or public publication is authorized by these offline helpers.
+
+### Integration-first milestone
+
+Run the existing supported integration path before adding E2E capabilities.
+This is execution eligibility, not a relevance filter or a new result schema.
+For newly authorized FILTER inputs, record E2E findings with `layer:"e2e"`,
+their actual coverage status and a `blockers` entry such as
+`"Deferred: E2E capability setup is outside the integration-first milestone"`.
+Keep their source versions, assertion inventory, harness and rationale.
+Do not turn deferral into `screen-out`, `covered`, or a missing candidate.
+Consolidation preserves these entries in `ranking` but does not select blocked
+candidates. If no integration candidate qualifies, report no eligible selection;
+do not invent an integration substitute or silently select a unit/E2E candidate.
+Retain any other out-of-milestone layer with an explicit execution blocker.
+
+An integration candidate still needs an exact inspected source revision,
+existing supported suite/harness and assertion inventory, a supported missing
+assertion, and no unresolved execution blockers. Source/skill qualification and
+actual source-bound integration results remain required before claiming execution.
+Synthetic pilot tests prove the adapter/contract, not product integration success.
+Changing milestone instructions requires a new instruction hash, sharing approval,
+manifest/payload binding and execution qualification; never edit sealed inputs or
+old results to add deferral retroactively.
+
+Essential for the first live milestone: explicitly qualify the existing Agency
+FILTER route under the approved local read-only analysis policy, validate local
+lossless captures and exact job/payload/result/source bindings, require successful
+execution and no observed mutations, authorize the exact request budget, complete every captured-cohort batch,
+and release only the accepted existing handoff. Current source-collection gaps
+remain disclosed; captured-cohort completion does not prove collection completeness.
+Neither this milestone nor these helpers authorize fresh collection, jobs or
+proposer execution. Later periodic completeness additionally requires qualified
+renewal/continuation and overlap handling; E2E requires separately qualified
+repository harnesses, identities, environments and source-bound execution.
+Shared runner deployment, repeated worker hashing and dedicated final-worktree
+attestation are not prerequisites under this policy. Unknown exhaustive
+publication effects remain explicit limitations, never verified zero effects.
+
+### Downstream reconciliation boundary
+
+This upstream flow is complementary to draft
+[#4](https://github.com/zhenhuangMSFT/periodic-evidence-agent/pull/4), not a
+plug-compatible producer for its reviewed-handoff command. That draft owns
+downstream review/authorization and repository execution. This change preserves
+the current `master` held Stage2 and PR-review receipt boundaries; it does not
+include the draft's proposer adapter, product changes or a new lineage feature.
+
+Before combining the branches, reconcile both producers and consumers in
+`src/workers.js`, `src/cli.js`, `scaffold/contracts.schema.json` and related tests
+and instructions. Keep Agency task/selection pins and local worker permissions
+consistent with the downstream assignment/result schemas; preserve both CLI
+dispatch guards. A reviewed downstream input must explicitly bind the accepted
+upstream manifest/result hashes, selected candidate and inspected product source
+revision to its own source-bound authorization contract. Do not rename, cast or
+copy consolidation into a reviewed handoff and treat that as authorization.
+Rerun shared producer/consumer tests after reconciliation; this branch does not
+assert that the two drafts can be combined without changes.
+
 ## Held Stage2 coverage handoff
 
 Stage2 proposals are private sidecars, **not production investigations or

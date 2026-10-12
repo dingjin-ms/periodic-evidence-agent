@@ -52,6 +52,11 @@ on that host.
 
 ## Devbox repository setup
 
+This optional full product-development setup is not a prerequisite for the
+local controller's existing-Agency FILTER path. Account-free pilot checks above
+need no product checkout. Configure product repositories only for authorized
+repository work; E2E setup is separate from the integration-first milestone.
+
 From a new clone, install locked dependencies, initialize machine-local product
 checkouts, qualify repository skills, run configuration diagnostics, execute the
 complete offline check and run the synthetic demo with one command:
@@ -137,7 +142,24 @@ roles, not four installed daemons. Skills are procedures, **not permission or
 process boundaries**. Configuration and the local ledger survive conversations.
 App-native sessions are temporary isolated execution contexts, never agent IDs
 or the sole state store. Same-session automation is not the target architecture.
-Agency is deferred.
+The current upstream milestone uses a local controller/ledger with explicitly
+selected existing Agency FILTER execution and the
+[essential local read-only analysis policy](AGENCY-EXECUTOR.md#essential-local-read-only-filter-policy).
+It does not require shared 1JS runner changes. Missing Agency task selection
+blocks this route rather than invoking a local-model fallback. The endpoint is
+accepted complete-cohort consolidation and the colleague's existing held
+handoff, not proposer execution or a product integration-test pass.
+
+**Observed scope:** one 15-member canary was accepted against exact
+request/result/source-bound execution: 7 reviewed records, 8 title exclusions
+and 5 candidate analyses (2 deferred E2E, 3 integration, including 1 unblocked
+gap). The user reduced execution to that one batch; the remaining 6 batches
+were not run, not failures. There is no complete 94-member cohort handoff,
+product integration-test pass, periodic-readiness or collection-completeness
+claim. Partial workplace-message coverage and unavailable incident coverage
+remain limitations. Unknown publication effects and final checkout observations
+remain unknown, not verified zero effects or a sandbox guarantee. Only this
+sanitized aggregate is published; no private execution artifacts are included.
 
 See [APP-NATIVE.md](APP-NATIVE.md) for exact command/receipt/claim/result contracts,
 [the schema](scaffold/contracts.schema.json) for portable records, and
@@ -229,6 +251,20 @@ commit identity, push or draft PR creation. Ambiguous project names remain
 blocked; assignments must pin the repo-relative owner project.
 
 ## Safety invariants
+
+Agent 2 FILTER owns loose, high-recall title screening. The
+[offline batching flow](APP-NATIVE.md#complete-record-filter-batches)
+uses complete-record batches under explicit verified or user-approved bounded
+estimate budgets, preserving related
+context and consolidating all source-version results locally before proposer
+handoff. Ambiguous and absent titles retain details; only obvious policy
+exclusions may screen out, with typed reasons and title quotes. Titles establish
+neither missing coverage nor executor feasibility. Existing
+[title-first helpers](APP-NATIVE.md#title-first-filter-screening) remain optional
+audit/selective-export tools, not a lazy-input prerequisite. Batch preparation,
+membership checks and consolidation do not launch hosted jobs. Main flow/state remain
+local. E2E execution/setup is deferred independently; relevant E2E findings and
+coverage facts remain in the audit/handoff rather than being excluded.
 
 - All 14 exclusions in the schema apply to **both defect and improvement**
   handoffs. Excluded evidence is audit-only. Functional classification is not

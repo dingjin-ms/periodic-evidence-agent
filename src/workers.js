@@ -8,6 +8,8 @@ import { withClient, restrictedSession, defineTool } from './runtime.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
+import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
+  recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeAgencyRequests } from './agency-executor.js';
 
 const exec = promisify(execFile);
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
@@ -82,6 +84,7 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
     assignment.requestedOutcome ?? null, assignment.skillBindingId ?? null,
     assignment.skillQualification ?? null
   ]))}`;
+  bindAgencyAssignment(config, assignment);
   validateRecord(assignment);
   return assignment;
 }
@@ -351,7 +354,6 @@ ${json({
 }
 export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(config.activation.dispatch, 'Worker dispatch is disabled');
-  modelPreflight(config);
   const job = ledger.job(id);
   requireThat(job?.state === 'prepared', 'Only a never-dispatched prepared assignment can launch; reconcile all other states', 'blocked-reconciliation');
   const assignment = ledger.get('assignment', id);
@@ -367,12 +369,35 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(investigation?.version === assignment.investigationVersion, 'Assignment evidence was superseded');
   requireCurrentAssignment(config, ledger, investigation, assignment);
   const repo = repoFor(config, assignment.repoId);
+  if (assignment.execution === 'hosted') {
+    requireThat(typeof dependencies.agencyTransport === 'function',
+      'An approved Agency transport is required; no local fallback is permitted', 'blocked-config');
+    requireAgencyQualification(config, ledger, agencyTaskId(assignment));
+  } else modelPreflight(config);
   const owner = ledger.acquire('dispatch');
   let proposal = null, revision = null, draftPR = null, validation = [];
   try {
-    const active = ledger.status().jobs.filter(j => ['dispatching', 'running'].includes(j.state)).length;
-    requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
-    ledger.moveJob(id, 'prepared', 'dispatching');
+    ledger.transaction(() => {
+      const active = ledger.status().jobs.filter(j => ['dispatching', 'claimed', 'running', 'uncertain'].includes(j.state)).length +
+        activeAgencyRequests(ledger, true);
+      requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
+      ledger.moveJob(id, 'prepared', 'dispatching');
+      if (assignment.execution === 'hosted')
+        reserveAgencyRequest(config, ledger, agencyTaskId(assignment), dependencies.agencyRequest);
+    });
+    if (assignment.execution === 'hosted') {
+      const taskId = agencyTaskId(assignment);
+      let submission;
+      try {
+        submission = await dependencies.agencyTransport(dependencies.agencyRequest.request);
+      } catch {
+        submission = { operation: 'jobs-create', state: 'uncertain', requestSha256: dependencies.agencyRequest.requestSha256,
+          jobId: null, httpStatus: null, observedAt: now() };
+      }
+      const receipt = recordAgencySubmission(ledger, taskId, submission);
+      ledger.moveJob(id, 'dispatching', submission.state === 'accepted' ? 'running' : 'blocked');
+      return receipt;
+    }
     const isolated = await provision(config, job, repo);
     ledger.moveJob(id, 'dispatching', 'running', isolated);
     const current = ledger.job(id);
@@ -438,4 +463,40 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     }
     throw error;
   } finally { ledger.release('dispatch', owner); }
+}
+
+export function reconcileHostedAssignment(ledger, id, input) {
+  return ledger.transaction(() => {
+    const assignment = ledger.get('assignment', id), job = ledger.job(id);
+    requireThat(assignment?.execution === 'hosted' && job &&
+      ['running', 'blocked', 'uncertain', 'completed'].includes(job.state), 'No submitted hosted assignment to reconcile');
+    const taskId = agencyTaskId(assignment);
+    const verdict = reconcileAgencyResult(ledger, taskId, input);
+    const existing = ledger.all('workerResult').find(r => r.id === `agency-result-${hash(taskId)}`);
+    if (existing) return { verdict, result: existing };
+    const draft = input.publication.pullRequest;
+    const draftPR = verdict.publicationPassed && draft ? {
+      url: draft.url, isDraft: true, headRevision: draft.headRevision
+    } : null;
+    const request = inspectAgencyRequest(ledger, taskId);
+    const validated = verdict.validationQualified;
+    const result = {
+      recordType: 'workerResult', schemaVersion: '1.0', id: `agency-result-${hash(taskId)}`,
+      assignmentId: id, attemptId: job.session_id, reportedAt: input.observedAt,
+      outcome: verdict.state === 'blocked' ? 'blocked' : draftPR && validated ? 'draft-pr-validated' : 'investigated',
+      findings: verdict.reasons.length ? verdict.reasons.join('; ') : 'Agency result reconciled against the exact source and task contract.',
+      evidenceIds: assignment.evidenceIds, sourceRevision: input.source.outputRevision, draftPR,
+      validation: assignment.validationGates.map(gateId => ({
+        gateId, sourceRevision: input.source.testedRevision, commandOrRunUrl: `agency-job:${input.jobId}`,
+        status: validated ? 'passed' : 'blocked', artifactRefs: input.inspection.evidenceRefs.map(r => r.ref),
+        owner: assignment.owner, nextCheckAt: null
+      })),
+      blocker: verdict.state === 'blocked' ? { owner: assignment.owner, reason: verdict.reasons.join('; '),
+        unblockCondition: 'Resolve the source-bound evidence gap; never resubmit or fall back automatically.' } : null,
+      nextAction: request.selection.allowPush ? 'Human review of the draft; never merge automatically.' : 'Review the recorded findings.'
+    };
+    ledger.put(result);
+    ledger.moveJob(id, job.state, verdict.state);
+    return { verdict, result };
+  });
 }

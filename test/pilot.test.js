@@ -489,7 +489,6 @@ test('package authentication configuration is explicit, value-free and contract-
   delete gate.packageAuth;
   assert.deepEqual(repositoryValidationContract(repo), originalContract);
 });
-
 test('worker writes honor exact files without broadening directory prefixes', t => {
   const { root, config } = setup(t);
   const repo = repoConfig(config, root);

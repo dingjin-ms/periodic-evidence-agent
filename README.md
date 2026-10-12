@@ -265,6 +265,37 @@ operation artifact and returns bounded diagnostics to the next skill round.
 The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 
+A content-bound profile may opt into controller-managed staged validation with
+one `PILOT_VALIDATION_PLAN` JSON comment. The fixed stage contract is
+`dependencies`, `compile`, `policy`, then `test`; the controller selects the
+stage through `PILOT_VALIDATION_STAGE`, not through worker input. Before worker
+authoring it can prepare the pinned base revision in a controller-only
+workspace. Preparation has two independently auditable receipts. The
+dependency receipt is keyed by the lockfile inputs, profile hash and
+Node/Corepack/Yarn/platform fingerprint, not by source revision. A compile
+receipt binds an exact source revision and build configuration to that
+dependency receipt. Validation artifacts record dependency and compile cache
+hit/miss state plus checkout, dependency materialization, preparation, policy,
+test and cleanup timings; Yarn resolution/fetch/link subphase timings are
+included when available.
+
+Receipt reuse is deterministic and fail closed. Each compile preparation starts
+from a fresh exact-revision source clone and receives a controller-made copy of
+the verified dependency snapshot. The controller records every ignored
+`node_modules` root produced by the locked install, uses native multithreaded
+copying on Windows, and rewrites every internal junction or symbolic link to the
+corresponding fresh-checkout path. Dependency fingerprints bind that complete
+root inventory, Yarn install state, linker state and normalized internal links.
+Production
+or build input changes rerun compile but reuse dependencies. A later test-only
+revision may reuse both receipts. Lockfile/profile/toolchain drift, missing or
+corrupt snapshots and receipts, or ambiguous paths rerun dependency preparation
+and compile. A recoverable retry of the same revision reuses completed
+preparation but reruns policy and test. Snapshot and prepared workspaces are
+serialized per receipt and source cleanliness plus declared outputs are
+rechecked after every run; workers and repository skills cannot access, write
+or approve cache metadata.
+
 ## Safety invariants
 
 Agent 2 FILTER owns loose, high-recall title screening. The
@@ -392,13 +423,22 @@ repository-native skill to author changes, but neither the worker nor skill
 receives shell, Git, network or PR permissions.
 
 After each authored revision, the controller commits it and runs the fixed
-approved validation gates in a fresh temporary checkout of the exact commit. A
-runner cannot validate changes it made during execution: changed source or HEAD
-is blocked and the temporary checkout is discarded. Explicitly classified
-infrastructure blockers may receive at most
-`limits.maxValidationInfrastructureRetries` fresh-checkout attempts; trust,
-profile-hash and policy failures are never auto-approved. A failed revision
-remains immutable validation
+approved validation gates at the exact commit. Profiles without a valid staged
+plan retain the original fresh temporary checkout for every attempt. Staged
+profiles use separate controller-owned dependency snapshots and exact-revision
+compile workspaces with immutable receipts and exclusive access. A dependency
+snapshot can serve fresh source checkouts that share its lockfile, profile and
+toolchain fingerprints; only deterministic test-only revisions reuse compile
+outputs. The implementation retains `clone --no-hardlinks` for source
+preparation: detached worktrees or shared-object clones make a durable cache
+depend on another worktree's lifetime. Detached worktrees remain suitable for
+ephemeral checkout optimization, but not as the durable receipt workspace.
+A runner cannot validate changes it made during
+execution: changed source or HEAD is blocked, and changed declared snapshot or
+prepared output invalidates the cache.
+Explicitly classified infrastructure blockers may receive at most
+`limits.maxValidationInfrastructureRetries` attempts; trust, profile-hash and
+policy failures are never auto-approved. A failed revision remains immutable validation
 evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
 bounded diagnostic tails to a new repository-skill repair round, commits the
 repair as a new revision and validates again. This is not a retry of the same

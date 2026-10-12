@@ -1,5 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
+$yarnCache = 'C:\.tools\.yarn'
+if (-not (Test-Path -LiteralPath $yarnCache -PathType Container)) {
+    throw "Required Yarn cache is unavailable: $yarnCache"
+}
+$env:YARN_CACHE_FOLDER = $yarnCache
 $env:YARN_AFTER_INSTALL = 'node -e "process.exit(0)"'
 $env:OAGENT_SKIP_PYTHON_POSTINSTALL = '1'
 

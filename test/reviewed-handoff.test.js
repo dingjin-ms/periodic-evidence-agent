@@ -10,7 +10,7 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import { dispatch, command } from '../src/workers.js';
-import { skillQualificationId } from '../src/repository-skills.js';
+import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
@@ -76,6 +76,7 @@ async function setup(t) {
     }]
   }];
   const ledger = new Ledger(state);
+  const validationContract = repositoryValidationContract(config.repositories[0]);
   ledger.qualify(skillQualificationId('office-agent', 'oa-integration-test-core'), {
     state: 'qualified-read-only',
     repoId: 'office-agent',
@@ -87,6 +88,9 @@ async function setup(t) {
     baseRevision,
     skillPath,
     skillSha256: hash('# Fixture integration-test skill\nAdd focused tests.\n'),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     sideEffects: { commit: true, push: true, createDraftPR: true }
   });
   t.after(() => {
@@ -154,10 +158,20 @@ test('stale or conflicting reviewed handoff versions fail closed', async t => {
   stale.source.revision = String(stale.version);
   await assert.rejects(async () => prepareReviewedHandoff(config, ledger, stale),
     /advance exactly once|superseded/);
+  const before = {
+    counts: ledger.status().counts,
+    jobs: ledger.status().jobs,
+    operations: ledger.status().operations
+  };
   const conflicting = structuredClone(fixture);
+  conflicting.evidence.summary = 'Conflicting evidence payload';
   conflicting.review.nextAction = 'Conflicting replay';
   await assert.rejects(async () => prepareReviewedHandoff(config, ledger, conflicting),
     /conflicts with persisted content/);
+  assert.deepEqual(ledger.status().counts, before.counts);
+  assert.deepEqual(ledger.status().jobs, before.jobs);
+  assert.deepEqual(ledger.status().operations, before.operations);
+  assert.equal(ledger.all('evidence').length, 1);
 });
 
 test('reviewed handoff requires the complete exclusion checklist', () => {
@@ -273,6 +287,9 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
   assert.equal(executed.result.skillExecution.bindingId, 'oa-integration-test-core');
   assert.equal(executed.result.validation[0].sourceRevision, executed.result.sourceRevision);
   assert.equal(executed.result.draftPR.headRevision, executed.result.sourceRevision);
+  assert.equal(executed.result.toolUsage.used, 2);
+  assert.equal(executed.result.toolUsage.byTool.pilot_write, 1);
+  assert.equal(executed.result.toolUsage.byTool.pilot_finish, 1);
 });
 
 test('controller validation failures feed a bounded repository-skill repair loop', async t => {
@@ -326,6 +343,8 @@ test('controller validation failures feed a bounded repository-skill repair loop
     executed.result.validationAttempts[1].sourceRevision);
   assert.equal(executed.result.sourceRevision,
     executed.result.validation[0].sourceRevision);
+  assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
+  assert.equal(executed.result.toolUsage.used, 5);
 });
 
 test('zero repair budget preserves an explicit failed Draft PR outcome', async t => {
@@ -420,7 +439,9 @@ test('blocked validation prevents repair push and Draft PR creation', async t =>
         status: 'blocked',
         artifactRefs: [],
         owner: repo.owner,
-        nextCheckAt: null
+        nextCheckAt: null,
+        attemptCount: 1,
+        blockedReason: 'runner-unavailable'
       }],
       pushBranch: async () => { pushed = true; },
       createDraft: async () => {

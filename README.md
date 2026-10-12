@@ -215,7 +215,10 @@ For OfficeAgent, the qualified router entry is
 project root, delegates to `docs/skills/Integration-test-core/workflow.md` and
 auto-discovers the project shell. A read-only qualification can verify the
 configured checkout, origin, base revision and skill content fingerprint before
-routing or writes are enabled:
+routing or writes are enabled. Repositories configured with
+`qualificationRefresh: "fetch"` fetch the trusted remote ref first instead of
+assuming the local branch is current. The receipt binds that exact revision,
+the skill SHA-256 and the repository validation contract version/hash:
 
 ```powershell
 npm run pilot -- qualify-skill --repo office-agent `
@@ -226,7 +229,9 @@ npm run pilot -- qualify-skill --repo office-agent `
 
 Qualification does not approve ownership, write prefixes, validation gates,
 commit identity, push or draft PR creation. Ambiguous project names remain
-blocked; assignments must pin the repo-relative owner project.
+blocked; assignments must pin the repo-relative owner project. A changed skill
+or validation profile requires a new qualification and is used only by new
+assignments; an in-progress repair loop never changes contracts mid-run.
 
 The OA skill owns validation intent and failure interpretation: it selects the
 project runner, targeted tests, behavior-card checks and repair procedure. The
@@ -351,7 +356,13 @@ repository-native skill to author changes, but neither the worker nor skill
 receives shell, Git, network or PR permissions.
 
 After each authored revision, the controller commits it and runs the fixed
-approved validation gates. A failed revision remains immutable validation
+approved validation gates in a fresh temporary checkout of the exact commit. A
+runner cannot validate changes it made during execution: changed source or HEAD
+is blocked and the temporary checkout is discarded. Explicitly classified
+infrastructure blockers may receive at most
+`limits.maxValidationInfrastructureRetries` fresh-checkout attempts; trust,
+profile-hash and policy failures are never auto-approved. A failed revision
+remains immutable validation
 evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
 bounded diagnostic tails to a new repository-skill repair round, commits the
 repair as a new revision and validates again. This is not a retry of the same
@@ -360,6 +371,12 @@ before push and Draft PR creation. Exhausted failed rounds may create only a
 clearly marked failed Draft PR under the configured policy. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
 network access, push or PR creation.
+
+Worker calls to `pilot_list`, `pilot_read`, `pilot_write` and `pilot_finish`
+share one `workerMaxToolCalls` budget across the initial authoring and every
+repair round. Each worker result records the limit, total/remaining calls,
+per-tool counts and per-round usage so operators can replace bootstrap limits
+with an observed percentile plus explicit headroom.
 
 `test/fixtures/reviewed-handoff/validation-repair-drill.json` is the deterministic
 failed-to-passed fixture. Its first revision intentionally fails the repository

@@ -16,7 +16,7 @@ import { collect, acceptReview, report, latestEvidence, reconcile, tick, previou
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
-import { skillQualificationId } from '../src/repository-skills.js';
+import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -104,6 +104,20 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
 test('portable scaffold config and all synthetic example records remain valid', () => {
   validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
   validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
+});
+test('worker-result audit fields and validation attempt metadata are mandatory', () => {
+  const examples = JSON.parse(readFileSync('scaffold/example-flows.json'));
+  const result = examples.records.find(record => record.recordType === 'workerResult');
+  for (const field of ['validationAttempts', 'toolUsage', 'skillExecution']) {
+    const invalid = structuredClone(result);
+    delete invalid[field];
+    assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
+  }
+  for (const field of ['attemptCount', 'blockedReason']) {
+    const invalid = structuredClone(result);
+    delete invalid.validation[0][field];
+    assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
+  }
 });
 test('portable example uses a fixed UTC fixture window and leaves live permissions unapproved', () => {
   const config = configAt('pilot.example.json');
@@ -421,15 +435,49 @@ test('failed validation is terminal evidence, not a success-shaped result', asyn
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 9);
 });
-test('source mutation during validation invalidates a successful exit', async t => {
+test('source mutation during validation retries in a clean checkout then blocks', async t => {
   const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
   repo.validationGates = [{ id: 'mutates', approved: true, isolationVerified: true,
     executable: process.execPath, args: [], timeoutMs: 10000 }];
-  const result = await runValidation(config, ledger, { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision, async () => {
-    writeFileSync(join(isolated.workspace, 'src', 'value.js'), 'changed');
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args, cwd) => {
+    attempts++;
+    writeFileSync(join(cwd, 'src', 'value.js'), 'changed');
     return { stdout: '', stderr: '' };
   });
   assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'runner-mutated-source');
+  assert.equal(result[0].attemptCount, 2);
+  assert.equal(result[0].artifactRefs.length, 2);
+  assert.equal(attempts, 2);
+  assert.equal(await command('git', ['status', '--porcelain'], isolated.workspace).then(value => value.stdout.trim()), '');
+});
+test('transient validation timeout retries once in a fresh checkout and can recover', async t => {
+  const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
+  repo.validationGates = [{
+    id: 'transient', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => {
+      attempts++;
+      if (attempts === 1)
+        throw Object.assign(new Error('timed out'), {
+          killed: true, code: null, stdout: '', stderr: 'timeout'
+        });
+      return { stdout: 'passed', stderr: '' };
+    });
+  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].blockedReason, null);
+  assert.equal(result[0].attemptCount, 2);
+  assert.equal(result[0].artifactRefs.length, 2);
+  assert.equal(JSON.parse(readFileSync(result[0].artifactRefs[0])).blockedReason, 'runner-timeout');
 });
 test('validation requires approved runner and never inherits credential environment values', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -465,7 +513,9 @@ test('validation profiles are content-bound and substituted by the controller', 
       return { stdout: '', stderr: '' };
     });
   assert.equal(result[0].status, 'passed');
-  assert.equal(observedArgs.at(-1), profilePath);
+  assert.notEqual(observedArgs.at(-1), profilePath);
+  assert.match(observedArgs.at(-1), /validation-profiles/);
+  assert.equal(existsSync(observedArgs.at(-1)), false);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.profileSha256, hash('Write-Output profile'));
 
@@ -479,6 +529,50 @@ test('validation profiles are content-bound and substituted by the controller', 
   await assert.rejects(runValidation(second.config, second.ledger,
     { ...second.job, workspace: secondIsolated.workspace }, second.repo,
     secondIsolated.baseRevision), /profile hash mismatch/);
+});
+test('validation blocks when a content-bound private profile changes during execution', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 1;
+  const profilePath = join(config.stateDirectory, 'validation-profile.ps1');
+  writeFileSync(profilePath, 'Write-Output profile');
+  repo.validationGates = [{
+    id: 'profile-toctou', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['{profile}'],
+    profilePath, profileSha256: hash('Write-Output profile'), timeoutMs: 10000
+  }];
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args) => {
+      attempts++;
+      writeFileSync(args[0], 'changed-after-verification');
+      return { stdout: '', stderr: '' };
+    });
+  assert.equal(attempts, 1);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-profile-changed');
+  assert.equal(result[0].attemptCount, 1);
+});
+test('validation cleanup failures still finalize blocked evidence and operations', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'cleanup', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => ({ stdout: '', stderr: '' }),
+    () => { throw new Error('synthetic cleanup failure'); });
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-cleanup-failed');
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.match(artifact.output.cleanupError, /Operation failed/);
+  assert.ok(artifact.output.residualPaths.length > 0);
+  const operations = ledger.status().operations;
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].state, 'blocked');
 });
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -618,11 +712,15 @@ test('planned OA skill path creates a source-bound validated draft result throug
     repoIds: [repo.id], capabilities: ['integration-test-authoring']
   });
   const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  const validationContract = repositoryValidationContract(repo);
   ctx.ledger.qualify(skillQualificationId(repo.id, 'oa-integration-test-core'), {
     state: 'qualified-read-only', repoId: repo.id, bindingId: 'oa-integration-test-core',
     capability: 'integration-test-authoring', remote: repo.remote, baseRef: repo.baseRef,
     baseRevision, skillPath: 'docs/skills/Integration-test-core/SKILL.md',
     skillSha256: hash('# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n'),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
   const plan = recordTestCoveragePlan(ctx.ledger, {
@@ -697,12 +795,21 @@ test('interrupted worker persists blocked result and cannot relaunch', async t =
   const { config, ledger, job } = await fixture(t, 'authenticated-source');
   config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
   await assert.rejects(dispatch(config, ledger, job.id, {
-    runModel: async () => { throw new PilotError('blocked-auth', 'Synthetic Copilot reauthentication required'); }
+    runModel: async (currentConfig, currentLedger, current, assignment, investigation,
+      toolkit) => {
+      toolkit.read('src\\value.js');
+      throw new PilotError('blocked-auth', 'Synthetic Copilot reauthentication required');
+    }
   }), /reauthentication/);
   assert.equal(ledger.job(job.id).state, 'blocked');
   const result = ledger.all('workerResult')[0];
   assert.equal(result.outcome, 'blocked');
   assert.match(result.blocker.reason, /reauthentication/);
+  assert.equal(result.toolUsage.used, 1);
+  assert.deepEqual(result.toolUsage.rounds, [{
+    round: 0, used: 1, cumulativeUsed: 1, status: 'failed'
+  }]);
+  assert.equal(result.skillExecution, null);
   await assert.rejects(dispatch(config, ledger, job.id), /never-dispatched/);
 });
 test('synthetic provenance cannot be dispatched through the live entrypoint', async t => {

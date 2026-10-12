@@ -84,7 +84,19 @@ export function configAt(path) {
     nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
   requireThat(config.limits.maxValidationRepairRounds <= 5,
     'maxValidationRepairRounds must not exceed 5');
+  config.limits.maxValidationInfrastructureRetries =
+    nonNegative(config.limits.maxValidationInfrastructureRetries ?? 0,
+      'maxValidationInfrastructureRetries');
+  requireThat(config.limits.maxValidationInfrastructureRetries <= 2,
+    'maxValidationInfrastructureRetries must not exceed 2');
   for (const repo of config.repositories) {
+    repo.qualificationRefresh ??= 'local';
+    repo.validationContractVersion ??= '1.0';
+    requireThat(['local', 'fetch'].includes(repo.qualificationRefresh),
+      `Repository ${repo.id} qualificationRefresh must be local or fetch`);
+    requireThat(typeof repo.validationContractVersion === 'string' &&
+      repo.validationContractVersion.length > 0,
+    `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
     const ids = new Set();
     for (const binding of repo.skillBindings ?? []) {

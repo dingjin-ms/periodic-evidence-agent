@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configAt, hash } from '../src/common.js';
 import {
-  loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill, resolveSkillBinding
+  loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill,
+  repositoryValidationContract, resolveSkillBinding
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -36,11 +37,15 @@ function setup(t) {
 }
 function qualification(config, assignment, revision, instructions = '# Synthetic OA integration skill\n') {
   const binding = config.repositories[0].skillBindings[0];
+  const contract = repositoryValidationContract(config.repositories[0]);
   const receipt = {
     state: 'qualified-read-only', repoId: assignment.repoId, bindingId: assignment.skillBindingId,
     capability: assignment.capability, remote: config.repositories[0].remote,
     baseRef: config.repositories[0].baseRef, baseRevision: revision,
     skillPath: binding.skillPath.replaceAll('\\', '/'), skillSha256: hash(instructions),
+    qualificationSource: 'local-reference',
+    validationContractVersion: contract.version,
+    validationContractSha256: contract.sha256,
     sideEffects: binding.sideEffects
   };
   assignment.skillQualification = pinSkillQualification(receipt);
@@ -84,8 +89,8 @@ test('read-only qualification verifies an exact repository revision before routi
     'oa-integration-test-core', async (executable, args, cwd) => {
       calls.push({ executable, args, cwd });
       const operation = args[2];
-      if (operation === 'rev-parse') return { stdout: `${revision}\n` };
       if (operation === 'remote') return { stdout: `${repo.remote}\n` };
+      if (operation === 'rev-parse') return { stdout: `${revision}\n` };
       if (operation === 'cat-file') return { stdout: '' };
       if (operation === 'show') return { stdout: '# Synthetic OA integration skill\n' };
       throw new Error(`Unexpected operation ${operation}`);
@@ -94,7 +99,50 @@ test('read-only qualification verifies an exact repository revision before routi
   assert.equal(result.state, 'qualified-read-only');
   assert.equal(result.skillPath, 'docs/skills/Integration-test-core/SKILL.md');
   assert.match(result.skillSha256, /^[a-f0-9]{64}$/);
-  assert.deepEqual(calls.map(call => call.args[2]), ['rev-parse', 'remote', 'cat-file', 'show']);
+  assert.equal(result.qualificationSource, 'local-reference');
+  assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(calls.map(call => call.args[2]), ['remote', 'rev-parse', 'cat-file', 'show']);
+});
+
+test('trusted-remote qualification fetches before resolving and binds the validation contract', async t => {
+  const { config } = setup(t);
+  const repo = config.repositories[0];
+  repo.qualificationRefresh = 'fetch';
+  repo.validationContractVersion = 'oa-v2';
+  repo.validationGates = [{
+    id: 'oa-test', approved: true, executable: process.execPath,
+    args: ['--test'], timeoutMs: 1000, profileSha256: 'a'.repeat(64)
+  }];
+  const revision = 'e'.repeat(40);
+  const calls = [];
+  const result = await qualifyRepositorySkill(config, 'office-src', 'integration-test-authoring',
+    'oa-integration-test-core', async (executable, args) => {
+      calls.push(args.slice(2));
+      if (args[2] === 'remote') return { stdout: `${repo.remote}\n` };
+      if (args[2] === 'fetch') return { stdout: '' };
+      if (args[2] === 'rev-parse') return { stdout: `${revision}\n` };
+      if (args[2] === 'cat-file') return { stdout: '' };
+      if (args[2] === 'show') return { stdout: '# Synthetic OA integration skill\n' };
+      throw new Error(`Unexpected operation ${args[2]}`);
+    });
+  assert.deepEqual(calls.map(args => args[0]),
+    ['remote', 'fetch', 'rev-parse', 'cat-file', 'show']);
+  assert.equal(result.qualificationSource, 'trusted-remote');
+  assert.equal(result.validationContractVersion, 'oa-v2');
+  assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
+});
+
+test('adapter rejects a validation contract changed after qualification', t => {
+  const { workspace, config, assignment } = setup(t);
+  const revision = 'f'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  config.repositories[0].validationGates = [{
+    id: 'new-gate', approved: true, executable: process.execPath,
+    args: [], timeoutMs: 1000
+  }];
+  assert.throws(() =>
+    loadRepositorySkill(config, assignment, workspace, revision, receipt),
+  /validation contract changed/);
 });
 
 test('adapter rejects path traversal and reparse-point skill paths', t => {

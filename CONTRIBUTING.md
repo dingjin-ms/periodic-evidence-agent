@@ -65,6 +65,18 @@ attempt and artifact, and receives a final independent controller validation.
 Keep the configured repair-round limit small and explicit; exhaustion must
 remain failed or blocked rather than becoming success-shaped.
 
+Infrastructure recovery is distinct from source repair. The controller may
+repeat only an explicitly classified transient validation attempt in a fresh
+checkout of the same revision and within the configured retry limit. It must
+preserve every attempt artifact. Profile/hash, ownership, permission or policy
+changes require reconciliation or approval and may not be cleared by a model.
+
+Repository-skill qualification must bind the exact source revision, skill
+content hash and validation contract version/hash. If trusted-remote refresh is
+configured, fetch before qualification. Do not silently update the skill or
+validation contract for an assignment that has already entered authoring or
+repair.
+
 Before merge, review the final diff and publish a machine-readable receipt bound
 to the exact PR head and base commit SHAs. Start from
 `scaffold/pr-review-receipt.example.json`, replace both SHAs and all review

@@ -88,9 +88,20 @@
       "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"], "sourceRevision": "synthetic-head-1",
       "draftPR": { "url": "https://example.invalid/repos/example-repo/pull/1", "isDraft": true, "headRevision": "synthetic-head-1" },
       "validation": [
-        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "running", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z" },
-        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "queued", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z" }
+        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "running", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z", "attemptCount": 1, "blockedReason": null },
+        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "queued", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z", "attemptCount": 1, "blockedReason": null }
       ],
+      "validationAttempts": [
+        {
+          "round": 0, "sourceRevision": "synthetic-head-1",
+          "validation": [
+            { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "running", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z", "attemptCount": 1, "blockedReason": null },
+            { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "queued", "artifactRefs": [], "owner": "synthetic-worker", "nextCheckAt": "2026-01-02T10:05:00Z", "attemptCount": 1, "blockedReason": null }
+          ]
+        }
+      ],
+      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
+      "skillExecution": null,
       "blocker": null, "nextAction": "The synthetic worker owns monitoring; no requeue or merge."
     },
     {
@@ -101,9 +112,20 @@
       "evidenceIds": ["ev-ado-1001-r1", "ev-icm-2001"], "sourceRevision": "synthetic-head-1",
       "draftPR": { "url": "https://example.invalid/repos/example-repo/pull/1", "isDraft": true, "headRevision": "synthetic-head-1" },
       "validation": [
-        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "passed", "artifactRefs": ["synthetic://validation/1/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null },
-        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "passed", "artifactRefs": ["synthetic://validation/2/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null }
+        { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "passed", "artifactRefs": ["synthetic://validation/1/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null, "attemptCount": 1, "blockedReason": null },
+        { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "passed", "artifactRefs": ["synthetic://validation/2/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null, "attemptCount": 1, "blockedReason": null }
       ],
+      "validationAttempts": [
+        {
+          "round": 0, "sourceRevision": "synthetic-head-1",
+          "validation": [
+            { "gateId": "targeted-regression", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/1", "status": "passed", "artifactRefs": ["synthetic://validation/1/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null, "attemptCount": 1, "blockedReason": null },
+            { "gateId": "typecheck", "sourceRevision": "synthetic-head-1", "commandOrRunUrl": "https://example.invalid/validation/2", "status": "passed", "artifactRefs": ["synthetic://validation/2/raw-result"], "owner": "synthetic-worker", "nextCheckAt": null, "attemptCount": 1, "blockedReason": null }
+          ]
+        }
+      ],
+      "toolUsage": { "limit": 20, "used": 8, "remaining": 12, "byTool": { "pilot_list": 1, "pilot_read": 4, "pilot_write": 2, "pilot_finish": 1 }, "rounds": [{ "round": 0, "used": 8, "cumulativeUsed": 8, "status": "completed" }] },
+      "skillExecution": null,
       "blocker": null, "nextAction": "Leave the PR a draft. Merge policy is undetermined."
     },
     {

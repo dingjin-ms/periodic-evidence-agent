@@ -8,7 +8,7 @@ import { configAt, hash, json, now } from '../src/common.js';
 import { evidenceEnvelope } from '../src/sources.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { makePlannedImprovementAssignment, requireCurrentAssignment } from '../src/workers.js';
-import { skillQualificationId } from '../src/repository-skills.js';
+import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'improvement-planner-'));
@@ -131,11 +131,15 @@ test('planned OA assignment pins improvement, plan and qualified repository skil
     coverageGaps: ['Missing focused integration coverage.'], unknowns: [],
     rationale: 'Create an OA integration-test assignment.'
   });
+  const validationContract = repositoryValidationContract(config.repositories[0]);
   ledger.qualify(skillQualificationId('office-src', 'oa-integration-test-core'), {
     state: 'qualified-read-only', repoId: 'office-src', bindingId: 'oa-integration-test-core',
     capability: 'integration-test-authoring', remote: config.repositories[0].remote,
     baseRef: 'main', baseRevision: plan.sourceRevision,
     skillPath: 'docs/skills/Integration-test-core/SKILL.md', skillSha256: 'd'.repeat(64),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
   const assignment = makePlannedImprovementAssignment(config, ledger, investigation, plan.id);

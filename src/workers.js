@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
-import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from 'node:fs';
+import { join, dirname, resolve, relative, isAbsolute, extname } from 'node:path';
 import { AzureCliCredential } from '@azure/identity';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight } from './common.js';
 import { withClient, restrictedSession, defineTool } from './runtime.js';
@@ -125,15 +125,18 @@ export function requireCurrentAssignment(config, ledger, investigation, assignme
     'Assignment inputs, plan or qualification changed after preparation', 'blocked-reconciliation');
   return rebuilt;
 }
-export async function provision(config, job, repo) {
+export async function provision(config, job, repo, expectedBaseRevision = null) {
   const root = join(config.stateDirectory, 'workspaces');
   mkdirSync(root, { recursive: true });
   const workspace = join(root, job.session_id);
   const relativeToReference = relative(resolve(repo.referenceCheckout), workspace);
   requireThat(relativeToReference.startsWith('..') || isAbsolute(relativeToReference), 'Workspace must not be inside the primary checkout');
   requireThat(!existsSync(workspace), 'Workspace already exists; reconcile instead of cloning twice', 'blocked-reconciliation');
-  const baseRevision = await git(repo.referenceCheckout, ['rev-parse', '--verify', `${repo.baseRef}^{commit}`]);
+  const baseRevision = expectedBaseRevision ??
+    await git(repo.referenceCheckout, ['rev-parse', '--verify', `${repo.baseRef}^{commit}`]);
   requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Invalid base revision');
+  if (expectedBaseRevision)
+    await git(repo.referenceCheckout, ['cat-file', '-e', `${expectedBaseRevision}^{commit}`]);
   await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', repo.referenceCheckout, workspace]);
   await git(workspace, ['remote', 'set-url', 'origin', repo.remote]);
   await git(workspace, ['checkout', '-b', `pilot/${job.id}`, baseRevision], checkoutEnvironment());
@@ -143,25 +146,35 @@ export function checkoutEnvironment() {
   return { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' };
 }
 export class WorkerTools {
-  constructor(config, assignment, workspace, loadedSkill = null, remaining = assignment.bounds.maxToolCalls) {
+  constructor(config, assignment, workspace, loadedSkill = null, usage = null) {
     this.config = config; this.assignment = assignment; this.workspace = workspace;
     this.repo = repoFor(config, assignment.repoId); this.loadedSkill = loadedSkill;
-    this.remaining = remaining; this.proposal = null;
+    this.usage = usage ?? {
+      limit: assignment.bounds.maxToolCalls,
+      used: 0,
+      byTool: { pilot_list: 0, pilot_read: 0, pilot_write: 0, pilot_finish: 0 }
+    };
+    this.proposal = null;
   }
-  use() { requireThat(this.remaining-- > 0, 'Worker tool budget exhausted', 'blocked-budget'); }
+  get remaining() { return this.usage.limit - this.usage.used; }
+  use(name) {
+    requireThat(this.remaining > 0, 'Worker tool budget exhausted', 'blocked-budget');
+    this.usage.used++;
+    this.usage.byTool[name]++;
+  }
   async list() {
-    this.use();
+    this.use('pilot_list');
     const paths = (await git(this.workspace, ['ls-files', '-z'])).split('\0').filter(Boolean);
     requireThat(paths.length <= 200000, 'Repository file list too large', 'blocked-budget');
     return paths;
   }
   read(path) {
-    this.use(); const target = boundedPath(this.workspace, path);
+    this.use('pilot_read'); const target = boundedPath(this.workspace, path);
     requireThat(statSync(target).isFile() && statSync(target).size <= this.config.limits.maxFileBytes, 'File exceeds read limit');
     return readFileSync(target, 'utf8');
   }
   write(path, content) {
-    this.use();
+    this.use('pilot_write');
     requireThat(!this.proposal && this.assignment.permissions.editCode, 'Worker edits are not permitted', 'blocked-permission');
     const target = boundedPath(this.workspace, path, { write: true });
     const normalized = relative(this.workspace, target).replaceAll('\\', '/');
@@ -173,7 +186,7 @@ export class WorkerTools {
     return 'written';
   }
   finish(proposal) {
-    this.use();
+    this.use('pilot_finish');
     requireThat(!this.proposal, 'Proposal already submitted');
     requireThat(['investigated', 'not-reproducible', 'not-actionable', 'propose-change', 'blocked'].includes(proposal.outcome)
       && typeof proposal.findings === 'string' && proposal.findings.length > 0, 'Invalid worker proposal');
@@ -225,7 +238,8 @@ export class WorkerTools {
     ];
   }
 }
-export async function runValidation(config, ledger, job, repo, revision, execute = command) {
+export async function runValidation(config, ledger, job, repo, revision, execute = command,
+  cleanup = rmSync) {
   const results = [];
   for (const gate of repo.validationGates) {
     requireThat(gate.approved === true && isAbsolute(gate.executable)
@@ -236,37 +250,120 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     if (gate.profilePath) {
       requireThat(isAbsolute(gate.profilePath) && /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
         `Gate ${gate.id} needs a resolved profile and SHA-256 binding`, 'blocked-validation');
-      requireThat(existsSync(gate.profilePath) && statSync(gate.profilePath).isFile() &&
-        hash(readFileSync(gate.profilePath)) === gate.profileSha256,
+      requireThat(existsSync(gate.profilePath) && statSync(gate.profilePath).isFile(),
+        `Gate ${gate.id} validation profile is unavailable`, 'blocked-validation');
+      const bytes = readFileSync(gate.profilePath);
+      requireThat(hash(bytes) === gate.profileSha256,
       `Gate ${gate.id} validation profile hash mismatch`, 'blocked-validation');
-      profile = { path: gate.profilePath, sha256: gate.profileSha256 };
+      profile = { path: gate.profilePath, sha256: gate.profileSha256, bytes };
     }
-    const id = `${job.id}:validation:${gate.id}:${revision}`;
-    const args = gate.args.map(a => a.replaceAll('{workspace}', job.workspace)
-      .replaceAll('{revision}', revision)
-      .replaceAll('{profile}', profile?.path ?? ''));
-    const artifact = join(config.stateDirectory, 'validation', `${hash(id)}.json`);
-    ledger.operation(id, job.id, 'validation', {
-      gateId: gate.id, revision, owner: repo.owner, profileSha256: profile?.sha256 ?? null,
-      nextCheckAt: new Date(Date.now() + gate.timeoutMs).toISOString()
+    requireThat(await git(job.workspace, ['rev-parse', 'HEAD']) === revision &&
+      !(await git(job.workspace, ['status', '--porcelain'])),
+    'Authored workspace is not clean at the validation revision', 'blocked-validation');
+    const maxRetries = config.limits.maxValidationInfrastructureRetries ?? 0;
+    const artifactRefs = [];
+    let status = 'blocked', blockedReason = null, commandOrRunUrl = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const id = `${job.id}:validation:${gate.id}:${revision}:attempt:${attempt}`;
+      const validationRoot = join(config.stateDirectory, 'validation-workspaces');
+      const validationWorkspace = join(validationRoot, hash(id));
+      const privateProfile = profile
+        ? join(config.stateDirectory, 'validation-profiles',
+          `${hash(id)}${extname(profile.path)}`)
+        : null;
+      const args = gate.args.map(a => a.replaceAll('{workspace}', validationWorkspace)
+        .replaceAll('{revision}', revision)
+        .replaceAll('{profile}', privateProfile ?? ''));
+      const artifact = join(config.stateDirectory, 'validation', `${hash(id)}.json`);
+      requireThat(!existsSync(validationWorkspace),
+        `Validation attempt workspace already exists for ${gate.id}`, 'blocked-reconciliation');
+      mkdirSync(validationRoot, { recursive: true });
+      commandOrRunUrl = json([gate.executable, ...args]);
+      artifactRefs.push(artifact);
+      ledger.operation(id, job.id, 'validation', {
+        gateId: gate.id, revision, attempt, owner: repo.owner,
+        profileSha256: profile?.sha256 ?? null,
+        nextCheckAt: new Date(Date.now() + gate.timeoutMs).toISOString()
+      });
+      let output = {};
+      blockedReason = null;
+      let cleanupError = null;
+      const residualPaths = [];
+      try {
+        await git(validationRoot,
+          ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, validationWorkspace]);
+        await git(validationWorkspace, ['checkout', '--detach', revision], checkoutEnvironment());
+        if (privateProfile) {
+          mkdirSync(dirname(privateProfile), { recursive: true });
+          writeFileSync(privateProfile, profile.bytes, { mode: 0o600 });
+        }
+        try {
+          output = await execute(gate.executable, args, validationWorkspace,
+            gate.timeoutMs, minimalEnvironment());
+          status = 'passed';
+        } catch (error) {
+          const unavailable = typeof error.code === 'string';
+          status = error.killed || unavailable ? 'blocked' : 'failed';
+          blockedReason = error.killed ? 'runner-timeout' :
+            unavailable ? 'runner-unavailable' : null;
+          output = {
+            stdout: error.stdout ?? '', stderr: error.stderr ?? '',
+            exitCode: error.code ?? null, timeout: Boolean(error.killed)
+          };
+        }
+        const actualHead = await git(validationWorkspace, ['rev-parse', 'HEAD']);
+        const dirty = await git(validationWorkspace, ['status', '--porcelain']);
+        if (actualHead !== revision || dirty) {
+          status = 'blocked';
+          blockedReason = 'runner-mutated-source';
+          output.sourceChanged = true;
+        }
+        if (profile && (!existsSync(privateProfile) ||
+          hash(readFileSync(privateProfile)) !== profile.sha256 ||
+          !existsSync(profile.path) || hash(readFileSync(profile.path)) !== profile.sha256)) {
+          status = 'blocked';
+          blockedReason = 'validation-profile-changed';
+          output.profileChanged = true;
+        }
+      } catch (error) {
+        status = 'blocked';
+        blockedReason = 'validation-workspace-unavailable';
+        output = {
+          stdout: '', stderr: safeError(error).message,
+          exitCode: null, timeout: false
+        };
+      } finally {
+        for (const target of [validationWorkspace, privateProfile].filter(Boolean)) {
+          try { cleanup(target, { recursive: true, force: true }); }
+          catch (error) {
+            cleanupError ??= safeError(error).message;
+            residualPaths.push(target);
+          }
+        }
+      }
+      if (cleanupError) {
+        status = 'blocked';
+        blockedReason = 'validation-cleanup-failed';
+        output.cleanupError = cleanupError;
+        output.residualPaths = residualPaths;
+      }
+      mkdirSync(dirname(artifact), { recursive: true });
+      writeFileSync(artifact, json({
+        gateId: gate.id, revision, attempt, status, blockedReason,
+        executable: gate.executable, args, profileSha256: profile?.sha256 ?? null,
+        output, observedAt: now()
+      }), { mode: 0o600 });
+      ledger.finishOperation(id, status, {
+        artifact, revision, attempt, blockedReason, owner: repo.owner
+      });
+      if (status !== 'blocked' || attempt >= maxRetries ||
+        ['validation-profile-changed', 'validation-cleanup-failed'].includes(blockedReason)) break;
+    }
+    results.push({
+      gateId: gate.id, sourceRevision: revision, commandOrRunUrl, status,
+      artifactRefs, owner: repo.owner, nextCheckAt: null,
+      attemptCount: artifactRefs.length, blockedReason
     });
-    let status = 'passed', output;
-    try { output = await execute(gate.executable, args, job.workspace, gate.timeoutMs, minimalEnvironment()); }
-    catch (error) {
-      status = error.killed ? 'blocked' : 'failed';
-      output = { stdout: error.stdout ?? '', stderr: error.stderr ?? '', exitCode: error.code ?? null, timeout: Boolean(error.killed) };
-    }
-    const actualHead = await git(job.workspace, ['rev-parse', 'HEAD']);
-    const dirty = await git(job.workspace, ['status', '--porcelain']);
-    if (actualHead !== revision || dirty) { status = 'blocked'; output.sourceChanged = true; }
-    mkdirSync(dirname(artifact), { recursive: true });
-    writeFileSync(artifact, json({
-      gateId: gate.id, revision, status, executable: gate.executable, args,
-      profileSha256: profile?.sha256 ?? null, output, observedAt: now()
-    }), { mode: 0o600 });
-    ledger.finishOperation(id, status, { artifact, revision, owner: repo.owner });
-    results.push({ gateId: gate.id, sourceRevision: revision, commandOrRunUrl: json([gate.executable, ...args]), status,
-      artifactRefs: [artifact], owner: repo.owner, nextCheckAt: null });
     if (status === 'blocked') break;
   }
   return results;
@@ -353,7 +450,7 @@ export async function createAdoDraft(config, ledger, job, repo, revision, propos
 function validationFeedback(results) {
   return results.map(result => {
     let diagnostic = { status: result.status };
-    const artifact = result.artifactRefs?.[0];
+    const artifact = result.artifactRefs?.at(-1);
     if (artifact && existsSync(artifact)) {
       const persisted = JSON.parse(readFileSync(artifact, 'utf8'));
       const output = persisted.output ?? {};
@@ -416,11 +513,18 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const repo = repoFor(config, assignment.repoId);
   const owner = ledger.acquire('dispatch');
   let proposal = null, revision = null, draftPR = null, validation = [], validationAttempts = [];
+  const toolUsage = {
+    limit: assignment.bounds.maxToolCalls,
+    used: 0,
+    byTool: { pilot_list: 0, pilot_read: 0, pilot_write: 0, pilot_finish: 0 },
+    rounds: []
+  };
   try {
     const active = ledger.status().jobs.filter(j => ['dispatching', 'running'].includes(j.state)).length;
     requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
     ledger.moveJob(id, 'prepared', 'dispatching');
-    const isolated = await provision(config, job, repo);
+    const isolated = await provision(config, job, repo,
+      assignment.skillQualification?.baseRevision ?? null);
     ledger.moveJob(id, 'dispatching', 'running', isolated);
     const current = ledger.job(id);
     const qualification = assignment.skillBindingId
@@ -431,17 +535,29 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       : null;
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
     let outcome;
-    let remainingTools = assignment.bounds.maxToolCalls;
     let authoring = { round: 0, validationFeedback: [] };
     let finalValidation = [];
     const maxRepairRounds = config.limits.maxValidationRepairRounds ?? 0;
     while (true) {
-      const toolkit = new WorkerTools(config, assignment, current.workspace, loadedSkill, remainingTools);
-      await (dependencies.runModel ?? runModel)(
-        config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring);
-      requireThat(toolkit.proposal, 'Worker ended without a structured result', 'blocked-result');
+      const startedUsed = toolUsage.used;
+      const toolkit = new WorkerTools(config, assignment, current.workspace, loadedSkill, toolUsage);
+      let roundStatus = 'completed';
+      try {
+        await (dependencies.runModel ?? runModel)(
+          config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring);
+        requireThat(toolkit.proposal, 'Worker ended without a structured result', 'blocked-result');
+      } catch (error) {
+        roundStatus = 'failed';
+        throw error;
+      } finally {
+        toolUsage.rounds.push({
+          round: authoring.round,
+          used: toolUsage.used - startedUsed,
+          cumulativeUsed: toolUsage.used,
+          status: roundStatus
+        });
+      }
       proposal = toolkit.proposal;
-      remainingTools = toolkit.remaining;
       outcome = proposal.outcome;
       if (outcome !== 'propose-change') break;
       const changedFiles = await workspaceChanges(current.workspace);
@@ -492,6 +608,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       recordType: 'workerResult', schemaVersion: '1.0', id: uuid(), assignmentId: id, attemptId: current.session_id,
       reportedAt: now(), outcome, findings: proposal.findings, evidenceIds: assignment.evidenceIds,
       sourceRevision: revision, draftPR, validation, validationAttempts,
+      toolUsage: { ...toolUsage, remaining: toolUsage.limit - toolUsage.used },
       skillExecution: proposal.skillExecution ?? null,
       blocker: outcome === 'blocked' ? { owner: repo.owner, reason: proposal.findings, unblockCondition: 'Operator resolves the worker-reported blocker' } : null,
       nextAction: draftPR ? 'Human review of draft; never merge automatically.' : 'Review the recorded findings.'
@@ -508,6 +625,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         reportedAt: now(), outcome: 'blocked', findings: proposal?.findings ?? 'Execution interrupted before findings were submitted.',
         evidenceIds: assignment.evidenceIds, sourceRevision: revision, draftPR, validation,
         validationAttempts,
+        toolUsage: {
+          ...toolUsage,
+          remaining: toolUsage.limit - toolUsage.used
+        },
+        skillExecution: proposal?.skillExecution ?? null,
         blocker: { owner: repo.owner, reason: detail.message, unblockCondition: 'Inspect persisted session and operation outcomes; resolve blocker without duplicate dispatch or validation.' },
         nextAction: 'Run reconcile; do not automatically relaunch.'
       });

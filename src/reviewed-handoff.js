@@ -123,32 +123,34 @@ export function prepareReviewedHandoff(config, ledger, input, {
   requireThat(qualification?.baseRevision,
     'Reviewed handoff requires a current repository skill qualification',
     'blocked-config');
-  const evidence = ledger.evidence(evidenceRecord(receipt, source), receipt.evidence,
-    `reviewed-handoff:${receipt.id}:v${receipt.version}`);
-  const investigation = persistReviewedInvestigation(config, ledger, {
-    investigation: investigationRecord(receipt, evidence),
-    exclusionsChecked: receipt.review.exclusionsChecked
-  }, {
-    requireReviewActivation: false,
-    allowImportedInitialVersion: true,
-    allowIdempotentReplay: true
+  return ledger.transaction(() => {
+    const evidence = ledger.evidence(evidenceRecord(receipt, source), receipt.evidence,
+      `reviewed-handoff:${receipt.id}:v${receipt.version}`);
+    const investigation = persistReviewedInvestigation(config, ledger, {
+      investigation: investigationRecord(receipt, evidence),
+      exclusionsChecked: receipt.review.exclusionsChecked
+    }, {
+      requireReviewActivation: false,
+      allowImportedInitialVersion: true,
+      allowIdempotentReplay: true
+    });
+    const planned = planImprovement(ledger, {
+      improvement: {
+        ...receipt.planning.improvement,
+        investigationIds: [investigation.id],
+        observedBehavior: investigation.observedBehavior,
+        expectedBehavior: investigation.expectedBehavior
+      },
+      testCoverage: {
+        ...coverage,
+        sourceRevision: qualification.baseRevision
+      }
+    });
+    const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
+      planned.testCoveragePlan.id, receipt.planning.requestedOutcome);
+    const job = ledger.job(assignment.id) ?? ledger.prepare(assignment);
+    return { receipt, evidence, investigation, ...planned, assignment, job };
   });
-  const planned = planImprovement(ledger, {
-    improvement: {
-      ...receipt.planning.improvement,
-      investigationIds: [investigation.id],
-      observedBehavior: investigation.observedBehavior,
-      expectedBehavior: investigation.expectedBehavior
-    },
-    testCoverage: {
-      ...coverage,
-      sourceRevision: qualification.baseRevision
-    }
-  });
-  const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
-    planned.testCoveragePlan.id, receipt.planning.requestedOutcome);
-  const job = ledger.job(assignment.id) ?? ledger.prepare(assignment);
-  return { receipt, evidence, investigation, ...planned, assignment, job };
 }
 
 export async function acceptReviewedHandoff(config, ledger, input, {

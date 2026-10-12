@@ -1,6 +1,6 @@
 import { hash, json, requireThat } from './common.js';
 import { readAgencyRequest, previewAgencyResult, selectAgency, validateFilterAnalysisPolicy,
-  recordAgencyPolicyEvaluation } from './agency-executor.js';
+  recordAgencyPolicyEvaluation, filterCandidateSourcesMatch } from './agency-executor.js';
 import { checkFilterBatchResult, consolidateFilterBatches } from './filter-batches.js';
 
 export function evaluateFilterExecution(config, ledger, manifest, taskId, resultBytes, input, policy) {
@@ -16,8 +16,8 @@ export function evaluateFilterExecution(config, ledger, manifest, taskId, result
     batch.analysisPayloadSha256 === s.analysisPayloadSha256 &&
     hash(manifest.request.instructions) === s.instructionsSha256,
   'Policy evaluation requires complete exact original manifest/request/result binding', 'blocked-reconciliation');
-  requireThat(result.candidates.every(c => c.sourceRevision === s.sourceRevision),
-    'Candidate analyzed source differs from actual execution source', 'blocked-reconciliation');
+  requireThat(filterCandidateSourcesMatch(s, result),
+    'Candidate repository or source revision differs from actual execution source', 'blocked-reconciliation');
   const integrity = { policy, manifestSha256: hash(`${JSON.stringify(manifest, null, 2)}\n`),
     payloadSha256: batch.payloadSha256, analysisPayloadSha256: batch.analysisPayloadSha256 };
   const verdict = previewAgencyResult(ledger, taskId, input, { policy, integrity, analysisCheck: checked });
@@ -85,6 +85,8 @@ export function reconcileFilterExecutionCohort(config, ledger, manifest, resultB
         value.checked.payloadSha256 !== terminal.receipt.analysis?.payloadSha256 ||
         value.checked.validator !== terminal.receipt.analysis?.validator))
         return blocked('Supplied complete result differs from the immutable execution analysis receipt');
+      if (matching.some(value => !filterCandidateSourcesMatch(s, value.result)))
+        return blocked('Candidate repository or source revision differs from actual execution source');
       const verdict = previewAgencyResult(ledger, batch.id, terminal.receipt);
       if (json(verdict) !== json(terminal.verdict))
         return blocked('Current execution grading differs from the immutable terminal verdict');

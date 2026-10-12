@@ -391,6 +391,8 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
     '-c', 'core.hooksPath=missing-hooks', 'commit', '--quiet', '--allow-empty', '-m', 'Synthetic verifier source']);
   const sourceRevision = git(['rev-parse', 'HEAD']);
   const r = result(manifest, batch);
+  if (['local-policy', 'valid', 'digest-valid'].includes(mode))
+    r.candidates.push(candidate(r, { sourceRevision }));
   if (mode === 'all-excluded') {
     Object.assign(r.titles.decisions[0], { disposition: 'screen-out', exclusionType: 'telemetry_only',
       titleQuote: 'Telemetry', reason: 'Explicit telemetry-only title' });
@@ -476,6 +478,16 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
   };
   const partial = structuredClone(r); partial.status = 'partial';
   assert.throws(() => recordAgencyAnalysisCheck(ledger, batch.id, bytes(partial), validate), /complete result/);
+  if (['local-policy', 'valid', 'digest-valid'].includes(mode)) {
+    for (const changed of [{ sourceRevision: 'b'.repeat(40) }, { repository: 'uninspected-repository' }]) {
+      const invalid = structuredClone(r); Object.assign(invalid.candidates[0], changed);
+      assert.equal(checkFilterBatchResult(s.config, manifest, invalid).state, 'checked-not-qualified');
+      assert.throws(() => recordAgencyAnalysisCheck(ledger, batch.id, bytes(invalid), validate),
+        /execution repository and source revision/);
+      assert.equal(ledger.db.prepare(
+        "SELECT body FROM agency_receipts WHERE task_id=? AND kind='analysis-check'").get(batch.id), undefined);
+    }
+  }
   const check = recordAgencyAnalysisCheck(ledger, batch.id, resultBytes, validate);
   assert.equal(check.payloadSha256, batch.analysisPayloadSha256);
   const refs = [{ ref: 'job-local:synthetic-job:derived-receipt', sha256: hash('synthetic proof') }];
@@ -632,6 +644,11 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
     assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [resultBytes], localPolicy).state,
       'complete-held');
     assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [], localPolicy).state, 'blocked');
+    for (const changed of [{ sourceRevision: 'b'.repeat(40) }, { repository: 'uninspected-repository' }]) {
+      const invalid = structuredClone(r); Object.assign(invalid.candidates[0] ??= candidate(r), changed);
+      assert.throws(() => evaluateFilterExecution(s.config, ledger, manifest, batch.id,
+        bytes(invalid), prospectiveInput, localPolicy), /Candidate repository or source revision/);
+    }
     for (const mutate of [
       i => { i.provider.result = 'Failure'; },
       i => { i.pipeline.result = 'failed'; },
@@ -692,6 +709,30 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
     ledger.db.exec('PRAGMA query_only=OFF');
   }
   if (mode === 'valid') {
+    for (const [name, changed] of [
+      ['source', { sourceRevision: 'b'.repeat(40) }],
+      ['repository', { repository: 'uninspected-repository' }]
+    ]) {
+      const invalid = structuredClone(r); Object.assign(invalid.candidates[0], changed);
+      const invalidBytes = bytes(invalid), invalidHash = hash(invalidBytes);
+      const historical = new Ledger(join(s.root, `historical-${name}`));
+      s.cleanup.push(() => historical.close());
+      historical.qualify(selection.qualificationId, q);
+      reserveAgencyRequest(s.config, historical, batch.id, reservation, manifest);
+      for (const row of ledger.db.prepare('SELECT kind,body FROM agency_receipts WHERE task_id=?').all(batch.id)) {
+        const receipt = JSON.parse(row.body);
+        if (['analysis-check', 'capture-requirements'].includes(row.kind)) receipt.resultSha256 = invalidHash;
+        if (row.kind === 'terminal') receipt.receipt.analysis.resultSha256 = invalidHash;
+        historical.db.prepare('INSERT INTO agency_receipts VALUES(?,?,?)').run(batch.id, row.kind, json(receipt));
+      }
+      historical.db.exec('PRAGMA query_only=ON');
+      const before = historical.db.prepare('SELECT kind,body FROM agency_receipts ORDER BY kind').all();
+      const blocked = reconcileFilterExecutionCohort(s.config, historical, manifest, [invalidBytes]);
+      assert.equal(blocked.state, 'blocked');
+      assert.equal(blocked.consolidation, null);
+      assert.match(blocked.batches[0].reasons[0], /Candidate repository or source revision/);
+      assert.deepEqual(historical.db.prepare('SELECT kind,body FROM agency_receipts ORDER BY kind').all(), before);
+    }
     const config = structuredClone(s.config);
     config.stateDirectory = join(s.root, 'must-not-initialize');
     const configPath = join(s.root, 'cli-config.json'), resultPath = join(s.root, 'cli-result.json');

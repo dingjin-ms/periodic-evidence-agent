@@ -535,6 +535,12 @@ restart. All reservations prohibit another POST. A known returned handle permits
 read-only reconciliation; an unknown handle blocks result acceptance.
 Never retry, replace, cancel, or fall back locally automatically.
 
+Shared worker admission counts the union of active local jobs and every
+nonterminal Agency reservation, deduplicated by hosted task ID. An uncertain
+submission retains its slot even after a restart or a legacy job transition to
+`blocked`; SDK and app-native admission use the same accounting. A definitive
+pre-job rejection or terminal reconciliation releases the reservation's slot.
+
 ## Existing dispatch surfaces
 
 App-native workers retain `prepare` and `claim`. Then use the existing
@@ -567,6 +573,14 @@ Its hash must match `resultBytes` exactly. For a canonical FILTER result use
 fields; do not discard unresolved members or force partial results to complete.
 This receipt alone does not qualify anything: positive provider and source
 reconciliation remains mandatory.
+
+For every FILTER assurance policy, candidate `repository` is the selected
+logical `repoId` and `sourceRevision` must equal the actual selected execution
+revision. A private provider repository name is not an implicit alias. A
+different repository/revision needs its own qualified analysis, not a candidate
+relabeled by the controller. The analysis check, prospective evaluation and
+read-only cohort gate enforce these pins; historical receipts remain immutable
+but cannot release mismatched candidates. Empty candidate sets remain valid.
 
 These are local JavaScript APIs and ledger operations, not authenticated
 submit/observe CLI commands. The private adapter owns the one approved POST,

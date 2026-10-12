@@ -10,7 +10,7 @@ import { makeAssignment, dispatch, requireCurrentAssignment, reconcileHostedAssi
 import { beginApp, openApp, appWorker } from '../src/app-native.js';
 import { selectAgency, requireAgencyQualification, reserveAgencyRequest, inspectAgencyRequest,
   recordAgencySubmission, reconcileAgencyResult, recordAgencyAnalysisCheck,
-  agencyFilterRunnerMetadata, validateFilterAnalysisPolicy } from '../src/agency-executor.js';
+  agencyFilterRunnerMetadata, validateFilterAnalysisPolicy, activeWorkerCount } from '../src/agency-executor.js';
 
 test('local FILTER policy requires explicit provenance and cannot relax proposer or validation', () => {
   const policy = { id: 'local-readonly-filter-v1', approvedBy: 'synthetic-user',
@@ -36,7 +36,8 @@ function fixture(t, { analysis = false } = {}) {
     baseRef: 'main', allowedWritePrefixes: ['src', 'test'],
     validationGates: analysis ? [] : [{ id: 'integration' }] }];
   const ledger = new Ledger(root);
-  t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
+  const ledgers = [ledger];
+  t.after(() => { for (const current of ledgers) current.close(); rmSync(root, { recursive: true, force: true }); });
   const e = evidenceEnvelope('ado', 'fixture', '1', '1', 'https://example.invalid/bug/1',
     'synthetic query', '2026-10-09T00:00:00Z');
   // Authenticated-shaped fixture exercises the live-entry guards without any transport.
@@ -109,7 +110,7 @@ function fixture(t, { analysis = false } = {}) {
     assertionsPreserved: true },
     analysis: analysis ? { payloadSha256: selection.payloadSha256, resultSha256: hash('audited analysis'),
       validator: 'fixture-membership-validator', membershipValidated: true, evidenceRefs: refs } : null };
-  return { root, config, ledger, evidence, investigation, local, assignment, selection, q, input, submission, result };
+  return { root, config, ledger, ledgers, evidence, investigation, local, assignment, selection, q, input, submission, result };
 }
 function reserve(f) {
   reserveAgencyRequest(f.config, f.ledger, f.selection.taskId, f.input);
@@ -164,6 +165,7 @@ test('uncertain POST stays latched across restart and cannot fall back or resubm
   const dependencies = { agencyRequest: f.input, agencyTransport: async () => { calls++; throw Error('timeout'); } };
   const result = await dispatch(f.config, f.ledger, f.assignment.id, dependencies);
   assert.equal(result.submissionState, 'uncertain'); assert.equal(result.submission.jobId, null);
+  assert.equal(f.ledger.job(f.assignment.id).state, 'uncertain');
   const reopened = new Ledger(f.root);
   try {
     assert.equal(inspectAgencyRequest(reopened, f.selection.taskId).submissionState, 'uncertain');
@@ -172,6 +174,51 @@ test('uncertain POST stays latched across restart and cannot fall back or resubm
     assert.throws(() => reconcileAgencyResult(reopened, f.selection.taskId, f.result), /unbound/);
   } finally { reopened.close(); }
   assert.equal(calls, 1);
+});
+
+for (const mode of ['timeout', 'invalid-receipt', 'historical-blocked', 'reserved', 'accepted', 'rejected'])
+test(`shared worker admission counts hosted ${mode} without double counting or losing ownership`, async t => {
+  const f = fixture(t);
+  f.config.repositories[0].projectId = 'synthetic-project';
+  f.config.limits.maxAssignments = 2;
+  f.config.limits.maxAiCreditsPerSession = 1;
+  beginApp(f.config, { runId: 'shared-run', dryRun: false, provenance: 'app-tool' });
+  const { ledger } = openApp(f.config, 'shared-run', false);
+  f.ledgers.push(ledger);
+  ledger.put(f.evidence); ledger.put(f.investigation); ledger.qualify(f.selection.qualificationId, f.q);
+  ledger.prepare(f.assignment);
+  if (mode === 'reserved') reserveAgencyRequest(f.config, ledger, f.selection.taskId, f.input);
+  else {
+    const dependencies = { agencyRequest: f.input, agencyTransport: async () => {
+      if (['timeout', 'historical-blocked'].includes(mode)) throw Error('Synthetic transport timeout');
+      if (mode === 'invalid-receipt') return { ...f.submission, operation: 'jobs-validate' };
+      if (mode === 'rejected') return { ...f.submission, state: 'rejected', httpStatus: 400, jobId: null };
+      return f.submission;
+    } };
+    if (mode === 'invalid-receipt')
+      await assert.rejects(dispatch(f.config, ledger, f.assignment.id, dependencies), /validation-only/);
+    else await dispatch(f.config, ledger, f.assignment.id, dependencies);
+    if (mode === 'historical-blocked') ledger.moveJob(f.assignment.id, 'uncertain', 'blocked');
+  }
+  assert.equal(activeWorkerCount(ledger), mode === 'rejected' ? 0 : 1);
+  const investigation = { ...f.investigation, id: 'next-local-investigation' };
+  ledger.put(investigation);
+  const local = appWorker(f.config, ledger, 'shared-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
+  });
+  const claim = { assignmentId: local.id, claimId: 'next-local-claim', coordinatorAgentId: f.config.agent.id };
+  if (mode !== 'rejected') {
+    assert.throws(() => appWorker(f.config, ledger, 'shared-run', 'claim', claim), /worker cap/);
+    await assert.rejects(dispatch(f.config, ledger, local.id), /Worker limit reached/);
+    assert.equal(ledger.job(local.id).state, 'prepared');
+    assert.equal(existsSync(join(f.root, 'workspaces')), false);
+  }
+  if (mode === 'accepted') {
+    reconcileHostedAssignment(ledger, f.assignment.id, f.result);
+    assert.equal(activeWorkerCount(ledger), 0);
+  } else if (mode !== 'rejected') f.config.limits.maxWorkers = 2;
+  appWorker(f.config, ledger, 'shared-run', 'claim', claim);
+  assert.equal(activeWorkerCount(ledger), ['accepted', 'rejected'].includes(mode) ? 1 : 2);
 });
 
 test('crash after reservation with no POST receipt remains uncertain and immutable', t => {

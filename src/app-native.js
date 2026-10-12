@@ -5,7 +5,7 @@ import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
 import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment, reconcileHostedAssignment } from './workers.js';
-import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordAgencySubmission, activeAgencyRequests } from './agency-executor.js';
+import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordAgencySubmission, activeWorkerCount } from './agency-executor.js';
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
@@ -622,8 +622,7 @@ export function appWorker(config, ledger, runId, action, input) {
       const latest = new Set(ledger.latestEvidence().map(e => e.id));
       requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
         !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before native claim', 'blocked-reconciliation');
-      const active = ledger.db.prepare("SELECT COUNT(*) n FROM jobs WHERE state IN ('dispatching','claimed','running','uncertain')").get().n +
-        activeAgencyRequests(ledger, true);
+      const active = activeWorkerCount(ledger);
       requireThat(active < config.limits.maxWorkers, 'Concurrent native worker cap reached', 'blocked-budget');
       value.state = 'claimed'; value.claimId = input.claimId;
     } else {

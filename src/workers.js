@@ -9,7 +9,7 @@ import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
-  recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeAgencyRequests } from './agency-executor.js';
+  recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount } from './agency-executor.js';
 
 const exec = promisify(execFile);
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
@@ -378,8 +378,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   let proposal = null, revision = null, draftPR = null, validation = [];
   try {
     ledger.transaction(() => {
-      const active = ledger.status().jobs.filter(j => ['dispatching', 'claimed', 'running', 'uncertain'].includes(j.state)).length +
-        activeAgencyRequests(ledger, true);
+      const active = activeWorkerCount(ledger);
       requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
       ledger.moveJob(id, 'prepared', 'dispatching');
       if (assignment.execution === 'hosted')
@@ -395,7 +394,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           jobId: null, httpStatus: null, observedAt: now() };
       }
       const receipt = recordAgencySubmission(ledger, taskId, submission);
-      ledger.moveJob(id, 'dispatching', submission.state === 'accepted' ? 'running' : 'blocked');
+      ledger.moveJob(id, 'dispatching', receipt.submissionState === 'accepted' ? 'running' :
+        receipt.submissionState === 'rejected' ? 'blocked' : 'uncertain');
       return receipt;
     }
     const isolated = await provision(config, job, repo);

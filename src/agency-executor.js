@@ -206,6 +206,19 @@ function activeRequests(ledger) {
 export function activeAgencyRequests(ledger, standaloneOnly = false) {
   return activeRequests(ledger).filter(r => !standaloneOnly || r.selection.role !== 'proposer').length;
 }
+export function activeWorkerCount(ledger, excludedTaskId = null) {
+  const shared = new Set(activeRequests(ledger).map(r => json(['task', r.taskId])));
+  const jobs = ledger.db.prepare(`SELECT j.id,r.body FROM jobs j
+    LEFT JOIN records r ON r.kind='assignment' AND r.id=j.id
+    WHERE j.state IN ('dispatching','claimed','running','uncertain')`).all();
+  for (const row of jobs) {
+    const assignment = row.body ? JSON.parse(row.body) : null;
+    shared.add(json(assignment?.execution === 'hosted'
+      ? ['task', agencyTaskId(assignment)] : ['job', row.id]));
+  }
+  if (excludedTaskId !== null) shared.delete(json(['task', excludedTaskId]));
+  return shared.size;
+}
 export function agencyFilterRunnerMetadata(selection) {
   const capture = selection.captureVerification;
   requireThat(capture?.inputEvidenceKind === digestInputEvidence &&
@@ -333,15 +346,8 @@ export function reserveAgencyRequest(config, ledger, taskId, input, manifest = n
     requireThat(!q.runtime.estimation || concurrent <= q.runtime.estimation.maxConcurrent,
       'Estimated trial exceeds approved FILTER concurrency', 'blocked-budget');
     const active = activeRequests(ledger);
-    const shared = new Set(active.map(r => json(['task', r.taskId])));
-    const jobs = ledger.db.prepare(`SELECT r.body FROM jobs j JOIN records r ON r.kind='assignment' AND r.id=j.id
-      WHERE j.state IN ('dispatching','claimed','running','uncertain')`).all();
-    for (const row of jobs) {
-      const a = JSON.parse(row.body);
-      shared.add(json(a.execution === 'hosted' ? ['task', agencyTaskId(a)] : ['job', a.id]));
-    }
-    shared.delete(json(['task', taskId]));
-    requireThat(active.length < concurrent && shared.size < positive(config.limits.maxWorkers, 'maxWorkers'),
+    requireThat(active.length < concurrent &&
+      activeWorkerCount(ledger, taskId) < positive(config.limits.maxWorkers, 'maxWorkers'),
     'Shared Agency/local worker concurrency budget exhausted', 'blocked-budget');
     const reservedAt = now();
     const record = { taskId, selection: s, qualificationSha256: s.qualificationSha256,
@@ -381,6 +387,10 @@ export function recordAgencySubmission(ledger, taskId, input) {
     return inspectAgencyRequest(ledger, taskId);
   });
 }
+export function filterCandidateSourcesMatch(selection, result) {
+  return Array.isArray(result?.candidates) && result.candidates.every(candidate =>
+    candidate?.repository === selection.repoId && candidate.sourceRevision === selection.sourceRevision);
+}
 export function recordAgencyAnalysisCheck(ledger, taskId, resultBytes, validate) {
   const request = inspectAgencyRequest(ledger, taskId);
   requireThat(request?.selection.resultKind === 'analysis' && typeof validate === 'function' && text(resultBytes),
@@ -390,11 +400,11 @@ export function recordAgencyAnalysisCheck(ledger, taskId, resultBytes, validate)
   requireThat(checked.state === 'checked-not-qualified' &&
     checked.payloadSha256 === analysisPayloadHash(request.selection) && checked.resultSha256 === hash(resultBytes) &&
     text(checked.validator), 'Local analysis validator did not verify the exact payload and complete result', 'blocked-result');
-  if (request.selection.analysisPolicy) {
+  if (request.selection.role === 'filter') {
     const result = JSON.parse(resultBytes);
     requireThat(checked.validator === 'filter-batch-result-v1' && result.status === 'complete' &&
-      result.candidates.every(c => c.sourceRevision === request.selection.sourceRevision),
-    'Local FILTER policy requires supported complete source-bound result validation', 'blocked-result');
+      filterCandidateSourcesMatch(request.selection, result),
+    'FILTER requires complete results bound to the execution repository and source revision', 'blocked-result');
     requiredFilterCaptureIds(JSON.parse(request.request).prompt, resultBytes);
   }
   return ledger.transaction(() => {

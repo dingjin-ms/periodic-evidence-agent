@@ -125,20 +125,32 @@ export function requireCurrentAssignment(config, ledger, investigation, assignme
     'Assignment inputs, plan or qualification changed after preparation', 'blocked-reconciliation');
   return rebuilt;
 }
-export async function provision(config, job, repo, expectedBaseRevision = null) {
+async function fetchQualifiedRevision(config, workspace, repo, revision,
+  getToken = adoAccessToken) {
+  const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote);
+  const env = adoRemote
+    ? adoGitEnvironment(await getToken(config, 'ADO qualified revision fetch'))
+    : process.env;
+  await git(workspace, ['fetch', '--no-tags', 'origin', revision], env);
+  await git(workspace, ['cat-file', '-e', `${revision}^{tree}`]);
+}
+export async function provision(config, job, repo, qualification = null, dependencies = {}) {
   const root = join(config.stateDirectory, 'workspaces');
   mkdirSync(root, { recursive: true });
   const workspace = join(root, job.session_id);
   const relativeToReference = relative(resolve(repo.referenceCheckout), workspace);
   requireThat(relativeToReference.startsWith('..') || isAbsolute(relativeToReference), 'Workspace must not be inside the primary checkout');
   requireThat(!existsSync(workspace), 'Workspace already exists; reconcile instead of cloning twice', 'blocked-reconciliation');
-  const baseRevision = expectedBaseRevision ??
+  const baseRevision = qualification?.baseRevision ??
     await git(repo.referenceCheckout, ['rev-parse', '--verify', `${repo.baseRef}^{commit}`]);
   requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Invalid base revision');
-  if (expectedBaseRevision)
-    await git(repo.referenceCheckout, ['cat-file', '-e', `${expectedBaseRevision}^{commit}`]);
+  if (qualification?.baseRevision)
+    await git(repo.referenceCheckout, ['cat-file', '-e', `${qualification.baseRevision}^{commit}`]);
   await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', repo.referenceCheckout, workspace]);
   await git(workspace, ['remote', 'set-url', 'origin', repo.remote]);
+  if (qualification?.qualificationSource === 'trusted-remote')
+    await (dependencies.fetchQualifiedRevision ?? fetchQualifiedRevision)(
+      config, workspace, repo, baseRevision, dependencies.getToken);
   await git(workspace, ['checkout', '-b', `pilot/${job.id}`, baseRevision], checkoutEnvironment());
   return { workspace, baseRevision };
 }
@@ -502,8 +514,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     const active = ledger.status().jobs.filter(j => ['dispatching', 'running'].includes(j.state)).length;
     requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
     ledger.moveJob(id, 'prepared', 'dispatching');
-    const isolated = await provision(config, job, repo,
-      assignment.skillQualification?.baseRevision ?? null);
+    const isolated = await provision(config, job, repo, assignment.skillQualification ?? null);
     ledger.moveJob(id, 'dispatching', 'running', isolated);
     const current = ledger.job(id);
     const qualification = assignment.skillBindingId

@@ -378,6 +378,22 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
 });
+test('trusted qualification fetches its exact revision before isolated checkout', async t => {
+  const { config, job, repo, g } = await fixture(t);
+  const revision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  let fetched = null;
+  const result = await provision(config, job, repo, {
+    baseRevision: revision,
+    qualificationSource: 'trusted-remote'
+  }, {
+    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision) => {
+      fetched = { workspace, repo: currentRepo.id, exactRevision };
+    }
+  });
+  assert.equal(fetched.repo, repo.id);
+  assert.equal(fetched.exactRevision, revision);
+  assert.equal((await command('git', ['rev-parse', 'HEAD'], result.workspace)).stdout.trim(), revision);
+});
 test('provisioning skips unrelated Git LFS smudges without mutating the controller environment', () => {
   const original = process.env.GIT_LFS_SKIP_SMUDGE;
   const env = checkoutEnvironment();

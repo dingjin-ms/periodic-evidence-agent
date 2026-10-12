@@ -259,8 +259,12 @@ included when available.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of
-the verified dependency snapshot; links whose targets are inside the snapshot
-workspace are rewritten to the corresponding fresh-checkout paths. Production
+the verified dependency snapshot. The controller records every ignored
+`node_modules` root produced by the locked install, uses native multithreaded
+copying on Windows, and rewrites every internal junction or symbolic link to the
+corresponding fresh-checkout path. Dependency fingerprints bind that complete
+root inventory, Yarn install state, linker state and normalized internal links.
+Production
 or build input changes rerun compile but reuse dependencies. A later test-only
 revision may reuse both receipts. Lockfile/profile/toolchain drift, missing or
 corrupt snapshots and receipts, or ambiguous paths rerun dependency preparation
@@ -391,8 +395,9 @@ snapshot can serve fresh source checkouts that share its lockfile, profile and
 toolchain fingerprints; only deterministic test-only revisions reuse compile
 outputs. The implementation retains `clone --no-hardlinks` for source
 preparation: detached worktrees or shared-object clones make a durable cache
-depend on another worktree's lifetime, while checkout is small beside
-dependency linking and compile. A runner cannot validate changes it made during
+depend on another worktree's lifetime. Detached worktrees remain suitable for
+ephemeral checkout optimization, but not as the durable receipt workspace.
+A runner cannot validate changes it made during
 execution: changed source or HEAD is blocked, and changed declared snapshot or
 prepared output invalidates the cache.
 Explicitly classified infrastructure blockers may receive at most

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { probeWorkiq } from '../scripts/Workiq-Auth-Repro.mjs';
@@ -102,7 +102,8 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
 }
 async function stagedValidationFixture(t) {
   const ctx = await fixture(t);
-  writeFileSync(join(ctx.repo.referenceCheckout, '.gitignore'), '.pilot/\n');
+  writeFileSync(join(ctx.repo.referenceCheckout, '.gitignore'),
+    '.pilot/\nextra/node_modules/\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'package.json'), '{"packageManager":"fixture@1.0.0"}\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'fixture.lock'), 'locked\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'build.config.js'), 'export default {};\n');
@@ -157,12 +158,25 @@ async function stagedValidationFixture(t) {
       writeFileSync(join(cwd, '.pilot', 'dependencies', 'package.js'), 'dependency\n');
       symlinkSync(join(cwd, 'src'), join(cwd, '.pilot', 'dependencies', 'source-link'),
         process.platform === 'win32' ? 'junction' : 'dir');
+      mkdirSync(join(cwd, 'extra', 'node_modules', 'fixture'), { recursive: true });
+      writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
+        '{"version":"2.0.0"}\n');
+      symlinkSync(join(cwd, 'src'),
+        join(cwd, 'extra', 'node_modules', 'source-link'),
+        process.platform === 'win32' ? 'junction' : 'dir');
       writeFileSync(join(cwd, '.pilot', 'install-state'), 'prepared\n');
     }
-    if (stage === 'compile')
+    if (stage === 'compile') {
       assert.equal(
         readFileSync(join(cwd, '.pilot', 'dependencies', 'source-link', 'value.js'), 'utf8'),
         readFileSync(join(cwd, 'src', 'value.js'), 'utf8'));
+      assert.equal(
+        readFileSync(join(cwd, 'extra', 'node_modules',
+          'source-link', 'value.js'), 'utf8'),
+        readFileSync(join(cwd, 'src', 'value.js'), 'utf8'));
+      assert.equal(JSON.parse(readFileSync(join(cwd, 'extra', 'node_modules',
+        'fixture', 'package.json'))).version, '2.0.0');
+    }
     if (stage === 'policy' && behavior.transientPolicy && behavior.policyAttempts++ === 0)
       throw Object.assign(new Error('timeout'), {
         killed: true, code: null, stdout: '', stderr: 'timeout'
@@ -828,6 +842,20 @@ test('corrupt dependency snapshot receipt reruns install and compile', async t =
   writeFileSync(receiptPath, JSON.stringify(receipt));
   const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
     'Repair after dependency corruption');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+test('damaged dependency workspace reruns install and compile', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  rmSync(join(dirname(prepared.staged.dependencyReceiptPath), 'w', '.git'),
+    { recursive: true, force: true });
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Repair after dependency workspace damage');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
   assert.equal(result[0].status, 'passed');

@@ -18,10 +18,10 @@ const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
-async function git(cwd, args, env = process.env) {
+async function git(cwd, args, env = process.env, timeout = 120000) {
   return (await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
-    '-c', 'protocol.file.allow=always', ...args], cwd, 120000, env)).stdout.trim();
+    '-c', 'protocol.file.allow=always', ...args], cwd, timeout, env)).stdout.trim();
 }
 async function workspaceChanges(cwd, baseRevision = null) {
   const diffArgs = ['diff', '--name-only'];
@@ -300,7 +300,37 @@ function pathFingerprint(root, path) {
   return { path, type: 'directory', entries };
 }
 async function outputFingerprint(workspace, paths) {
-  const values = paths.map(path => pathFingerprint(workspace, path));
+  const values = paths.map(path => {
+    const target = join(workspace, path);
+    if (!existsSync(target) || !lstatSync(target).isDirectory() ||
+      !path.replaceAll('\\', '/').endsWith('node_modules')) return pathFingerprint(workspace, path);
+    const links = [];
+    const visit = (directory, relativePath) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name))) {
+        const entryPath = join(directory, entry.name);
+        const entryRelative = join(relativePath, entry.name);
+        if (entry.isSymbolicLink()) {
+          const resolvedTarget = resolve(dirname(entryPath), readlinkSync(entryPath));
+          const rootRelative = relative(workspace, resolvedTarget);
+          if (rootRelative.startsWith('..') || isAbsolute(rootRelative) ||
+            !existsSync(resolvedTarget)) return false;
+          links.push({
+            path: entryRelative.replaceAll('\\', '/'),
+            target: rootRelative.replaceAll('\\', '/')
+          });
+        } else if (entry.isDirectory() && visit(entryPath, entryRelative) === false) return false;
+      }
+      return true;
+    };
+    if (visit(target, path) === false) return null;
+    const statePath = join(target, '.yarn-state.yml');
+    return {
+      path, type: 'dependency-directory',
+      stateSha256: existsSync(statePath) ? hash(readFileSync(statePath)) : null,
+      links
+    };
+  });
   return values.every(Boolean) ? hash(json(values)) : null;
 }
 function materializeSnapshotPath(sourceRoot, targetRoot, path) {
@@ -329,12 +359,76 @@ function materializeSnapshotPath(sourceRoot, targetRoot, path) {
   for (const name of readdirSync(source).sort())
     materializeSnapshotPath(sourceRoot, targetRoot, join(path, name));
 }
-function materializeDependencySnapshot(snapshot, workspace, paths) {
+async function materializeDependencySnapshot(snapshot, workspace, paths, timeoutMs) {
   for (const path of paths) {
+    const source = join(snapshot, path);
     const target = join(workspace, path);
     if (existsSync(target)) removeValidationPath(target, { recursive: true, force: true });
-    materializeSnapshotPath(snapshot, workspace, path);
+    if (process.platform !== 'win32' || !lstatSync(source).isDirectory() ||
+      !path.replaceAll('\\', '/').endsWith('node_modules')) {
+      materializeSnapshotPath(snapshot, workspace, path);
+      continue;
+    }
+    mkdirSync(target, { recursive: true });
+    try {
+      await command('robocopy', [source, target, '/MIR', '/SL', '/SJ', '/MT:32',
+        '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], workspace, timeoutMs);
+    } catch (error) {
+      requireThat(Number.isInteger(error.code) && error.code >= 0 && error.code < 8,
+        `Dependency snapshot copy failed for ${path}`, 'blocked-validation');
+    }
   }
+  for (const path of paths) {
+    const source = join(snapshot, path);
+    if (!lstatSync(source).isDirectory()) continue;
+    const rewriteLinks = (directory, relativePath) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = join(directory, entry.name);
+        const entryRelative = join(relativePath, entry.name);
+        if (entry.isSymbolicLink()) {
+          const resolvedTarget = resolve(dirname(entryPath), readlinkSync(entryPath));
+          const sourceRelative = relative(snapshot, resolvedTarget);
+          requireThat(!sourceRelative.startsWith('..') && !isAbsolute(sourceRelative),
+            `Dependency snapshot link escapes its workspace: ${entryRelative}`,
+            'blocked-validation');
+          const targetLink = join(workspace, entryRelative);
+          if (existsSync(targetLink))
+            removeValidationPath(targetLink, { recursive: true, force: true });
+          mkdirSync(dirname(targetLink), { recursive: true });
+          symlinkSync(join(workspace, sourceRelative), targetLink,
+            process.platform === 'win32' && statSync(entryPath).isDirectory()
+              ? 'junction' : undefined);
+        } else if (entry.isDirectory()) rewriteLinks(entryPath, entryRelative);
+      }
+    };
+    rewriteLinks(source, path);
+  }
+}
+async function dependencySnapshotPaths(workspace, configuredPaths) {
+  const ignored = (await git(workspace,
+    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
+    .split(/\r?\n/).filter(path => /(^|\/)node_modules\/$/.test(path))
+    .map(path => path.slice(0, -1));
+  return [...new Set([...configuredPaths, ...ignored])]
+    .map(path => path.replaceAll('\\', '/')).sort();
+}
+async function preparedSnapshotPaths(workspace, dependencyPaths, configuredPaths) {
+  const ignored = (await git(workspace,
+    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
+    .split(/\r?\n/).filter(Boolean).map(path => path.replace(/\/$/, ''));
+  const overlapsDependencies = path => dependencyPaths.some(dependency =>
+    path === dependency || path.startsWith(`${dependency}/`) ||
+    dependency.startsWith(`${path}/`));
+  const candidates = [...new Set([
+    ...configuredPaths.map(path => path.replaceAll('\\', '/')),
+    ...ignored.filter(path => !overlapsDependencies(path))
+  ])].sort((left, right) => left.length - right.length || left.localeCompare(right));
+  return candidates.filter((path, index) => !candidates.slice(0, index)
+    .some(parent => path.startsWith(`${parent}/`))).sort();
+}
+function preparedValidationRoot(config, type, gateId, key) {
+  return join(config.stateDirectory, 'pv', type,
+    hash(gateId).slice(0, 12), key.slice(0, 24));
 }
 async function prepareDependencySnapshot(config, job, gate, revision, profile, plan,
   fingerprintRun, toolchain, lockfileSha256, execute) {
@@ -343,20 +437,21 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
     toolchain, toolchainSha256: hash(json(toolchain))
   };
   const key = hash(json(inputs));
-  const root = join(config.stateDirectory, 'prepared-validation', 'dependencies', gate.id, key);
-  const workspace = join(root, 'workspace');
-  const receiptPath = join(root, 'receipt.json');
+  const root = preparedValidationRoot(config, 'd', gate.id, key);
+  const workspace = join(root, 'w');
+  const receiptPath = join(root, 'r.json');
   const load = async () => {
-    if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
-    let receipt;
-    try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
-    catch { return null; }
-    if (!validReceiptIntegrity(receipt) || receipt.type !== 'dependencies' ||
-      json(receipt.inputs) !== json(inputs) ||
-      await git(workspace, ['status', '--porcelain']) ||
-      await outputFingerprint(workspace, plan.dependencySnapshotPaths) !==
-        receipt.outputs.sha256) return null;
-    return { ...receipt, receiptPath, workspace, profile, plan, cache: 'hit' };
+    try {
+      if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      if (!validReceiptIntegrity(receipt) || receipt.type !== 'dependencies' ||
+        json(receipt.inputs) !== json(inputs) ||
+        await git(workspace, ['status', '--porcelain']) ||
+        !Array.isArray(receipt.outputs?.paths) ||
+        await outputFingerprint(workspace, receipt.outputs.paths) !==
+          receipt.outputs.sha256) return null;
+      return { ...receipt, receiptPath, workspace, profile, plan, cache: 'hit' };
+    } catch { return null; }
   };
   const cached = await load();
   if (cached) return cached;
@@ -369,8 +464,10 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
     const timings = [fingerprintRun.telemetry];
     try {
       const checkoutStarted = now();
-      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, workspace]);
-      await git(workspace, ['checkout', '--detach', revision], checkoutEnvironment());
+      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
+        job.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
+      await git(workspace, ['checkout', '--detach', revision],
+        checkoutEnvironment(), gate.timeoutMs);
       timings.push(stageTelemetry('dependency-checkout', checkoutStarted, 'miss'));
       const result = await runProfileStage(gate, profile, 'dependencies', workspace, execute);
       timings.push(result.telemetry);
@@ -380,12 +477,13 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
       requireThat(await git(workspace, ['rev-parse', 'HEAD']) === revision &&
         !(await git(workspace, ['status', '--porcelain'])),
       `Gate ${gate.id} dependency preparation mutated source`, 'blocked-validation');
-      const outputSha256 = await outputFingerprint(workspace, plan.dependencySnapshotPaths);
+      const outputPaths = await dependencySnapshotPaths(workspace, plan.dependencySnapshotPaths);
+      const outputSha256 = await outputFingerprint(workspace, outputPaths);
       requireThat(outputSha256, `Gate ${gate.id} dependency snapshot is incomplete`,
         'blocked-validation');
       const body = {
         version: 2, type: 'dependencies', gateId: gate.id, key, inputs,
-        outputs: { paths: plan.dependencySnapshotPaths, sha256: outputSha256 },
+        outputs: { paths: outputPaths, sha256: outputSha256 },
         timings, preparedFromRevision: revision, dependencyReceipt: null,
         createdAt: now(), controllerOwned: true
       };
@@ -408,10 +506,8 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
   const profile = profileForGate(gate);
   const plan = validationPlan(profile);
   if (!plan) return null;
-  const fingerprintWorkspace = join(config.stateDirectory, 'validation-fingerprint-workspace');
-  mkdirSync(fingerprintWorkspace, { recursive: true });
   const fingerprintRun = await runProfileStage(gate, profile, 'fingerprint',
-    fingerprintWorkspace, execute);
+    job.workspace, execute);
   const toolchain = parseToolchainFingerprint(fingerprintRun.output);
   const lockfileSha256 = await revisionPathFingerprint(job.workspace, revision, plan.lockfilePaths);
   const buildConfigSha256 = await revisionPathFingerprint(job.workspace, revision, plan.buildConfigPaths);
@@ -422,26 +518,28 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
   const inputs = {
     gateId: gate.id, sourceRevision: revision, lockfileSha256, buildConfigSha256,
     profileSha256: profile.sha256, toolchain, toolchainSha256: hash(json(toolchain)),
-    dependencyKey: dependency.key, dependencyIntegrity: dependency.integrity
+    dependencyKey: dependency.key, dependencyIntegrity: dependency.integrity,
+    preparedSnapshotVersion: 3
   };
   const key = hash(json(inputs));
-  const root = join(config.stateDirectory, 'prepared-validation', 'compiled', gate.id, key);
-  const workspace = join(root, 'workspace');
-  const receiptPath = join(root, 'receipt.json');
+  const root = preparedValidationRoot(config, 'c', gate.id, key);
+  const workspace = join(root, 'w');
+  const receiptPath = join(root, 'r.json');
   const load = async () => {
-    if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
-    let receipt;
-    try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
-    catch { return null; }
-    if (!validReceiptIntegrity(receipt) || receipt.type !== 'compile' ||
-      json(receipt.inputs) !== json(inputs) ||
-      await git(workspace, ['rev-parse', 'HEAD']) !== revision ||
-      await git(workspace, ['status', '--porcelain']) ||
-      await outputFingerprint(workspace, plan.preparedOutputPaths) !== receipt.outputs.sha256) return null;
-    return {
-      ...receipt, receiptPath, workspace, profile, plan, cache: 'hit',
-      dependencyCache: dependency.cache, dependencyReceiptPath: dependency.receiptPath
-    };
+    try {
+      if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      if (!validReceiptIntegrity(receipt) || receipt.type !== 'compile' ||
+        json(receipt.inputs) !== json(inputs) ||
+        await git(workspace, ['rev-parse', 'HEAD']) !== revision ||
+        await git(workspace, ['status', '--porcelain']) ||
+        !Array.isArray(receipt.outputs?.paths) ||
+        await outputFingerprint(workspace, receipt.outputs.paths) !== receipt.outputs.sha256) return null;
+      return {
+        ...receipt, receiptPath, workspace, profile, plan, cache: 'hit',
+        dependencyCache: dependency.cache, dependencyReceiptPath: dependency.receiptPath
+      };
+    } catch { return null; }
   };
   const cached = await load();
   if (cached) return cached;
@@ -457,13 +555,15 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       : [fingerprintRun.telemetry, cachedStageTelemetry(dependency, 'dependencies')];
     try {
       const checkoutStarted = now();
-      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, workspace]);
-      await git(workspace, ['checkout', '--detach', revision], checkoutEnvironment());
+      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
+        job.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
+      await git(workspace, ['checkout', '--detach', revision],
+        checkoutEnvironment(), gate.timeoutMs);
       timings.push(stageTelemetry('checkout', checkoutStarted, 'miss'));
       const materializeStarted = now();
-      materializeDependencySnapshot(dependency.workspace, workspace,
-        plan.dependencySnapshotPaths);
-      requireThat(await outputFingerprint(workspace, plan.dependencySnapshotPaths) ===
+      await materializeDependencySnapshot(dependency.workspace, workspace,
+        dependency.outputs.paths, gate.timeoutMs);
+      requireThat(await outputFingerprint(workspace, dependency.outputs.paths) ===
         dependency.outputs.sha256,
       `Gate ${gate.id} dependency snapshot materialization failed`, 'blocked-validation');
       timings.push(stageTelemetry('dependency-materialization', materializeStarted, 'hit'));
@@ -476,12 +576,17 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       requireThat(await git(workspace, ['rev-parse', 'HEAD']) === revision &&
         !(await git(workspace, ['status', '--porcelain'])),
       `Gate ${gate.id} preparation mutated source`, 'blocked-validation');
-      const preparedOutputSha256 = await outputFingerprint(workspace, plan.preparedOutputPaths);
+      const preparedOutputPaths = [...new Set([
+        ...dependency.outputs.paths,
+        ...await preparedSnapshotPaths(workspace, dependency.outputs.paths,
+          plan.preparedOutputPaths)
+      ])].sort();
+      const preparedOutputSha256 = await outputFingerprint(workspace, preparedOutputPaths);
       requireThat(preparedOutputSha256,
         `Gate ${gate.id} prepared outputs are incomplete`, 'blocked-validation');
       const body = {
-        version: 2, type: 'compile', gateId: gate.id, key, inputs,
-        outputs: { paths: plan.preparedOutputPaths, sha256: preparedOutputSha256 },
+        version: 3, type: 'compile', gateId: gate.id, key, inputs,
+        outputs: { paths: preparedOutputPaths, sha256: preparedOutputSha256 },
         timings, preparedFromRevision: revision,
         dependencyReceipt: {
           path: dependency.receiptPath, key: dependency.key,
@@ -544,13 +649,19 @@ async function reusablePreparation(gate, job, revision, prepared, execute) {
   try {
     dependency = JSON.parse(readFileSync(prepared.dependencyReceipt.path, 'utf8'));
   } catch { return null; }
-  const dependencyWorkspace = join(dirname(prepared.dependencyReceipt.path), 'workspace');
-  if (!validReceiptIntegrity(dependency) || dependency.type !== 'dependencies' ||
-    dependency.key !== prepared.dependencyReceipt.key ||
-    dependency.integrity !== prepared.dependencyReceipt.integrity ||
-    !existsSync(dependencyWorkspace) ||
-    await outputFingerprint(dependencyWorkspace, prepared.plan.dependencySnapshotPaths) !==
-      dependency.outputs.sha256) return null;
+  const dependencyWorkspace = join(dirname(prepared.dependencyReceipt.path), 'w');
+  try {
+    if (!validReceiptIntegrity(dependency) || dependency.type !== 'dependencies' ||
+      dependency.key !== prepared.dependencyReceipt.key ||
+      dependency.integrity !== prepared.dependencyReceipt.integrity ||
+      !existsSync(dependencyWorkspace) ||
+      !Array.isArray(dependency.outputs?.paths) ||
+      await git(dependencyWorkspace, ['rev-parse', 'HEAD']) !==
+        dependency.preparedFromRevision ||
+      await git(dependencyWorkspace, ['status', '--porcelain']) ||
+      await outputFingerprint(dependencyWorkspace, dependency.outputs.paths) !==
+        dependency.outputs.sha256) return null;
+  } catch { return null; }
   const paths = await changedPaths(job.workspace, prepared.inputs.sourceRevision, revision);
   if (!paths.every(path => prepared.plan.testOnlyPrefixes.some(prefix => path.startsWith(prefix))))
     return null;
@@ -569,7 +680,7 @@ async function reusablePreparation(gate, job, revision, prepared, execute) {
     buildConfigSha256 !== prepared.inputs.buildConfigSha256 ||
     await git(prepared.workspace, ['rev-parse', 'HEAD']) !== prepared.inputs.sourceRevision ||
     await git(prepared.workspace, ['status', '--porcelain']) ||
-    await outputFingerprint(prepared.workspace, prepared.plan.preparedOutputPaths) !==
+    await outputFingerprint(prepared.workspace, prepared.outputs.paths) !==
       prepared.outputs.sha256) return null;
   return {
     ...prepared, profile, cache: 'hit',
@@ -729,7 +840,7 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
           await git(receipt.workspace, ['checkout', '--detach',
             receipt.inputs.sourceRevision], checkoutEnvironment());
           const outputSha256 = await outputFingerprint(receipt.workspace,
-            receipt.plan.preparedOutputPaths);
+            receipt.outputs.paths);
           if (await git(receipt.workspace, ['status', '--porcelain']) ||
             outputSha256 !== receipt.outputs.sha256)
             throw new Error('Prepared validation workspace changed');

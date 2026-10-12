@@ -243,6 +243,27 @@ operation artifact and returns bounded diagnostics to the next skill round.
 The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 
+A content-bound profile may opt into controller-managed staged validation with
+one `PILOT_VALIDATION_PLAN` JSON comment. The fixed stage contract is
+`dependencies`, `compile`, `policy`, then `test`; the controller selects the
+stage through `PILOT_VALIDATION_STAGE`, not through worker input. Before worker
+authoring it can prepare the pinned base revision in a controller-only
+workspace. The receipt binds the exact prepared revision, lockfiles, build
+configuration, profile hash, Node/Corepack/Yarn fingerprint and declared
+prepared outputs. Validation artifacts record checkout, preparation, policy,
+test and cleanup timings, Yarn resolution/fetch/link subphase timings when
+available, cache hit/miss state and the input fingerprint.
+
+Receipt reuse is deterministic and fail closed. A later revision may reuse
+dependency and compile stages only when every changed path is under the
+profile's test-only prefixes and all bound fingerprints still match. Production
+or build input changes, lockfile/profile/toolchain drift, missing outputs,
+corrupt receipts or ambiguous paths trigger a new clean preparation. A
+recoverable retry of the same revision reuses completed preparation but reruns
+policy and test stages. Prepared workspaces are serialized per receipt and
+source cleanliness plus declared outputs are rechecked after every run; the
+worker and repository skill cannot read, write or approve cache metadata.
+
 ## Safety invariants
 
 - All 14 exclusions in the schema apply to **both defect and improvement**
@@ -356,13 +377,19 @@ repository-native skill to author changes, but neither the worker nor skill
 receives shell, Git, network or PR permissions.
 
 After each authored revision, the controller commits it and runs the fixed
-approved validation gates in a fresh temporary checkout of the exact commit. A
-runner cannot validate changes it made during execution: changed source or HEAD
-is blocked and the temporary checkout is discarded. Explicitly classified
-infrastructure blockers may receive at most
-`limits.maxValidationInfrastructureRetries` fresh-checkout attempts; trust,
-profile-hash and policy failures are never auto-approved. A failed revision
-remains immutable validation
+approved validation gates at the exact commit. Profiles without a valid staged
+plan retain the original fresh temporary checkout for every attempt. Staged
+profiles use a controller-owned prepared workspace with immutable receipts and
+exclusive access; only deterministic test-only revisions may reuse expensive
+dependency and compile stages. The implementation deliberately retains
+`clone --no-hardlinks` for preparation: detached worktrees or shared-object
+clones reduce checkout cost but make a durable cache depend on another
+worktree's lifetime, while checkout is small beside dependency linking and
+compile. A runner cannot validate changes it made during execution: changed
+source or HEAD is blocked, and a changed prepared output invalidates the cache.
+Explicitly classified infrastructure blockers may receive at most
+`limits.maxValidationInfrastructureRetries` attempts; trust, profile-hash and
+policy failures are never auto-approved. A failed revision remains immutable validation
 evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
 bounded diagnostic tails to a new repository-skill repair round, commits the
 repair as a new revision and validates again. This is not a retry of the same

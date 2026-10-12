@@ -201,7 +201,7 @@ grants. A different deployment needs a reviewed adapter/config change, not a
 silent query substitution. The example's Teams IDs are fictitious.
 
 Before code work, resolve repo owner/project binding, routing, base/target
-revisions, permitted write prefixes, commit identity and approved validation
+revisions, permitted write prefixes or exact files, commit identity and approved validation
 commands. Primary checkouts are references only; execution must use isolated
 task workspaces. A worktree/clone is **not an OS sandbox**.
 
@@ -264,6 +264,51 @@ run, executes it outside the model tool surface, records the hash in the
 operation artifact and returns bounded diagnostics to the next skill round.
 The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
+
+### 1JS declarative E2E authoring
+
+The optional `1js-declarative-e2e-authoring` binding targets
+`.github/skills/author-declarative-e2e-test/SKILL.md`. It is disabled and
+unqualified in `pilot.example.json`; configuring a checkout or qualifying the
+skill does not enable routing, writes, validation, push or Draft PR creation.
+The binding accepts only `declarative-e2e-mini-spec-batch-v1`. Reviewed and
+FILTER handoffs must provide every batch item before assignment:
+
+```json
+{
+  "format": "declarative-e2e-mini-spec-batch-v1",
+  "items": [{
+    "inputItemId": "bizchat-create-canary-excel",
+    "title": "Create a Canary Excel workbook from BizChat",
+    "account": "AAD",
+    "entryUrl": "https://copilot.cloud.microsoft/chat",
+    "preconditions": ["Use the qualified signed-in AAD profile."],
+    "orderedTestSteps": ["Open BizChat.", "Create and open the workbook."],
+    "expectedUserVisibleAndDataOutcomes": ["A real .xlsx workbook opens and satisfies the declared table contract."],
+    "cleanup": ["Restore changed flight values and close only the test-owned tab."]
+  }]
+}
+```
+
+Missing, malformed, differently versioned or duplicate-ID input blocks before
+the worker starts. The validated object is content-bound into the coverage plan
+and assignment and is shown to the repository skill as
+`repositorySkillInput`; the skill may inspect the exact source revision but may
+not invent omitted authoring requirements.
+
+1JS authoring uses directory prefixes only for scenario directories and exact
+`allowedWriteFiles` for shared declarative composites, UI maps and resource
+registries. This intentionally excludes runner, loader and verifier code.
+Harness repairs such as workbook-identity resolution require a separate,
+explicitly authorized change/PR rather than broadening an authoring assignment.
+
+Static validation and scenario discovery are necessary but do not prove the
+signed-in product flow. Local live evidence must come from the qualified
+profile with retries disabled; CI evidence must identify Pipeline 36540 runs
+for the same final commit. Repeated attempts inside one build are not distinct
+successful builds. If the repository skill requires five consecutive local
+runs and five consecutive builds, fewer successes must be reported as partial
+qualification rather than a completed authoring result.
 
 ## Safety invariants
 

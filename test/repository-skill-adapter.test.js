@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { configAt, hash } from '../src/common.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill,
-  repositoryValidationContract, resolveSkillBinding
+  normalizeSkillInput, repositoryValidationContract, resolveSkillBinding
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -108,6 +108,7 @@ test('trusted-remote qualification fetches before resolving and binds the valida
   const { config } = setup(t);
   const repo = config.repositories[0];
   repo.qualificationRefresh = 'fetch';
+  repo.baseRef = 'origin/feature/agent_reliability';
   repo.validationContractVersion = 'oa-v2';
   repo.validationGates = [{
     id: 'oa-test', approved: true, executable: process.execPath,
@@ -127,6 +128,9 @@ test('trusted-remote qualification fetches before resolving and binds the valida
     }, async () => 'synthetic-token');
   assert.deepEqual(calls.map(args => args[0]),
     ['remote', 'fetch', 'rev-parse', 'cat-file', 'show']);
+  assert.equal(calls.find(args => args[0] === 'fetch').at(-1), 'feature/agent_reliability');
+  assert.equal(calls.find(args => args[0] === 'rev-parse').at(-1),
+    'FETCH_HEAD^{commit}');
   assert.equal(result.qualificationSource, 'trusted-remote');
   assert.equal(result.validationContractVersion, 'oa-v2');
   assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
@@ -202,6 +206,31 @@ test('skill result normalization is deterministic and rejects success-shaped emp
     changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
     unknowns: [], needsHumanDecision: false
   }), /existing coverage/);
+});
+
+test('declarative E2E skill input is versioned, complete and has unique item IDs', t => {
+  const { config } = setup(t);
+  const binding = config.repositories[0].skillBindings[0];
+  binding.inputFormat = 'declarative-e2e-mini-spec-batch-v1';
+  const input = {
+    format: 'declarative-e2e-mini-spec-batch-v1',
+    items: [{
+      inputItemId: 'bizchat-excel-canary',
+      title: 'Create an Excel workbook from BizChat',
+      account: 'AAD',
+      entryUrl: 'https://example.invalid/chat',
+      preconditions: ['Signed in with the qualified AAD profile'],
+      orderedTestSteps: ['Open BizChat', 'Create the workbook'],
+      expectedUserVisibleAndDataOutcomes: ['A real workbook opens'],
+      cleanup: ['Close only the test-owned tab']
+    }]
+  };
+  assert.deepEqual(normalizeSkillInput(binding, input), input);
+  assert.throws(() => normalizeSkillInput(binding, null),
+    /requires declarative-e2e-mini-spec-batch-v1/);
+  const duplicate = structuredClone(input);
+  duplicate.items.push(structuredClone(input.items[0]));
+  assert.throws(() => normalizeSkillInput(binding, duplicate), /unique/);
 });
 
 test('adapter rejects missing, changed or source-mismatched qualification receipts', t => {

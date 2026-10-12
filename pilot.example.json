@@ -49,9 +49,32 @@
       "routingRules": [],
       "referenceCheckout": null,
       "baseRef": null,
+      "qualificationRefresh": "fetch",
       "remote": "https://dev.azure.com/office/Office/_git/1JS",
-      "allowedWritePrefixes": [],
-      "skillBindings": [],
+      "allowedWritePrefixes": [
+        "ooui/apps/cross-office-client-e2e/scenarios",
+        "ooui/apps/excel-agent-declarative-e2e/declarative/scenarios"
+      ],
+      "allowedWriteFiles": [
+        "ooui/apps/cross-office-client-e2e/composites/cross-office.yaml",
+        "ooui/apps/cross-office-client-e2e/ui/ui-map.yaml",
+        "ooui/apps/cross-office-client-e2e/resources.yaml",
+        "ooui/apps/excel-agent-declarative-e2e/declarative/composites/excel-agent.yaml",
+        "ooui/apps/excel-agent-declarative-e2e/declarative/ui-map.yaml",
+        "ooui/apps/excel-agent-declarative-e2e/declarative/resources.yaml"
+      ],
+      "skillBindings": [
+        {
+          "id": "1js-declarative-e2e-authoring",
+          "capability": "declarative-e2e-authoring",
+          "skillPath": ".github/skills/author-declarative-e2e-test/SKILL.md",
+          "inputFormat": "declarative-e2e-mini-spec-batch-v1",
+          "enabled": false,
+          "qualification": "unqualified",
+          "requestedOutcomes": ["add-declarative-e2e-tests"],
+          "sideEffects": { "commit": false, "push": false, "createDraftPR": false }
+        }
+      ],
       "commitIdentity": { "name": null, "email": null },
       "validationGates": [],
       "pr": {

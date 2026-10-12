@@ -379,6 +379,7 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
       id: 'target-integration',
       capability: 'integration-test-authoring',
       skillPath,
+      inputFormat: 'declarative-e2e-mini-spec-batch-v1',
       enabled: true,
       qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
@@ -407,13 +408,30 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   const input = {
     format: 'filter-proposer-handoff-v1',
     filter: { manifestPath: s.path, resultPaths: [resultPath] },
-    routing: { capability: 'integration-test-authoring' }
+    routing: {
+      capability: 'integration-test-authoring',
+      skillInput: {
+        format: 'declarative-e2e-mini-spec-batch-v1',
+        items: [{
+          inputItemId: 'filter-authored-canary',
+          title: 'Author a reviewed FILTER canary',
+          account: 'AAD',
+          entryUrl: 'https://example.invalid/chat',
+          preconditions: ['Use the qualified signed-in profile'],
+          orderedTestSteps: ['Open the entry URL', 'Perform the reviewed workflow'],
+          expectedUserVisibleAndDataOutcomes: ['The reviewed outcome is visible'],
+          cleanup: ['Close only the test-owned tab']
+        }]
+      }
+    }
   };
   const preparedHandoff = prepareFilterProposerHandoff(s.config, ledger, input);
   assert.equal(preparedHandoff.candidate.definition.repository, 'target-repo');
   assert.equal(preparedHandoff.evidence[0].source.provenance, 'authenticated-source');
   assert.equal(preparedHandoff.investigation.review.reviewer, 'FILTER:synthetic-filter');
   assert.equal(preparedHandoff.testCoveragePlan.sourceRevision, sourceRevision);
+  assert.deepEqual(preparedHandoff.testCoveragePlan.skillInput, input.routing.skillInput);
+  assert.deepEqual(preparedHandoff.assignment.skillInput, input.routing.skillInput);
   assert.equal(preparedHandoff.assignment.skillBindingId, 'target-integration');
   assert.equal(preparedHandoff.job.state, 'prepared');
   const replay = prepareFilterProposerHandoff(s.config, ledger, input);

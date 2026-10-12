@@ -18,8 +18,11 @@ const fixture = JSON.parse(readFileSync(
 const repairDrill = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/validation-repair-drill.json', import.meta.url),
   'utf8'));
+const oneJsFixture = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-bizchat-excel.reviewed-handoff.json', import.meta.url),
+  'utf8'));
 
-async function setup(t) {
+async function setup(t, { inputFormat = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
@@ -69,6 +72,7 @@ async function setup(t) {
       id: 'oa-integration-test-core',
       capability: 'integration-test-authoring',
       skillPath,
+      ...(inputFormat ? { inputFormat } : {}),
       enabled: true,
       qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
@@ -111,6 +115,24 @@ test('reviewed handoff fixture prepares real planning and assignment records', a
   assert.match(prepared.assignment.questions[0],
     /contracts\/apps\/onenote\/omni-onenote-bootstrap-progress\.contract\.test\.ts/);
   assert.equal(prepared.job.state, 'prepared');
+});
+
+test('reviewed handoff preserves validated declarative E2E mini-spec input through assignment', async t => {
+  validateReviewedHandoffReceipt(oneJsFixture);
+  const { config, ledger } = await setup(t, {
+    inputFormat: 'declarative-e2e-mini-spec-batch-v1'
+  });
+  const mapped = structuredClone(oneJsFixture);
+  mapped.review.repoIds = ['office-agent'];
+  mapped.planning.improvement.repoIds = ['office-agent'];
+  mapped.planning.improvement.capabilities = ['integration-test-authoring'];
+  mapped.planning.testCoverage.repoId = 'office-agent';
+  mapped.planning.testCoverage.capability = 'integration-test-authoring';
+  mapped.planning.requestedOutcome = 'add-or-update-tests';
+  const prepared = prepareReviewedHandoff(config, ledger, mapped);
+  assert.deepEqual(prepared.testCoveragePlan.skillInput, mapped.planning.skillInput);
+  assert.deepEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
+  assert.notStrictEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
 });
 
 test('reviewed handoff production API is the only controller path', async t => {

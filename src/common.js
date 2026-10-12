@@ -98,6 +98,13 @@ export function configAt(path) {
       repo.validationContractVersion.length > 0,
     `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
+    repo.allowedWriteFiles ??= [];
+    requireThat(Array.isArray(repo.allowedWritePrefixes ?? []) &&
+      Array.isArray(repo.allowedWriteFiles), `Repository ${repo.id} write bounds must be arrays`);
+    for (const allowedPath of [...repo.allowedWritePrefixes, ...repo.allowedWriteFiles])
+      requireThat(typeof allowedPath === 'string' && allowedPath.length > 0 &&
+        !isAbsolute(allowedPath) && !allowedPath.split(/[\\/]/).includes('..'),
+      `Repository ${repo.id} has an invalid write bound`);
     const ids = new Set();
     for (const binding of repo.skillBindings ?? []) {
       requireThat(binding && typeof binding.id === 'string' && binding.id.length > 0 && !ids.has(binding.id),
@@ -106,6 +113,9 @@ export function configAt(path) {
       requireThat(typeof binding.capability === 'string' && binding.capability.length > 0 &&
         typeof binding.skillPath === 'string' && binding.skillPath.length > 0 && !isAbsolute(binding.skillPath),
       `Repository ${repo.id} skill binding ${binding.id} is incomplete`);
+      requireThat(binding.inputFormat === undefined ||
+        binding.inputFormat === 'declarative-e2e-mini-spec-batch-v1',
+      `Repository ${repo.id} skill binding ${binding.id} has an unsupported input format`);
       requireThat(typeof binding.enabled === 'boolean' &&
         ['unqualified', 'qualified'].includes(binding.qualification) &&
         Array.isArray(binding.requestedOutcomes) && binding.requestedOutcomes.length > 0,

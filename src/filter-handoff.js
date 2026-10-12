@@ -186,7 +186,10 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
         existingTests: [],
         coverageGaps: [candidate.definition.missingAssertion],
         unknowns: [],
-        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`
+        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`,
+        ...(input.routing.skillInput
+          ? { skillInput: input.routing.skillInput }
+          : {})
       }
     });
     const assignment = makePlannedImprovementAssignment(config, ledger,

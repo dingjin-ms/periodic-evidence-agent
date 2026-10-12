@@ -76,7 +76,8 @@ function repoConfig(config, root) {
   const repo = {
     id: 'fixture', owner: 'synthetic-owner', routingApproved: true, routingRules: ['synthetic only'],
     referenceCheckout: join(root, 'reference'), baseRef: 'HEAD', remote: join(root, 'remote.git'),
-    allowedWritePrefixes: ['src', 'test'], validationGates: [], commitIdentity: { name: 'Pilot fixture', email: 'fixture@example.invalid' }
+    allowedWritePrefixes: ['src', 'test'], allowedWriteFiles: [],
+    validationGates: [], commitIdentity: { name: 'Pilot fixture', email: 'fixture@example.invalid' }
   };
   config.repositories = [repo]; return repo;
 }
@@ -157,6 +158,23 @@ test('configuration resolves and content-binds relative validation profiles', t 
   delete gate.profileSha256;
   writeFileSync(configPath, JSON.stringify(config));
   assert.throws(() => configAt(configPath), /bind profilePath and profileSha256 together/);
+});
+
+test('worker writes honor exact files without broadening directory prefixes', t => {
+  const { root, config } = setup(t);
+  const repo = repoConfig(config, root);
+  repo.allowedWritePrefixes = [];
+  repo.allowedWriteFiles = ['config/allowed.yaml'];
+  const workspace = join(root, 'workspace');
+  mkdirSync(join(workspace, 'config'), { recursive: true });
+  const assignment = {
+    repoId: repo.id,
+    permissions: { editCode: true },
+    bounds: { maxToolCalls: 3 }
+  };
+  const tools = new WorkerTools(config, assignment, workspace);
+  assert.equal(tools.write('config\\allowed.yaml', 'allowed\n'), 'written');
+  assert.throws(() => tools.write('config\\other.yaml', 'blocked\n'), /approved edit bounds/);
 });
 test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   const window = configAt('pilot.example.json').window;
@@ -406,7 +424,7 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   const editable = structuredClone(assignment); editable.permissions.editCode = true;
   const tools = new WorkerTools(config, editable, workspace);
   for (const path of ['..\\outside', '.git\\config', 'src\\x:stream', 'src\\..\\..\\outside', 'src\\..\\README.md']) assert.throws(() => tools.write(path, 'bad'));
-  assert.throws(() => tools.write('other\\value.js', 'bad'), /prefixes/);
+  assert.throws(() => tools.write('other\\value.js', 'bad'), /edit bounds/);
   mkdirSync(join(root, 'outside'));
   symlinkSync(join(root, 'outside'), join(workspace, 'src', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => tools.write('src\\linked\\value.js', 'bad'), /Symlink/);

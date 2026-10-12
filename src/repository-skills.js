@@ -2,11 +2,28 @@ import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { boundedPath, hash, json, requireThat } from './common.js';
+import { boundedPath, hash, json, requireThat, validateRecord } from './common.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
 export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
+
+export function normalizeSkillInput(binding, input) {
+  if (!binding.inputFormat) {
+    requireThat(input === undefined || input === null,
+      `Repository skill binding ${binding.id} does not accept a structured skill input`,
+      'blocked-scope');
+    return null;
+  }
+  requireThat(input && input.format === binding.inputFormat,
+    `Repository skill binding ${binding.id} requires ${binding.inputFormat}`,
+    'blocked-reconciliation');
+  validateRecord(structuredClone(input), 'declarativeE2ESpecBatch');
+  const ids = input.items.map(item => item.inputItemId);
+  requireThat(new Set(ids).size === ids.length,
+    'Repository skill input item IDs must be unique', 'blocked-reconciliation');
+  return structuredClone(input);
+}
 
 export function repositoryValidationContract(repo) {
   const version = repo.validationContractVersion ?? '1.0';
@@ -167,7 +184,10 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
     `Repository ${repoId} origin does not match its configured remote`, 'blocked-scope');
   const refresh = repo.qualificationRefresh ?? 'local';
   if (refresh === 'fetch') {
-    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', repo.baseRef];
+    const fetchRef = repo.baseRef.startsWith('origin/')
+      ? repo.baseRef.slice('origin/'.length)
+      : repo.baseRef;
+    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', fetchRef];
     const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(remote);
     const env = adoRemote
       ? adoGitEnvironment(await getToken(config, 'ADO repository skill qualification'))

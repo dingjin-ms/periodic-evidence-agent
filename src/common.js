@@ -102,6 +102,20 @@ export function configAt(path) {
         typeof binding.sideEffects[key] === 'boolean'),
       `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);
     }
+    for (const gate of repo.validationGates ?? []) {
+      requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
+        `Repository ${repo.id} validation gate ${gate.id} must bind profilePath and profileSha256 together`);
+      if (!gate.profilePath) continue;
+      requireThat(!isAbsolute(gate.profilePath) &&
+        /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
+      `Repository ${repo.id} validation gate ${gate.id} needs a relative profilePath and profileSha256`);
+      const profilePath = resolve(dirname(resolve(path)), gate.profilePath);
+      requireThat(existsSync(profilePath) && lstatSync(profilePath).isFile(),
+        `Repository ${repo.id} validation gate ${gate.id} profile does not exist`);
+      requireThat(hash(readFileSync(profilePath)) === gate.profileSha256,
+        `Repository ${repo.id} validation gate ${gate.id} profile hash mismatch`);
+      gate.profilePath = profilePath;
+    }
   }
   config.stateDirectory = resolve(dirname(resolve(path)), config.stateDirectory);
   return config;

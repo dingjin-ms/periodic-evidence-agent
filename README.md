@@ -228,6 +228,16 @@ Qualification does not approve ownership, write prefixes, validation gates,
 commit identity, push or draft PR creation. Ambiguous project names remain
 blocked; assignments must pin the repo-relative owner project.
 
+The OA skill owns validation intent and failure interpretation: it selects the
+project runner, targeted tests, behavior-card checks and repair procedure. The
+controller owns execution and evidence. A validation gate may bind a versioned
+pipeline script using `profilePath`, `profileSha256` and the `{profile}`
+argument placeholder. The controller verifies the profile hash before every
+run, executes it outside the model tool surface, records the hash in the
+operation artifact and returns bounded diagnostics to the next skill round.
+The checked-in OneNote profile is
+`scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
+
 ## Safety invariants
 
 - All 14 exclusions in the schema apply to **both defect and improvement**
@@ -348,6 +358,11 @@ before push and Draft PR creation. Exhausted failed rounds may create only a
 clearly marked failed Draft PR under the configured policy. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
 network access, push or PR creation.
+
+`test/fixtures/downstream-e2e/validation-repair-drill.json` is the deterministic
+failed-to-passed fixture. Its first revision intentionally fails the repository
+gate; the next skill round consumes controller diagnostics, changes only the
+failing test, and is committed and validated as a distinct passing revision.
 
 ## Local package and eventual publication
 

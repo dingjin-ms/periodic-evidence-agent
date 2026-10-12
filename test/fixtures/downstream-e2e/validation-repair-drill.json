@@ -1,0 +1,42 @@
+{
+  "format": "validation-repair-drill-v1",
+  "rounds": [
+    {
+      "expectedFeedbackStatus": null,
+      "findings": "Added an intentionally failing first revision for the deterministic controller repair drill.",
+      "title": "Add fixture behavior coverage",
+      "writes": {
+        "test/behavior.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 2));\n",
+        "test/behavior-card.md": "# Fixture behavior\n"
+      }
+    },
+    {
+      "expectedFeedbackStatus": "failed",
+      "findings": "Repaired the controller-reported validation failure in a new revision.",
+      "title": "Repair fixture behavior coverage",
+      "writes": {
+        "test/behavior.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n"
+      }
+    }
+  ],
+  "skillResult": {
+    "status": "succeeded",
+    "classification": "missing-test-coverage",
+    "changedFiles": [
+      "test/behavior-card.md",
+      "test/behavior.test.js"
+    ],
+    "testsAddedOrUpdated": [
+      "fixture behavior"
+    ],
+    "behaviorCardsAddedOrUpdated": [
+      "test/behavior-card.md"
+    ],
+    "unknowns": [],
+    "needsHumanDecision": false
+  },
+  "expectedValidationStatuses": [
+    "failed",
+    "passed"
+  ]
+}

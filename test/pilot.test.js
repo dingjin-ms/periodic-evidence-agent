@@ -115,6 +115,35 @@ test('portable example uses a fixed UTC fixture window and leaves live permissio
   assert.ok(config.repositories.every(r => !r.projectId && !r.referenceCheckout && !r.routingApproved));
   assert.match(config.identity.designatedUser, /@example\.invalid$/);
 });
+test('configuration resolves and content-binds relative validation profiles', t => {
+  const root = mkdtempSync(join(tmpdir(), 'profile-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const profile = 'Write-Output profile';
+  const profilePath = join(root, 'scripts', 'validation', 'profile.ps1');
+  mkdirSync(join(root, 'scripts', 'validation'), { recursive: true });
+  writeFileSync(profilePath, profile);
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  const gate = {
+    id: 'profiled', approved: false, isolationVerified: false,
+    profilePath: 'scripts/validation/profile.ps1', profileSha256: hash(profile),
+    executable: null, args: ['-File', '{profile}'], timeoutMs: 10000
+  };
+  config.repositories.find(repo => repo.id === 'office-agent').validationGates.push(gate);
+  const configPath = join(root, 'pilot.json');
+  writeFileSync(configPath, JSON.stringify(config));
+
+  const loaded = configAt(configPath);
+  assert.equal(loaded.repositories.find(repo => repo.id === 'office-agent')
+    .validationGates[0].profilePath, profilePath);
+
+  gate.profileSha256 = '0'.repeat(64);
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => configAt(configPath), /profile hash mismatch/);
+
+  delete gate.profileSha256;
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => configAt(configPath), /bind profilePath and profileSha256 together/);
+});
 test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   const window = configAt('pilot.example.json').window;
   assert.match(wiql(window), /\[System.CreatedDate\]/);
@@ -417,6 +446,39 @@ test('validation requires approved runner and never inherits credential environm
     if (localAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = localAppData;
   }
+});
+test('validation profiles are content-bound and substituted by the controller', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const profilePath = join(config.stateDirectory, 'validation-profile.ps1');
+  writeFileSync(profilePath, 'Write-Output profile');
+  repo.validationGates = [{
+    id: 'profiled', approved: true, isolationVerified: true,
+    executable: process.execPath, args: ['-e', 'process.exit(0)', '{profile}'],
+    profilePath, profileSha256: hash('Write-Output profile'), timeoutMs: 10000
+  }];
+  let observedArgs;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args) => {
+      observedArgs = args;
+      return { stdout: '', stderr: '' };
+    });
+  assert.equal(result[0].status, 'passed');
+  assert.equal(observedArgs.at(-1), profilePath);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.profileSha256, hash('Write-Output profile'));
+
+  const second = await fixture(t);
+  const secondIsolated = await provision(second.config, second.job, second.repo);
+  second.repo.validationGates = [{
+    ...repo.validationGates[0],
+    profilePath,
+    profileSha256: '0'.repeat(64)
+  }];
+  await assert.rejects(runValidation(second.config, second.ledger,
+    { ...second.job, workspace: secondIsolated.workspace }, second.repo,
+    secondIsolated.baseRevision), /profile hash mismatch/);
 });
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);

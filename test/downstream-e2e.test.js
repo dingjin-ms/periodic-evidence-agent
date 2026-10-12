@@ -17,6 +17,9 @@ import { skillQualificationId } from '../src/repository-skills.js';
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/downstream-e2e/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
   'utf8'));
+const repairDrill = JSON.parse(readFileSync(
+  new URL('./fixtures/downstream-e2e/validation-repair-drill.json', import.meta.url),
+  'utf8'));
 
 async function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'downstream-e2e-'));
@@ -281,33 +284,21 @@ test('controller validation failures feed a bounded repository-skill repair loop
         toolkit, skill, authoring) => {
         modelCalls++;
         assert.equal(authoring.round, modelCalls - 1);
-        if (authoring.round === 0) {
-          assert.deepEqual(authoring.validationFeedback, []);
-          toolkit.write('test\\behavior.test.js',
-            "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 2));\n");
-          toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
-        } else {
-          assert.equal(authoring.validationFeedback[0].status, 'failed');
+        const round = repairDrill.rounds[authoring.round];
+        assert.ok(round);
+        if (round.expectedFeedbackStatus === null) assert.deepEqual(authoring.validationFeedback, []);
+        else {
+          assert.equal(authoring.validationFeedback[0].status, round.expectedFeedbackStatus);
           assert.equal(authoring.validationFeedback[0].exitCode, 1);
-          toolkit.write('test\\behavior.test.js',
-            "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n");
         }
+        for (const [path, content] of Object.entries(round.writes))
+          toolkit.write(path.replaceAll('/', '\\'), content);
         toolkit.finish({
           outcome: 'propose-change',
-          findings: authoring.round === 0
-            ? 'Added initial focused fixture coverage.'
-            : 'Repaired the controller-reported validation failure.',
-          title: authoring.round === 0 ? 'Add fixture behavior coverage' : 'Repair fixture behavior coverage',
+          findings: round.findings,
+          title: round.title,
           description: 'Authorized synthetic downstream E2E draft.',
-          skillResult: {
-            status: 'succeeded',
-            classification: 'missing-test-coverage',
-            changedFiles: ['test/behavior-card.md', 'test/behavior.test.js'],
-            testsAddedOrUpdated: ['fixture behavior'],
-            behaviorCardsAddedOrUpdated: ['test/behavior-card.md'],
-            unknowns: [],
-            needsHumanDecision: false
-          }
+          skillResult: repairDrill.skillResult
         });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
@@ -321,7 +312,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
   assert.equal(executed.result.outcome, 'draft-pr-validated');
   assert.deepEqual(executed.result.validation.map(item => item.status), ['passed']);
   assert.deepEqual(executed.result.validationAttempts.map(attempt =>
-    attempt.validation[0].status), ['failed', 'passed']);
+    attempt.validation[0].status), repairDrill.expectedValidationStatuses);
   assert.notEqual(executed.result.validationAttempts[0].sourceRevision,
     executed.result.validationAttempts[1].sourceRevision);
   assert.equal(executed.result.sourceRevision,

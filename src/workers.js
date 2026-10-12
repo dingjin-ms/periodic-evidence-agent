@@ -232,10 +232,24 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       && Array.isArray(gate.args) && gate.args.every(a => typeof a === 'string'),
     `Gate ${gate.id} needs an approved repo-native runner and fixed argument list`, 'blocked-validation');
     positive(gate.timeoutMs, 'validation timeoutMs');
+    let profile = null;
+    if (gate.profilePath) {
+      requireThat(isAbsolute(gate.profilePath) && /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
+        `Gate ${gate.id} needs a resolved profile and SHA-256 binding`, 'blocked-validation');
+      requireThat(existsSync(gate.profilePath) && statSync(gate.profilePath).isFile() &&
+        hash(readFileSync(gate.profilePath)) === gate.profileSha256,
+      `Gate ${gate.id} validation profile hash mismatch`, 'blocked-validation');
+      profile = { path: gate.profilePath, sha256: gate.profileSha256 };
+    }
     const id = `${job.id}:validation:${gate.id}:${revision}`;
-    const args = gate.args.map(a => a.replaceAll('{workspace}', job.workspace).replaceAll('{revision}', revision));
+    const args = gate.args.map(a => a.replaceAll('{workspace}', job.workspace)
+      .replaceAll('{revision}', revision)
+      .replaceAll('{profile}', profile?.path ?? ''));
     const artifact = join(config.stateDirectory, 'validation', `${hash(id)}.json`);
-    ledger.operation(id, job.id, 'validation', { gateId: gate.id, revision, owner: repo.owner, nextCheckAt: new Date(Date.now() + gate.timeoutMs).toISOString() });
+    ledger.operation(id, job.id, 'validation', {
+      gateId: gate.id, revision, owner: repo.owner, profileSha256: profile?.sha256 ?? null,
+      nextCheckAt: new Date(Date.now() + gate.timeoutMs).toISOString()
+    });
     let status = 'passed', output;
     try { output = await execute(gate.executable, args, job.workspace, gate.timeoutMs, minimalEnvironment()); }
     catch (error) {
@@ -246,7 +260,10 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     const dirty = await git(job.workspace, ['status', '--porcelain']);
     if (actualHead !== revision || dirty) { status = 'blocked'; output.sourceChanged = true; }
     mkdirSync(dirname(artifact), { recursive: true });
-    writeFileSync(artifact, json({ gateId: gate.id, revision, status, executable: gate.executable, args, output, observedAt: now() }), { mode: 0o600 });
+    writeFileSync(artifact, json({
+      gateId: gate.id, revision, status, executable: gate.executable, args,
+      profileSha256: profile?.sha256 ?? null, output, observedAt: now()
+    }), { mode: 0o600 });
     ledger.finishOperation(id, status, { artifact, revision, owner: repo.owner });
     results.push({ gateId: gate.id, sourceRevision: revision, commandOrRunUrl: json([gate.executable, ...args]), status,
       artifactRefs: [artifact], owner: repo.owner, nextCheckAt: null });

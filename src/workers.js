@@ -10,6 +10,7 @@ import {
 } from './repository-skills.js';
 
 const exec = promisify(execFile);
+const reviewedHandoffPermit = Symbol('reviewed-handoff-downstream-e2e');
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
@@ -357,8 +358,14 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const assignment = ledger.get('assignment', id);
   const currentEvidence = new Set(ledger.latestEvidence().map(e => e.id));
   requireThat(assignment.evidenceIds.every(e => currentEvidence.has(e)), 'New source evidence requires review before dispatch', 'blocked-reconciliation');
-  requireThat(assignment.evidenceIds.every(e => ledger.get('evidence', e)?.source.provenance !== 'synthetic'),
-    'Synthetic evidence cannot launch a live worker');
+  const fixtureEvidence = assignment.evidenceIds.map(e => ledger.get('evidence', e));
+  const permittedReviewedHandoff = dependencies[reviewedHandoffPermit] === true &&
+    assignment.intent === 'improvement' && assignment.skillBindingId &&
+    fixtureEvidence.every(e => e?.source.kind === 'fixture' && e.source.provenance === 'synthetic' &&
+      e.source.namespace.startsWith('reviewed-handoff/') && e.scopeId.startsWith('downstream-e2e:'));
+  requireThat(permittedReviewedHandoff ||
+    fixtureEvidence.every(e => e?.source.provenance !== 'synthetic'),
+  'Synthetic evidence cannot launch a live worker');
   requireThat(assignment.evidenceIds.every(id => {
     const e = ledger.get('evidence', id);
     return ledger.trackedState(e)?.state !== 'reconciliation-required' && !['Removed', 'Resolved', 'Closed'].includes(e.sourceStatus);
@@ -438,4 +445,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     }
     throw error;
   } finally { ledger.release('dispatch', owner); }
+}
+
+export async function dispatchReviewedHandoffE2E(config, ledger, id, dependencies = {}) {
+  return dispatch(config, ledger, id, { ...dependencies, [reviewedHandoffPermit]: true });
 }

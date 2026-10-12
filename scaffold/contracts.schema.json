@@ -11,6 +11,7 @@
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/workerResult" },
     { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/reviewedHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -217,7 +218,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "namespace", "recordId", "revision", "versionBasis", "provenance", "ownerConfirmation"],
           "properties": {
-            "kind": { "enum": ["ado", "icm", "workiq"] },
+            "kind": { "enum": ["ado", "icm", "workiq", "fixture"] },
             "namespace": { "$ref": "#/$defs/text" },
             "recordId": { "$ref": "#/$defs/text" },
             "revision": { "$ref": "#/$defs/nullableText" },
@@ -242,6 +243,10 @@
             {
               "if": { "properties": { "kind": { "const": "ado" } } },
               "then": { "properties": { "revision": { "$ref": "#/$defs/text" } } }
+            },
+            {
+              "if": { "properties": { "kind": { "const": "fixture" } } },
+              "then": { "properties": { "provenance": { "const": "synthetic" } } }
             },
             {
               "if": { "properties": { "provenance": { "const": "owner-provided" } } },
@@ -379,6 +384,100 @@
           "then": { "properties": { "reportEligibility": { "const": "unavailable" }, "handoffEligibility": { "const": "needs-evidence" }, "defectConfirmation": { "const": "unconfirmed" } } }
         }
       ]
+    },
+    "reviewedHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "id", "version", "reviewedAt", "evidence", "review", "planning"],
+      "properties": {
+        "format": { "const": "reviewed-handoff-v1" },
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "evidence": {
+          "type": "object", "additionalProperties": false,
+          "required": ["title", "summary", "fields"],
+          "properties": {
+            "title": { "$ref": "#/$defs/text" },
+            "summary": { "$ref": "#/$defs/text" },
+            "fields": { "type": "object" }
+          }
+        },
+        "review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "reviewer", "observedBehavior", "expectedBehavior", "hypotheses",
+            "counterEvidence", "classification", "defectConfirmation", "reportEligibility",
+            "handoffEligibility", "exclusionsChecked", "exclusionReasons", "rationale", "confidence",
+            "repoIds", "existingFixes", "nextAction"],
+          "properties": {
+            "method": { "enum": ["agent-evidence-review", "human-review"] },
+            "reviewer": { "$ref": "#/$defs/text" },
+            "observedBehavior": { "$ref": "#/$defs/text" },
+            "expectedBehavior": { "$ref": "#/$defs/nullableText" },
+            "hypotheses": { "$ref": "#/$defs/texts" },
+            "counterEvidence": { "$ref": "#/$defs/texts" },
+            "classification": { "enum": ["functional", "nonfunctional", "unavailable"] },
+            "defectConfirmation": { "enum": ["unconfirmed", "confirmed", "ruled-out"] },
+            "reportEligibility": { "enum": ["included", "excluded", "unavailable"] },
+            "handoffEligibility": { "enum": ["eligible", "excluded", "needs-evidence"] },
+            "exclusionsChecked": {
+              "type": "array", "minItems": 14, "maxItems": 14, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/exclusion" }
+            },
+            "exclusionReasons": {
+              "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/exclusion" }
+            },
+            "rationale": { "$ref": "#/$defs/text" },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "repoIds": { "$ref": "#/$defs/texts" },
+            "existingFixes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/uri" } },
+            "nextAction": { "$ref": "#/$defs/text" }
+          }
+        },
+        "planning": {
+          "type": "object", "additionalProperties": false,
+          "required": ["improvement", "testCoverage", "requestedOutcome"],
+          "properties": {
+            "improvement": {
+              "type": "object", "additionalProperties": false,
+              "required": ["category", "theme", "rationale", "priority", "repoIds", "capabilities"],
+              "properties": {
+                "category": { "enum": ["missing-test-coverage", "behavior-drift", "repeated-failure", "test-maintainability", "other"] },
+                "theme": { "$ref": "#/$defs/text" },
+                "rationale": { "$ref": "#/$defs/text" },
+                "priority": { "enum": ["low", "medium", "high", "critical"] },
+                "repoIds": { "$ref": "#/$defs/texts" },
+                "capabilities": { "$ref": "#/$defs/texts" }
+              }
+            },
+            "testCoverage": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repoId", "capability", "sourceRevision", "searchStatus", "existingTests",
+                "coverageGaps", "unknowns", "rationale"],
+              "properties": {
+                "repoId": { "$ref": "#/$defs/text" },
+                "capability": { "$ref": "#/$defs/text" },
+                "sourceRevision": { "const": "qualified-base" },
+                "searchStatus": { "enum": ["complete", "partial", "not-run"] },
+                "existingTests": {
+                  "type": "array",
+                  "items": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["path", "identifier"],
+                    "properties": {
+                      "path": { "$ref": "#/$defs/text" },
+                      "identifier": { "$ref": "#/$defs/text" }
+                    }
+                  }
+                },
+                "coverageGaps": { "$ref": "#/$defs/texts" },
+                "unknowns": { "$ref": "#/$defs/texts" },
+                "rationale": { "$ref": "#/$defs/text" }
+              }
+            },
+            "requestedOutcome": { "$ref": "#/$defs/text" }
+          }
+        }
+      }
     },
     "areaToImprove": {
       "type": "object", "additionalProperties": false,

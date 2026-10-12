@@ -22,6 +22,14 @@ acquire credentials, call services or launch product workers. Add focused
 regressions for behavioral changes and run the complete offline suite before
 handoff. CI uses a read-only token and no live secrets or account login.
 
+The reviewed-handoff downstream E2E is not a source connector test. Keep its
+fixture source-neutral (`kind: fixture`, `provenance: synthetic`) and keep the
+runner thin: it must call the normal planning, assignment and dispatch modules,
+not reimplement them. Ordinary dispatch must continue rejecting synthetic
+evidence. Real worker, push and Draft PR effects require the dedicated command
+plus both explicit authorization flags; offline tests may inject only external
+model and PR-provider boundaries.
+
 For ledger/schema changes, cover immutable versions, transaction rollback,
 idempotency, cursor retention, provenance and uncertain ownership. Do not
 silently migrate or edit a colleague's live config/ledger. Stable agent/run/

@@ -308,6 +308,34 @@ run. The ignored `*.local.json` name prevents the local receipt from entering
 the package. The command complements required CI and branch protection; it does
 not merge or alter the PR.
 
+### Authorized downstream E2E
+
+The versioned reviewed-handoff fixture exercises the workflow after evidence
+review without pretending to be an IcM, ADO or WorkIQ response. Its only
+synthetic boundary is the eligible reviewed investigation; planning, repository
+routing, assignment construction and dispatch use the normal controller code.
+
+Prepare the handoff without launching a worker or creating repository effects:
+
+```powershell
+npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
+```
+
+An authorized operator may run the real downstream repository path only after
+setup/qualification and explicit acknowledgement of both synthetic input and
+Draft PR effects:
+
+```powershell
+npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-draft-pr
+```
+
+The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
+The dedicated E2E entrypoint accepts only `fixture` evidence produced from the
+strict reviewed-handoff contract, requires an improvement assignment with a
+repository-native skill, and still permits Draft PRs only—never merge. Offline
+CI injects only external model/PR boundaries and performs no network access,
+push or PR creation.
+
 ## Local package and eventual publication
 
 This repository is prepared for **internal experimental collaboration** only.

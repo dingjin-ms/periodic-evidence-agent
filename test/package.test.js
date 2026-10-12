@@ -48,3 +48,19 @@ test('package check detects unsuitable historical contents removed from the curr
   const report = JSON.parse(result.stderr);
   assert.ok(report.findings.some(f => f.origin !== 'index' && f.rule === 'personal Microsoft email'));
 });
+
+test('package check ignores history reachable only from unrelated refs', t => {
+  const { root, git, inspect } = fixture(t);
+  writeFileSync(join(root, 'README.md'), 'Safe package\n');
+  git(['add', 'README.md']);
+  git(['-c', 'user.name=Synthetic fixture', '-c', 'user.email=fixture@example.invalid',
+    '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Safe package']);
+  const packageBranch = git(['branch', '--show-current']).trim();
+  git(['checkout', '--quiet', '--orphan', 'unrelated']);
+  writeFileSync(join(root, 'AGENCY-EXECUTOR.md'), 'Not part of the package branch\n');
+  git(['add', 'AGENCY-EXECUTOR.md']);
+  git(['-c', 'user.name=Synthetic fixture', '-c', 'user.email=fixture@example.invalid',
+    '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Unrelated history']);
+  git(['checkout', '--quiet', packageBranch]);
+  assert.equal(inspect().status, 0);
+});

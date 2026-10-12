@@ -1,9 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $yarnCache = 'C:\.tools\.yarn'
-if (-not (Test-Path -LiteralPath $yarnCache -PathType Container)) {
-    throw "Required Yarn cache is unavailable: $yarnCache"
-}
+New-Item -ItemType Directory -Path $yarnCache -Force | Out-Null
 $env:YARN_CACHE_FOLDER = $yarnCache
 $env:YARN_AFTER_INSTALL = 'node -e "process.exit(0)"'
 $env:OAGENT_SKIP_PYTHON_POSTINSTALL = '1'
@@ -29,7 +27,7 @@ $knownCompileOutputs = @(
     'agents/workspace-agent/experiments/project-agent/components/bundle.js'
 )
 
-Invoke-Checked $corepack yarn install --immutable --immutable-cache --mode=skip-build
+Invoke-Checked $corepack yarn install --immutable --mode=skip-build
 $compileFailure = $null
 try {
     Invoke-Checked $corepack yarn compile --to '@officeagent-agent/office-agent'

@@ -593,6 +593,31 @@ test('validation cleanup failures still finalize blocked evidence and operations
   assert.equal(operations.length, 1);
   assert.equal(operations[0].state, 'blocked');
 });
+test('post-run inspection failures preserve runner diagnostics in blocked evidence', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'inspection', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (executable, args, cwd) => {
+      rmSync(join(cwd, '.git'), { recursive: true, force: true });
+      const error = new Error('synthetic runner failure');
+      error.code = 9;
+      error.stdout = 'runner stdout';
+      error.stderr = 'runner stderr';
+      throw error;
+    });
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-workspace-unavailable');
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.output.exitCode, 9);
+  assert.equal(artifact.output.stdout, 'runner stdout');
+  assert.equal(artifact.output.stderr, 'runner stderr');
+  assert.match(artifact.output.inspectionError, /Operation failed/);
+});
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.remote = 'https://dev.azure.com/test/project/_git/fixture';

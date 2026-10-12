@@ -157,6 +157,9 @@ export async function provision(config, job, repo, qualification = null, depende
 export function checkoutEnvironment() {
   return { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' };
 }
+function removeValidationPath(path, options) {
+  return rmSync(path, { ...options, maxRetries: 10, retryDelay: 250 });
+}
 export class WorkerTools {
   constructor(config, assignment, workspace, loadedSkill = null, usage = null) {
     this.config = config; this.assignment = assignment; this.workspace = workspace;
@@ -288,7 +291,7 @@ export class WorkerTools {
   }
 }
 export async function runValidation(config, ledger, job, repo, revision, execute = command,
-  cleanup = rmSync) {
+  cleanup = removeValidationPath) {
   const results = [];
   for (const gate of repo.validationGates) {
     requireThat(gate.approved === true && isAbsolute(gate.executable)
@@ -377,10 +380,12 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       } catch (error) {
         status = 'blocked';
         blockedReason = 'validation-workspace-unavailable';
-        output = {
-          stdout: '', stderr: safeError(error).message,
-          exitCode: null, timeout: false
-        };
+        output = Object.keys(output).length > 0
+          ? { ...output, inspectionError: safeError(error).message }
+          : {
+            stdout: '', stderr: safeError(error).message,
+            exitCode: null, timeout: false
+          };
       } finally {
         for (const target of [validationWorkspace, privateProfile].filter(Boolean)) {
           try { cleanup(target, { recursive: true, force: true }); }

@@ -420,6 +420,22 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   assert.equal(replay.assignment.id, preparedHandoff.assignment.id);
   assert.equal(ledger.all('evidence').length, 1);
   assert.equal(ledger.all('investigation').length, 1);
+  const configPath = join(s.root, 'target-config.json');
+  const inputPath = join(s.root, 'filter-handoff.json');
+  writeFileSync(configPath, bytes(s.config));
+  writeFileSync(inputPath, bytes(input));
+  const cli = spawnSync(process.execPath, [
+    'src\\cli.js', 'submit-filter-handoff',
+    '--file', inputPath, '--config', configPath, '--prepare'
+  ], { encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).assignment.id, preparedHandoff.assignment.id);
+  ledger.qualify(skillQualificationId('target-repo', 'target-integration'), {
+    ...ledger.qualification(skillQualificationId('target-repo', 'target-integration')),
+    baseRevision: 'c'.repeat(40)
+  });
+  assert.throws(() => prepareFilterProposerHandoff(s.config, ledger, input),
+    /different source revisions/);
 });
 test('offline CLI uses pinned tokenizer command and does not create a main writable ledger', async t => {
   const s = setup(t, 1), tokenizer = join(s.root, 'counter.cjs');

@@ -22,7 +22,7 @@ acquire credentials, call services or launch product workers. Add focused
 regressions for behavioral changes and run the complete offline suite before
 handoff. CI uses a read-only token and no live secrets or account login.
 
-The reviewed-handoff downstream E2E is not a source connector test. Keep its
+The reviewed-handoff integration flow is not a source connector test. Keep its
 fixture source-neutral (`kind: fixture`, `provenance: synthetic`) and keep the
 runner thin: it must call the normal planning, assignment and dispatch modules,
 not reimplement them. Ordinary dispatch must continue rejecting synthetic

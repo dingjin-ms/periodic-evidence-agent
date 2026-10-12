@@ -15,14 +15,12 @@ import { qualifyRepositorySkill, skillQualificationId } from './repository-skill
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
-import { runReviewedHandoffE2E } from './downstream-e2e.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
-const reviewedHandoffActions = ['submit-reviewed-handoff', 'downstream-e2e'];
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
-  ['setup', 'bootstrap-repo', ...reviewedHandoffActions].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
+  ['setup', 'bootstrap-repo', 'submit-reviewed-handoff'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
 }
@@ -231,8 +229,7 @@ try {
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
-      case 'submit-reviewed-handoff':
-      case 'downstream-e2e': {
+      case 'submit-reviewed-handoff': {
         requireThat(args.includes('--prepare') !== args.includes('--execute'),
           `${action} requires exactly one of --prepare or --execute`);
         const handoff = input();
@@ -243,12 +240,10 @@ try {
           authorizePush: args.includes('--authorize-push'),
           authorizeDraftPR: args.includes('--authorize-draft-pr')
         };
-        result = action === 'downstream-e2e'
-          ? await runReviewedHandoffE2E(config, ledger, handoff, handoffOptions)
-          : await acceptReviewedHandoff(config, ledger, handoff, {
-            ...handoffOptions,
-            source: 'submit-reviewed-handoff'
-          });
+        result = await acceptReviewedHandoff(config, ledger, handoff, {
+          ...handoffOptions,
+          source: 'submit-reviewed-handoff'
+        });
         break;
       }
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;

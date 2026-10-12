@@ -318,7 +318,7 @@ run. The ignored `*.local.json` name prevents the local receipt from entering
 the package. The command complements required CI and branch protection; it does
 not merge or alter the PR.
 
-### Authorized downstream E2E
+### Authorized reviewed-handoff submission
 
 The versioned `ReviewedHandoff` receipt is an upstream review decision, not a
 second review implementation. It carries explicit source-neutral fixture
@@ -327,22 +327,21 @@ repository capability. `src/reviewed-handoff.js` is the production controller
 boundary: it validates the receipt, materializes linked ledger records
 idempotently, invokes normal planning/routing/assignment and dispatch, and owns
 all repository side effects. `submit-reviewed-handoff` is the production-named
-thin CLI boundary; it does not add orchestration or model permissions.
-`src/downstream-e2e.js` and the `downstream-e2e` command remain compatibility
-adapters for the deterministic E2E.
+thin CLI boundary; it does not add orchestration or model permissions. Tests
+invoke this same controller API and CLI rather than a separate E2E adapter.
 
 Prepare the handoff without launching a worker or creating repository effects:
 
 ```powershell
-npm run submit:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
+npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --prepare
 ```
 
-An authorized operator may run the real downstream repository path only after
+An authorized operator may run the real reviewed-handoff repository path only after
 setup/qualification and separate acknowledgement of synthetic input, commit,
 push and Draft PR effects:
 
 ```powershell
-npm run submit:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
+npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
@@ -362,7 +361,7 @@ clearly marked failed Draft PR under the configured policy. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
 network access, push or PR creation.
 
-`test/fixtures/downstream-e2e/validation-repair-drill.json` is the deterministic
+`test/fixtures/reviewed-handoff/validation-repair-drill.json` is the deterministic
 failed-to-passed fixture. Its first revision intentionally fails the repository
 gate; the next skill round consumes controller diagnostics, changes only the
 failing test, and is committed and validated as a distinct passing revision.

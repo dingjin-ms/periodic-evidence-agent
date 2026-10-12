@@ -7,23 +7,20 @@ import { spawnSync } from 'node:child_process';
 import { configAt, hash } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
-  prepareReviewedHandoffE2E, runReviewedHandoffE2E, validateReviewedHandoff
-} from '../src/downstream-e2e.js';
-import {
-  acceptReviewedHandoff, prepareReviewedHandoff
+  acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import { dispatch, command } from '../src/workers.js';
 import { skillQualificationId } from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
-  new URL('./fixtures/downstream-e2e/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
+  new URL('./fixtures/reviewed-handoff/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
   'utf8'));
 const repairDrill = JSON.parse(readFileSync(
-  new URL('./fixtures/downstream-e2e/validation-repair-drill.json', import.meta.url),
+  new URL('./fixtures/reviewed-handoff/validation-repair-drill.json', import.meta.url),
   'utf8'));
 
 async function setup(t) {
-  const root = mkdtempSync(join(tmpdir(), 'downstream-e2e-'));
+  const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
   const state = join(root, 'state');
@@ -54,7 +51,7 @@ async function setup(t) {
     projectId: 'fixture-project',
     owner: 'fixture-owner',
     routingApproved: true,
-    routingRules: ['Reviewed downstream E2E'],
+    routingRules: ['Reviewed handoff integration'],
     referenceCheckout: reference,
     baseRef: 'HEAD',
     remote,
@@ -101,7 +98,7 @@ async function setup(t) {
 
 test('reviewed handoff fixture prepares real planning and assignment records', async t => {
   const { config, ledger, baseRevision } = await setup(t);
-  const prepared = prepareReviewedHandoffE2E(config, ledger, fixture);
+  const prepared = prepareReviewedHandoff(config, ledger, fixture);
   assert.equal(prepared.evidence.source.kind, 'fixture');
   assert.equal(prepared.evidence.source.provenance, 'synthetic');
   assert.equal(prepared.investigation.handoffEligibility, 'eligible');
@@ -112,14 +109,11 @@ test('reviewed handoff fixture prepares real planning and assignment records', a
   assert.equal(prepared.job.state, 'prepared');
 });
 
-test('downstream adapter delegates to the production reviewed-handoff controller', async t => {
+test('reviewed handoff production API is the only controller path', async t => {
   const { config, ledger } = await setup(t);
   assert.equal(typeof prepareReviewedHandoff, 'function');
   assert.equal(typeof acceptReviewedHandoff, 'function');
-  const source = readFileSync(new URL('../src/downstream-e2e.js', import.meta.url), 'utf8');
-  assert.match(source, /from '.\/reviewed-handoff\.js'/);
-  assert.doesNotMatch(source, /ledger\.|recordType|planImprovement|exclusionsChecked/);
-  const prepared = prepareReviewedHandoffE2E(config, ledger, fixture);
+  const prepared = prepareReviewedHandoff(config, ledger, fixture);
   assert.equal(prepared.receipt.id, fixture.id);
 });
 
@@ -169,7 +163,7 @@ test('stale or conflicting reviewed handoff versions fail closed', async t => {
 test('reviewed handoff requires the complete exclusion checklist', () => {
   const invalid = structuredClone(fixture);
   invalid.review.exclusionsChecked.pop();
-  assert.throws(() => validateReviewedHandoff(invalid), /reviewedHandoff|exclusion/);
+  assert.throws(() => validateReviewedHandoffReceipt(invalid), /reviewedHandoff|exclusion/);
 });
 
 test('invalid fixture provenance is rejected before ledger materialization', async t => {
@@ -184,7 +178,7 @@ test('invalid fixture provenance is rejected before ledger materialization', asy
 
 test('ordinary dispatch still rejects reviewed synthetic fixture evidence', async t => {
   const { config, ledger } = await setup(t);
-  const prepared = prepareReviewedHandoffE2E(config, ledger, fixture);
+  const prepared = prepareReviewedHandoff(config, ledger, fixture);
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   await assert.rejects(dispatch(config, ledger, prepared.assignment.id), /Synthetic evidence/);
@@ -208,7 +202,7 @@ test('execution authorization is required before reviewed fixture state is persi
       authorizeDraftPR: true,
       [missing]: false
     };
-    await assert.rejects(runReviewedHandoffE2E(config, ledger, fixture, options),
+    await assert.rejects(acceptReviewedHandoff(config, ledger, fixture, options),
       new RegExp(expected));
     assert.equal(ledger.latestEvidence().length, 0);
   }
@@ -218,7 +212,7 @@ test('repository binding must authorize commit push and Draft PR independently',
   for (const sideEffect of ['commit', 'push', 'createDraftPR']) {
     const { config, ledger } = await setup(t);
     config.repositories[0].skillBindings[0].sideEffects[sideEffect] = false;
-    await assert.rejects(runReviewedHandoffE2E(config, ledger, fixture, {
+    await assert.rejects(acceptReviewedHandoff(config, ledger, fixture, {
       execute: true,
       authorizeSynthetic: true,
       authorizeCommit: true,
@@ -230,18 +224,16 @@ test('repository binding must authorize commit push and Draft PR independently',
 });
 
 test('production reviewed-handoff controller is repository and scenario neutral', () => {
-  for (const path of ['../src/reviewed-handoff.js', '../src/downstream-e2e.js']) {
-    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /office-agent|oa-integration|onenote/i);
-  }
+  const source = readFileSync(new URL('../src/reviewed-handoff.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /office-agent|oa-integration|onenote/i);
 });
 
-test('authorized downstream E2E reuses real dispatch with external boundaries injected', async t => {
+test('authorized reviewed handoff reuses real dispatch with external boundaries injected', async t => {
   const { root, remote, config, ledger } = await setup(t);
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   await command('git', ['init', '--bare', '--quiet', remote], root);
-  const executed = await runReviewedHandoffE2E(config, ledger, fixture, {
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
     authorizeSynthetic: true,
     authorizeCommit: true,
@@ -256,9 +248,9 @@ test('authorized downstream E2E reuses real dispatch with external boundaries in
           "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n");
         toolkit.finish({
           outcome: 'propose-change',
-          findings: 'Added focused fixture coverage through the real downstream controller.',
+          findings: 'Added focused fixture coverage through the real reviewed-handoff controller.',
           title: 'Add fixture behavior coverage',
-          description: 'Authorized synthetic downstream E2E draft.',
+          description: 'Authorized synthetic reviewed-handoff draft.',
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',
@@ -271,7 +263,7 @@ test('authorized downstream E2E reuses real dispatch with external boundaries in
         });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
-        url: 'https://example.invalid/downstream-e2e/draft/1',
+        url: 'https://example.invalid/reviewed-handoff/draft/1',
         isDraft: true,
         headRevision: revision
       })
@@ -290,7 +282,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
   config.limits.maxValidationRepairRounds = 2;
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
-  const executed = await runReviewedHandoffE2E(config, ledger, fixture, {
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
     authorizeSynthetic: true,
     authorizeCommit: true,
@@ -314,12 +306,12 @@ test('controller validation failures feed a bounded repository-skill repair loop
           outcome: 'propose-change',
           findings: round.findings,
           title: round.title,
-          description: 'Authorized synthetic downstream E2E draft.',
+          description: 'Authorized synthetic reviewed-handoff draft.',
           skillResult: repairDrill.skillResult
         });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
-        url: 'https://example.invalid/downstream-e2e/draft/repair',
+        url: 'https://example.invalid/reviewed-handoff/draft/repair',
         isDraft: true,
         headRevision: revision
       })
@@ -343,7 +335,7 @@ test('zero repair budget preserves an explicit failed Draft PR outcome', async t
   config.limits.maxValidationRepairRounds = 0;
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
-  const executed = await runReviewedHandoffE2E(config, ledger, fixture, {
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
     authorizeSynthetic: true,
     authorizeCommit: true,
@@ -360,7 +352,7 @@ test('zero repair budget preserves an explicit failed Draft PR outcome', async t
           outcome: 'propose-change',
           findings: 'Added initial focused fixture coverage.',
           title: 'Add failing fixture behavior coverage',
-          description: 'Authorized synthetic downstream E2E draft.',
+          description: 'Authorized synthetic reviewed-handoff draft.',
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',
@@ -373,7 +365,7 @@ test('zero repair budget preserves an explicit failed Draft PR outcome', async t
         });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
-        url: 'https://example.invalid/downstream-e2e/draft/failed',
+        url: 'https://example.invalid/reviewed-handoff/draft/failed',
         isDraft: true,
         headRevision: revision
       })
@@ -393,7 +385,7 @@ test('blocked validation prevents repair push and Draft PR creation', async t =>
   let modelCalls = 0;
   let pushed = false;
   let draftCreated = false;
-  await assert.rejects(runReviewedHandoffE2E(config, ledger, fixture, {
+  await assert.rejects(acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
     authorizeSynthetic: true,
     authorizeCommit: true,
@@ -409,7 +401,7 @@ test('blocked validation prevents repair push and Draft PR creation', async t =>
           outcome: 'propose-change',
           findings: 'Added focused fixture coverage.',
           title: 'Add fixture behavior coverage',
-          description: 'Authorized synthetic downstream E2E draft.',
+          description: 'Authorized synthetic reviewed-handoff draft.',
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',

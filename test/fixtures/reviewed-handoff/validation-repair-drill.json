@@ -3,7 +3,7 @@
   "rounds": [
     {
       "expectedFeedbackStatus": null,
-      "findings": "Added an intentionally failing first revision for the deterministic controller repair drill.",
+      "findings": "Added an intentionally failing first revision for the deterministic reviewed-handoff controller repair drill.",
       "title": "Add fixture behavior coverage",
       "writes": {
         "test/behavior.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 2));\n",

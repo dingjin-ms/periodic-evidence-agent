@@ -4,7 +4,8 @@ import { Ledger } from './ledger.js';
 import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
-import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment } from './workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment, reconcileHostedAssignment } from './workers.js';
+import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordAgencySubmission, activeWorkerCount } from './agency-executor.js';
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
@@ -590,21 +591,24 @@ export function appWorker(config, ledger, runId, action, input) {
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
       ['authenticated-source', 'app-tool-reported', 'workiq-cli-verified'].includes(ledger.get('evidence', id).source.provenance) &&
       !ledger.trackedState(ledger.get('evidence', id))), 'Stale, synthetic or reconciled evidence cannot dispatch');
+    if (assignment.execution === 'hosted') requireAgencyQualification(config, ledger, agencyTaskId(assignment));
     return ledger.transaction(() => {
       const job = ledger.prepare(assignment, { bucket: json(run.window), maxNew: config.limits.maxAssignments });
       const value = { id: job.id, agentId: `repo-owner:${job.repo}`, coordinatorAgentId: run.agentId,
-        state: 'prepared', projectId: config.repositories.find(r => r.id === job.repo).projectId,
-        repoId: job.repo, runId, assignment, sessionId: null, claimId: null, execution: 'external-app-native-session' };
-      requireThat(value.projectId, 'Native repository project binding is missing');
+        state: 'prepared', projectId: assignment.execution === 'hosted' ? null : config.repositories.find(r => r.id === job.repo).projectId,
+        repoId: job.repo, runId, assignment, sessionId: null, claimId: null,
+        execution: assignment.execution === 'hosted' ? 'agency' : 'external-app-native-session' };
+      requireThat(assignment.execution === 'hosted' || value.projectId, 'Native repository project binding is missing');
       ledger.db.prepare('INSERT OR IGNORE INTO app_workers VALUES(?,?)').run(job.id, json(value));
       return worker(ledger, job.id);
     });
   }
   return ledger.transaction(() => {
     object(input, ['assignmentId', 'claimId', 'coordinatorAgentId', 'sessionId', 'projectId', 'workspace',
-      'baseRevision', 'outcome', 'evidenceRef'], ['assignmentId', 'claimId']);
+      'baseRevision', 'outcome', 'evidenceRef', 'agencyRequest', 'agencySubmission', 'agencyResult'], ['assignmentId', 'claimId']);
     identifier(input.claimId);
     const value = worker(ledger, input.assignmentId);
+    const before = value.state;
     requireThat(value.runId === runId, 'Assignment belongs to another app run');
     if (action === 'claim') {
       requireThat(input.coordinatorAgentId === run.agentId, 'Only configured coordinator agent may claim');
@@ -614,15 +618,46 @@ export function appWorker(config, ledger, runId, action, input) {
       requireThat(current?.version === value.assignment.investigationVersion &&
         !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before native claim', 'blocked-reconciliation');
       requireCurrentAssignment(config, ledger, current, value.assignment);
+      if (value.execution === 'agency') requireAgencyQualification(config, ledger, agencyTaskId(value.assignment));
       const latest = new Set(ledger.latestEvidence().map(e => e.id));
       requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
         !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before native claim', 'blocked-reconciliation');
-      const active = ledger.db.prepare("SELECT COUNT(*) n FROM app_workers WHERE json_extract(body,'$.state') IN ('claimed','running','uncertain')").get().n;
+      const active = activeWorkerCount(ledger);
       requireThat(active < config.limits.maxWorkers, 'Concurrent native worker cap reached', 'blocked-budget');
       value.state = 'claimed'; value.claimId = input.claimId;
     } else {
       requireThat(value.claimId === input.claimId, 'Native assignment claim does not match', 'overlap');
-      if (action === 'bind') {
+      if (value.execution === 'agency') {
+        const taskId = agencyTaskId(value.assignment);
+        if (action === 'agency-reserve') {
+          requireThat(value.state === 'claimed', 'Only a freshly claimed Agency assignment may reserve a request');
+          const current = ledger.get('investigation', value.assignment.investigationId);
+          requireThat(current?.version === value.assignment.investigationVersion &&
+            !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before Agency reservation');
+          requireCurrentAssignment(config, ledger, current, value.assignment);
+          const latest = new Set(ledger.latestEvidence().map(e => e.id));
+          requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
+            !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before Agency reservation');
+          const reserved = reserveAgencyRequest(config, ledger, taskId, input.agencyRequest);
+          value.state = 'uncertain';
+          value.requestSha256 = reserved.requestSha256;
+          value.agencyTaskId = taskId;
+          value.resubmitAllowed = false;
+        } else if (action === 'agency-submission') {
+          requireThat(['uncertain', 'running', 'blocked'].includes(value.state), 'Agency submission requires a prior reservation');
+          const recorded = recordAgencySubmission(ledger, taskId, input.agencySubmission);
+          value.providerJobId = recorded.submission.jobId;
+          value.state = recorded.submissionState === 'accepted' ? 'running' :
+            recorded.submissionState === 'rejected' ? 'blocked' : 'uncertain';
+        } else if (action === 'agency-result') {
+          const result = reconcileHostedAssignment(ledger, value.id, input.agencyResult);
+          value.state = result.verdict.state;
+          value.validationQualified = result.verdict.validationQualified;
+          value.agencyVerdict = result.verdict;
+          value.result = { outcome: result.result.outcome, evidenceRef: result.result.id };
+          return saveWorker(ledger, value);
+        } else requireThat(false, 'Agency assignments cannot bind or finish through local session/workspace actions');
+      } else if (action === 'bind') {
         identifier(input.sessionId);
         const repo = config.repositories.find(r => r.id === value.repoId);
         requireThat(input.projectId === value.projectId && isAbsolute(input.workspace) &&
@@ -656,8 +691,8 @@ export function appWorker(config, ledger, runId, action, input) {
         value.state = 'uncertain';
       } else requireThat(false, 'Unknown native worker action');
     }
-    ledger.db.prepare('UPDATE jobs SET state=?,session_id=COALESCE(?,session_id),updated_at=? WHERE id=?')
-      .run(value.state, value.sessionId, now(), value.id);
+    ledger.moveJob(value.id, before, value.state);
+    if (value.sessionId) ledger.db.prepare('UPDATE jobs SET session_id=? WHERE id=?').run(value.sessionId, value.id);
     return saveWorker(ledger, value);
   });
 }

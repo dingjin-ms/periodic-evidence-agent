@@ -3,6 +3,8 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { hash, json, now, readJson, requireThat, windowCheck } from './common.js';
+import { validateTitleScreen } from './filter.js';
+import { bindFilterConsolidation } from './filter-batches.js';
 
 export const coverageSkillName = 'analyze-excel-agent-test-coverage';
 const classifications = ['already covered', 'extend existing test', 'new integration/E2E scenario',
@@ -50,7 +52,7 @@ function pinMatches(actual, expected) {
     realpathSync(actual.path) === realpathSync(expected.path) &&
     realpathSync(actual.referencePath) === realpathSync(expected.referencePath);
 }
-function sourceSnapshot(source) {
+function sourceSnapshot(source, retainedIds = null) {
   requireThat(text(source?.ledgerPath) && text(source.runId) && existsSync(source.ledgerPath),
     'Stage2 source requires an existing ledgerPath and runId', 'invalid-record');
   const path = realpathSync(source.ledgerPath), db = new DatabaseSync(path, { readOnly: true });
@@ -60,7 +62,10 @@ function sourceSnapshot(source) {
     const data = JSON.parse(run.body);
     const passes = db.prepare('SELECT pass,body FROM app_passes WHERE run_id=? ORDER BY pass').all(source.runId);
     const observations = db.prepare(`SELECT DISTINCT r.body FROM records r JOIN observations o ON o.evidence_id=r.id
-      WHERE r.kind='evidence' AND substr(o.run_id,1,length(?)+1)=?||':' ORDER BY r.id`).all(source.runId, source.runId);
+      WHERE r.kind='evidence' AND substr(o.run_id,1,length(?)+1)=?||':'
+      AND (? IS NULL OR r.id IN (SELECT value FROM json_each(?))) ORDER BY r.id`)
+      .all(source.runId, source.runId, retainedIds === null ? null : json(retainedIds),
+        retainedIds === null ? null : json(retainedIds));
     const evidenceRefs = observations.map(row => {
       const e = JSON.parse(row.body);
       const capture = db.prepare('SELECT body FROM captures WHERE hash=?').get(e.capture.sha256);
@@ -84,11 +89,25 @@ export function prepareStage2(config, input, outputPath) {
   requireThat(config.statePolicy.accessApproved, 'Private handoff storage approval required');
   requireThat(input?.format === 'stage2-sources-v1' && Array.isArray(input.sources) && input.sources.length > 0,
     'Stage2 requires explicit source-ledger manifest', 'invalid-record');
-  const skill = installedCoverageSkill(config), sources = input.sources.map(sourceSnapshot);
+  requireThat(!(input.titleScreen && input.batchReview), 'Select one FILTER review binding', 'invalid-record');
+  const batchReview = input.batchReview ? bindFilterConsolidation(config, input.batchReview) : null;
+  if (batchReview) requireThat(json(input.sources) === json(batchReview.sources),
+    'Stage2 sources differ from FILTER batch sources', 'invalid-record');
+  const screening = input.titleScreen ? validateTitleScreen(config, input.titleScreen.indexPath,
+    input.titleScreen.decisionsPath) : null;
+  if (screening) requireThat(json(input.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
+    json(screening.index.sources.map(s => [s.ledgerPath, s.runId])),
+  'Stage2 sources differ from title-screen sources', 'invalid-record');
+  const skill = installedCoverageSkill(config),
+    sources = input.sources.map(source => sourceSnapshot(source, batchReview?.retainedIds ?? screening?.retainedIds ?? null));
   requireThat(new Set(sources.map(s => `${s.ledgerPath}:${s.runId}`)).size === sources.length,
     'Duplicate Stage2 source', 'invalid-record');
   const handoff = { format: 'stage2-handoff-v1', status: 'held-not-dispatched', dispatchAllowed: false,
-    skill, sources, instructions: [
+    skill, sources, ...(batchReview ? { batchReview } : {}), ...(screening ? { titleScreen: { indexPath: resolve(input.titleScreen.indexPath),
+      decisionsPath: resolve(input.titleScreen.decisionsPath), indexSha256: screening.indexSha256,
+      decisionsSha256: screening.decisionsSha256, retainedIds: screening.retainedIds } } : {}), instructions: [
+      'Agent 2 FILTER uses loose title/identity/policy reasoning with full-record batches; selective title helpers are optional.',
+      'Read full retained evidence before RCA/coverage; screened-out titles remain audit-only, not proposer candidates.',
       `Before evidence-to-test classification, invoke installed skill ${coverageSkillName}.`,
       `Read pinned ${skill.path} and ${skill.referencePath}; verify both hashes and follow the complete procedure.`,
       'Missing or changed skill/reference is blocked-skill, not permission to infer procedure from session history.',
@@ -115,8 +134,23 @@ export function checkStage2Proposal(config, proposal, handoff) {
     handoff.dispatchAllowed === false && Array.isArray(handoff.sources) && handoff.sources.length > 0,
   'Invalid held Stage2 handoff', 'invalid-record');
   requireThat(pinMatches(skill, handoff.skill), 'Handoff skill/reference changed; prepare a new held handoff', 'blocked-skill');
+  requireThat(!(handoff.titleScreen && handoff.batchReview), 'Conflicting FILTER bindings', 'invalid-record');
+  const batchReview = handoff.batchReview ? bindFilterConsolidation(config, handoff.batchReview) : null;
+  if (batchReview) requireThat(json(batchReview) === json(handoff.batchReview),
+    'FILTER batch consolidation changed', 'blocked-reconciliation');
+  if (batchReview) requireThat(json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
+    json(batchReview.sources.map(s => [realpathSync(s.ledgerPath), s.runId])),
+  'Stage2 sources differ from FILTER batch sources', 'blocked-reconciliation');
+  const screening = handoff.titleScreen ? validateTitleScreen(config, handoff.titleScreen.indexPath,
+    handoff.titleScreen.decisionsPath) : null;
+  if (screening) requireThat(screening.indexSha256 === handoff.titleScreen.indexSha256 &&
+    screening.decisionsSha256 === handoff.titleScreen.decisionsSha256 &&
+    json(screening.retainedIds) === json(handoff.titleScreen.retainedIds) &&
+    json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
+      json(screening.index.sources.map(s => [s.ledgerPath, s.runId])),
+  'Stage2 title screening changed', 'blocked-reconciliation');
   const sources = handoff.sources.map(source => {
-    const current = sourceSnapshot(source);
+    const current = sourceSnapshot(source, batchReview?.retainedIds ?? screening?.retainedIds ?? null);
     requireThat(current.snapshotSha256 === source.snapshotSha256, 'Source changed since handoff; prepare a new snapshot', 'invalid-record');
     return current;
   });
@@ -124,6 +158,8 @@ export function checkStage2Proposal(config, proposal, handoff) {
     proposal.status === 'held-not-dispatched' && proposal.dispatchAllowed === false &&
     Array.isArray(proposal.candidates) && proposal.replay && proposal.examinedScope,
   'Invalid held Stage2 proposal', 'invalid-record');
+  if (batchReview) requireThat(proposal.candidates.length <= (batchReview.selected ? 1 : 0),
+    'Batch consolidation permits at most one selected proposer candidate', 'invalid-record');
   requireThat(proposal.skill && pinMatches(skill, proposal.skill),
     'Proposal must pin the required installed skill and reference', 'blocked-skill');
   const cohort = proposal.replay.cohort?.window;
@@ -137,6 +173,14 @@ export function checkStage2Proposal(config, proposal, handoff) {
   'Proposal requires verified index and exact-ref baselines', 'invalid-record');
   const candidates = new Set(), candidateGates = [];
   for (const c of proposal.candidates) {
+    if (batchReview) {
+      const selected = batchReview.selected;
+      requireThat(c.filterCandidateKey === selected.key &&
+        c.target?.repository === selected.definition.repository &&
+        c.target?.inspectedRef === selected.definition.sourceRevision &&
+        c.missingAssertion === selected.definition.missingAssertion,
+      'Proposal differs from selected FILTER candidate', 'blocked-reconciliation');
+    }
     requireThat(text(c.id) && !candidates.has(c.id) && classifications.includes(c.classification) &&
       Array.isArray(c.evidenceRefs) && c.evidenceRefs.length > 0 && c.behavior &&
       c.dispatchAllowed === false && typeof c.behavior.runtimeReproduced === 'boolean' &&

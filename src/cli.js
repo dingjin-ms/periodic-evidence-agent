@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { configAt, readJson, safeError, requireThat } from './common.js';
 import { Ledger } from './ledger.js';
 import { collect, acceptReview, reviewPending, route, report, reconcile, tick, runOnce, nextDailyWake } from './coordinator.js';
@@ -10,17 +12,22 @@ import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appR
 import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
 import { persistIcmReplay } from './icm-replay.js';
 import { prepareStage2, checkStage2Files } from './stage2.js';
+import { prepareTitleIndex, materializeTitleScreen } from './filter.js';
+import { prepareFilterBatches, sizeFilterGroups, checkFilterBatchFiles, consolidateFilterBatches } from './filter-batches.js';
+import { reconcileFilterExecutionCohort } from './filter-execution.js';
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
+import { acceptFilterProposerHandoff } from './filter-handoff.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
-  ['setup', 'bootstrap-repo', 'submit-reviewed-handoff'].includes(action) ? 'pilot.local.json' : 'pilot.example.json';
+  ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff'].includes(action)
+    ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
 }
@@ -42,6 +49,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
+  node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --prepare
+  node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --execute --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -74,6 +83,13 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-thread-context --run ID --pass workiq:created|workiq:changed
   node src\\cli.js icm-replay --file receipt-bundle.json --config pilot.local.json
   node src\\cli.js stage2-handoff --file source-ledgers.json --output private-handoff.json
+  node src\\cli.js filter-title-index --file source-ledgers.json --output private-titles.json
+  node src\\cli.js filter-title-materialize --file title-decisions.json --index private-titles.json --output private-details.json
+  node src\\cli.js filter-batches --file batch-request.json --output private-batches.json
+  node src\\cli.js filter-batch-size --file batch-request.json --output private-sizes.json
+  node src\\cli.js filter-batch-check --file batch-result.json --manifest private-batches.json
+  node src\\cli.js filter-consolidate --file result-paths.json --manifest private-batches.json --output consolidation.json
+  node src\\cli.js filter-execution-check --file result-paths.json --manifest private-batches.json --ledger execution.sqlite
   node src\\cli.js stage2-proposal-check --file private-proposal.json --handoff private-handoff.json
   node src\\cli.js app-review --run ID --production --file review.json
   node src\\cli.js app-plan-improvement --run ID --production --file improvement-plan.json
@@ -140,7 +156,9 @@ try {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
-    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check'].includes(action))
+    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check',
+      'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
+      'filter-batch-check', 'filter-consolidate', 'filter-execution-check'].includes(action))
       ledger = new Ledger(config.stateDirectory);
     if (appAction && !['app-begin', 'app-runs', 'app-workiq-continue'].includes(action)) {
       requireThat(option('--run'), 'App commands require --run');
@@ -149,6 +167,43 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'filter-batch-size':
+        requireThat(option('--output'), 'Batch measurement requires --output');
+        result = sizeFilterGroups(config, input(), option('--output')); break;
+      case 'filter-batches':
+        requireThat(option('--output'), 'Batch preparation requires --output');
+        result = await prepareFilterBatches(config, input(), option('--output')); break;
+      case 'filter-batch-check':
+        requireThat(option('--file') && option('--manifest'), 'Batch check requires --file and --manifest');
+        result = checkFilterBatchFiles(config, option('--manifest'), option('--file')); break;
+      case 'filter-consolidate': {
+        requireThat(option('--manifest') && option('--output'), 'Consolidation requires --manifest and --output');
+        const files = input();
+        requireThat(Array.isArray(files) && files.every(p => typeof p === 'string'),
+          'Consolidation --file must contain an array of result paths');
+        result = consolidateFilterBatches(config, readJson(option('--manifest')),
+          files.map(p => readJson(resolve(p))), option('--output')); break;
+      }
+      case 'filter-execution-check': {
+        requireThat(option('--manifest') && option('--ledger'), 'Execution check requires --manifest and --ledger');
+        const files = input();
+        requireThat(Array.isArray(files) && files.every(p => typeof p === 'string'),
+          'Execution check --file must contain an array of result paths');
+        const db = new DatabaseSync(resolve(option('--ledger')), { readOnly: true });
+        try {
+          result = reconcileFilterExecutionCohort(config, { db }, readJson(option('--manifest')),
+           files.map(p => readFileSync(resolve(p), 'utf8')),
+           option('--policy') ? readJson(option('--policy')) : null);
+        } finally { db.close(); }
+        break;
+      }
+      case 'filter-title-index':
+        requireThat(option('--output'), 'Title index requires an explicit private output path');
+        result = prepareTitleIndex(config, input(), option('--output')); break;
+      case 'filter-title-materialize':
+        requireThat(option('--file') && option('--index') && option('--output'),
+          'Title materialization requires --file, --index and --output');
+        result = materializeTitleScreen(config, option('--index'), option('--file'), option('--output')); break;
       case 'icm-replay':
         requireThat(!args.includes('--collect'), 'IcM replay is offline only; live timestamp contract is unresolved');
         result = persistIcmReplay(config, input()); break;
@@ -243,6 +298,17 @@ try {
         result = await acceptReviewedHandoff(config, ledger, handoff, {
           ...handoffOptions,
           source: 'submit-reviewed-handoff'
+        });
+        break;
+      }
+      case 'submit-filter-handoff': {
+        requireThat(args.includes('--prepare') !== args.includes('--execute'),
+          `${action} requires exactly one of --prepare or --execute`);
+        result = await acceptFilterProposerHandoff(config, ledger, input(), {
+          execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
         });
         break;
       }

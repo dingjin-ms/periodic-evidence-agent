@@ -10,6 +10,10 @@
     { "$ref": "#/$defs/testCoveragePlan" },
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/workerResult" },
+    { "$ref": "#/$defs/filterTitleDecisions" },
+    { "$ref": "#/$defs/filterBatchRequest" },
+    { "$ref": "#/$defs/filterBatchResult" },
+    { "$ref": "#/$defs/filterProposerHandoff" },
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/reviewedHandoff" },
     { "$ref": "#/$defs/examples" }
@@ -491,6 +495,32 @@
         }
       }
     },
+    "filterProposerHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "filter", "routing"],
+      "properties": {
+        "format": { "const": "filter-proposer-handoff-v1" },
+        "filter": {
+          "type": "object", "additionalProperties": false,
+          "required": ["manifestPath", "resultPaths"],
+          "properties": {
+            "manifestPath": { "$ref": "#/$defs/text" },
+            "resultPaths": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/text" }
+            }
+          }
+        },
+        "routing": {
+          "type": "object", "additionalProperties": false,
+          "required": ["capability"],
+          "properties": {
+            "capability": { "$ref": "#/$defs/text" },
+            "requestedOutcome": { "$ref": "#/$defs/text" }
+          }
+        }
+      }
+    },
     "areaToImprove": {
       "type": "object", "additionalProperties": false,
       "required": ["recordType", "schemaVersion", "id", "version", "aggregationKey", "investigationIds", "evidenceIds", "category", "state", "observedBehavior", "expectedBehavior", "rationale", "priority", "repoIds", "capabilities", "createdAt", "updatedAt"],
@@ -672,6 +702,112 @@
           }
         }
       ]
+    },
+    "filterTitleDecisions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "indexSha256", "reviewer", "reviewedAt", "decisions"],
+      "properties": {
+        "format": { "const": "filter-title-decisions-v1" },
+        "indexSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "reviewer": { "$ref": "#/$defs/text" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["evidenceId", "source", "captureSha256", "disposition", "exclusionType", "reason", "titleQuote"],
+            "properties": {
+              "evidenceId": { "$ref": "#/$defs/text" },
+              "source": {
+                "type": "object", "additionalProperties": false,
+                "required": ["kind", "namespace", "recordId", "revision", "versionBasis"],
+                "properties": {
+                  "kind": { "enum": ["ado", "icm", "workiq"] },
+                  "namespace": { "$ref": "#/$defs/text" },
+                  "recordId": { "$ref": "#/$defs/text" },
+                  "revision": { "$ref": "#/$defs/nullableText" },
+                  "versionBasis": { "$ref": "#/$defs/text" }
+                }
+              },
+              "captureSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "disposition": { "enum": ["likely-relevant", "needs-details", "no-title", "screen-out"] },
+              "exclusionType": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/exclusion" }] },
+              "reason": { "$ref": "#/$defs/text" },
+              "titleQuote": { "$ref": "#/$defs/nullableText" }
+            }
+          }
+        }
+      }
+    },
+    "filterBatchRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "sources", "instructions", "groups", "groupingReview", "sharing"],
+      "properties": {
+        "format": { "const": "filter-batch-request-v1" },
+        "sources": { "type": "array", "minItems": 1, "items": {
+          "type": "object", "additionalProperties": false, "required": ["ledgerPath", "runId"],
+          "properties": { "ledgerPath": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" } }
+        } },
+        "instructions": { "$ref": "#/$defs/text" },
+        "groups": { "type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["id", "memberIds", "contextIds", "reason"],
+          "properties": { "id": { "$ref": "#/$defs/text" }, "memberIds": { "$ref": "#/$defs/texts" },
+            "contextIds": { "$ref": "#/$defs/texts" }, "reason": { "$ref": "#/$defs/text" } }
+        } },
+        "groupingReview": { "type": "object", "additionalProperties": false,
+          "required": ["reviewer", "reviewedAt", "rationale"],
+          "properties": { "reviewer": { "$ref": "#/$defs/text" }, "reviewedAt": { "$ref": "#/$defs/utc" },
+            "rationale": { "$ref": "#/$defs/text" } } },
+        "sharing": { "type": "object", "additionalProperties": false,
+          "required": ["audience", "approvalRef", "materials"],
+          "properties": { "audience": { "$ref": "#/$defs/text" }, "approvalRef": { "$ref": "#/$defs/text" },
+            "materials": { "type": "array", "items": {
+              "type": "object", "additionalProperties": false, "required": ["sha256", "eligibility", "restrictions"],
+              "properties": { "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "eligibility": { "enum": ["approved", "unknown", "denied"] },
+                "restrictions": { "$ref": "#/$defs/texts" } }
+            } } }
+        }
+      }
+    },
+    "filterBatchResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "cohortId", "batchId", "payloadSha256", "status", "titles", "details", "candidates"],
+      "properties": {
+        "format": { "const": "filter-batch-result-v1" },
+        "cohortId": { "$ref": "#/$defs/text" }, "batchId": { "$ref": "#/$defs/text" },
+        "payloadSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "status": { "enum": ["complete", "partial", "failed", "blocked"] },
+        "titles": { "$ref": "#/$defs/filterTitleDecisions" },
+        "details": { "type": "array", "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["evidenceId", "recordSha256", "captureSha256", "status", "reason"],
+          "properties": { "evidenceId": { "$ref": "#/$defs/text" },
+            "recordSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "captureSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "status": { "enum": ["reviewed", "excluded-title", "pending", "blocked"] },
+            "reason": { "$ref": "#/$defs/text" } }
+        } },
+        "candidates": { "type": "array", "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "evidenceIds", "repository", "sourceRevision", "layer", "missingAssertion",
+            "existingCoverage", "harness", "coverageStatus", "blockers", "priority", "confidence", "rationale"],
+          "properties": {
+            "id": { "$ref": "#/$defs/text" }, "evidenceIds": { "$ref": "#/$defs/texts" },
+            "repository": { "$ref": "#/$defs/text" },
+            "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+            "layer": { "enum": ["unit", "integration", "e2e"] },
+            "missingAssertion": { "$ref": "#/$defs/text" },
+            "existingCoverage": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+            "harness": { "$ref": "#/$defs/text" },
+            "coverageStatus": { "enum": ["gap", "covered", "unknown"] },
+            "blockers": { "$ref": "#/$defs/texts" },
+            "priority": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "rationale": { "$ref": "#/$defs/text" }
+          }
+        } }
+      }
     },
     "validation": {
       "type": "object", "additionalProperties": false,

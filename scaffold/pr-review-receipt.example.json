@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "reviewedHead": "0000000000000000000000000000000000000000",
+  "reviewedBase": "0000000000000000000000000000000000000000",
+  "reviewedAt": "2026-10-12T00:00:00.000Z",
+  "reviewer": "replace-with-reviewer-or-session",
+  "outcome": "no-blocking-findings",
+  "findings": [],
+  "validation": [
+    {
+      "name": "npm test",
+      "state": "passed"
+    }
+  ],
+  "residualRisks": []
+}

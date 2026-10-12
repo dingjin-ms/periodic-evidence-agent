@@ -14,6 +14,7 @@ import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
+import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
@@ -35,6 +36,8 @@ function failedOutcome(result) {
 const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
+  node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
+  node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -103,6 +106,25 @@ try {
       searchRoots: options('--search-root'),
       cloneRoot: option('--clone-root'),
       allowClone: true
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'pr-review-publish') {
+    requireThat(option('--repo') && option('--pr') && option('--file'),
+      'pr-review-publish requires --repo, --pr and --file');
+    const result = await publishReviewReceipt({
+      repository: option('--repo'),
+      number: Number(option('--pr')),
+      receipt: readJson(resolve(option('--file'))),
+      approveOtherAuthor: args.includes('--approve-other-author')
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'pr-review-verify') {
+    requireThat(option('--repo') && option('--pr'), 'pr-review-verify requires --repo and --pr');
+    const result = await verifyReviewReceipt({
+      repository: option('--repo'),
+      number: Number(option('--pr'))
     });
     console.log(JSON.stringify(result, null, 2));
   }

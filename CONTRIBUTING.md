@@ -44,6 +44,24 @@ unavailable source. A new connector, expanded scope, auth flow, validation
 runner, scheduler or permission grant requires explicit owner approval and its
 own qualification. A working offline demo does not authorize any of these.
 
+Before merge, review the final diff and publish a machine-readable receipt bound
+to the exact PR head and base commit SHAs. Start from
+`scaffold/pr-review-receipt.example.json`, replace both SHAs and all review
+details, then run:
+
+```powershell
+npm run pilot -- pr-review-publish --repo OWNER/REPO --pr NUMBER --file .\review-receipt.local.json
+npm run pilot -- pr-review-verify --repo OWNER/REPO --pr NUMBER
+```
+
+Publishing automatically comments only on a PR owned by the signed-in GitHub
+user. Commenting on another author's PR requires explicit approval and
+`--approve-other-author`. Any new push, base update or conflict resolution makes
+the prior receipt stale and requires another final-diff review. A receipt with
+blocking findings, failed validation or validation that was not run cannot pass
+verification. The `*.local.json` name keeps the local receipt out of Git.
+Passing CI is necessary but does not replace code review.
+
 Publication is an independent decision: see
 [the validation and sharing gate](README.md#validation-and-sharing-gate).
 No open-source license is supplied; confirm company requirements before

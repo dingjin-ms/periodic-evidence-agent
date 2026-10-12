@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-# PILOT_VALIDATION_PLAN: {"version":1,"stages":["dependencies","compile","policy","test"],"testOnlyPrefixes":["agents/office-agent/tests/integration/"],"lockfilePaths":["package.json","yarn.lock",".yarnrc.yml"],"buildConfigPaths":["lage.config.js","tsconfig.json","agents/office-agent/package.json","agents/office-agent/tsconfig.json","jest.config.js"],"preparedOutputPaths":[".yarn/install-state.gz"]}
+# PILOT_VALIDATION_PLAN: {"version":2,"stages":["dependencies","compile","policy","test"],"testOnlyPrefixes":["agents/office-agent/tests/integration/"],"lockfilePaths":["package.json","yarn.lock",".yarnrc.yml"],"buildConfigPaths":["lage.config.js","tsconfig.json","agents/office-agent/package.json","agents/office-agent/tsconfig.json","jest.config.js"],"dependencySnapshotPaths":["node_modules",".yarn/install-state.gz"],"preparedOutputPaths":["node_modules",".yarn/install-state.gz"]}
 
 $yarnCache = 'C:\.tools\.yarn'
 New-Item -ItemType Directory -Path $yarnCache -Force | Out-Null

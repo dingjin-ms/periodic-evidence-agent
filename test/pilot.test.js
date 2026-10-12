@@ -106,6 +106,8 @@ async function stagedValidationFixture(t) {
   writeFileSync(join(ctx.repo.referenceCheckout, 'package.json'), '{"packageManager":"fixture@1.0.0"}\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'fixture.lock'), 'locked\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'build.config.js'), 'export default {};\n');
+  mkdirSync(join(ctx.repo.referenceCheckout, 'src'), { recursive: true });
+  writeFileSync(join(ctx.repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
   mkdirSync(join(ctx.repo.referenceCheckout, 'test'));
   writeFileSync(join(ctx.repo.referenceCheckout, 'test', 'behavior.test.js'), 'pass\n');
   await ctx.g(['add', '.']);
@@ -115,11 +117,12 @@ async function stagedValidationFixture(t) {
   const current = { ...ctx.job, workspace: isolated.workspace };
   const profilePath = join(ctx.config.stateDirectory, 'staged-profile.mjs');
   const plan = {
-    version: 1,
+    version: 2,
     stages: ['dependencies', 'compile', 'policy', 'test'],
     testOnlyPrefixes: ['test/'],
     lockfilePaths: ['package.json', 'fixture.lock'],
     buildConfigPaths: ['build.config.js'],
+    dependencySnapshotPaths: ['.pilot/dependencies', '.pilot/install-state'],
     preparedOutputPaths: ['.pilot/install-state']
   };
   writeFileSync(profilePath, `// PILOT_VALIDATION_PLAN: ${JSON.stringify(plan)}\n`);
@@ -150,8 +153,16 @@ async function stagedValidationFixture(t) {
           code: 1, stdout: '', stderr: 'install failure'
         });
       mkdirSync(join(cwd, '.pilot'), { recursive: true });
+      mkdirSync(join(cwd, '.pilot', 'dependencies'), { recursive: true });
+      writeFileSync(join(cwd, '.pilot', 'dependencies', 'package.js'), 'dependency\n');
+      symlinkSync(join(cwd, 'src'), join(cwd, '.pilot', 'dependencies', 'source-link'),
+        process.platform === 'win32' ? 'junction' : 'dir');
       writeFileSync(join(cwd, '.pilot', 'install-state'), 'prepared\n');
     }
+    if (stage === 'compile')
+      assert.equal(
+        readFileSync(join(cwd, '.pilot', 'dependencies', 'source-link', 'value.js'), 'utf8'),
+        readFileSync(join(cwd, 'src', 'value.js'), 'utf8'));
     if (stage === 'policy' && behavior.transientPolicy && behavior.policyAttempts++ === 0)
       throw Object.assign(new Error('timeout'), {
         killed: true, code: null, stdout: '', stderr: 'timeout'
@@ -756,10 +767,10 @@ test('failed test-only revision repairs without repeating dependency or compile 
   assert.equal(ctx.calls.filter(stage => stage === 'policy').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'test').length, 2);
 });
-test('production and lockfile changes invalidate prepared validation', async t => {
-  for (const [path, content] of [
-    ['src/value.js', 'export const value = 2;\n'],
-    ['fixture.lock', 'changed\n']
+test('production changes reuse dependencies while lockfile changes invalidate them', async t => {
+  for (const [path, content, dependencyRuns] of [
+    ['src/value.js', 'export const value = 2;\n', 1],
+    ['fixture.lock', 'changed\n', 2]
   ]) {
     const ctx = await stagedValidationFixture(t);
     const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
@@ -768,8 +779,11 @@ test('production and lockfile changes invalidate prepared validation', async t =
     const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
       revision, ctx.execute, rmSync, prepared);
     assert.equal(result[0].status, 'passed');
-    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, dependencyRuns);
     assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+    assert.equal(artifact.telemetry.dependencyCache,
+      dependencyRuns === 1 ? 'hit' : 'miss');
   }
 });
 test('profile and toolchain drift invalidate prepared validation', async t => {
@@ -798,6 +812,22 @@ test('corrupt prepared receipt fails closed to full preparation', async t => {
   receipt.inputs.lockfileSha256 = '0'.repeat(64);
   writeFileSync(receiptPath, JSON.stringify(receipt));
   const revision = await ctx.commit('test/behavior.test.js', 'repair\n', 'Repair after corruption');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+test('corrupt dependency snapshot receipt reruns install and compile', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const receiptPath = prepared.staged.dependencyReceiptPath;
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  receipt.inputs.lockfileSha256 = '0'.repeat(64);
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Repair after dependency corruption');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
   assert.equal(result[0].status, 'passed');
@@ -853,7 +883,8 @@ test('staged preparation failures persist terminal validation evidence', async t
   assert.equal(result[0].attemptCount, 1);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 1);
-  assert.equal(artifact.telemetry.preparationTimings[0].id, 'dependencies');
+  assert.ok(artifact.telemetry.preparationTimings.some(stage =>
+    stage.id === 'dependencies'));
 });
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);

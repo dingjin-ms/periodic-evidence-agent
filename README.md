@@ -248,21 +248,27 @@ one `PILOT_VALIDATION_PLAN` JSON comment. The fixed stage contract is
 `dependencies`, `compile`, `policy`, then `test`; the controller selects the
 stage through `PILOT_VALIDATION_STAGE`, not through worker input. Before worker
 authoring it can prepare the pinned base revision in a controller-only
-workspace. The receipt binds the exact prepared revision, lockfiles, build
-configuration, profile hash, Node/Corepack/Yarn fingerprint and declared
-prepared outputs. Validation artifacts record checkout, preparation, policy,
-test and cleanup timings, Yarn resolution/fetch/link subphase timings when
-available, cache hit/miss state and the input fingerprint.
+workspace. Preparation has two independently auditable receipts. The
+dependency receipt is keyed by the lockfile inputs, profile hash and
+Node/Corepack/Yarn/platform fingerprint, not by source revision. A compile
+receipt binds an exact source revision and build configuration to that
+dependency receipt. Validation artifacts record dependency and compile cache
+hit/miss state plus checkout, dependency materialization, preparation, policy,
+test and cleanup timings; Yarn resolution/fetch/link subphase timings are
+included when available.
 
-Receipt reuse is deterministic and fail closed. A later revision may reuse
-dependency and compile stages only when every changed path is under the
-profile's test-only prefixes and all bound fingerprints still match. Production
-or build input changes, lockfile/profile/toolchain drift, missing outputs,
-corrupt receipts or ambiguous paths trigger a new clean preparation. A
-recoverable retry of the same revision reuses completed preparation but reruns
-policy and test stages. Prepared workspaces are serialized per receipt and
-source cleanliness plus declared outputs are rechecked after every run; the
-worker and repository skill cannot read, write or approve cache metadata.
+Receipt reuse is deterministic and fail closed. Each compile preparation starts
+from a fresh exact-revision source clone and receives a controller-made copy of
+the verified dependency snapshot; links whose targets are inside the snapshot
+workspace are rewritten to the corresponding fresh-checkout paths. Production
+or build input changes rerun compile but reuse dependencies. A later test-only
+revision may reuse both receipts. Lockfile/profile/toolchain drift, missing or
+corrupt snapshots and receipts, or ambiguous paths rerun dependency preparation
+and compile. A recoverable retry of the same revision reuses completed
+preparation but reruns policy and test. Snapshot and prepared workspaces are
+serialized per receipt and source cleanliness plus declared outputs are
+rechecked after every run; workers and repository skills cannot access, write
+or approve cache metadata.
 
 ## Safety invariants
 
@@ -379,14 +385,16 @@ receives shell, Git, network or PR permissions.
 After each authored revision, the controller commits it and runs the fixed
 approved validation gates at the exact commit. Profiles without a valid staged
 plan retain the original fresh temporary checkout for every attempt. Staged
-profiles use a controller-owned prepared workspace with immutable receipts and
-exclusive access; only deterministic test-only revisions may reuse expensive
-dependency and compile stages. The implementation deliberately retains
-`clone --no-hardlinks` for preparation: detached worktrees or shared-object
-clones reduce checkout cost but make a durable cache depend on another
-worktree's lifetime, while checkout is small beside dependency linking and
-compile. A runner cannot validate changes it made during execution: changed
-source or HEAD is blocked, and a changed prepared output invalidates the cache.
+profiles use separate controller-owned dependency snapshots and exact-revision
+compile workspaces with immutable receipts and exclusive access. A dependency
+snapshot can serve fresh source checkouts that share its lockfile, profile and
+toolchain fingerprints; only deterministic test-only revisions reuse compile
+outputs. The implementation retains `clone --no-hardlinks` for source
+preparation: detached worktrees or shared-object clones make a durable cache
+depend on another worktree's lifetime, while checkout is small beside
+dependency linking and compile. A runner cannot validate changes it made during
+execution: changed source or HEAD is blocked, and changed declared snapshot or
+prepared output invalidates the cache.
 Explicitly classified infrastructure blockers may receive at most
 `limits.maxValidationInfrastructureRetries` attempts; trust, profile-hash and
 policy failures are never auto-approved. A failed revision remains immutable validation

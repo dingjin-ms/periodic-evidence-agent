@@ -387,12 +387,24 @@
     },
     "reviewedHandoff": {
       "type": "object", "additionalProperties": false,
-      "required": ["format", "id", "version", "reviewedAt", "evidence", "review", "planning"],
+      "required": ["format", "id", "version", "reviewedAt", "source", "evidence", "review", "planning"],
       "properties": {
         "format": { "const": "reviewed-handoff-v1" },
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
         "version": { "type": "integer", "minimum": 1 },
         "reviewedAt": { "$ref": "#/$defs/utc" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "provenance", "namespace", "recordId", "revision"],
+          "properties": {
+            "kind": { "const": "fixture" },
+            "provenance": { "const": "synthetic" },
+            "namespace": { "type": "string", "pattern": "^reviewed-handoff/" },
+            "recordId": { "$ref": "#/$defs/text" },
+            "revision": { "$ref": "#/$defs/text" }
+          }
+        },
         "evidence": {
           "type": "object", "additionalProperties": false,
           "required": ["title", "summary", "fields"],
@@ -709,6 +721,23 @@
           ]
         },
         "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },
+        "validationAttempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["round", "sourceRevision", "validation"],
+            "properties": {
+              "round": { "type": "integer", "minimum": 0 },
+              "sourceRevision": { "$ref": "#/$defs/text" },
+              "validation": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/validation" }
+              }
+            }
+          }
+        },
         "skillExecution": {
           "anyOf": [
             { "type": "null" },

@@ -41,7 +41,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
   node src\\cli.js downstream-e2e --file reviewed-handoff.json --config pilot.local.json --prepare
-  node src\\cli.js downstream-e2e --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-draft-pr
+  node src\\cli.js downstream-e2e --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
@@ -235,6 +235,8 @@ try {
         result = await runReviewedHandoffE2E(config, ledger, input(), {
           execute: args.includes('--execute'),
           authorizeSynthetic: args.includes('--authorize-synthetic'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
           authorizeDraftPR: args.includes('--authorize-draft-pr')
         });
         break;

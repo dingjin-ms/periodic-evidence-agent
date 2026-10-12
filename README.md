@@ -310,10 +310,13 @@ not merge or alter the PR.
 
 ### Authorized downstream E2E
 
-The versioned reviewed-handoff fixture exercises the workflow after evidence
-review without pretending to be an IcM, ADO or WorkIQ response. Its only
-synthetic boundary is the eligible reviewed investigation; planning, repository
-routing, assignment construction and dispatch use the normal controller code.
+The versioned `ReviewedHandoff` receipt is an upstream review decision, not a
+second review implementation. It carries explicit source-neutral fixture
+provenance, reviewer/exclusion/classification decisions and the requested
+repository capability. `src/reviewed-handoff.js` is the production controller
+boundary: it validates the receipt, materializes linked ledger records
+idempotently, invokes normal planning/routing/assignment and dispatch, and owns
+all repository side effects. `src/downstream-e2e.js` is only a thin adapter.
 
 Prepare the handoff without launching a worker or creating repository effects:
 
@@ -322,19 +325,29 @@ npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bo
 ```
 
 An authorized operator may run the real downstream repository path only after
-setup/qualification and explicit acknowledgement of both synthetic input and
-Draft PR effects:
+setup/qualification and separate acknowledgement of synthetic input, commit,
+push and Draft PR effects:
 
 ```powershell
-npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-draft-pr
+npm run e2e:reviewed-handoff -- --file .\test\fixtures\downstream-e2e\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
-The dedicated E2E entrypoint accepts only `fixture` evidence produced from the
-strict reviewed-handoff contract, requires an improvement assignment with a
-repository-native skill, and still permits Draft PRs only—never merge. Offline
-CI injects only external model/PR boundaries and performs no network access,
-push or PR creation.
+Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
+explicitly authorized synthetic receipt. A repository worker may follow a
+repository-native skill to author changes, but neither the worker nor skill
+receives shell, Git, network or PR permissions.
+
+After each authored revision, the controller commits it and runs the fixed
+approved validation gates. A failed revision remains immutable validation
+evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
+bounded diagnostic tails to a new repository-skill repair round, commits the
+repair as a new revision and validates again. This is not a retry of the same
+validation operation. The final committed revision is independently validated
+before push and Draft PR creation. Exhausted failed rounds may create only a
+clearly marked failed Draft PR under the configured policy. Merge is always
+prohibited. Offline CI injects external model/PR boundaries and performs no
+network access, push or PR creation.
 
 ## Local package and eventual publication
 

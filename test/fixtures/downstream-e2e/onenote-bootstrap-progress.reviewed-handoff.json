@@ -3,6 +3,13 @@
   "id": "onenote-bootstrap-progress-coverage",
   "version": 2,
   "reviewedAt": "2026-10-12T03:00:00.000Z",
+  "source": {
+    "kind": "fixture",
+    "provenance": "synthetic",
+    "namespace": "reviewed-handoff/fixture",
+    "recordId": "onenote-bootstrap-progress-coverage",
+    "revision": "2"
+  },
   "evidence": {
     "title": "OneNote bootstrap progress lacks focused app-level integration coverage",
     "summary": "Synthetic reviewed evidence for exercising the downstream repository-change workflow; no production incident or live source access is claimed.",

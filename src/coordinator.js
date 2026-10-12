@@ -5,6 +5,7 @@ import { defineTool, withClient, restrictedSession } from './runtime.js';
 import { makeAssignment, dispatch } from './workers.js';
 import { followRelated } from './followup.js';
 import { revisitTracked } from './revisit.js';
+import { requireCompleteExclusionReview } from './review-decisions.js';
 
 export async function collect(config, ledger, { window = config.window, lane = 'created', adapters = {}, onlySources = null, follow = true } = {}) {
   collectionPreflight(config); windowCheck(window);
@@ -57,23 +58,40 @@ export async function collect(config, ledger, { window = config.window, lane = '
 export function latestEvidence(ledger) {
   return ledger.latestEvidence();
 }
-export function acceptReview(config, ledger, bundle) {
+export function persistReviewedInvestigation(config, ledger, bundle, {
+  requireReviewActivation = true,
+  allowImportedInitialVersion = false,
+  allowIdempotentReplay = false
+} = {}) {
   const { investigation, exclusionsChecked } = bundle;
   validateRecord(investigation, 'investigation');
-  requireThat(config.activation.review, 'Evidence review is disabled');
+  if (requireReviewActivation) requireThat(config.activation.review, 'Evidence review is disabled');
   requireThat(config.reviewMethod && investigation.review.method === config.reviewMethod, 'Configured review method does not match');
-  requireThat(Array.isArray(exclusionsChecked) && exclusionsChecked.length === exclusions.length &&
-    exclusions.every(e => exclusionsChecked.includes(e)), 'All scanner exclusions must be reviewed for both handoff intents', 'blocked-exclusion');
+  requireCompleteExclusionReview(exclusionsChecked);
   const latestIds = new Set(latestEvidence(ledger).map(r => r.id));
   requireThat(investigation.evidenceIds.every(id => latestIds.has(id)), 'Review references missing or superseded evidence');
   const primary = ledger.get('evidence', investigation.evidenceIds[0]);
   requireThat(investigation.id === `investigation-${hash(json([primary.source.namespace, primary.source.recordId]))}`,
     'Investigation identity must be derived from its primary source record');
   const previous = ledger.get('investigation', investigation.id);
-  requireThat(investigation.version === (previous?.version ?? 0) + 1, 'Review version must advance exactly once');
+  if (previous?.version === investigation.version) {
+    requireThat(allowIdempotentReplay && json(previous) === json(investigation),
+      allowIdempotentReplay
+        ? 'Reviewed investigation version conflicts with persisted content'
+        : 'Review version must advance exactly once',
+    'blocked-reconciliation');
+    return previous;
+  }
+  requireThat(previous
+    ? investigation.version === previous.version + 1
+    : allowImportedInitialVersion || investigation.version === 1,
+    'Review version must advance exactly once', 'blocked-reconciliation');
   requireThat(investigation.repoIds.every(id => config.repositories.some(r => r.id === id && r.routingApproved)), 'Unknown repository ownership');
   ledger.put(investigation);
   return investigation;
+}
+export function acceptReview(config, ledger, bundle) {
+  return persistReviewedInvestigation(config, ledger, bundle);
 }
 export async function reviewPending(config, ledger) {
   requireThat(config.activation.review && config.reviewMethod === 'agent-evidence-review', 'Autonomous review is not approved');

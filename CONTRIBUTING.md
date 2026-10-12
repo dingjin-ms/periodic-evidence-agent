@@ -52,6 +52,19 @@ unavailable source. A new connector, expanded scope, auth flow, validation
 runner, scheduler or permission grant requires explicit owner approval and its
 own qualification. A working offline demo does not authorize any of these.
 
+Reviewed handoff submission is a deterministic controller interface, not a new
+AI agent or a second implementation of review policy. The upstream receipt owns
+the review/exclusion/classification decision; shared production helpers enforce
+its consistency and eligibility. The repository-native skill guides authoring,
+while the controller alone owns ledger materialization, commit, validation,
+push and Draft PR operations.
+
+Validation repair rounds never rerun an immutable gate operation on the same
+revision. Each repair produces a new committed revision, preserves the failed
+attempt and artifact, and receives a final independent controller validation.
+Keep the configured repair-round limit small and explicit; exhaustion must
+remain failed or blocked rather than becoming success-shaped.
+
 Before merge, review the final diff and publish a machine-readable receipt bound
 to the exact PR head and base commit SHAs. Start from
 `scaffold/pr-review-receipt.example.json`, replace both SHAs and all review

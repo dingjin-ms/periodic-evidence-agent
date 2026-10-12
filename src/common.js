@@ -28,6 +28,10 @@ export function positive(value, name) {
   requireThat(Number.isInteger(value) && value > 0, `${name} must be a positive integer`);
   return value;
 }
+export function nonNegative(value, name) {
+  requireThat(Number.isInteger(value) && value >= 0, `${name} must be a nonnegative integer`);
+  return value;
+}
 export function safeError(error) {
   if (error instanceof PilotError) return { code: error.code, message: error.message };
   // Library errors can contain request headers, source payloads or credentials.
@@ -76,6 +80,10 @@ export function configAt(path) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');
   }
   requireThat(Array.isArray(config.repositories), 'repositories must be an array');
+  config.limits.maxValidationRepairRounds =
+    nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
+  requireThat(config.limits.maxValidationRepairRounds <= 5,
+    'maxValidationRepairRounds must not exceed 5');
   for (const repo of config.repositories) {
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
     const ids = new Set();

@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { boundedPath, hash, json, requireThat } from './common.js';
+import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
 export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
@@ -154,7 +155,8 @@ export function normalizeSkillResult(loaded, result) {
   return normalized;
 }
 
-export async function qualifyRepositorySkill(config, repoId, capability, bindingId = null, runCommand = execute) {
+export async function qualifyRepositorySkill(config, repoId, capability, bindingId = null,
+  runCommand = execute, getToken = adoAccessToken) {
   const { repo, binding } = resolveSkillBinding(config, repoId, capability, bindingId,
     { requireQualified: false, requireEnabled: false, requireRouted: false });
   requireThat(isAbsolute(repo.referenceCheckout) && repo.baseRef && repo.remote,
@@ -164,8 +166,14 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
   requireThat(remote.toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
     `Repository ${repoId} origin does not match its configured remote`, 'blocked-scope');
   const refresh = repo.qualificationRefresh ?? 'local';
-  if (refresh === 'fetch')
-    await run(['fetch', '--no-tags', '--prune', 'origin', repo.baseRef]);
+  if (refresh === 'fetch') {
+    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', repo.baseRef];
+    const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(remote);
+    const env = adoRemote
+      ? adoGitEnvironment(await getToken(config, 'ADO repository skill qualification'))
+      : process.env;
+    await runCommand('git', args, repo.referenceCheckout, 120000, env);
+  }
   const revisionRef = refresh === 'fetch' ? 'FETCH_HEAD' : repo.baseRef;
   const baseRevision = (await run(['rev-parse', '--verify', `${revisionRef}^{commit}`])).stdout.trim();
   requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Repository skill qualification resolved an invalid base revision');

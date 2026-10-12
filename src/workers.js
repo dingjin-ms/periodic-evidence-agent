@@ -2,13 +2,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, resolve, relative, isAbsolute, extname } from 'node:path';
-import { AzureCliCredential } from '@azure/identity';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight } from './common.js';
 import { withClient, restrictedSession, defineTool } from './runtime.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
 import { requireEligibleImprovementInvestigation } from './review-decisions.js';
+import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
@@ -378,33 +378,12 @@ export function minimalEnvironment() {
   ];
   return Object.fromEntries(allowed.filter(k => process.env[k]).map(k => [k, process.env[k]]));
 }
-async function adoAccessToken(config, purpose) {
-  const credential = new AzureCliCredential({ tenantId: config.identity.tenantId });
-  let token;
-  try { token = await credential.getToken('499b84ac-1321-427f-aa17-267ca6975798/.default'); }
-  catch { throw new PilotError('blocked-auth', `${purpose} requires designated user sign-in`); }
-  requireThat(token?.token, `${purpose} returned no token`, 'blocked-auth');
-  const claims = JSON.parse(Buffer.from(token.token.split('.')[1], 'base64url').toString('utf8'));
-  requireThat(claims.oid === config.identity.objectId && claims.tid === config.identity.tenantId,
-    `${purpose} identity mismatch`, 'blocked-auth');
-  return token.token;
-}
 export async function pushDraftBranch(config, workspace, repo, refspec, dependencies = {}) {
   const execute = dependencies.execute ?? git;
   if (repo.pr?.provider !== 'ado' || !/^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote))
     return execute(workspace, ['push', 'origin', refspec]);
   const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
-  const env = {
-    ...process.env,
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.extraHeader',
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${token}`,
-    GIT_TRACE: '0',
-    GIT_TRACE_CURL: '0',
-    GIT_CURL_VERBOSE: '0',
-    GIT_TRACE_PACKET: '0'
-  };
-  return execute(workspace, ['push', 'origin', refspec], env);
+  return execute(workspace, ['push', 'origin', refspec], adoGitEnvironment(token));
 }
 export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true) {
   requireThat(repo.pr?.provider === 'ado' && repo.pr.repositoryId && repo.pr.project && repo.pr.organization &&

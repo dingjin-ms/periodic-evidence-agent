@@ -124,12 +124,35 @@ test('trusted-remote qualification fetches before resolving and binds the valida
       if (args[2] === 'cat-file') return { stdout: '' };
       if (args[2] === 'show') return { stdout: '# Synthetic OA integration skill\n' };
       throw new Error(`Unexpected operation ${args[2]}`);
-    });
+    }, async () => 'synthetic-token');
   assert.deepEqual(calls.map(args => args[0]),
     ['remote', 'fetch', 'rev-parse', 'cat-file', 'show']);
   assert.equal(result.qualificationSource, 'trusted-remote');
   assert.equal(result.validationContractVersion, 'oa-v2');
   assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
+});
+
+test('trusted ADO qualification fetch uses a short-lived bearer without persisting it', async t => {
+  const { config } = setup(t);
+  const repo = config.repositories[0];
+  repo.remote = 'https://office.visualstudio.com/ISS/_git/OfficeAgent';
+  repo.qualificationRefresh = 'fetch';
+  const revision = 'a'.repeat(40);
+  const calls = [];
+  await qualifyRepositorySkill(config, 'office-src', 'integration-test-authoring',
+    'oa-integration-test-core', async (executable, args, cwd, timeout, env) => {
+      calls.push({ args, env });
+      if (args[2] === 'remote') return { stdout: `${repo.remote}\n` };
+      if (args[2] === 'fetch') return { stdout: '' };
+      if (args[2] === 'rev-parse') return { stdout: `${revision}\n` };
+      if (args[2] === 'cat-file') return { stdout: '' };
+      if (args[2] === 'show') return { stdout: '# Synthetic OA integration skill\n' };
+      throw new Error(`Unexpected operation ${args[2]}`);
+    }, async () => 'synthetic-token');
+  const fetch = calls.find(call => call.args[2] === 'fetch');
+  assert.equal(fetch.env.GIT_CONFIG_KEY_0, 'http.extraHeader');
+  assert.equal(fetch.env.GIT_CONFIG_VALUE_0, 'AUTHORIZATION: bearer synthetic-token');
+  assert.ok(fetch.args.every(arg => !arg.includes('synthetic-token')));
 });
 
 test('adapter rejects a validation contract changed after qualification', t => {

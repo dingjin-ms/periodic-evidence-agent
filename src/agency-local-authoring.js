@@ -216,8 +216,10 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
         }, mcpConfigPath, finalizationUsagePath),
         {
           ...options,
-          prompt: 'Your previous Agency turn ended without pilot_finish. Do not investigate or edit further. ' +
-            'Use the existing session context and workspace state to call pilot_finish exactly once now. ' +
+          prompt: 'Your previous Agency turn ended without pilot_finish. Do not restart broad investigation. ' +
+            'Use the existing session context and workspace state. If that context already identifies a concrete ' +
+            'mechanical defect in files you authored, correct it with the bounded tools; otherwise do not edit further. ' +
+            'Then call pilot_finish exactly once. ' +
             'The controller accepts no final prose and will block the assignment if pilot_finish is omitted.'
         });
     }

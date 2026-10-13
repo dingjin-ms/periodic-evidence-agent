@@ -243,6 +243,7 @@ test('Local Agency requires pilot_finish even after a successful process exit', 
   assert.equal(launches.length, 2);
   assert.equal(launches[0].options.prompt, 'prompt');
   assert.deepEqual(launches[1].args.slice(-2), ['--resume', current.session_id]);
+  assert.match(launches[1].options.prompt, /mechanical defect in files you authored/);
   assert.match(launches[1].options.prompt, /call pilot_finish exactly once/);
 });
 

@@ -93,9 +93,11 @@ sending an unbounded tool result into the model context.
 Agency stdout, stderr and final prose are not authoritative. A successful
 process exit without an accepted `pilot_finish` triggers one finalization-only
 resume of the same explicit session while the authenticated controller remains
-active. If that turn also omits `pilot_finish`, the assignment blocks. Unknown
-tools, malformed requests, incorrect tokens, process startup failures,
-timeouts, nonzero exits and failed session resume all fail closed.
+active. That turn may correct a concrete mechanical defect already identified
+in an authored file, but it may not restart broad investigation. If it also
+omits `pilot_finish`, the assignment blocks. Unknown tools, malformed requests,
+incorrect tokens, process startup failures, timeouts, nonzero exits and failed
+session resume all fail closed.
 
 ## Repair rounds
 

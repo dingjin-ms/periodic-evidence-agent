@@ -111,6 +111,7 @@
               "skillPath": { "$ref": "#/$defs/text" },
               "enabled": { "type": "boolean" },
               "qualification": { "enum": ["unqualified", "qualified"] },
+              "authoringProvider": { "$ref": "#/$defs/text" },
               "requestedOutcomes": { "$ref": "#/$defs/texts" },
               "sideEffects": {
                 "type": "object", "additionalProperties": false,
@@ -634,6 +635,8 @@
         "testCoveragePlanId": { "$ref": "#/$defs/text" },
         "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
         "skillBindingId": { "$ref": "#/$defs/text" },
+        "authoringProvider": { "$ref": "#/$defs/text" },
+        "authoringProviderSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "skillQualification": {
           "type": "object", "additionalProperties": false,
           "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote",
@@ -700,6 +703,14 @@
             "required": ["capability", "requestedOutcome", "improvementId", "improvementVersion",
               "testCoveragePlanId", "testCoveragePlanVersion", "skillQualification"]
           }
+        },
+        {
+          "if": { "required": ["authoringProvider"] },
+          "then": { "required": ["authoringProviderSha256"] }
+        },
+        {
+          "if": { "required": ["authoringProviderSha256"] },
+          "then": { "required": ["authoringProvider"] }
         }
       ]
     },

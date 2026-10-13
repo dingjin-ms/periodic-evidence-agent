@@ -1,5 +1,10 @@
 # Agency executor integration
 
+> This document describes hosted Agency task reservation and reconciliation.
+> The opt-in [Local Agency authoring provider](AGENCY-LOCAL-AUTHORING.md) is a
+> separate transport that keeps assignments on the existing local controller
+> path. Neither path is a merge authority. integration
+
 The local runtime and SQLite ledger remain the scheduler and state owner.
 `collector`, `filter`, and `proposer` are the only selectable roles. Agency is
 an explicitly qualified task executor, not a replacement main controller or a

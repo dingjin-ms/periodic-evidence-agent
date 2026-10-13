@@ -513,6 +513,15 @@ failed-to-passed fixture. Its first revision intentionally fails the repository
 gate; the next skill round consumes controller diagnostics, changes only the
 failing test, and is committed and validated as a distinct passing revision.
 
+Repository-skill bindings use the existing Copilot SDK authoring transport by
+default. A binding may explicitly select the opt-in
+[Local Agency authoring provider](AGENCY-LOCAL-AUTHORING.md), which exposes the
+same five controller-owned tools through an authenticated stdio MCP bridge and
+resumes the exact Agency session for repair rounds. The assignment remains
+local: provisioning, commits, exact-revision validation, push, Draft PR
+creation, reconciliation and the no-merge invariant are unchanged. This is
+separate from the hosted [Agency executor](AGENCY-EXECUTOR.md).
+
 ## Local package and eventual publication
 
 This repository is prepared for **internal experimental collaboration** only.

@@ -9,7 +9,7 @@ import { Ledger } from '../src/ledger.js';
 import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
-import { dispatch, command } from '../src/workers.js';
+import { dispatch, dispatchReviewedHandoff, command } from '../src/workers.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
@@ -108,6 +108,13 @@ test('reviewed handoff fixture prepares real planning and assignment records', a
   assert.equal(prepared.investigation.handoffEligibility, 'eligible');
   assert.equal(prepared.testCoveragePlan.sourceRevision, baseRevision);
   assert.equal(prepared.assignment.skillBindingId, 'oa-integration-test-core');
+  assert.equal(prepared.assignment.authoringProvider, undefined);
+  assert.equal(prepared.assignment.id, `assignment-${hash(JSON.stringify([
+    prepared.investigation.id, prepared.investigation.version, 'office-agent', 'improvement',
+    prepared.assignment.testCoveragePlanId, prepared.assignment.testCoveragePlanVersion,
+    prepared.assignment.requestedOutcome, prepared.assignment.skillBindingId,
+    prepared.assignment.skillQualification
+  ]))}`);
   assert.match(prepared.assignment.questions[0],
     /contracts\/apps\/onenote\/omni-onenote-bootstrap-progress\.contract\.test\.ts/);
   assert.equal(prepared.job.state, 'prepared');
@@ -345,6 +352,83 @@ test('controller validation failures feed a bounded repository-skill repair loop
     executed.result.validation[0].sourceRevision);
   assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
   assert.equal(executed.result.toolUsage.used, 5);
+});
+
+test('Agency authoring provider uses the same local repair loop and exact session', async t => {
+  const { root, remote, config, ledger } = await setup(t);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.limits.maxValidationRepairRounds = 2;
+  config.authoringProviders = {
+    'agency-oa': {
+      type: 'agency-local',
+      executable: process.execPath,
+      profile: 'periodic-evidence-isolated'
+    }
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-oa';
+  await command('git', ['init', '--bare', '--quiet', remote], root);
+  const sessions = [];
+  const prompts = [];
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runAgencyLocal: async (currentConfig, current, toolkit, prompt, provider, authoring) => {
+        sessions.push(current.session_id);
+        prompts.push(prompt);
+        assert.equal(provider, config.authoringProviders['agency-oa']);
+        const round = repairDrill.rounds[authoring.round];
+        assert.ok(round);
+        for (const [path, content] of Object.entries(round.writes))
+          toolkit.write(path.replaceAll('/', '\\'), content);
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: round.findings,
+          title: round.title,
+          description: 'Authorized synthetic reviewed-handoff draft.',
+          skillResult: repairDrill.skillResult
+        });
+      },
+      createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
+        url: 'https://example.invalid/reviewed-handoff/draft/agency-repair',
+        isDraft: true,
+        headRevision: revision
+      })
+    }
+  });
+  assert.equal(executed.result.outcome, 'draft-pr-validated');
+  assert.equal(new Set(sessions).size, 1);
+  assert.equal(sessions.length, 2);
+  assert.match(prompts[0], /"round":0/);
+  assert.match(prompts[1], /"round":1/);
+  assert.match(prompts[1], /"status":"failed"/);
+  assert.deepEqual(executed.result.validationAttempts.map(attempt =>
+    attempt.validation[0].status), repairDrill.expectedValidationStatuses);
+  assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
+  assert.equal(executed.result.toolUsage.used, 5);
+});
+
+test('prepared Agency assignments reject provider configuration drift', async t => {
+  const { config, ledger } = await setup(t);
+  config.authoringProviders = {
+    'agency-oa': {
+      type: 'agency-local',
+      executable: process.execPath,
+      profile: 'periodic-evidence-isolated'
+    }
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-oa';
+  const prepared = prepareReviewedHandoff(config, ledger, fixture);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.authoringProviders['agency-oa'].profile = 'changed-after-preparation';
+  await assert.rejects(dispatchReviewedHandoff(config, ledger, prepared.assignment.id),
+    /changed after assignment preparation|Assignment inputs/);
+  assert.equal(ledger.job(prepared.assignment.id).state, 'prepared');
 });
 
 test('zero repair budget preserves an explicit failed Draft PR outcome', async t => {

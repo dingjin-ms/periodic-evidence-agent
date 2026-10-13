@@ -80,6 +80,19 @@ export function configAt(path) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');
   }
   requireThat(Array.isArray(config.repositories), 'repositories must be an array');
+  config.authoringProviders ??= {};
+  requireThat(config.authoringProviders && typeof config.authoringProviders === 'object' &&
+    !Array.isArray(config.authoringProviders),
+  'authoringProviders must be an object');
+  for (const [id, provider] of Object.entries(config.authoringProviders)) {
+    requireThat(id !== 'copilot-sdk' && /^[a-zA-Z0-9_.-]+$/.test(id) &&
+      provider?.type === 'agency-local' &&
+      Object.keys(provider).every(key => ['type', 'executable', 'profile'].includes(key)),
+      `Authoring provider ${id} must be an agency-local provider`);
+    requireThat(typeof provider.executable === 'string' && isAbsolute(provider.executable) &&
+      typeof provider.profile === 'string' && /^[a-zA-Z0-9_.-]+$/.test(provider.profile),
+    `Authoring provider ${id} needs an absolute executable and profile-only name`);
+  }
   config.limits.maxValidationRepairRounds =
     nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
   requireThat(config.limits.maxValidationRepairRounds <= 5,
@@ -113,6 +126,10 @@ export function configAt(path) {
       requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
         typeof binding.sideEffects[key] === 'boolean'),
       `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);
+      binding.authoringProvider ??= 'copilot-sdk';
+      requireThat(binding.authoringProvider === 'copilot-sdk' ||
+        Object.hasOwn(config.authoringProviders, binding.authoringProvider),
+      `Repository ${repo.id} skill binding ${binding.id} references an unknown authoring provider`);
     }
     for (const gate of repo.validationGates ?? []) {
       requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
@@ -128,6 +145,12 @@ export function configAt(path) {
         `Repository ${repo.id} validation gate ${gate.id} profile hash mismatch`);
       gate.profilePath = profilePath;
     }
+  }
+  if (config.repositories.some(repo => repo.skillBindings?.some(binding =>
+    (binding.authoringProvider ?? 'copilot-sdk') !== 'copilot-sdk'))) {
+    requireThat(Number.isFinite(config.limits.maxAiCreditsPerSession) &&
+      config.limits.maxAiCreditsPerSession >= 30,
+    'Local Agency requires maxAiCreditsPerSession of at least 30');
   }
   config.stateDirectory = resolve(dirname(resolve(path)), config.stateDirectory);
   return config;

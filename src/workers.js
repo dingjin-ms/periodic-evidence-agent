@@ -971,10 +971,20 @@ export class WorkerTools {
     this.usage.byTool[name] ??= 0;
     this.usage.byTool[name]++;
   }
-  async list() {
+  async list(path = '') {
     this.use('pilot_list');
-    const paths = (await git(this.workspace, ['ls-files', '-z'])).split('\0').filter(Boolean);
+    let scope = '';
+    if (path) {
+      const target = boundedPath(this.workspace, path);
+      scope = relative(this.workspace, target).replaceAll('\\', '/');
+    }
+    const args = ['ls-files', '-z'];
+    if (scope) args.push('--', scope);
+    const paths = (await git(this.workspace, args)).split('\0').filter(Boolean);
     requireThat(paths.length <= 200000, 'Repository file list too large', 'blocked-budget');
+    requireThat(Buffer.byteLength(paths.join('\n')) <= this.config.limits.maxFileBytes,
+      'File list exceeds read limit; narrow pilot_list with a repository-relative directory',
+      'blocked-budget');
     return paths;
   }
   async search(query, path = '') {
@@ -1049,7 +1059,7 @@ export class WorkerTools {
   }
   tools() {
     const handlers = {
-      pilot_list: () => this.list(),
+      pilot_list: args => this.list(args.path),
       pilot_search: args => this.search(args.query, args.path),
       pilot_read: args => this.read(args.path, args.startLine ?? null, args.endLine ?? null),
       pilot_write: args => this.write(args.path, args.content),

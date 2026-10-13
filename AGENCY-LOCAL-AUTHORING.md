@@ -85,6 +85,11 @@ to the controller-owned `WorkerTools`, which enforce path bounds, file-size
 limits, write prefixes, edit permission, result shape, duplicate finish
 rejection and the cumulative call budget.
 
+`pilot_list` accepts an optional repository-relative `path`. If a repository's
+root tracked-file inventory exceeds the shared file-size limit, the controller
+fails that call with an instruction to list a narrower directory instead of
+sending an unbounded tool result into the model context.
+
 Agency stdout, stderr and final prose are not authoritative. A successful
 process exit without an accepted `pilot_finish` blocks the assignment. Unknown
 tools, malformed requests, incorrect tokens, process startup failures,

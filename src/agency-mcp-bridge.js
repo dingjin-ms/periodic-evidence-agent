@@ -75,32 +75,40 @@ function controllerCall(tool, args) {
   return new Promise((resolve, reject) => {
     const socket = connect(endpoint);
     let output = '';
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback(value);
+    };
     const timeout = setTimeout(() => {
       socket.destroy();
-      reject(new Error('Pilot controller timed out.'));
+      settle(reject, new Error('Pilot controller timed out.'));
     }, 30000);
     socket.setEncoding('utf8');
     socket.on('connect', () => {
-      socket.end(`${JSON.stringify({ id: randomUUID(), token, tool, args })}\n`);
+      socket.write(`${JSON.stringify({ id: randomUUID(), token, tool, args })}\n`);
     });
     socket.on('data', chunk => {
       output += chunk;
       if (Buffer.byteLength(output) > 1024 * 1024) {
         socket.destroy();
-        reject(new Error('Pilot controller response exceeded the protocol limit.'));
+        settle(reject, new Error('Pilot controller response exceeded the protocol limit.'));
       }
     });
-    socket.on('error', () => reject(new Error('Pilot controller is unavailable.')));
+    socket.on('error', () =>
+      settle(reject, new Error('Pilot controller is unavailable.')));
     socket.on('close', () => {
-      clearTimeout(timeout);
+      if (settled) return;
       let response;
       try { response = JSON.parse(output.trim()); }
       catch {
-        reject(new Error('Pilot controller returned an invalid response.'));
+        settle(reject, new Error('Pilot controller returned an invalid response.'));
         return;
       }
-      if (response.ok) resolve(response.result);
-      else reject(new Error(`${response.error?.code ?? 'blocked-protocol'}: ${
+      if (response.ok) settle(resolve, response.result);
+      else settle(reject, new Error(`${response.error?.code ?? 'blocked-protocol'}: ${
         response.error?.message ?? 'Pilot tool failed.'}`));
     });
   });

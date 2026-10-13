@@ -29,7 +29,7 @@ function validateArguments(tool, args) {
 
 async function invokeTool(toolkit, name, args) {
   switch (name) {
-    case 'pilot_list': return toolkit.list();
+    case 'pilot_list': return toolkit.list(args.path);
     case 'pilot_search': return toolkit.search(args.query, args.path);
     case 'pilot_read': return toolkit.read(args.path, args.startLine ?? null, args.endLine ?? null);
     case 'pilot_write': return toolkit.write(args.path, args.content);
@@ -44,7 +44,7 @@ export async function startWorkerRpcServer(toolkit, options = {}) {
     ? `\\\\.\\pipe\\periodic-evidence-${uuid()}`
     : join(tmpdir(), `periodic-evidence-${uuid()}.sock`));
   const tools = new Map(workerToolDefinitions.map(tool => [tool.name, tool]));
-  const server = createServer(socket => {
+  const server = createServer({ allowHalfOpen: true }, socket => {
     socket.setEncoding('utf8');
     let input = '';
     let handled = false;

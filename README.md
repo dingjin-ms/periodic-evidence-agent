@@ -504,7 +504,9 @@ Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
 `pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
 the initial authoring and every repair round. Search and ranged reads are
 repository-local, read-only and bounded; they do not grant shell or network
-access. Each worker result records the limit, total/remaining calls, per-tool
+access. `pilot_list` accepts an optional repository-relative directory and
+requires a narrower scope when the root file inventory exceeds the file-size
+limit. Each worker result records the limit, total/remaining calls, per-tool
 counts and per-round usage so operators can replace bootstrap limits with an
 observed percentile plus explicit headroom.
 

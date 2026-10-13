@@ -6,7 +6,6 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { once } from 'node:events';
 import { configAt, PilotError } from '../src/common.js';
 import {
   agencyArguments, launchAgency, runAgencyLocal, startWorkerRpcServer
@@ -58,7 +57,10 @@ test('controller RPC authenticates, validates and forwards only bounded pilot to
   const calls = [];
   let finished = false;
   const toolkit = {
-    list: async () => ['src/value.js'],
+    list: async path => {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+      return [path ? `${path}/value.js` : 'src/value.js'];
+    },
     search: async (query, path) => ({ query, path }),
     read: (path, start, end) => ({ path, start, end }),
     write: (path, content) => {
@@ -75,6 +77,11 @@ test('controller RPC authenticates, validates and forwards only bounded pilot to
   t.after(() => runtime.close());
   assert.deepEqual(await rpc(runtime.endpoint, runtime.token, 'pilot_list'), {
     id: 'test-request', ok: true, result: ['src/value.js']
+  });
+  assert.deepEqual(await rpc(runtime.endpoint, runtime.token, 'pilot_list', {
+    path: 'test'
+  }), {
+    id: 'test-request', ok: true, result: ['test/value.js']
   });
   assert.equal((await rpc(runtime.endpoint, runtime.token, 'pilot_write', {
     path: 'test/value.test.js', content: 'test'
@@ -97,8 +104,14 @@ test('controller RPC authenticates, validates and forwards only bounded pilot to
 
 test('stdio MCP bridge advertises and invokes only the controller pilot tools', async t => {
   const toolkit = {
-    list: async () => ['src/value.js'],
-    search: async () => [],
+    list: async path => {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 20));
+      return [path ? `${path}/value.js` : 'src/value.js'];
+    },
+    search: async () => {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 10));
+      return ['src/value.js:1:value'];
+    },
     read: () => 'value',
     write: () => 'written',
     finish: () => 'accepted'
@@ -116,16 +129,21 @@ test('stdio MCP bridge advertises and invokes only the controller pilot tools', 
     windowsHide: true
   });
   const lines = createInterface({ input: bridge.stdout, crlfDelay: Infinity });
+  const pending = new Map();
+  lines.on('line', line => {
+    const response = JSON.parse(line);
+    pending.get(response.id)?.(response);
+    pending.delete(response.id);
+  });
   t.after(async () => {
     lines.close();
     bridge.kill();
     await runtime.close();
   });
-  const request = async message => {
-    const response = once(lines, 'line');
+  const request = message => new Promise(resolveResponse => {
+    pending.set(message.id, resolveResponse);
     bridge.stdin.write(`${JSON.stringify(message)}\n`);
-    return JSON.parse((await response)[0]);
-  };
+  });
   const initialized = await request({
     jsonrpc: '2.0', id: 1, method: 'initialize',
     params: { protocolVersion: '2025-06-18' }
@@ -138,6 +156,22 @@ test('stdio MCP bridge advertises and invokes only the controller pilot tools', 
     params: { name: 'pilot_list', arguments: {} }
   });
   assert.equal(called.result.content[0].text, '["src/value.js"]');
+  const concurrent = await Promise.all([
+    request({
+      jsonrpc: '2.0', id: 31, method: 'tools/call',
+      params: { name: 'pilot_list', arguments: { path: 'test' } }
+    }),
+    request({
+      jsonrpc: '2.0', id: 32, method: 'tools/call',
+      params: { name: 'pilot_search', arguments: { query: 'value' } }
+    }),
+    request({
+      jsonrpc: '2.0', id: 33, method: 'tools/call',
+      params: { name: 'pilot_read', arguments: { path: 'src/value.js' } }
+    })
+  ]);
+  assert.deepEqual(concurrent.map(response => response.id).sort(), [31, 32, 33]);
+  assert.equal(concurrent.every(response => response.result.isError !== true), true);
   const denied = await request({
     jsonrpc: '2.0', id: 4, method: 'tools/call',
     params: { name: 'shell', arguments: {} }

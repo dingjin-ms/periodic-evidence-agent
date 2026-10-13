@@ -524,6 +524,15 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
   assert.ok((await tools.search('value = 1', 'src')).some(match =>
     match.includes('src/value.js')));
+  assert.deepEqual(await tools.list('src'), ['src/value.js']);
+  mkdirSync(join(workspace, 'docs'));
+  writeFileSync(join(workspace, 'docs', 'value.js'), 'export const documented = true;\r\n');
+  await command('git', ['add', 'docs/value.js'], workspace);
+  const boundedConfig = structuredClone(config);
+  boundedConfig.limits.maxFileBytes = 12;
+  const boundedTools = new WorkerTools(boundedConfig, editable, workspace);
+  await assert.rejects(boundedTools.list(), /narrow pilot_list/);
+  assert.deepEqual(await boundedTools.list('src'), ['src/value.js']);
 });
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);

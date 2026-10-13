@@ -1,8 +1,13 @@
 export const workerToolDefinitions = Object.freeze([
   {
     name: 'pilot_list',
-    description: 'List tracked files in this isolated checkout',
-    inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
+    description: 'List tracked files, optionally below one repository-relative directory',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: [],
+      additionalProperties: false
+    }
   },
   {
     name: 'pilot_search',

@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { availableParallelism } from 'node:os';
 import { promisify } from 'node:util';
+import { Worker } from 'node:worker_threads';
 import {
   readFileSync, writeFileSync, mkdirSync, existsSync, statSync, lstatSync,
   readdirSync, readlinkSync, symlinkSync, copyFileSync, rmSync
@@ -11,6 +13,7 @@ import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
 import { requireEligibleImprovementInvestigation } from './review-decisions.js';
+import { outputPathFingerprint } from './output-fingerprint.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
   recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount } from './agency-executor.js';
@@ -277,64 +280,65 @@ function profileForGate(gate) {
   const bytes = readFileSync(gate.profilePath);
   return { path: gate.profilePath, sha256: gate.profileSha256, bytes };
 }
-function pathFingerprint(root, path) {
-  const target = join(root, path);
-  if (!existsSync(target)) return null;
-  const info = lstatSync(target);
-  if (info.isSymbolicLink()) {
-    const rawTarget = readlinkSync(target);
-    const resolvedTarget = resolve(dirname(target), rawTarget);
-    const rootRelative = relative(root, resolvedTarget);
-    return {
-      path, type: 'link',
-      target: !rootRelative.startsWith('..') && !isAbsolute(rootRelative)
-        ? { rootRelative } : { external: rawTarget }
-    };
-  }
-  if (info.isFile())
-    return { path, type: 'file', sha256: hash(readFileSync(target)) };
-  if (!info.isDirectory()) return null;
-  const entries = [];
-  for (const name of readdirSync(target).sort()) {
-    const entry = pathFingerprint(root, join(path, name));
-    if (!entry) return null;
-    entries.push(entry);
-  }
-  return { path, type: 'directory', entries };
-}
 async function outputFingerprint(workspace, paths) {
-  const values = paths.map(path => {
-    const target = join(workspace, path);
-    if (!existsSync(target) || !lstatSync(target).isDirectory() ||
-      !path.replaceAll('\\', '/').endsWith('node_modules')) return pathFingerprint(workspace, path);
-    const links = [];
-    const visit = (directory, relativePath) => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })
-        .sort((left, right) => left.name.localeCompare(right.name))) {
-        const entryPath = join(directory, entry.name);
-        const entryRelative = join(relativePath, entry.name);
-        if (entry.isSymbolicLink()) {
-          const resolvedTarget = resolve(dirname(entryPath), readlinkSync(entryPath));
-          const rootRelative = relative(workspace, resolvedTarget);
-          if (rootRelative.startsWith('..') || isAbsolute(rootRelative) ||
-            !existsSync(resolvedTarget)) return false;
-          links.push({
-            path: entryRelative.replaceAll('\\', '/'),
-            target: rootRelative.replaceAll('\\', '/')
-          });
-        } else if (entry.isDirectory() && visit(entryPath, entryRelative) === false) return false;
-      }
-      return true;
-    };
-    if (visit(target, path) === false) return null;
-    const statePath = join(target, '.yarn-state.yml');
-    return {
-      path, type: 'dependency-directory',
-      stateSha256: existsSync(statePath) ? hash(readFileSync(statePath)) : null,
-      links
-    };
-  });
+  if (paths.length >= 8 && availableParallelism() > 1)
+    return parallelOutputFingerprint(workspace, paths);
+  const values = paths.map(path => outputPathFingerprint(workspace, path));
   return values.every(Boolean) ? hash(json(values)) : null;
+}
+async function parallelOutputFingerprint(workspace, paths) {
+  const serialized = Array(paths.length);
+  const workers = [];
+  const workerCount = Math.min(8, availableParallelism(), paths.length);
+  let next = 0;
+  try {
+    const valid = await new Promise((resolvePromise, rejectPromise) => {
+      let completed = 0;
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        rejectPromise(error);
+      };
+      const dispatch = worker => {
+        if (next >= paths.length) return;
+        const index = next++;
+        worker.postMessage({ workspace, index, path: paths[index] });
+      };
+      for (let index = 0; index < workerCount; index++) {
+        const worker = new Worker(new URL('./output-fingerprint-worker.js', import.meta.url));
+        workers.push(worker);
+        worker.on('message', result => {
+          if (settled) return;
+          if (!Number.isInteger(result.index) || result.index < 0 ||
+            result.index >= paths.length || result.error) {
+            fail(new Error(`Cannot fingerprint ${paths[result.index]}: ${result.error}`));
+            return;
+          }
+          if (!result.valid) {
+            settled = true;
+            resolvePromise(false);
+            return;
+          }
+          serialized[result.index] = result.serialized;
+          completed++;
+          if (completed === paths.length) {
+            settled = true;
+            resolvePromise(true);
+          } else dispatch(worker);
+        });
+        worker.on('error', fail);
+        worker.on('exit', code => {
+          if (!settled)
+            fail(new Error(`Output fingerprint worker exited before completion (${code})`));
+        });
+        dispatch(worker);
+      }
+    });
+    return valid ? hash(`[${serialized.join(',')}]`) : null;
+  } finally {
+    await Promise.all(workers.map(worker => worker.terminate()));
+  }
 }
 function materializeSnapshotPath(sourceRoot, targetRoot, path) {
   const source = join(sourceRoot, path);
@@ -434,7 +438,7 @@ function preparedValidationRoot(config, type, gateId, key) {
     hash(gateId).slice(0, 12), key.slice(0, 24));
 }
 async function prepareDependencySnapshot(config, job, gate, revision, profile, plan,
-  fingerprintRun, toolchain, lockfileSha256, execute) {
+  fingerprintRun, toolchain, lockfileSha256, execute, verifyOutputs = true) {
   const inputs = {
     gateId: gate.id, lockfileSha256, profileSha256: profile.sha256,
     toolchain, toolchainSha256: hash(json(toolchain))
@@ -445,15 +449,19 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
   const receiptPath = join(root, 'r.json');
   const load = async () => {
     try {
-      if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
+      if (!existsSync(receiptPath)) return null;
       const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
       if (!validReceiptIntegrity(receipt) || receipt.type !== 'dependencies' ||
         json(receipt.inputs) !== json(inputs) ||
+        !Array.isArray(receipt.outputs?.paths)) return null;
+      if (verifyOutputs && (!existsSync(workspace) ||
         await git(workspace, ['status', '--porcelain']) ||
-        !Array.isArray(receipt.outputs?.paths) ||
         await outputFingerprint(workspace, receipt.outputs.paths) !==
-          receipt.outputs.sha256) return null;
-      return { ...receipt, receiptPath, workspace, profile, plan, cache: 'hit' };
+          receipt.outputs.sha256)) return null;
+      return {
+        ...receipt, receiptPath, workspace, profile, plan, cache: 'hit',
+        outputsVerified: verifyOutputs
+      };
     } catch { return null; }
   };
   const cached = await load();
@@ -492,7 +500,10 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      return { ...receipt, receiptPath, workspace, profile, plan, cache: 'miss' };
+      return {
+        ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
+        outputsVerified: true
+      };
     } catch (error) {
       error.preparationTimings = [...timings];
       if (error.stageTelemetry &&
@@ -516,20 +527,24 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
   const buildConfigSha256 = await revisionPathFingerprint(job.workspace, revision, plan.buildConfigPaths);
   requireThat(toolchain && lockfileSha256 && buildConfigSha256,
     `Gate ${gate.id} staged validation fingerprints are incomplete`, 'blocked-validation');
-  const dependency = await prepareDependencySnapshot(config, job, gate, revision,
-    profile, plan, fingerprintRun, toolchain, lockfileSha256, execute);
-  const inputs = {
-    gateId: gate.id, sourceRevision: revision, lockfileSha256, buildConfigSha256,
-    profileSha256: profile.sha256, toolchain, toolchainSha256: hash(json(toolchain)),
-    dependencyKey: dependency.key, dependencyIntegrity: dependency.integrity,
-    preparedSnapshotVersion: 3
+  let dependency = await prepareDependencySnapshot(config, job, gate, revision,
+    profile, plan, fingerprintRun, toolchain, lockfileSha256, execute, false);
+  const compileContext = () => {
+    const inputs = {
+      gateId: gate.id, sourceRevision: revision, lockfileSha256, buildConfigSha256,
+      profileSha256: profile.sha256, toolchain, toolchainSha256: hash(json(toolchain)),
+      dependencyKey: dependency.key, dependencyIntegrity: dependency.integrity,
+      preparedSnapshotVersion: 3
+    };
+    const key = hash(json(inputs));
+    const root = preparedValidationRoot(config, 'c', gate.id, key);
+    return {
+      inputs, key, root, workspace: join(root, 'w'), receiptPath: join(root, 'r.json')
+    };
   };
-  const key = hash(json(inputs));
-  const root = preparedValidationRoot(config, 'c', gate.id, key);
-  const workspace = join(root, 'w');
-  const receiptPath = join(root, 'r.json');
-  const load = async () => {
+  const load = async context => {
     try {
+      const { inputs, workspace, receiptPath } = context;
       if (!existsSync(receiptPath) || !existsSync(workspace)) return null;
       const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
       if (!validReceiptIntegrity(receipt) || receipt.type !== 'compile' ||
@@ -544,8 +559,17 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       };
     } catch { return null; }
   };
-  const cached = await load();
+  let context = compileContext();
+  let cached = await load(context);
   if (cached) return cached;
+  if (!dependency.outputsVerified) {
+    dependency = await prepareDependencySnapshot(config, job, gate, revision,
+      profile, plan, fingerprintRun, toolchain, lockfileSha256, execute, true);
+    context = compileContext();
+    cached = await load(context);
+    if (cached) return cached;
+  }
+  const { inputs, key, root, workspace, receiptPath } = context;
   const promiseKey = `compile:${key}`;
   const existing = preparationPromises.get(promiseKey);
   if (existing) return existing;
@@ -644,6 +668,8 @@ async function changedPaths(workspace, fromRevision, toRevision) {
 async function reusablePreparation(gate, job, revision, prepared, execute) {
   if (!prepared?.workspace || !validReceiptIntegrity(prepared) ||
     !existsSync(prepared.receiptPath) || !existsSync(prepared.workspace)) return null;
+  const reuseTimings = [];
+  const receiptsStarted = now();
   let persisted;
   try { persisted = JSON.parse(readFileSync(prepared.receiptPath, 'utf8')); }
   catch { return null; }
@@ -652,27 +678,23 @@ async function reusablePreparation(gate, job, revision, prepared, execute) {
   try {
     dependency = JSON.parse(readFileSync(prepared.dependencyReceipt.path, 'utf8'));
   } catch { return null; }
-  const dependencyWorkspace = join(dirname(prepared.dependencyReceipt.path), 'w');
-  try {
-    if (!validReceiptIntegrity(dependency) || dependency.type !== 'dependencies' ||
-      dependency.key !== prepared.dependencyReceipt.key ||
-      dependency.integrity !== prepared.dependencyReceipt.integrity ||
-      !existsSync(dependencyWorkspace) ||
-      !Array.isArray(dependency.outputs?.paths) ||
-      await git(dependencyWorkspace, ['rev-parse', 'HEAD']) !==
-        dependency.preparedFromRevision ||
-      await git(dependencyWorkspace, ['status', '--porcelain']) ||
-      await outputFingerprint(dependencyWorkspace, dependency.outputs.paths) !==
-        dependency.outputs.sha256) return null;
-  } catch { return null; }
+  if (!validReceiptIntegrity(dependency) || dependency.type !== 'dependencies' ||
+    dependency.key !== prepared.dependencyReceipt.key ||
+    dependency.integrity !== prepared.dependencyReceipt.integrity ||
+    !Array.isArray(dependency.outputs?.paths)) return null;
+  reuseTimings.push(stageTelemetry('reuse-receipts', receiptsStarted, 'hit'));
+  const changedPathsStarted = now();
   const paths = await changedPaths(job.workspace, prepared.inputs.sourceRevision, revision);
   if (!paths.every(path => prepared.plan.testOnlyPrefixes.some(prefix => path.startsWith(prefix))))
     return null;
+  reuseTimings.push(stageTelemetry('reuse-changed-paths', changedPathsStarted, 'hit'));
   const profile = profileForGate(gate);
   if (!profile || profile.sha256 !== prepared.inputs.profileSha256 ||
     hash(profile.bytes) !== profile.sha256) return null;
   const fingerprintRun = await runProfileStage(gate, profile, 'fingerprint',
     job.workspace, execute);
+  reuseTimings.push(fingerprintRun.telemetry);
+  const inputsStarted = now();
   const toolchain = parseToolchainFingerprint(fingerprintRun.output);
   const lockfileSha256 = await revisionPathFingerprint(job.workspace, revision,
     prepared.plan.lockfilePaths);
@@ -680,16 +702,19 @@ async function reusablePreparation(gate, job, revision, prepared, execute) {
     prepared.plan.buildConfigPaths);
   if (!toolchain || hash(json(toolchain)) !== prepared.inputs.toolchainSha256 ||
     lockfileSha256 !== prepared.inputs.lockfileSha256 ||
-    buildConfigSha256 !== prepared.inputs.buildConfigSha256 ||
-    await git(prepared.workspace, ['rev-parse', 'HEAD']) !== prepared.inputs.sourceRevision ||
+    buildConfigSha256 !== prepared.inputs.buildConfigSha256) return null;
+  reuseTimings.push(stageTelemetry('reuse-inputs', inputsStarted, 'hit'));
+  const outputsStarted = now();
+  if (await git(prepared.workspace, ['rev-parse', 'HEAD']) !== prepared.inputs.sourceRevision ||
     await git(prepared.workspace, ['status', '--porcelain']) ||
     await outputFingerprint(prepared.workspace, prepared.outputs.paths) !==
       prepared.outputs.sha256) return null;
+  reuseTimings.push(stageTelemetry('reuse-prepared-outputs', outputsStarted, 'hit'));
   return {
     ...prepared, profile, cache: 'hit',
     dependencyCache: 'hit',
     dependencyReceiptPath: prepared.dependencyReceipt.path,
-    reuseFingerprintTiming: fingerprintRun.telemetry
+    reuseTimings
   };
 }
 function cachedStageTelemetry(receipt, id) {
@@ -787,7 +812,7 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
       nextCheckAt: new Date(Date.now() + gate.timeoutMs).toISOString()
     });
     const timings = [
-      ...(receipt.reuseFingerprintTiming ? [receipt.reuseFingerprintTiming] : []),
+      ...(receipt.reuseTimings ?? []),
       cachedStageTelemetry(receipt, 'dependencies'),
       cachedStageTelemetry(receipt, 'compile')
     ];
@@ -839,20 +864,36 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
         output.inspectionError = safeError(error).message;
       } finally {
         const cleanupStarted = now();
+        const cleanupSubphases = [];
         try {
+          const restoreStarted = Date.now();
           await git(receipt.workspace, ['checkout', '--detach',
             receipt.inputs.sourceRevision], checkoutEnvironment());
+          cleanupSubphases.push({
+            id: 'restore-source', durationMs: Date.now() - restoreStarted
+          });
+          const outputsStarted = Date.now();
           const outputSha256 = await outputFingerprint(receipt.workspace,
             receipt.outputs.paths);
-          if (await git(receipt.workspace, ['status', '--porcelain']) ||
-            outputSha256 !== receipt.outputs.sha256)
+          cleanupSubphases.push({
+            id: 'verify-prepared-outputs', durationMs: Date.now() - outputsStarted
+          });
+          const sourceStarted = Date.now();
+          const dirty = await git(receipt.workspace, ['status', '--porcelain']);
+          cleanupSubphases.push({
+            id: 'verify-source', durationMs: Date.now() - sourceStarted
+          });
+          if (dirty || outputSha256 !== receipt.outputs.sha256)
             throw new Error('Prepared validation workspace changed');
         } catch (error) {
           cleanupError = safeError(error).message;
           removeValidationPath(dirname(receipt.workspace), { recursive: true, force: true });
         }
-        timings.push(stageTelemetry('cleanup', cleanupStarted,
-          cleanupError ? 'invalidated' : 'preserved'));
+        timings.push({
+          ...stageTelemetry('cleanup', cleanupStarted,
+            cleanupError ? 'invalidated' : 'preserved'),
+          subphases: cleanupSubphases
+        });
       }
     });
     if (cleanupError) {

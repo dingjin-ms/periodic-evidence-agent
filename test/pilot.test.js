@@ -100,7 +100,7 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   const job = ctx.ledger.prepare(assignment);
   return { ...ctx, repo, evidence, investigation, assignment, job, g };
 }
-async function stagedValidationFixture(t) {
+async function stagedValidationFixture(t, { parallelOutputs = false } = {}) {
   const ctx = await fixture(t);
   writeFileSync(join(ctx.repo.referenceCheckout, '.gitignore'),
     '.pilot/\nextra/node_modules/\n');
@@ -124,7 +124,10 @@ async function stagedValidationFixture(t) {
     lockfilePaths: ['package.json', 'fixture.lock'],
     buildConfigPaths: ['build.config.js'],
     dependencySnapshotPaths: ['.pilot/dependencies', '.pilot/install-state'],
-    preparedOutputPaths: ['.pilot/install-state']
+    preparedOutputPaths: parallelOutputs
+      ? ['.pilot/install-state', ...Array.from({ length: 8 },
+        (_, index) => `.pilot/output-${index}`)]
+      : ['.pilot/install-state']
   };
   writeFileSync(profilePath, `// PILOT_VALIDATION_PLAN: ${JSON.stringify(plan)}\n`);
   ctx.repo.validationGates = [{
@@ -176,6 +179,13 @@ async function stagedValidationFixture(t) {
         readFileSync(join(cwd, 'src', 'value.js'), 'utf8'));
       assert.equal(JSON.parse(readFileSync(join(cwd, 'extra', 'node_modules',
         'fixture', 'package.json'))).version, '2.0.0');
+      if (parallelOutputs) {
+        for (let index = 0; index < 8; index++) {
+          mkdirSync(join(cwd, '.pilot', `output-${index}`), { recursive: true });
+          writeFileSync(join(cwd, '.pilot', `output-${index}`, 'compiled.js'),
+            `export const value = ${index};\n`);
+        }
+      }
     }
     if (stage === 'policy' && behavior.transientPolicy && behavior.policyAttempts++ === 0)
       throw Object.assign(new Error('timeout'), {
@@ -748,6 +758,14 @@ test('test-only repair reuses dependency and compile receipts with phase telemet
     stage.startedAt && stage.finishedAt));
   assert.ok(artifact.telemetry.validationTimings.every(stage =>
     stage.startedAt && stage.finishedAt));
+  assert.deepEqual(artifact.telemetry.validationTimings
+    .filter(stage => stage.id.startsWith('reuse-')).map(stage => stage.id), [
+    'reuse-receipts', 'reuse-changed-paths', 'reuse-inputs', 'reuse-prepared-outputs'
+  ]);
+  assert.deepEqual(artifact.telemetry.validationTimings.find(stage =>
+    stage.id === 'cleanup').subphases.map(stage => stage.id), [
+    'restore-source', 'verify-prepared-outputs', 'verify-source'
+  ]);
 });
 test('cold staged validation passes with one complete prepared pipeline', async t => {
   const ctx = await stagedValidationFixture(t);
@@ -848,18 +866,60 @@ test('corrupt dependency snapshot receipt reruns install and compile', async t =
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
-test('damaged dependency workspace reruns install and compile', async t => {
+test('test-only repair reuses an intact compile snapshot when the dependency workspace is damaged',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    rmSync(join(dirname(prepared.staged.dependencyReceiptPath), 'w', '.git'),
+      { recursive: true, force: true });
+    const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+      'Repair test after dependency workspace damage');
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, ctx.execute, rmSync, prepared);
+    assert.equal(result[0].status, 'passed');
+    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+    assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  });
+test('cache loading reuses an intact compile snapshot without reading a damaged dependency workspace',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    rmSync(join(dirname(prepared.staged.dependencyReceiptPath), 'w', '.git'),
+      { recursive: true, force: true });
+    const reloaded = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    assert.equal(reloaded.staged.receiptPath, prepared.staged.receiptPath);
+    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+    assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  });
+test('damaged dependency workspace reruns install and compile when production changes', async t => {
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
     ctx.isolated.baseRevision, ctx.execute);
   rmSync(join(dirname(prepared.staged.dependencyReceiptPath), 'w', '.git'),
     { recursive: true, force: true });
-  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
-    'Repair after dependency workspace damage');
+  const revision = await ctx.commit('src/value.js', 'export const value = 2;\n',
+    'Change production after dependency workspace damage');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
   assert.equal(result[0].status, 'passed');
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+test('parallel prepared-output fingerprint detects cache mutation', async t => {
+  const ctx = await stagedValidationFixture(t, { parallelOutputs: true });
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  writeFileSync(join(prepared.staged.workspace, '.pilot', 'output-3', 'compiled.js'),
+    'mutated\n');
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Repair after compiled output mutation');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
 test('same-revision infrastructure retry reuses expensive prepared stages', async t => {

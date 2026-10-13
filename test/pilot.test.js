@@ -13,7 +13,7 @@ import { dryRun } from '../src/dry-run.js';
 import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
-import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
+import { cliPath, validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
@@ -464,11 +464,26 @@ test('RCA-only workers cannot write and submitted workers cannot keep editing', 
   tools.finish({ outcome: 'investigated', findings: 'Synthetic findings' });
   assert.throws(() => tools.finish({ outcome: 'investigated', findings: 'again' }), /already submitted/);
 });
-test('SDK configuration exposes no built-in tools and denies unrelated permissions', () => {
-  const config = restrictedSession([{ name: 'pilot_read' }]);
+test('SDK configuration approves only registered custom tools and denies unrelated permissions', () => {
+  assert.equal(cliPath('bundled'), undefined);
+  const config = restrictedSession([{ name: 'pilot_read' }], { maxAiCredits: 3 });
   assert.deepEqual(config.availableTools.toArray(), ['custom:pilot_read']);
+  assert.deepEqual(config.sessionLimits, { maxAiCredits: 3 });
   assert.equal(config.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
-  assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+  assert.equal(config.onPermissionRequest({
+    kind: 'custom-tool',
+    toolName: 'pilot_read'
+  }).kind, 'approve-once');
+  assert.equal(config.onPermissionRequest({
+    kind: 'custom-tool',
+    toolName: 'pilot_write'
+  }).kind, 'reject');
+  assert.equal(config.onPermissionRequest({
+    kind: 'custom-tool',
+    toolName: 'pilot_read',
+    managedApprovalRequired: true
+  }).kind, 'reject');
+  assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'reject');
 });
 test('validation records real terminal command execution at exact fixture HEAD and forbids duplicates', async t => {
   const { config, ledger, job, repo } = await fixture(t);

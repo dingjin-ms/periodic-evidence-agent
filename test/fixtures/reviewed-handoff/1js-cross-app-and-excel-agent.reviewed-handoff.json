@@ -1,0 +1,166 @@
+{
+  "format": "reviewed-handoff-v1",
+  "id": "1js-cross-app-and-excel-agent-declarative-e2e",
+  "version": 3,
+  "reviewedAt": "2026-10-13T13:30:00.000Z",
+  "source": {
+    "kind": "fixture",
+    "provenance": "synthetic",
+    "namespace": "reviewed-handoff/fixture",
+    "recordId": "1js-cross-app-and-excel-agent-declarative-e2e",
+    "revision": "3"
+  },
+  "evidence": {
+    "title": "Reviewed Cross-App and Excel Agent workflows need declarative E2E coverage",
+    "summary": "Synthetic reviewed evidence used to exercise one production 1JS declarative E2E authoring batch across both supported owning workspaces without claiming a live incident.",
+    "fields": {
+      "startingSurfaces": [
+        "Microsoft 365 Copilot BizChat",
+        "Excel Online Copilot"
+      ],
+      "artifacts": [
+        "Cross-App generated Excel workbook",
+        "Excel Agent workbook edit"
+      ],
+      "requiredContracts": [
+        "Create and preview a real workbook with a worksheet named Canary and a four-row by three-column table including one header row.",
+        "In the Omni AAD Excel Agent experience, write and verify an exact four-row by three-column grid in cells A1:C4."
+      ]
+    }
+  },
+  "review": {
+    "method": "agent-evidence-review",
+    "reviewer": "synthetic-reviewed-handoff-fixture",
+    "observedBehavior": "The controller has a Cross-App authoring fixture but no reviewed fixture proving that one batch can also route an Excel Agent case to its separate owning workspace and execution cohort.",
+    "expectedBehavior": "One repository-native authoring batch should add independent Cross-App and Omni AAD Excel Agent declarations, preserve their separate local and CI evidence, and deliver them on one branch and Draft PR.",
+    "hypotheses": [
+      "The existing BizChat setup, workbook creation composite and protected workbook verifier can express the Cross-App case without a new harness capability.",
+      "The existing Excel Agent prompt-turn, workbook-clear and exact-cell assertion contracts can express a deterministic A1:C4 grid without new provider behavior."
+    ],
+    "counterEvidence": [
+      "The existing Cross-App six-by-five scenario covers a different worksheet and table contract and must not be renamed or weakened.",
+      "Existing Excel Agent write-string and write-workbook cases verify only one cell and do not cover the requested multi-cell grid contract."
+    ],
+    "classification": "functional",
+    "defectConfirmation": "unconfirmed",
+    "reportEligibility": "included",
+    "handoffEligibility": "eligible",
+    "exclusionsChecked": [
+      "task",
+      "feature_enhancement",
+      "tracking",
+      "security_governance_only",
+      "accessibility_only",
+      "telemetry_only",
+      "performance_measurement_only",
+      "test_infrastructure",
+      "cosmetic_ui_only",
+      "copy_text_only",
+      "localization_only",
+      "by_design",
+      "confirmed_non_bug",
+      "service_reliability_only"
+    ],
+    "exclusionReasons": [],
+    "rationale": "The handoff requests source-bound coverage for two established workbook capabilities using the qualified repository-native authoring skill and its documented multi-workspace batch contract.",
+    "confidence": 0.95,
+    "repoIds": [
+      "1js"
+    ],
+    "existingFixes": [],
+    "nextAction": "Use the configured 1JS declarative E2E authoring skill. Preserve existing cases and add one distinct Cross-App AAD scenario plus one distinct Omni AAD Excel Agent scenario only where exact coverage is absent."
+  },
+  "planning": {
+    "improvement": {
+      "category": "missing-test-coverage",
+      "theme": "Cross-App and Excel Agent declarative authoring batch coverage",
+      "rationale": "Prove that reviewed evidence can route independent cases into both supported 1JS declarative E2E owning workspaces while retaining one authoring delivery.",
+      "priority": "medium",
+      "repoIds": [
+        "1js"
+      ],
+      "capabilities": [
+        "declarative-e2e-authoring"
+      ]
+    },
+    "testCoverage": {
+      "repoId": "1js",
+      "capability": "declarative-e2e-authoring",
+      "sourceRevision": "qualified-base",
+      "searchStatus": "complete",
+      "existingTests": [],
+      "coverageGaps": [
+        "No dedicated AAD BizChat scenario verifies a Canary worksheet with a four-row by three-column Excel Table including one header row.",
+        "No dedicated Omni AAD Excel Agent scenario verifies a deterministic four-row by three-column grid written into A1:C4."
+      ],
+      "unknowns": [],
+      "rationale": "The qualified skill must inspect the exact 1JS revision, classify each item by starting surface, reuse current declarations and keep Cross-App and Excel Agent execution evidence attributable."
+    },
+    "requestedOutcome": "add-declarative-e2e-tests",
+    "skillInput": {
+      "format": "declarative-e2e-mini-spec-batch-v1",
+      "items": [
+        {
+          "inputItemId": "bizchat-create-canary-excel",
+          "title": "Create a Canary Excel workbook from BizChat",
+          "account": "AAD",
+          "entryUrl": "https://copilot.cloud.microsoft/chat?M365ChatFeatures=enableFluxV4Toggle&redirfrom=mcmToCcm",
+          "preconditions": [
+            "The user is signed in to Microsoft 365 Copilot with the qualified AAD profile.",
+            "Record the current Try Fluxv4 value and Sydney variants so both can be restored."
+          ],
+          "orderedTestSteps": [
+            "Open Microsoft 365 Copilot Chat using the entry URL.",
+            "Turn off Try Fluxv4 if it is enabled.",
+            "Append the existing Office Agent MCP Sydney variants used by the current BizChat workbook scenario without removing existing variants.",
+            "Send the exact prompt: Create an Excel workbook with sheet 'Canary' and that contains a 4x3 table (contains header)",
+            "Wait for the response to complete.",
+            "Open the generated Excel workbook in the Excel preview panel."
+          ],
+          "expectedUserVisibleAndDataOutcomes": [
+            "The response produces a real Excel .xlsx workbook.",
+            "The workbook opens in an Excel preview panel.",
+            "The workbook contains a worksheet named Canary.",
+            "The worksheet contains an Excel Table spanning exactly four total rows and three columns.",
+            "The first table row is the header row and the remaining three rows are table body rows; body cells may be empty."
+          ],
+          "cleanup": [
+            "Restore the original Sydney variants.",
+            "Restore the original Try Fluxv4 value.",
+            "Close only the tab created for this test."
+          ]
+        },
+        {
+          "inputItemId": "excel-agent-omni-write-four-by-three-grid",
+          "title": "Excel Agent writes a four-by-three grid in Omni",
+          "account": "AAD",
+          "entryUrl": "https://excel.cloud.microsoft/",
+          "preconditions": [
+            "The user is signed in with the qualified AAD enterprise profile.",
+            "The local or CloudTest launcher has selected the Omni Excel Agent experience.",
+            "Launch the existing AAD hub-create flow with a disposable blank workbook owned by this test.",
+            "The external owning registration workflow reserves semantic ID excel-agent.aad.write-four-by-three-grid, title Enterprise Excel Agent writes a four-by-three workbook grid, command e2e:ci:excel-agent:aad:write-four-by-three-grid, catalog number 33, tags omni-supported, arcadia-ongoing and omni-observing, and a capability-matrix row matching the authored declaration."
+          ],
+          "orderedTestSteps": [
+            "Open the test-owned disposable blank workbook in Excel Online.",
+            "Open the Excel Copilot task pane and verify that the current experience is Omni.",
+            "Clear cells A1:C4.",
+            "Send the exact prompt: Fill cells A1:C4 with this exact grid. Row 1: Item, Quantity, Region. Row 2: Widget A, 2, West. Row 3: Widget B, 4, East. Row 4: Widget C, 6, Central.",
+            "Wait for the edit operation to complete."
+          ],
+          "expectedUserVisibleAndDataOutcomes": [
+            "Excel Agent completes the workbook edit without switching away from Omni.",
+            "A1, B1 and C1 contain Item, Quantity and Region.",
+            "A2, B2 and C2 contain Widget A, 2 and West.",
+            "A3, B3 and C3 contain Widget B, 4 and East.",
+            "A4, B4 and C4 contain Widget C, 6 and Central."
+          ],
+          "cleanup": [
+            "Keep the edited A1:C4 cells as result evidence because the AAD hub-created workbook is disposable.",
+            "Close only the browser context or tab owned by this test."
+          ]
+        }
+      ]
+    }
+  }
+}

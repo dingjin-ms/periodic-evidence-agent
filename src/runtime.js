@@ -5,6 +5,7 @@ import { requireThat, PilotError, json, safeError } from './common.js';
 
 export { defineTool };
 export function cliPath(name) {
+  if (name === 'bundled') return undefined;
   if (isAbsolute(name)) return name;
   const candidates = (process.env.PATH ?? '').split(delimiter).map(dir => join(dir, process.platform === 'win32' && !name.endsWith('.exe') ? `${name}.exe` : name));
   const found = candidates.find(path => existsSync(path));
@@ -12,9 +13,9 @@ export function cliPath(name) {
   return found;
 }
 export function createClient(config, workingDirectory, workplace = false) {
+  const path = cliPath(config.runtime.cliPath);
   return new CopilotClient({
-    connection: RuntimeConnection.forStdio({ path: cliPath(config.runtime.cliPath),
-      args: config.limits.maxAiCreditsPerSession > 0 ? ['--max-ai-credits', String(config.limits.maxAiCreditsPerSession)] : [] }),
+    connection: RuntimeConnection.forStdio(path ? { path } : {}),
     mode: workplace ? 'copilot-cli' : 'empty',
     ...(workplace ? {} : { baseDirectory: join(config.stateDirectory, 'runtime') }),
     workingDirectory,
@@ -22,12 +23,19 @@ export function createClient(config, workingDirectory, workplace = false) {
     useLoggedInUser: true
   });
 }
-export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '' } = {}) {
+export function restrictedSession(tools, {
+  sessionId, workingDirectory, prompt = '', maxAiCredits
+} = {}) {
   const names = new Set(tools.map(t => t.name));
   return {
     sessionId, workingDirectory, tools,
+    ...(maxAiCredits > 0 ? { sessionLimits: { maxAiCredits } } : {}),
     availableTools: tools.reduce((set, tool) => set.addCustom(tool.name), new ToolSet()),
-    onPermissionRequest: () => ({ kind: 'denied-by-rules' }),
+    onPermissionRequest: request =>
+      request?.kind === 'custom-tool' && names.has(request.toolName) &&
+        request.managedApprovalRequired !== true
+        ? { kind: 'approve-once' }
+        : { kind: 'reject', feedback: 'Only bounded pilot callbacks are authorized' },
     hooks: {
       onPreToolUse: ({ toolName }) => ({
         permissionDecision: names.has(toolName) ? 'allow' : 'deny',

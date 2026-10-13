@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { configAt, PilotError } from '../src/common.js';
@@ -31,7 +31,7 @@ function rpc(endpoint, token, tool, args = {}) {
 
 test('Agency arguments expose only pilot MCP tools and resume the exact session', () => {
   const config = {
-    stateDirectory: 'C:\\state',
+    stateDirectory: '.state',
     limits: { maxAiCreditsPerSession: 3 }
   };
   const provider = { profile: 'periodic-evidence-isolated' };
@@ -39,7 +39,7 @@ test('Agency arguments expose only pilot MCP tools and resume the exact session'
   const first = agencyArguments(config, provider, current, { round: 0 }, 'mcp.json', 'usage.json');
   const repair = agencyArguments(config, provider, current, { round: 1 }, 'mcp.json', 'usage.json');
   assert.deepEqual(first.slice(0, 11), [
-    '--no-aec', '--log-dir', join(config.stateDirectory, 'agency-local-logs'),
+    '--no-aec', '--log-dir', resolve(config.stateDirectory, 'agency-local-logs'),
     'copilot', '--session-id', current.session_id,
     '--profile-only', provider.profile, '--no-default-mcps', '--no-config-plugins', '--'
   ]);
@@ -174,7 +174,7 @@ test('Local Agency requires pilot_finish even after a successful process exit', 
   const root = mkdtempSync(join(tmpdir(), 'agency-run-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const config = {
-    stateDirectory: join(root, 'state'),
+    stateDirectory: relative(process.cwd(), join(root, 'state')),
     limits: { workerMinutes: 1, maxAiCreditsPerSession: 30 }
   };
   const current = {
@@ -232,6 +232,11 @@ test('Local Agency accepts only a proposal delivered through its authenticated c
     launch: async (executable, args, options) => {
       assert.equal(executable, process.execPath);
       assert.equal(options.prompt, 'prompt');
+      const mcpConfig = args[args.indexOf('--additional-mcp-config') + 1].slice(1);
+      const logDirectory = args[args.indexOf('--log-dir') + 1];
+      assert.equal(isAbsolute(mcpConfig), true);
+      assert.equal(existsSync(mcpConfig), true);
+      assert.equal(isAbsolute(logDirectory), true);
       const result = await rpc(options.env.PILOT_MCP_ENDPOINT,
         options.env.PILOT_MCP_TOKEN, 'pilot_finish', {
           outcome: 'investigated',

@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { PilotError, json, positive, requireThat, safeError, uuid } from './common.js';
@@ -120,7 +120,7 @@ export function agencyArguments(config, provider, current, authoring, mcpConfigP
   if (authoring.round > 0) extra.push('--resume', current.session_id);
   return [
     '--no-aec',
-    '--log-dir', join(config.stateDirectory, 'agency-local-logs'),
+    '--log-dir', resolve(config.stateDirectory, 'agency-local-logs'),
     'copilot',
     '--session-id', current.session_id,
     '--profile-only', provider.profile,
@@ -172,7 +172,7 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
     config.limits.maxAiCreditsPerSession >= 30,
   'Local Agency requires maxAiCreditsPerSession of at least 30', 'blocked-config');
   const runtime = await startWorkerRpcServer(toolkit, dependencies.rpcOptions);
-  const directory = join(config.stateDirectory, 'agency-local', current.session_id);
+  const directory = resolve(config.stateDirectory, 'agency-local', current.session_id);
   mkdirSync(directory, { recursive: true });
   const mcpConfigPath = join(directory, 'mcp-config.json');
   const usagePath = join(directory, `usage-round-${authoring.round}.json`);

@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Workspace,
-    [switch]$InstallProvider
+    [switch]$InstallProvider,
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,28 @@ $expectedRegistries = @(
     'https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/',
     'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/'
 )
+
+function Write-Preflight {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$State,
+        [string]$Reason,
+        [bool]$Install = $false
+    )
+
+    $result = [ordered]@{
+        state = $State
+        provider = 'artifacts-npm-credprovider'
+        providerVersion = $providerVersion
+        feedCount = $expectedRegistries.Count
+        tokenRecorded = $false
+    }
+    if ($State -eq 'action-required-auth') {
+        $result.reason = $Reason
+        $result.installProvider = $Install
+    }
+    Write-Output "PILOT_VALIDATION_AUTH_PREFLIGHT:$($result | ConvertTo-Json -Compress)"
+}
 
 function Invoke-CredentialProvider {
     param(
@@ -58,6 +81,10 @@ $installedVersion = if ($null -ne $provider) {
 }
 
 if ($installedVersion -ne $providerVersion) {
+    if ($CheckOnly) {
+        Write-Preflight 'action-required-auth' 'provider-missing' $true
+        exit 0
+    }
     if (-not $InstallProvider) {
         throw "artifacts-npm-credprovider $providerVersion is required. Re-run with -InstallProvider after approving the pinned package installation."
     }
@@ -78,18 +105,34 @@ if ($installedVersion -ne $providerVersion) {
     }
 }
 
-$acquisition = Invoke-CredentialProvider $provider.Source @(
-    '--config-file', $configPath, '--verbosity', 'minimal'
-)
-if ($acquisition.ExitCode -ne 0) {
-    throw "Azure Artifacts authentication failed with code $($acquisition.ExitCode)"
-}
-
 $validation = Invoke-CredentialProvider $provider.Source @(
     '--validate-only', '--config-file', $configPath, '--verbosity', 'minimal'
 )
-if ($validation.ExitCode -ne 0 -or ($validation.Output -join "`n") -match 'need refresh') {
-    throw 'Azure Artifacts credentials are not valid for every configured OfficeAgent feed'
+$needsAuthentication = $validation.ExitCode -ne 0 -or
+    ($validation.Output -join "`n") -match 'need refresh'
+if ($CheckOnly) {
+    if ($needsAuthentication) {
+        Write-Preflight 'action-required-auth' 'interactive-sign-in-required'
+    }
+    else {
+        Write-Preflight 'ready'
+    }
+    exit 0
+}
+
+if ($needsAuthentication) {
+    $acquisition = Invoke-CredentialProvider $provider.Source @(
+        '--config-file', $configPath, '--verbosity', 'minimal'
+    )
+    if ($acquisition.ExitCode -ne 0) {
+        throw "Azure Artifacts authentication failed with code $($acquisition.ExitCode)"
+    }
+    $validation = Invoke-CredentialProvider $provider.Source @(
+        '--validate-only', '--config-file', $configPath, '--verbosity', 'minimal'
+    )
+    if ($validation.ExitCode -ne 0 -or ($validation.Output -join "`n") -match 'need refresh') {
+        throw 'Azure Artifacts credentials are not valid for every configured OfficeAgent feed'
+    }
 }
 
 Write-Output "OfficeAgent Azure Artifacts authentication is ready with provider $installedVersion."

@@ -283,15 +283,24 @@ cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
 Version 3 staged plans may bind an `azure-artifacts-npm` authentication
-contract. Authentication runs only after a dependency-receipt miss and before
-the locked dependency restore. The trusted profile validates the pinned
-`artifacts-npm-credprovider` version, refreshes the current user's supported
-Azure Artifacts credentials when required, and validates every declared feed.
-It never emits a token or passes arbitrary shell secrets to the worker,
-compile, policy or test stages. A missing provider, interactive sign-in
-failure, anonymous request, expired credential or feed denial becomes
-`blocked-auth` and is not treated as a recoverable infrastructure retry.
-Dependency and compile cache hits do not run the authentication stage.
+contract. Before a local worker launches, a controller-owned preflight checks
+authentication only when the matching dependency receipt is absent. If the
+pinned provider is missing or the current user must sign in, dispatch returns
+`action-required-auth` while the assignment remains `prepared`; no workspace,
+worker session or tool budget is created. The result contains a non-secret,
+structured remediation command bound to a controller-owned `.yarnrc.yml`
+snapshot extracted from the exact base revision. After the user approves any
+required pinned provider installation and completes Microsoft sign-in/MFA, the
+agent retries the original controller command once and resumes the same
+assignment.
+
+The exact-revision dependency preparation still performs a final non-interactive
+authentication validation before the locked restore. It never emits a token or
+passes arbitrary shell secrets to the worker, compile, policy or test stages.
+Unexpected provider drift, anonymous requests, expired credentials or feed
+denials after preflight become `blocked-auth` and are not treated as
+infrastructure retries. Dependency and compile cache hits do not run either the
+authentication check or the authentication stage.
 
 On a new Windows machine, the agent may prepare the approved provider and
 current user's feed authentication explicitly:
@@ -305,7 +314,9 @@ npm run setup:validation-auth -- -Workspace C:\path\to\OfficeAgent -InstallProvi
 ```
 
 The general `npm run setup` command intentionally remains offline with respect
-to product-repository authentication.
+to product-repository authentication. Agents must never ask users to paste
+tokens; the approved setup command delegates credential acquisition to the
+pinned provider and the Microsoft sign-in flow.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of

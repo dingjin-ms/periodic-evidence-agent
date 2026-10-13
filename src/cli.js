@@ -38,7 +38,8 @@ function failedOutcome(result) {
   if (Array.isArray(result)) return result.some(failedOutcome);
   if (!result || typeof result !== 'object') return false;
   return Boolean(result.error) ||
-    ['blocked', 'blocked-auth', 'partial', 'partial-or-blocked', 'draft-pr-validation-failed'].includes(result.state) ||
+    ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
+      'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed'].includes(result.outcome) ||
     ['collection', 'reviews', 'workers', 'result'].some(key => failedOutcome(result[key]));
 }

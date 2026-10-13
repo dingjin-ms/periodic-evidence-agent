@@ -276,8 +276,11 @@ Node/Corepack/Yarn/platform fingerprint, not by source revision. A compile
 receipt binds an exact source revision and build configuration to that
 dependency receipt. Validation artifacts record dependency and compile cache
 hit/miss state plus checkout, dependency materialization, preparation, policy,
-test and cleanup timings; Yarn resolution/fetch/link subphase timings are
-included when available.
+test and cleanup timings. Cache-hit artifacts also separate receipt loading,
+changed-path checks, input fingerprinting and prepared-output verification;
+cleanup separates source restore, prepared-output verification and source
+cleanliness. Yarn resolution/fetch/link subphase timings are included when
+available.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of
@@ -293,8 +296,13 @@ corrupt snapshots and receipts, or ambiguous paths rerun dependency preparation
 and compile. A recoverable retry of the same revision reuses completed
 preparation but reruns policy and test. Snapshot and prepared workspaces are
 serialized per receipt and source cleanliness plus declared outputs are
-rechecked after every run; workers and repository skills cannot access, write
-or approve cache metadata.
+rechecked before and after every run. Large output sets retain the same complete
+content/link fingerprint but calculate independent output roots through a
+bounded controller-owned worker pool. Test-only reuse validates the active
+compile workspace and its dependency-receipt lineage; damage to an unused
+dependency source workspace does not invalidate an intact compiled snapshot,
+but is detected and rebuilt before any later compile. Workers and repository
+skills cannot access, write or approve cache metadata.
 
 ## Safety invariants
 

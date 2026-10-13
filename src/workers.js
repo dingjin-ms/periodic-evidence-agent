@@ -478,6 +478,13 @@ export async function pushDraftBranch(config, workspace, repo, refspec, dependen
   const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
   return execute(workspace, ['push', 'origin', refspec], adoGitEnvironment(token));
 }
+export function draftSourceRef(repo, jobId) {
+  const prefix = repo.pr?.sourceBranchPrefix ?? 'pilot';
+  requireThat(/^[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$/.test(prefix) &&
+    !prefix.includes('//') && !prefix.split('/').includes('..') && !prefix.startsWith('refs/'),
+  'Invalid Draft PR source branch prefix', 'blocked-config');
+  return `refs/heads/${prefix}/${jobId}`;
+}
 export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true) {
   requireThat(repo.pr?.provider === 'ado' && repo.pr.repositoryId && repo.pr.project && repo.pr.organization &&
     repo.pr.targetRef?.startsWith('refs/heads/'), 'Draft PR provider is not configured', 'blocked-pr');
@@ -500,7 +507,7 @@ export async function createAdoDraft(config, ledger, job, repo, revision, propos
       return response.json();
     };
   }
-  const sourceRefName = `refs/heads/pilot/${job.id}`;
+  const sourceRefName = draftSourceRef(repo, job.id);
   const found = await request('GET', `?searchCriteria.sourceRefName=${encodeURIComponent(sourceRefName)}&searchCriteria.status=all&api-version=7.1`);
   requireThat(Array.isArray(found.value) && found.value.length <= 1, 'Ambiguous existing PRs; manual reconciliation required', 'blocked-reconciliation');
   let pr = found.value[0];
@@ -690,7 +697,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     }
     if (outcome === 'propose-change') {
       ledger.operation(`${id}:push`, id, 'push', { revision });
-      await (dependencies.pushBranch ?? pushDraftBranch)(config, current.workspace, repo, `HEAD:refs/heads/pilot/${id}`);
+      await (dependencies.pushBranch ?? pushDraftBranch)(
+        config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
       ledger.finishOperation(`${id}:push`, 'completed', { revision });
       draftPR = await (dependencies.createDraft ?? createAdoDraft)(config, ledger, current, repo, revision, proposal);
       requireThat(draftPR?.isDraft === true && draftPR.headRevision === revision &&

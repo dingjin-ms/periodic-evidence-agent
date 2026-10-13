@@ -98,6 +98,14 @@ export function configAt(path) {
       repo.validationContractVersion.length > 0,
     `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
+    if (repo.pr?.sourceBranchPrefix !== undefined) {
+      requireThat(typeof repo.pr.sourceBranchPrefix === 'string' &&
+        /^[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$/.test(repo.pr.sourceBranchPrefix) &&
+        !repo.pr.sourceBranchPrefix.includes('//') &&
+        !repo.pr.sourceBranchPrefix.split('/').includes('..') &&
+        !repo.pr.sourceBranchPrefix.startsWith('refs/'),
+      `Repository ${repo.id} has an invalid PR source branch prefix`);
+    }
     repo.allowedWriteFiles ??= [];
     requireThat(Array.isArray(repo.allowedWritePrefixes ?? []) &&
       Array.isArray(repo.allowedWriteFiles), `Repository ${repo.id} write bounds must be arrays`);

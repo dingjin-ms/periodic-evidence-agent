@@ -675,6 +675,37 @@ test('ADO draft provider creates only a draft and reconciles by stable source br
   });
   assert.equal(writes, 0);
 });
+test('ADO draft provider uses a configured user source branch namespace', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.remote = 'https://dev.azure.com/test/project/_git/fixture';
+  repo.pr = {
+    provider: 'ado',
+    organization: 'test',
+    project: 'project',
+    repositoryId: 'fixture',
+    sourceBranchPrefix: 'user/tester/periodic-evidence-agent',
+    targetRef: 'refs/heads/main'
+  };
+  const revision = 'c'.repeat(40);
+  const sourceRefName = `refs/heads/user/tester/periodic-evidence-agent/${job.id}`;
+  const draft = {
+    pullRequestId: 7,
+    isDraft: true,
+    status: 'active',
+    sourceRefName,
+    targetRefName: 'refs/heads/main',
+    lastMergeSourceCommit: { commitId: revision }
+  };
+  const calls = [];
+  await createAdoDraft(config, ledger, job, repo, revision,
+    { title: 'Fixture', description: 'Synthetic' },
+    async (method, suffix, body) => {
+      calls.push({ method, suffix, body });
+      return method === 'GET' ? { value: [] } : draft;
+    });
+  assert.match(calls[0].suffix, /user%2Ftester%2Fperiodic-evidence-agent/);
+  assert.equal(calls[1].body.sourceRefName, sourceRefName);
+});
 test('ADO draft provider accepts the configured legacy visualstudio.com repository host', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.remote = 'https://office.visualstudio.com/ISS/_git/OfficeAgent';

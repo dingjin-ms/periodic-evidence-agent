@@ -182,7 +182,16 @@ function validationPlan(profile) {
   const paths = value => Array.isArray(value) && value.length > 0 &&
     value.every(path => typeof path === 'string' && path && !isAbsolute(path) &&
       !path.includes('..') && !path.includes(':'));
-  if (plan?.version !== 2 ||
+  const authentication = plan?.authentication;
+  const validAuthentication = plan?.version === 2 && authentication === undefined ||
+    plan?.version === 3 && authentication?.type === 'azure-artifacts-npm' &&
+      authentication.provider === 'artifacts-npm-credprovider' &&
+      /^\d+\.\d+\.\d+$/.test(authentication.providerVersion ?? '') &&
+      Array.isArray(authentication.feeds) && authentication.feeds.length > 0 &&
+      authentication.feeds.every(feed =>
+        /^https:\/\/[^/]+\/_packaging\/[^/]+\/npm\/registry\/$/.test(feed?.registry ?? '') &&
+        (feed.scope === null || /^[a-z0-9][a-z0-9-]*$/.test(feed.scope ?? '')));
+  if (![2, 3].includes(plan?.version) || !validAuthentication ||
     json(plan.stages) !== json(['dependencies', 'compile', 'policy', 'test']) ||
     !paths(plan.testOnlyPrefixes) || !paths(plan.lockfilePaths) ||
     !paths(plan.buildConfigPaths) || !paths(plan.dependencySnapshotPaths) ||
@@ -241,6 +250,24 @@ function stageTelemetry(id, startedAt, cache, output = null) {
     subphases: output ? yarnSubphases(output) : []
   };
 }
+function authenticationFailureText(error) {
+  return [
+    error?.message, error?.stdout, error?.stderr,
+    error?.originalMessage
+  ].filter(value => typeof value === 'string').join('\n');
+}
+function isAuthenticationFailure(error) {
+  return /PILOT_AUTH_|No authentication configured|Invalid authentication|anonymous user|authentication required|credentials?.*(?:invalid|missing|refresh)|\b(?:401|403)\b/i
+    .test(authenticationFailureText(error));
+}
+function blockedAuthentication(error) {
+  const blocked = new PilotError('blocked-auth',
+    'Azure Artifacts credentials are unavailable or invalid; run the approved validation authentication setup and retry.');
+  blocked.stdout = '';
+  blocked.stderr = blocked.message;
+  blocked.stageTelemetry = error.stageTelemetry;
+  return blocked;
+}
 async function runProfileStage(gate, profile, stage, workspace, execute = command) {
   const profileRoot = join(dirname(workspace), 'validation-profiles');
   mkdirSync(profileRoot, { recursive: true });
@@ -260,6 +287,9 @@ async function runProfileStage(gate, profile, stage, workspace, execute = comman
       stdout: error.stdout ?? '', stderr: error.stderr ?? '',
       exitCode: error.code ?? null, timeout: Boolean(error.killed)
     });
+    if (stage === 'authentication' ||
+      stage === 'dependencies' && isAuthenticationFailure(error))
+      throw blockedAuthentication(error);
     throw error;
   } finally {
     removeValidationPath(privateProfile, { force: true });
@@ -273,6 +303,19 @@ function parseToolchainFingerprint(output) {
     const value = JSON.parse(line.slice('PILOT_VALIDATION_FINGERPRINT:'.length));
     return value && ['node', 'corepack', 'yarn', 'platform', 'architecture']
       .every(key => typeof value[key] === 'string' && value[key]) ? value : null;
+  } catch { return null; }
+}
+function parseAuthenticationFingerprint(output) {
+  const line = String(output?.stdout ?? '').split(/\r?\n/)
+    .find(value => value.startsWith('PILOT_VALIDATION_AUTH:'));
+  if (!line) return null;
+  try {
+    const value = JSON.parse(line.slice('PILOT_VALIDATION_AUTH:'.length));
+    return value &&
+      value.provider === 'artifacts-npm-credprovider' &&
+      /^\d+\.\d+\.\d+$/.test(value.providerVersion ?? '') &&
+      Number.isInteger(value.feedCount) && value.feedCount > 0 &&
+      value.tokenRecorded === false ? value : null;
   } catch { return null; }
 }
 function profileForGate(gate) {
@@ -443,6 +486,7 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
     gateId: gate.id, lockfileSha256, profileSha256: profile.sha256,
     toolchain, toolchainSha256: hash(json(toolchain))
   };
+  if (plan.authentication) inputs.authentication = plan.authentication;
   const key = hash(json(inputs));
   const root = preparedValidationRoot(config, 'd', gate.id, key);
   const workspace = join(root, 'w');
@@ -480,6 +524,22 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
       await git(workspace, ['checkout', '--detach', revision],
         checkoutEnvironment(), gate.timeoutMs);
       timings.push(stageTelemetry('dependency-checkout', checkoutStarted, 'miss'));
+      if (plan.authentication) {
+        const authentication = await runProfileStage(
+          gate, profile, 'authentication', workspace, execute);
+        timings.push(authentication.telemetry);
+        const authenticationFingerprint =
+          parseAuthenticationFingerprint(authentication.output);
+        requireThat(authenticationFingerprint?.provider ===
+          plan.authentication.provider &&
+          authenticationFingerprint.providerVersion ===
+            plan.authentication.providerVersion &&
+          authenticationFingerprint.feedCount === plan.authentication.feeds.length,
+        `Gate ${gate.id} authentication evidence is incomplete`, 'blocked-auth');
+        requireThat(await git(workspace, ['rev-parse', 'HEAD']) === revision &&
+          !(await git(workspace, ['status', '--porcelain'])),
+        `Gate ${gate.id} authentication mutated source`, 'blocked-auth');
+      }
       const result = await runProfileStage(gate, profile, 'dependencies', workspace, execute);
       timings.push(result.telemetry);
       requireThat(existsSync(profile.path) && hash(readFileSync(profile.path)) === profile.sha256,

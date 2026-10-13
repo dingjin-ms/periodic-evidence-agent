@@ -103,6 +103,7 @@
         "organization": "office",
         "project": "Office",
         "repositoryId": "1JS",
+        "sourceBranchPrefix": "user/your-alias/periodic-evidence-agent",
         "targetRef": null
       }
     },

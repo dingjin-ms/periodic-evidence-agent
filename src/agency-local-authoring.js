@@ -174,6 +174,8 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
   const runtime = await startWorkerRpcServer(toolkit, dependencies.rpcOptions);
   const directory = resolve(config.stateDirectory, 'agency-local', current.session_id);
   mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'agency.toml'),
+    `[profiles."${provider.profile}"]\n`, { mode: 0o600 });
   const mcpConfigPath = join(directory, 'mcp-config.json');
   const usagePath = join(directory, `usage-round-${authoring.round}.json`);
   writeFileSync(mcpConfigPath, json({
@@ -197,7 +199,7 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
       provider.executable,
       agencyArguments(config, provider, current, authoring, mcpConfigPath, usagePath),
       {
-        cwd: current.workspace,
+        cwd: directory,
         env,
         timeoutMs: positive(config.limits.workerMinutes, 'workerMinutes') * 60000,
         prompt

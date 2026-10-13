@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -206,7 +206,7 @@ test('Local Agency accepts only a proposal delivered through its authenticated c
   const root = mkdtempSync(join(tmpdir(), 'agency-run-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const config = {
-    stateDirectory: join(root, 'state'),
+    stateDirectory: relative(process.cwd(), join(root, 'state')),
     limits: { workerMinutes: 1, maxAiCreditsPerSession: 30 }
   };
   const current = {
@@ -232,6 +232,9 @@ test('Local Agency accepts only a proposal delivered through its authenticated c
     launch: async (executable, args, options) => {
       assert.equal(executable, process.execPath);
       assert.equal(options.prompt, 'prompt');
+      assert.equal(options.cwd, resolve(config.stateDirectory, 'agency-local', current.session_id));
+      assert.equal(readFileSync(join(options.cwd, 'agency.toml'), 'utf8'),
+        `[profiles."${provider.profile}"]\n`);
       const mcpConfig = args[args.indexOf('--additional-mcp-config') + 1].slice(1);
       const logDirectory = args[args.indexOf('--log-dir') + 1];
       assert.equal(isAbsolute(mcpConfig), true);

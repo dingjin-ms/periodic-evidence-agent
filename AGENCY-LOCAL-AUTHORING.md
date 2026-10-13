@@ -49,10 +49,12 @@ reference its ID:
 ```
 
 The real binding retains all other required fields shown in
-`pilot.example.json`. The executable must be an absolute path. The named Agency
-profile must already exist and must be intentionally limited to this use. The
-launcher uses `--profile-only`, so ambient global and workspace MCP sources are
-not loaded. Current Agency/Copilot CLI builds require
+`pilot.example.json`. The executable must be an absolute path. The profile name
+identifies a controller-generated empty profile in the session's private state
+directory; it does not depend on mutable user-global Agency configuration. The
+launcher starts Agency from that controller-owned directory and uses
+`--profile-only`, so ambient global and product-workspace MCP sources are not
+loaded. Current Agency/Copilot CLI builds require
 `limits.maxAiCreditsPerSession` to be at least `30` when this provider is used;
 the controller still passes that value as a hard per-session ceiling.
 

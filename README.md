@@ -282,6 +282,31 @@ cleanup separates source restore, prepared-output verification and source
 cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
+Version 3 staged plans may bind an `azure-artifacts-npm` authentication
+contract. Authentication runs only after a dependency-receipt miss and before
+the locked dependency restore. The trusted profile validates the pinned
+`artifacts-npm-credprovider` version, refreshes the current user's supported
+Azure Artifacts credentials when required, and validates every declared feed.
+It never emits a token or passes arbitrary shell secrets to the worker,
+compile, policy or test stages. A missing provider, interactive sign-in
+failure, anonymous request, expired credential or feed denial becomes
+`blocked-auth` and is not treated as a recoverable infrastructure retry.
+Dependency and compile cache hits do not run the authentication stage.
+
+On a new Windows machine, the agent may prepare the approved provider and
+current user's feed authentication explicitly:
+
+```powershell
+npm run setup:validation-auth -- -Workspace C:\path\to\OfficeAgent
+
+# Only when the pinned provider is absent or has the wrong version, after
+# approving installation of @microsoft/artifacts-npm-credprovider@1.2.1:
+npm run setup:validation-auth -- -Workspace C:\path\to\OfficeAgent -InstallProvider
+```
+
+The general `npm run setup` command intentionally remains offline with respect
+to product-repository authentication.
+
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of
 the verified dependency snapshot. The controller records every ignored

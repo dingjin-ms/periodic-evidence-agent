@@ -174,7 +174,7 @@
     "changedEvidencePolicy": "tracked-open-and-area-changed"
   },
   "runtime": {
-    "cliPath": "copilot",
+    "cliPath": "bundled",
     "workiqCli": { "enabled": false, "executable": null, "packageVersion": "1.0.1", "timeoutMs": 120000 },
     "workiqPluginDirectory": null,
     "timeoutMs": 120000

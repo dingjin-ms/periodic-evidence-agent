@@ -22,6 +22,12 @@ const repairDrill = JSON.parse(readFileSync(
 const oneJsFixture = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/1js-bizchat-excel.reviewed-handoff.json', import.meta.url),
   'utf8'));
+const oneJsDualSuiteFixture = JSON.parse(readFileSync(
+  new URL(
+    './fixtures/reviewed-handoff/1js-cross-app-and-excel-agent.reviewed-handoff.json',
+    import.meta.url
+  ),
+  'utf8'));
 
 async function setup(t, { inputFormat = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
@@ -244,6 +250,31 @@ test('reviewed handoff preserves validated declarative E2E mini-spec input throu
   mapped.planning.requestedOutcome = 'add-or-update-tests';
   const prepared = prepareReviewedHandoff(config, ledger, mapped);
   assert.deepEqual(prepared.testCoveragePlan.skillInput, mapped.planning.skillInput);
+  assert.deepEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
+  assert.notStrictEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
+});
+
+test('reviewed handoff preserves a dual-suite declarative E2E batch', async t => {
+  validateReviewedHandoffReceipt(oneJsDualSuiteFixture);
+  const { config, ledger } = await setup(t, {
+    inputFormat: 'declarative-e2e-mini-spec-batch-v1'
+  });
+  const mapped = structuredClone(oneJsDualSuiteFixture);
+  mapped.review.repoIds = ['office-agent'];
+  mapped.planning.improvement.repoIds = ['office-agent'];
+  mapped.planning.improvement.capabilities = ['integration-test-authoring'];
+  mapped.planning.testCoverage.repoId = 'office-agent';
+  mapped.planning.testCoverage.capability = 'integration-test-authoring';
+  mapped.planning.requestedOutcome = 'add-or-update-tests';
+  const prepared = prepareReviewedHandoff(config, ledger, mapped);
+  assert.equal(prepared.assignment.skillInput.items.length, 2);
+  assert.deepEqual(
+    prepared.assignment.skillInput.items.map(item => item.inputItemId),
+    [
+      'bizchat-create-canary-excel',
+      'excel-agent-omni-write-four-by-three-grid'
+    ]
+  );
   assert.deepEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
   assert.notStrictEqual(prepared.assignment.skillInput, mapped.planning.skillInput);
 });

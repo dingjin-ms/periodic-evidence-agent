@@ -178,6 +178,8 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
     `[profiles."${provider.profile}"]\n`, { mode: 0o600 });
   const mcpConfigPath = join(directory, 'mcp-config.json');
   const usagePath = join(directory, `usage-round-${authoring.round}.json`);
+  const finalizationUsagePath = join(directory,
+    `usage-round-${authoring.round}-finalization.json`);
   writeFileSync(mcpConfigPath, json({
     mcpServers: {
       pilot: {
@@ -195,15 +197,30 @@ export async function runAgencyLocal(config, current, toolkit, prompt, provider,
     PILOT_MCP_TOKEN: runtime.token
   };
   try {
-    await (dependencies.launch ?? launchAgency)(
+    const launch = dependencies.launch ?? launchAgency;
+    const options = {
+      cwd: directory,
+      env,
+      timeoutMs: positive(config.limits.workerMinutes, 'workerMinutes') * 60000
+    };
+    await launch(
       provider.executable,
       agencyArguments(config, provider, current, authoring, mcpConfigPath, usagePath),
-      {
-        cwd: directory,
-        env,
-        timeoutMs: positive(config.limits.workerMinutes, 'workerMinutes') * 60000,
-        prompt
-      });
+      { ...options, prompt });
+    if (!toolkit.proposal) {
+      await launch(
+        provider.executable,
+        agencyArguments(config, provider, current, {
+          ...authoring,
+          round: Math.max(1, authoring.round)
+        }, mcpConfigPath, finalizationUsagePath),
+        {
+          ...options,
+          prompt: 'Your previous Agency turn ended without pilot_finish. Do not investigate or edit further. ' +
+            'Use the existing session context and workspace state to call pilot_finish exactly once now. ' +
+            'The controller accepts no final prose and will block the assignment if pilot_finish is omitted.'
+        });
+    }
     requireThat(toolkit.proposal, 'Agency ended without pilot_finish', 'blocked-result');
   } finally {
     await runtime.close();

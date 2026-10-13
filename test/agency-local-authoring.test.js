@@ -230,10 +230,65 @@ test('Local Agency requires pilot_finish even after a successful process exit', 
       return 'accepted';
     }
   };
+  const launches = [];
   await assert.rejects(runAgencyLocal(
     config, current, toolkit, 'prompt', provider, { round: 0 },
-    { launch: async () => ({ stdout: 'final prose', stderr: '' }) }
+    {
+      launch: async (executable, args, options) => {
+        launches.push({ executable, args, options });
+        return { stdout: 'final prose', stderr: '' };
+      }
+    }
   ), /without pilot_finish/);
+  assert.equal(launches.length, 2);
+  assert.equal(launches[0].options.prompt, 'prompt');
+  assert.deepEqual(launches[1].args.slice(-2), ['--resume', current.session_id]);
+  assert.match(launches[1].options.prompt, /call pilot_finish exactly once/);
+});
+
+test('Local Agency resumes the exact session once to finalize an authored result', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'agency-finalize-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = {
+    stateDirectory: relative(process.cwd(), join(root, 'state')),
+    limits: { workerMinutes: 1, maxAiCreditsPerSession: 30 }
+  };
+  const current = {
+    session_id: '23232323-2323-4232-8232-232323232323',
+    workspace: root
+  };
+  const provider = {
+    executable: process.execPath,
+    profile: 'periodic-evidence-isolated'
+  };
+  const toolkit = {
+    proposal: null,
+    list: async () => [],
+    search: async () => [],
+    read: () => '',
+    write: () => 'written',
+    finish(proposal) {
+      this.proposal = proposal;
+      return 'accepted';
+    }
+  };
+  let launches = 0;
+  await runAgencyLocal(config, current, toolkit, 'author', provider, { round: 0 }, {
+    launch: async (executable, args, options) => {
+      launches++;
+      if (launches === 1) return { stdout: '', stderr: '' };
+      assert.deepEqual(args.slice(-2), ['--resume', current.session_id]);
+      const result = await rpc(options.env.PILOT_MCP_ENDPOINT,
+        options.env.PILOT_MCP_TOKEN, 'pilot_finish', {
+          outcome: 'investigated',
+          findings: 'Finalized through the exact resumed session'
+        });
+      assert.equal(result.ok, true);
+      return { stdout: '', stderr: '' };
+    }
+  });
+  assert.equal(launches, 2);
+  assert.equal(toolkit.proposal.findings, 'Finalized through the exact resumed session');
 });
 
 test('Local Agency accepts only a proposal delivered through its authenticated controller', async t => {

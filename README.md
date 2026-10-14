@@ -613,6 +613,17 @@ local: provisioning, commits, exact-revision validation, push, Draft PR
 creation, reconciliation and the no-merge invariant are unchanged. This is
 separate from the hosted [Agency executor](AGENCY-EXECUTOR.md).
 
+| Authoring option | Selection | Additional runtime | Recommended use |
+|---|---|---|---|
+| Copilot SDK | Default | Existing SDK session | Lowest-complexity production baseline |
+| Local Agency | Explicit binding opt-in | Agency CLI, private profile and authenticated MCP bridge | Qualifying Agency orchestration without transferring controller authority |
+
+These are two transports for the same controller workflow, not two different
+permission models. Both receive the same bounded tools and repository skill;
+neither can commit, validate, push, create a Draft PR or merge independently.
+See the provider document for the
+[full comparison](AGENCY-LOCAL-AUTHORING.md#copilot-sdk-comparison).
+
 ## Local package and eventual publication
 
 This repository is prepared for **internal experimental collaboration** only.

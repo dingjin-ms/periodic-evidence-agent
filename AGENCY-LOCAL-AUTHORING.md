@@ -16,6 +16,29 @@ existing local controller still:
 - pushes the final branch and creates an active Draft PR; and
 - prohibits merge.
 
+## Copilot SDK comparison
+
+Local Agency is an alternative authoring transport, not a replacement
+controller. Provider choice does not change the repository policy or delivery
+pipeline.
+
+| Dimension | Copilot SDK | Local Agency |
+|---|---|---|
+| Selection | Default when no provider is configured | Explicit repository-skill binding |
+| Model transport | Direct `@github/copilot-sdk` session | Agency CLI driving an explicit Copilot session |
+| Additional runtime | Existing SDK configuration | Absolute Agency executable, generated private profile and authenticated MCP bridge |
+| Model-visible tools | The five controller-owned `pilot_*` tools | The same five controller-owned `pilot_*` tools |
+| Repair continuity | Existing SDK authoring context | Exact Agency session UUID; never the most recent session |
+| Commit and validation | Controller-owned | Controller-owned |
+| Push and Draft PR | Controller-owned | Controller-owned |
+| Merge | Prohibited | Prohibited |
+| Recommended use | Stable, lowest-complexity baseline | Opt-in Agency qualification and orchestration experiments |
+
+There is no automatic fallback between providers. Missing, changed or failing
+Agency configuration blocks the assignment instead of silently switching to
+the SDK path. Qualify both paths against the same repository skill and
+validation contract before enabling Agency for that binding.
+
 ## Configuration
 
 The SDK provider remains the default. An omitted

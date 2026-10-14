@@ -32,6 +32,7 @@ const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const preparedOutputGuards = new Map();
 const maxPreparedOutputGuards = 2;
 const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
+const maxOutputFingerprintTaskEntries = 2048;
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
@@ -548,34 +549,54 @@ async function parallelOutputFingerprint(workspace, paths) {
     tasks.push(value);
     return tasks.length - 1;
   };
+  const exceedsTaskEntryLimit = target => {
+    let count = 0;
+    const pending = [target];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      const info = lstatSync(current);
+      if (++count > maxOutputFingerprintTaskEntries) return true;
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      for (const entry of readdirSync(current))
+        pending.push(join(current, entry));
+    }
+    return false;
+  };
+  const dependencyEntryPlan = (dependencyPath, entryPath) => {
+    const target = join(workspace, dependencyPath, entryPath);
+    const info = lstatSync(target);
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+      !exceedsTaskEntryLimit(target))
+      return {
+        task: task({
+          mode: 'dependency-entry', dependencyPath, entryPath
+        })
+      };
+    const children = readdirSync(target, { withFileTypes: true })
+      .sort((left, right) =>
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+      .map(entry => dependencyEntryPlan(
+        dependencyPath, join(entryPath, entry.name)));
+    return { name: target.slice(dirname(target).length + 1), children };
+  };
+  const dependencyEntryValue = (entry, serialized) => {
+    if (Number.isInteger(entry.task)) return JSON.parse(serialized[entry.task]);
+    const children = entry.children.map(child =>
+      dependencyEntryValue(child, serialized));
+    return {
+      name: entry.name, type: 'directory', sha256: hash(json(children))
+    };
+  };
   const plans = paths.map(path => {
     const target = join(workspace, path);
     if (!existsSync(target)) return null;
     const info = lstatSync(target);
     if (!info.isDirectory() || !path.replaceAll('\\', '/').endsWith('node_modules'))
       return { type: 'path', task: task({ mode: 'path', path }) };
-    const entries = [];
-    for (const entry of readdirSync(target, { withFileTypes: true })
-      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
-      const entryPath = join(target, entry.name);
-      const entryInfo = lstatSync(entryPath);
-      if (!entryInfo.isSymbolicLink() && entryInfo.isDirectory() &&
-        entry.name.startsWith('@')) {
-        const children = readdirSync(entryPath, { withFileTypes: true })
-          .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
-          .map(child => task({
-            mode: 'dependency-entry', dependencyPath: path,
-            entryPath: join(entry.name, child.name)
-          }));
-        entries.push({ name: entry.name, children });
-      } else {
-        entries.push({
-          task: task({
-            mode: 'dependency-entry', dependencyPath: path, entryPath: entry.name
-          })
-        });
-      }
-    }
+    const entries = readdirSync(target, { withFileTypes: true })
+      .sort((left, right) =>
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+      .map(entry => dependencyEntryPlan(path, entry.name));
     return { type: 'dependency', path, entries };
   });
   if (plans.some(plan => !plan)) return null;
@@ -607,7 +628,7 @@ async function parallelOutputFingerprint(workspace, paths) {
       const dispatch = worker => {
         if (next >= tasks.length) return;
         const index = next++;
-        const timer = setTimeout(() => fail(new Error(
+        const timer = setTimeout(() => fail(new PilotError('blocked-validation',
           `Output fingerprint task timed out after ${outputFingerprintTaskTimeoutMs} ms: ` +
           json(tasks[index]))), outputFingerprintTaskTimeoutMs);
         taskTimers.set(index, timer);
@@ -651,11 +672,8 @@ async function parallelOutputFingerprint(workspace, paths) {
     if (!valid) return null;
     const values = plans.map(plan => {
       if (plan.type === 'path') return JSON.parse(serialized[plan.task]);
-      const entries = plan.entries.map(entry => {
-        if (Number.isInteger(entry.task)) return JSON.parse(serialized[entry.task]);
-        const children = entry.children.map(index => JSON.parse(serialized[index]));
-        return { name: entry.name, type: 'directory', sha256: hash(json(children)) };
-      });
+      const entries = plan.entries.map(entry =>
+        dependencyEntryValue(entry, serialized));
       return dependencyOutputFingerprint(plan.path, entries);
     });
     return hash(json(values));

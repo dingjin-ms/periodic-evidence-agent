@@ -5,8 +5,9 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import {
   readFileSync, writeFileSync, mkdirSync, existsSync, statSync, lstatSync,
-  readdirSync, readlinkSync, symlinkSync, copyFileSync, rmSync, watch
+  readdirSync, readlinkSync, symlinkSync, copyFileSync, rmSync, renameSync, watch
 } from 'node:fs';
+import { rm as removeAsync } from 'node:fs/promises';
 import { join, dirname, resolve, relative, isAbsolute, extname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight, workspaceCleanupPolicy } from './common.js';
@@ -30,6 +31,7 @@ const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const preparedOutputGuards = new Map();
 const maxPreparedOutputGuards = 2;
+const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
@@ -182,6 +184,16 @@ export function checkoutEnvironment() {
 }
 function removeValidationPath(path, options) {
   return rmSync(path, { ...options, maxRetries: 10, retryDelay: 250 });
+}
+function quarantineValidationPath(path) {
+  if (!existsSync(path)) return null;
+  const quarantine = `${path}.stale-${process.pid}-${uuid()}`;
+  renameSync(path, quarantine);
+  removeAsync(quarantine, {
+    recursive: true, force: true, maxRetries: 10, retryDelay: 250
+  }).catch(error => process.emitWarning(
+    `Background validation cleanup failed for ${quarantine}: ${safeError(error).message}`));
+  return quarantine;
 }
 const preparationPromises = new Map();
 const authenticationPreflightPromises = new Map();
@@ -346,7 +358,7 @@ function profileForGate(gate) {
   const bytes = readFileSync(gate.profilePath);
   return { path: gate.profilePath, sha256: gate.profileSha256, bytes };
 }
-async function outputFingerprint(workspace, paths) {
+export async function outputFingerprint(workspace, paths) {
   const hasDependencyDirectory = paths.some(path =>
     path.replaceAll('\\', '/').endsWith('node_modules') &&
     existsSync(join(workspace, path)) && lstatSync(join(workspace, path)).isDirectory());
@@ -570,6 +582,7 @@ async function parallelOutputFingerprint(workspace, paths) {
   }
   const serialized = Array(tasks.length);
   const workers = [];
+  const taskTimers = new Map();
   const workerCount = Math.min(8, availableParallelism(), tasks.length);
   let next = 0;
   try {
@@ -591,6 +604,10 @@ async function parallelOutputFingerprint(workspace, paths) {
       const dispatch = worker => {
         if (next >= tasks.length) return;
         const index = next++;
+        const timer = setTimeout(() => fail(new Error(
+          `Output fingerprint task timed out after ${outputFingerprintTaskTimeoutMs} ms: ` +
+          json(tasks[index]))), outputFingerprintTaskTimeoutMs);
+        taskTimers.set(index, timer);
         worker.postMessage({ workspace, index, ...tasks[index] });
       };
       for (let index = 0; index < workerCount; index++) {
@@ -598,6 +615,11 @@ async function parallelOutputFingerprint(workspace, paths) {
         workers.push(worker);
         worker.on('message', result => {
           if (settled) return;
+          const timer = taskTimers.get(result.index);
+          if (timer) {
+            clearTimeout(timer);
+            taskTimers.delete(result.index);
+          }
           if (!Number.isInteger(result.index) || result.index < 0 ||
             result.index >= tasks.length || result.error) {
             fail(new Error(`Cannot fingerprint task ${result.index}: ${result.error}`));
@@ -635,6 +657,7 @@ async function parallelOutputFingerprint(workspace, paths) {
     });
     return hash(json(values));
   } finally {
+    for (const timer of taskTimers.values()) clearTimeout(timer);
     await Promise.all(workers.map(worker => worker.terminate()));
   }
 }
@@ -923,7 +946,7 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
   if (existing) return existing;
   const preparing = (async () => {
     closePreparedOutputGuard(receiptPath);
-    if (existsSync(root)) removeValidationPath(root, { recursive: true, force: true });
+    quarantineValidationPath(root);
     mkdirSync(root, { recursive: true });
     const timings = [fingerprintRun.telemetry];
     try {
@@ -1038,7 +1061,7 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
   if (existing) return existing;
   const preparing = (async () => {
     closePreparedOutputGuard(receiptPath);
-    if (existsSync(root)) removeValidationPath(root, { recursive: true, force: true });
+    quarantineValidationPath(root);
     mkdirSync(dirname(root), { recursive: true });
     mkdirSync(root, { recursive: true });
     const timings = dependency.cache === 'miss'
@@ -1356,7 +1379,7 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
         } catch (error) {
           cleanupError = safeError(error).message;
           closePreparedOutputGuard(receipt.receiptPath);
-          removeValidationPath(dirname(receipt.workspace), { recursive: true, force: true });
+          quarantineValidationPath(dirname(receipt.workspace));
         }
         timings.push({
           ...stageTelemetry('cleanup', cleanupStarted,

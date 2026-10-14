@@ -1,15 +1,25 @@
 import { parentPort } from 'node:worker_threads';
 import {
-  dependencyEntryFingerprint, outputPathFingerprint
+  dependencyEntryFingerprint, dependencyEntryFingerprintWithEntries,
+  outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
 
-parentPort.on('message', ({ workspace, index, mode, path, dependencyPath, entryPath }) => {
+parentPort.on('message', ({
+  workspace, index, mode, path, dependencyPath, entryPath, captureEntries
+}) => {
   try {
-    const value = mode === 'dependency-entry'
+    const result = captureEntries
+      ? mode === 'dependency-entry'
+        ? dependencyEntryFingerprintWithEntries(
+          workspace, dependencyPath, entryPath)
+        : outputPathFingerprintWithEntries(workspace, path)
+      : null;
+    const value = result?.value ?? (mode === 'dependency-entry'
       ? dependencyEntryFingerprint(workspace, dependencyPath, entryPath)
-      : outputPathFingerprint(workspace, path);
+      : outputPathFingerprint(workspace, path));
     parentPort.postMessage({
-      index, valid: value !== null, serialized: JSON.stringify(value)
+      index, valid: value !== null, serialized: JSON.stringify(value),
+      entries: result?.entries ?? null
     });
   } catch (error) {
     parentPort.postMessage({ index, error: error.message });

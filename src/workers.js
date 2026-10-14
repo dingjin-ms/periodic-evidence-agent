@@ -18,7 +18,8 @@ import {
 } from './repository-skills.js';
 import { requireEligibleImprovementInvestigation } from './review-decisions.js';
 import {
-  dependencyOutputFingerprint, fileContentSha256, outputPathFingerprint
+  dependencyOutputFingerprint, fileContentSha256, outputPathFingerprint,
+  outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
@@ -362,14 +363,20 @@ function profileForGate(gate) {
   const bytes = readFileSync(gate.profilePath);
   return { path: gate.profilePath, sha256: gate.profileSha256, bytes };
 }
-export async function outputFingerprint(workspace, paths) {
+export async function outputFingerprint(workspace, paths, captureEntries = false) {
   const hasDependencyDirectory = paths.some(path =>
     path.replaceAll('\\', '/').endsWith('node_modules') &&
     existsSync(join(workspace, path)) && lstatSync(join(workspace, path)).isDirectory());
   if ((paths.length >= 8 || hasDependencyDirectory) && availableParallelism() > 1)
-    return parallelOutputFingerprint(workspace, paths);
-  const values = paths.map(path => outputPathFingerprint(workspace, path));
-  return values.every(Boolean) ? hash(json(values)) : null;
+    return parallelOutputFingerprint(workspace, paths, captureEntries);
+  const results = paths.map(path => captureEntries
+    ? outputPathFingerprintWithEntries(workspace, path)
+    : { value: outputPathFingerprint(workspace, path), entries: null });
+  if (!results.every(result => result?.value)) return null;
+  const sha256 = hash(json(results.map(result => result.value)));
+  return captureEntries
+    ? { sha256, entries: new Map(results.flatMap(result => result.entries)) }
+    : sha256;
 }
 function normalizedOutputPath(path) {
   return path.replaceAll('\\', '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
@@ -378,27 +385,38 @@ function watchPathKey(path) {
   const normalized = normalizedOutputPath(path);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
-function collectPreparedOutputFiles(workspace, paths) {
-  const files = new Map();
+function collectPreparedOutputEntries(workspace, paths) {
+  const entries = new Map();
   const visit = (target, path) => {
     const info = lstatSync(target);
-    if (info.isSymbolicLink()) return;
+    if (info.isSymbolicLink()) {
+      const resolvedTarget = resolve(dirname(target), readlinkSync(target));
+      const rootRelative = relative(workspace, resolvedTarget);
+      entries.set(watchPathKey(path), {
+        type: 'link',
+        sha256: hash(json(!rootRelative.startsWith('..') &&
+          !isAbsolute(rootRelative)
+          ? rootRelative.replaceAll('\\', '/')
+          : readlinkSync(target).replaceAll('\\', '/')))
+      });
+      return;
+    }
     if (info.isFile()) {
-      files.set(watchPathKey(path), fileContentSha256(target));
+      entries.set(watchPathKey(path), {
+        type: 'file', sha256: fileContentSha256(target)
+      });
       return;
     }
     if (!info.isDirectory()) return;
+    entries.set(watchPathKey(path), { type: 'directory' });
     for (const entry of readdirSync(target, { withFileTypes: true })) {
       const entryPath = join(target, entry.name);
       const relativePath = `${normalizedOutputPath(path)}/${entry.name}`;
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) visit(entryPath, relativePath);
-      else if (entry.isFile())
-        files.set(watchPathKey(relativePath), fileContentSha256(entryPath));
+      visit(entryPath, relativePath);
     }
   };
   for (const path of paths) visit(join(workspace, path), path);
-  return files;
+  return entries;
 }
 function closePreparedOutputGuard(receiptPath) {
   const guard = preparedOutputGuards.get(receiptPath);
@@ -420,7 +438,8 @@ function retainPreparedOutputGuard(receiptPath, guard) {
   preparedOutputGuards.set(receiptPath, guard);
   evictPreparedOutputGuards(receiptPath);
 }
-function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256) {
+function startPreparedOutputGuard(
+  receiptPath, workspace, paths, expectedSha256, baselineEntries) {
   const normalizedPaths = paths.map(normalizedOutputPath).sort();
   const current = preparedOutputGuards.get(receiptPath);
   if (current && current.workspace === workspace &&
@@ -435,7 +454,11 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
     guard = {
       workspace, paths: normalizedPaths, expectedSha256,
       dirty: false, dirtyReason: null, verified: false, watchers: [],
-      baselineFiles: new Map(), changedFiles: new Set(), active: 0
+      baselineEntries: new Map([...baselineEntries].map(([path, value]) => [
+        watchPathKey(path),
+        value.type === 'directory' ? { type: 'directory' } : value
+      ])),
+      changedEntries: new Set(), active: 0
     };
     const stopWatching = () => {
       for (const watcher of guard.watchers) watcher.close();
@@ -446,7 +469,6 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
       guard.dirtyReason ??= reason;
       stopWatching();
     };
-    guard.baselineFiles = collectPreparedOutputFiles(workspace, normalizedPaths);
     for (const path of normalizedPaths) {
       const target = join(workspace, path);
       if (!existsSync(target)) {
@@ -466,8 +488,8 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
           relativePath !== normalizedOutputPath(expectedName)) return;
         const changedPath = watchPathKey(
           `${path}${directory ? `/${relativePath}` : ''}`);
-        if (eventType === 'change' && guard.baselineFiles.has(changedPath)) {
-          guard.changedFiles.add(changedPath);
+        if (eventType === 'change' && guard.baselineEntries.has(changedPath)) {
+          guard.changedEntries.add(changedPath);
           return;
         }
         markDirty(`${eventType}:${changedPath}`);
@@ -487,10 +509,20 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
 async function settlePreparedOutputGuard(guard) {
   await delay(100);
   if (guard.dirty) return false;
-  for (const path of guard.changedFiles) {
+  const changedEntries = [...guard.changedEntries].sort(
+    (left, right) => left.length - right.length)
+    .filter((path, index, values) => !values.slice(0, index)
+      .some(parent => path.startsWith(`${parent}/`)));
+  for (const path of changedEntries) {
     const target = join(guard.workspace, path);
-    if (!existsSync(target) || !lstatSync(target).isFile() ||
-      fileContentSha256(target) !== guard.baselineFiles.get(path)) {
+    const actual = existsSync(target)
+      ? collectPreparedOutputEntries(guard.workspace, [path])
+      : new Map();
+    const expected = new Map([...guard.baselineEntries]
+      .filter(([entry]) => entry === path || entry.startsWith(`${path}/`)));
+    if (actual.size !== expected.size ||
+      [...actual].some(([entry, value]) =>
+        json(expected.get(entry)) !== json(value))) {
       guard.dirty = true;
       guard.dirtyReason = `content-changed:${path}`;
       for (const watcher of guard.watchers) watcher.close();
@@ -498,7 +530,7 @@ async function settlePreparedOutputGuard(guard) {
       return false;
     }
   }
-  guard.changedFiles.clear();
+  guard.changedEntries.clear();
   return true;
 }
 async function withActivePreparedOutputGuard(guard, operation) {
@@ -510,9 +542,20 @@ async function withActivePreparedOutputGuard(guard, operation) {
     evictPreparedOutputGuards();
   }
 }
-async function verifyPreparedOutputs(receiptPath, workspace, outputs) {
-  const guard = startPreparedOutputGuard(receiptPath, workspace,
-    outputs.paths, outputs.sha256);
+async function verifyPreparedOutputs(
+  receiptPath, workspace, outputs, capturedBaseline = null) {
+  let baseline = capturedBaseline;
+  if (!baseline) {
+    const captured = await outputFingerprint(workspace, outputs.paths, true);
+    if (!captured || captured.sha256 !== outputs.sha256)
+      return {
+        valid: false, method: 'content',
+        reason: 'content-fingerprint-mismatch'
+      };
+    baseline = captured.entries;
+  }
+  const guard = startPreparedOutputGuard(
+    receiptPath, workspace, outputs.paths, outputs.sha256, baseline);
   if (guard?.dirty) return { valid: false, method: 'watch', reason: guard.dirtyReason };
   if (guard?.verified) return { valid: true, method: 'watch' };
   const verify = async () => {
@@ -543,7 +586,7 @@ async function preparedOutputsRemainValid(receipt) {
   }
   return verifyPreparedOutputs(receipt.receiptPath, receipt.workspace, receipt.outputs);
 }
-async function parallelOutputFingerprint(workspace, paths) {
+async function parallelOutputFingerprint(workspace, paths, captureEntries = false) {
   const tasks = [];
   const task = value => {
     tasks.push(value);
@@ -577,15 +620,23 @@ async function parallelOutputFingerprint(workspace, paths) {
         left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
       .map(entry => dependencyEntryPlan(
         dependencyPath, join(entryPath, entry.name)));
-    return { name: target.slice(dirname(target).length + 1), children };
+    return {
+      name: target.slice(dirname(target).length + 1),
+      path: join(dependencyPath, entryPath),
+      children
+    };
   };
+  const capturedEntries = [];
   const dependencyEntryValue = (entry, serialized) => {
     if (Number.isInteger(entry.task)) return JSON.parse(serialized[entry.task]);
     const children = entry.children.map(child =>
       dependencyEntryValue(child, serialized));
-    return {
-      name: entry.name, type: 'directory', sha256: hash(json(children))
-    };
+    const sha256 = hash(json(children));
+    if (captureEntries)
+      capturedEntries.push([
+        entry.path.replaceAll('\\', '/'), { type: 'directory', sha256 }
+      ]);
+    return { name: entry.name, type: 'directory', sha256 };
   };
   const plans = paths.map(path => {
     const target = join(workspace, path);
@@ -601,8 +652,14 @@ async function parallelOutputFingerprint(workspace, paths) {
   });
   if (plans.some(plan => !plan)) return null;
   if (tasks.length < 8) {
-    const values = paths.map(path => outputPathFingerprint(workspace, path));
-    return values.every(Boolean) ? hash(json(values)) : null;
+    const results = paths.map(path => captureEntries
+      ? outputPathFingerprintWithEntries(workspace, path)
+      : { value: outputPathFingerprint(workspace, path), entries: null });
+    if (!results.every(result => result?.value)) return null;
+    const sha256 = hash(json(results.map(result => result.value)));
+    return captureEntries
+      ? { sha256, entries: new Map(results.flatMap(result => result.entries)) }
+      : sha256;
   }
   const serialized = Array(tasks.length);
   const workers = [];
@@ -615,7 +672,17 @@ async function parallelOutputFingerprint(workspace, paths) {
         plan.entries.map(entry => ({
           name: entry.name, type: 'directory', sha256: hash(json([]))
         }))));
-      return hash(json(values));
+      const sha256 = hash(json(values));
+      return captureEntries
+        ? {
+          sha256,
+          entries: new Map(plans.map((plan, index) => [
+            plan.path, {
+              type: 'directory', sha256: values[index].manifestSha256
+            }
+          ]))
+        }
+        : sha256;
     }
     const valid = await new Promise((resolvePromise, rejectPromise) => {
       let completed = 0;
@@ -632,7 +699,9 @@ async function parallelOutputFingerprint(workspace, paths) {
           `Output fingerprint task timed out after ${outputFingerprintTaskTimeoutMs} ms: ` +
           json(tasks[index]))), outputFingerprintTaskTimeoutMs);
         taskTimers.set(index, timer);
-        worker.postMessage({ workspace, index, ...tasks[index] });
+        worker.postMessage({
+          workspace, index, ...tasks[index], captureEntries
+        });
       };
       for (let index = 0; index < workerCount; index++) {
         const worker = new Worker(new URL('./output-fingerprint-worker.js', import.meta.url));
@@ -654,6 +723,8 @@ async function parallelOutputFingerprint(workspace, paths) {
             resolvePromise(false);
             return;
           }
+          if (captureEntries && Array.isArray(result.entries))
+            capturedEntries.push(...result.entries);
           serialized[result.index] = result.serialized;
           completed++;
           if (completed === tasks.length) {
@@ -674,9 +745,18 @@ async function parallelOutputFingerprint(workspace, paths) {
       if (plan.type === 'path') return JSON.parse(serialized[plan.task]);
       const entries = plan.entries.map(entry =>
         dependencyEntryValue(entry, serialized));
-      return dependencyOutputFingerprint(plan.path, entries);
+      const value = dependencyOutputFingerprint(plan.path, entries);
+      if (captureEntries)
+        capturedEntries.push([
+          plan.path.replaceAll('\\', '/'),
+          { type: 'directory', sha256: value.manifestSha256 }
+        ]);
+      return value;
     });
-    return hash(json(values));
+    const sha256 = hash(json(values));
+    return captureEntries
+      ? { sha256, entries: new Map(capturedEntries) }
+      : sha256;
   } finally {
     for (const timer of taskTimers.values()) clearTimeout(timer);
     await Promise.all(workers.map(worker => worker.terminate()));
@@ -1002,19 +1082,22 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
         !(await git(workspace, ['status', '--porcelain'])),
       `Gate ${gate.id} dependency preparation mutated source`, 'blocked-validation');
       const outputPaths = await dependencySnapshotPaths(workspace, plan.dependencySnapshotPaths);
-      const outputSha256 = await outputFingerprint(workspace, outputPaths);
-      requireThat(outputSha256, `Gate ${gate.id} dependency snapshot is incomplete`,
+      const capturedOutputs =
+        await outputFingerprint(workspace, outputPaths, true);
+      requireThat(capturedOutputs,
+        `Gate ${gate.id} dependency snapshot is incomplete`,
         'blocked-validation');
       const body = {
         version: 2, type: 'dependencies', gateId: gate.id, key, inputs,
-        outputs: { paths: outputPaths, sha256: outputSha256 },
+        outputs: { paths: outputPaths, sha256: capturedOutputs.sha256 },
         timings, preparedFromRevision: revision, dependencyReceipt: null,
         createdAt: now(), controllerOwned: true
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
       const verification =
-        await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs);
+        await verifyPreparedOutputs(
+          receiptPath, workspace, receipt.outputs, capturedOutputs.entries);
       requireThat(verification.valid,
         `Gate ${gate.id} dependency snapshot changed while it was recorded` +
         `${verification.reason ? ` (${verification.reason})` : ''}`,
@@ -1118,12 +1201,15 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
         ...await preparedSnapshotPaths(workspace, dependency.outputs.paths,
           plan.preparedOutputPaths)
       ])].sort();
-      const preparedOutputSha256 = await outputFingerprint(workspace, preparedOutputPaths);
-      requireThat(preparedOutputSha256,
+      const capturedOutputs =
+        await outputFingerprint(workspace, preparedOutputPaths, true);
+      requireThat(capturedOutputs,
         `Gate ${gate.id} prepared outputs are incomplete`, 'blocked-validation');
       const body = {
         version: 3, type: 'compile', gateId: gate.id, key, inputs,
-        outputs: { paths: preparedOutputPaths, sha256: preparedOutputSha256 },
+        outputs: {
+          paths: preparedOutputPaths, sha256: capturedOutputs.sha256
+        },
         timings, preparedFromRevision: revision,
         dependencyReceipt: {
           path: dependency.receiptPath, key: dependency.key,
@@ -1133,8 +1219,9 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs))
-        .valid, `Gate ${gate.id} prepared outputs changed while they were recorded`,
+      requireThat((await verifyPreparedOutputs(
+        receiptPath, workspace, receipt.outputs, capturedOutputs.entries)).valid,
+      `Gate ${gate.id} prepared outputs changed while they were recorded`,
       'blocked-validation');
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',

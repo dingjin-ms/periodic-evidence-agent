@@ -27,7 +27,11 @@ export function fileContentSha256(path) {
   return fileSha256(path, lstatSync(path).size);
 }
 
-function pathFingerprint(root, path) {
+function recordEntry(entries, path, value) {
+  if (entries) entries.push([path.replaceAll('\\', '/'), value]);
+}
+
+function pathFingerprint(root, path, recordedEntries = null) {
   const target = join(root, path);
   if (!existsSync(target)) return null;
   const info = lstatSync(target);
@@ -35,25 +39,40 @@ function pathFingerprint(root, path) {
     const rawTarget = readlinkSync(target);
     const resolvedTarget = resolve(dirname(target), rawTarget);
     const rootRelative = relative(root, resolvedTarget);
-    return {
+    const value = {
       path, type: 'link',
       target: !rootRelative.startsWith('..') && !isAbsolute(rootRelative)
         ? { rootRelative } : { external: rawTarget }
     };
+    recordEntry(recordedEntries, path, {
+      type: 'link',
+      sha256: hash(json(!rootRelative.startsWith('..') &&
+        !isAbsolute(rootRelative)
+        ? rootRelative.replaceAll('\\', '/')
+        : rawTarget.replaceAll('\\', '/')))
+    });
+    return value;
   }
-  if (info.isFile())
-    return { path, type: 'file', sha256: fileSha256(target, info.size) };
+  if (info.isFile()) {
+    const sha256 = fileSha256(target, info.size);
+    recordEntry(recordedEntries, path, { type: 'file', sha256 });
+    return { path, type: 'file', sha256 };
+  }
   if (!info.isDirectory()) return null;
   const entries = [];
   for (const name of readdirSync(target).sort()) {
-    const entry = pathFingerprint(root, join(path, name));
+    const entry = pathFingerprint(root, join(path, name), recordedEntries);
     if (!entry) return null;
     entries.push(entry);
   }
+  recordEntry(recordedEntries, path, {
+    type: 'directory', sha256: hash(json(entries))
+  });
   return { path, type: 'directory', entries };
 }
 
-function dependencyNodeFingerprint(workspace, physicalWorkspace, entryPath, name) {
+function dependencyNodeFingerprint(workspace, physicalWorkspace, entryPath, name,
+  recordedEntries = null, recordedPath = name) {
   const info = lstatSync(entryPath);
   if (info.isSymbolicLink()) {
     const resolvedTarget = resolve(dirname(entryPath), readlinkSync(entryPath));
@@ -66,24 +85,34 @@ function dependencyNodeFingerprint(workspace, physicalWorkspace, entryPath, name
     const finalRootRelative = relative(physicalWorkspace, finalTarget);
     if (finalRootRelative.startsWith('..') || isAbsolute(finalRootRelative))
       return null;
-    return {
+    const value = {
       name, type: 'link',
       target: rootRelative.replaceAll('\\', '/'),
       resolvedTarget: finalRootRelative.replaceAll('\\', '/')
     };
+    recordEntry(recordedEntries, recordedPath, {
+      type: 'link', sha256: hash(json(value.target))
+    });
+    return value;
   }
-  if (info.isFile())
-    return { name, type: 'file', size: info.size, sha256: fileSha256(entryPath, info.size) };
+  if (info.isFile()) {
+    const sha256 = fileSha256(entryPath, info.size);
+    recordEntry(recordedEntries, recordedPath, { type: 'file', sha256 });
+    return { name, type: 'file', size: info.size, sha256 };
+  }
   if (!info.isDirectory()) return null;
   const entries = [];
   for (const entry of readdirSync(entryPath, { withFileTypes: true })
     .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
     const value = dependencyNodeFingerprint(workspace, physicalWorkspace,
-      join(entryPath, entry.name), entry.name);
+      join(entryPath, entry.name), entry.name, recordedEntries,
+      join(recordedPath, entry.name));
     if (!value) return null;
     entries.push(value);
   }
-  return { name, type: 'directory', sha256: hash(json(entries)) };
+  const sha256 = hash(json(entries));
+  recordEntry(recordedEntries, recordedPath, { type: 'directory', sha256 });
+  return { name, type: 'directory', sha256 };
 }
 
 export function dependencyEntryFingerprint(workspace, dependencyPath, entryPath) {
@@ -94,6 +123,20 @@ export function dependencyEntryFingerprint(workspace, dependencyPath, entryPath)
     !existsSync(target)) return null;
   return dependencyNodeFingerprint(workspace, realpathSync.native(workspace),
     target, basename(target));
+}
+
+export function dependencyEntryFingerprintWithEntries(
+  workspace, dependencyPath, entryPath) {
+  const dependencyDirectory = resolve(workspace, dependencyPath);
+  const target = resolve(dependencyDirectory, entryPath);
+  const bounded = relative(dependencyDirectory, target);
+  if (!bounded || bounded.startsWith('..') || isAbsolute(bounded) ||
+    !existsSync(target)) return null;
+  const entries = [];
+  const value = dependencyNodeFingerprint(
+    workspace, realpathSync.native(workspace), target, basename(target),
+    entries, join(dependencyPath, entryPath));
+  return value ? { value, entries } : null;
 }
 
 export function dependencyOutputFingerprint(path, entries) {
@@ -125,4 +168,30 @@ export function outputPathFingerprint(workspace, path) {
     !path.replaceAll('\\', '/').endsWith('node_modules'))
     return pathFingerprint(workspace, path);
   return dependencyDirectoryFingerprint(workspace, target, path);
+}
+
+export function outputPathFingerprintWithEntries(workspace, path) {
+  const target = join(workspace, path);
+  const entries = [];
+  if (!existsSync(target) || !lstatSync(target).isDirectory() ||
+    !path.replaceAll('\\', '/').endsWith('node_modules')) {
+    const value = pathFingerprint(workspace, path, entries);
+    return value ? { value, entries } : null;
+  }
+  const physicalWorkspace = realpathSync.native(workspace);
+  const values = [];
+  for (const entry of readdirSync(target, { withFileTypes: true })
+    .sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
+    const value = dependencyNodeFingerprint(
+      workspace, physicalWorkspace, join(target, entry.name), entry.name,
+      entries, join(path, entry.name));
+    if (!value) return null;
+    values.push(value);
+  }
+  const value = dependencyOutputFingerprint(path, values);
+  recordEntry(entries, path, {
+    type: 'directory', sha256: value.manifestSha256
+  });
+  return { value, entries };
 }

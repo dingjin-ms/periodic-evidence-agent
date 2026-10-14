@@ -624,6 +624,10 @@ function startPreparedOutputGuard(
       const watchRoot = directory ? target : dirname(target);
       const expectedName = directory ? null : target.slice(dirname(target).length + 1);
       const watcher = watch(watchRoot, { recursive: directory }, (eventType, filename) => {
+        if (!existsSync(target)) {
+          markDirty(`missing:${path}`);
+          return;
+        }
         if (filename === null) {
           if (eventType === 'change' && !guard.verified) {
             guard.unknownInitialChange = true;

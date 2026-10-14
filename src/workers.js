@@ -1466,6 +1466,7 @@ async function reusablePreparation(gate, job, revision, prepared, execute, repo)
   } catch { return null; }
   if (!validReceiptIntegrity(dependency) || dependency.type !== 'dependencies' ||
     dependency.key !== prepared.dependencyReceipt.key ||
+    dependency.outputs?.sha256 !== prepared.inputs.dependencyOutputsSha256 ||
     !Array.isArray(dependency.outputs?.paths)) return null;
   reuseTimings.push(stageTelemetry('reuse-receipts', receiptsStarted, 'hit'));
   const changedPathsStarted = now();

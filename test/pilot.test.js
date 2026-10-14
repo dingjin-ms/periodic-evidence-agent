@@ -1594,6 +1594,26 @@ test('changed dependency contents cannot reuse an older compile receipt', async 
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
+test('test-only repair rejects an older compile receipt after dependency regeneration',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    rmSync(dirname(prepared.staged.dependencyReceiptPath),
+      { recursive: true, force: true });
+    ctx.behavior.dependencyVersion = '3.0.0';
+    const regenerated = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    assert.notEqual(regenerated.staged.inputs.dependencyOutputsSha256,
+      prepared.staged.inputs.dependencyOutputsSha256);
+    const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+      'Repair test after dependency regeneration');
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, ctx.execute, rmSync, prepared);
+    assert.equal(result[0].status, 'passed');
+    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+    assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 3);
+  });
 test('runner dependency file mutation invalidates the prepared cache', async t => {
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,

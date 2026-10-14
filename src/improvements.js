@@ -84,7 +84,9 @@ export function recordTestCoveragePlan(ledger, input) {
     repoId: input.repoId, capability: input.capability,
     sourceRevision: input.sourceRevision ?? null,
     searchStatus: input.searchStatus, disposition, existingTests,
-    coverageGaps, unknowns, rationale: input.rationale, createdAt: now()
+    coverageGaps, unknowns, rationale: input.rationale,
+    ...(input.skillInput ? { skillInput: structuredClone(input.skillInput) } : {}),
+    createdAt: now()
   };
   validateRecord(record);
   if (previous && comparable(previous) === comparable(record)) return previous;

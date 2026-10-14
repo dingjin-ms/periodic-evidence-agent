@@ -12,6 +12,19 @@ You perform the collector role of an independent logical agent. A conversation
 is a temporary executor, not the agent's identity or state store. Do not spawn
 agents merely because this skill was selected.
 
+This is the top-level Collector entrypoint, alongside `evidence-filter` and
+`evidence-proposer`. `npm run pilot -- agent collector help` describes its
+inputs, outputs and supported helper operations. Invoke an existing helper as
+`npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json`.
+The facade preserves its existing arguments, schemas and permission gates;
+its result envelope is not a new authorization or completeness assertion.
+
+For an explicitly selected saved-source handoff, `agent collector replay-evidence`
+imports pinned original records/captures into a held audit ledger with collection
+and dispatch disabled. Label it saved-evidence import, not a fresh source read.
+Follow the [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff);
+the receipt preserves original provenance and never establishes full coverage.
+
 ## Inputs and durable state
 
 Read [the app-native contract](../../../APP-NATIVE.md), the selected pilot

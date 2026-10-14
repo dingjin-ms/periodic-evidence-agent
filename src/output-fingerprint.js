@@ -2,7 +2,7 @@ import {
   existsSync, lstatSync, readFileSync, readdirSync, readlinkSync
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { hash } from './common.js';
+import { hash } from './hash.js';
 
 function pathFingerprint(root, path) {
   const target = join(root, path);

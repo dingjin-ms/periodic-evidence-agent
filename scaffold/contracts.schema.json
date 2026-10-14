@@ -22,6 +22,31 @@
     "text": { "type": "string", "minLength": 1 },
     "nullableText": { "type": ["string", "null"], "minLength": 1 },
     "texts": { "type": "array", "items": { "$ref": "#/$defs/text" }, "uniqueItems": true },
+    "declarativeE2ESpecBatch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "items"],
+      "properties": {
+        "format": { "const": "declarative-e2e-mini-spec-batch-v1" },
+        "items": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["inputItemId", "title", "account", "entryUrl", "preconditions",
+              "orderedTestSteps", "expectedUserVisibleAndDataOutcomes", "cleanup"],
+            "properties": {
+              "inputItemId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+              "title": { "$ref": "#/$defs/text" },
+              "account": { "enum": ["AAD", "MSA", "AAD and MSA"] },
+              "entryUrl": { "$ref": "#/$defs/uri" },
+              "preconditions": { "$ref": "#/$defs/texts" },
+              "orderedTestSteps": { "$ref": "#/$defs/texts" },
+              "expectedUserVisibleAndDataOutcomes": { "$ref": "#/$defs/texts" },
+              "cleanup": { "$ref": "#/$defs/texts" }
+            }
+          }
+        }
+      }
+    },
     "utc": { "type": "string", "format": "date-time", "pattern": "Z$" },
     "nullableUtc": { "anyOf": [{ "$ref": "#/$defs/utc" }, { "type": "null" }] },
     "uri": { "type": "string", "format": "uri", "pattern": "^https://" },
@@ -98,6 +123,7 @@
         "owner": { "$ref": "#/$defs/nullableText" },
         "routingRules": { "$ref": "#/$defs/texts" },
         "execution": { "enum": ["local", "hosted"] },
+        "flights": { "$ref": "#/$defs/executorFlights" },
         "dispatchBinding": { "$ref": "#/$defs/nullableText" },
         "capabilities": { "$ref": "#/$defs/texts" },
         "skillBindings": {
@@ -109,6 +135,9 @@
               "id": { "$ref": "#/$defs/text" },
               "capability": { "$ref": "#/$defs/text" },
               "skillPath": { "$ref": "#/$defs/text" },
+              "inputFormat": {
+                "enum": ["declarative-e2e-mini-spec-batch-v1"]
+              },
               "enabled": { "type": "boolean" },
               "qualification": { "enum": ["unqualified", "qualified"] },
               "requestedOutcomes": { "$ref": "#/$defs/texts" },
@@ -157,6 +186,13 @@
             "message": { "$ref": "#/$defs/text" }
           }
         }
+      }
+    },
+    "executorFlights": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposerExecutor"],
+      "properties": {
+        "proposerExecutor": { "enum": ["local", "agency"] }
       }
     },
     "configuration": {
@@ -523,7 +559,8 @@
                 "rationale": { "$ref": "#/$defs/text" }
               }
             },
-            "requestedOutcome": { "$ref": "#/$defs/text" }
+            "requestedOutcome": { "$ref": "#/$defs/text" },
+            "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" }
           }
         }
       }
@@ -549,7 +586,8 @@
           "required": ["capability"],
           "properties": {
             "capability": { "$ref": "#/$defs/text" },
-            "requestedOutcome": { "$ref": "#/$defs/text" }
+            "requestedOutcome": { "$ref": "#/$defs/text" },
+            "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" }
           }
         }
       }
@@ -606,6 +644,7 @@
         "coverageGaps": { "$ref": "#/$defs/texts" },
         "unknowns": { "$ref": "#/$defs/texts" },
         "rationale": { "$ref": "#/$defs/text" },
+        "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
         "createdAt": { "$ref": "#/$defs/utc" }
       },
       "allOf": [
@@ -667,6 +706,7 @@
         "testCoveragePlanId": { "$ref": "#/$defs/text" },
         "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
         "skillBindingId": { "$ref": "#/$defs/text" },
+        "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
         "skillQualification": {
           "type": "object", "additionalProperties": false,
           "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote",

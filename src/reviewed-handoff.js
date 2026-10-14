@@ -143,7 +143,10 @@ export function prepareReviewedHandoff(config, ledger, input, {
       },
       testCoverage: {
         ...coverage,
-        sourceRevision: qualification.baseRevision
+        sourceRevision: qualification.baseRevision,
+        ...(receipt.planning.skillInput
+          ? { skillInput: receipt.planning.skillInput }
+          : {})
       }
     });
     const assignment = makePlannedImprovementAssignment(config, ledger, investigation,

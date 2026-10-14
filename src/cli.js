@@ -2,7 +2,7 @@
 import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { configAt, readJson, safeError, requireThat } from './common.js';
+import { configAt, readJson, safeError, requireThat, proposerExecutorFlight } from './common.js';
 import { Ledger } from './ledger.js';
 import { collect, acceptReview, reviewPending, route, report, reconcile, tick, runOnce, nextDailyWake } from './coordinator.js';
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
@@ -23,8 +23,16 @@ import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.j
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
+import { describeAgent, describeAgents, agentInvocation, agentOperationResult, agentOperationError } from './agents.js';
+import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
+import { continueRoleValidation } from './role-continuation.js';
+import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } from './local-diagnostic.js';
+import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
 
-const [action = 'help', ...args] = process.argv.slice(2);
+const invocationArgs = process.argv.slice(2);
+const roleInvocation = invocationArgs[0] === 'agent';
+const role = roleInvocation ? invocationArgs[1] : null;
+const [action = 'help', ...args] = roleInvocation ? invocationArgs.slice(2) : invocationArgs;
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
   ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff', 'workspace-gc'].includes(action)
@@ -42,10 +50,18 @@ function failedOutcome(result) {
     result.state === 'failed' ||
     ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
-    ['blocked', 'draft-pr-validation-failed'].includes(result.outcome) ||
+    ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
     ['collection', 'reviews', 'workers', 'result', 'workspaces'].some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js agents
+  node src\\cli.js agent collector|filter|proposer help
+  node src\\cli.js agent ROLE EXISTING_COMMAND [existing command arguments]
+  node src\\cli.js agent collector replay-evidence --file captured-inputs.json --config held-replay.local.json
+  node src\\cli.js agent filter replay-review --file recorded-review.json --config held-replay.local.json
+  node src\\cli.js agent proposer continue-local-validation --prepare|--execute --file request.json --config next.local.json
+  node src\\cli.js agent proposer diagnose-local-validation --prepare|--execute --file request.json --config diagnostic.local.json
+  node src\\cli.js agent proposer continue-local-authoring --prepare|--execute --file request.json --config successor.local.json
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
@@ -103,9 +119,25 @@ const help = `Local evidence pilot (live operations disabled by default)
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
-let ledger;
+let ledger, agent;
 try {
-  if (action === 'help') console.log(help);
+  if (roleInvocation) agent = agentInvocation(role, action);
+  if (action === 'continue-local-validation')
+    requireThat(args.includes('--prepare') !== args.includes('--execute') &&
+      option('--file') && option('--config'),
+    'Role continuation requires explicit --file, --config and exactly one of --prepare or --execute',
+    'blocked-authorization');
+  if (['diagnose-local-validation', 'continue-local-authoring'].includes(action)) {
+    const label = action === 'diagnose-local-validation' ? 'Local diagnostic' : 'Authoring successor';
+    requireThat(args.filter(arg => ['--prepare', '--execute'].includes(arg)).length === 1 &&
+      ['--file', '--config'].every(name => option(name) && !option(name).startsWith('--')),
+    `${label} requires explicit --file, --config and exactly one of --prepare or --execute`,
+    'blocked-authorization');
+  }
+  if (action === 'help') console.log(agent
+    ? JSON.stringify(agentOperationResult(agent, describeAgent(role)), null, 2)
+    : help);
+  else if (action === 'agents') console.log(JSON.stringify(describeAgents(), null, 2));
   else if (action === 'setup') {
     const result = await setupLocalEnvironment({
       settingsPath: configFile,
@@ -156,7 +188,8 @@ try {
     const config = configAt(resolve(configFile));
     const appAction = action.startsWith('app-');
     if (config.executionMode === 'app-native' && !appAction &&
-      ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
+      ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
+        'continue-local-authoring', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
@@ -171,6 +204,33 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'replay-evidence': result = await replayRecordedEvidence(config, ledger, input()); break;
+      case 'replay-review': result = await replayRecordedReview(config, ledger, input()); break;
+      case 'continue-local-validation':
+        result = await continueRoleValidation(config, ledger, input(),
+          args.includes('--prepare') ? 'prepare' : 'execute'); break;
+      case 'diagnose-local-validation': {
+        const request = input();
+        if (args.includes('--prepare')) result = await prepareLocalValidationDiagnostic(config, ledger, request);
+        else {
+          requireThat(typeof request?.diagnosticId === 'string' && request.diagnosticId.length > 0 &&
+            Object.keys(request).length === 1,
+          'Local diagnostic execution requires only its prepared diagnosticId', 'blocked-reconciliation');
+          result = await dispatchLocalValidationDiagnostic(config, ledger, request.diagnosticId);
+        }
+        break;
+      }
+      case 'continue-local-authoring': {
+        const request = input();
+        if (args.includes('--prepare')) result = await prepareLocalAuthoringSuccessor(config, ledger, request);
+        else {
+          requireThat(typeof request?.assignmentId === 'string' && request.assignmentId.length > 0 &&
+            Object.keys(request).length === 1,
+          'Authoring successor execution requires only its prepared assignmentId', 'blocked-reconciliation');
+          result = await dispatchLocalAuthoringSuccessor(config, ledger, request.assignmentId);
+        }
+        break;
+      }
       case 'filter-batch-size':
         requireThat(option('--output'), 'Batch measurement requires --output');
         result = sizeFilterGroups(config, input(), option('--output')); break;
@@ -248,6 +308,10 @@ try {
           node: process.version, activation: config.activation, initialWindow: config.window,
           identityConfigured: Boolean(config.identity.designatedUser && config.identity.tenantId && config.identity.objectId),
           workiqSeeds: config.sources.workiq.seeds.length, repositoryMappings: config.repositories.length,
+          proposerExecutors: config.repositories.map(repo => ({
+            repoId: repo.id, selection: proposerExecutorFlight(repo) ?? 'legacy-per-task',
+            readinessVerified: false
+          })),
           reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
           icm: 'Offline connector receipt replay and owner export supported. Live connector execution is not enabled; exact timestamp/saved-query scope contract required.',
           validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',
@@ -350,10 +414,11 @@ try {
       }
       default: throw new Error(`Unknown command: ${action}`);
     }
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(agent ? agentOperationResult(agent, result) : result, null, 2));
     if (failedOutcome(result)) process.exitCode = 2;
   }
 } catch (error) {
-  console.error(JSON.stringify(safeError(error), null, 2));
+  const failure = safeError(error);
+  console.error(JSON.stringify(agent ? agentOperationError(agent, failure) : failure, null, 2));
   process.exitCode = 1;
 } finally { ledger?.close(); }

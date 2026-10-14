@@ -2,6 +2,23 @@
 
 ## Project skills
 
+There are exactly three top-level role entrypoints: `evidence-collector`,
+`evidence-filter` and `evidence-proposer`. The procedures below implement these
+roles; they are not additional workers to launch.
+
+`npm run pilot -- agents` returns their versioned descriptors and pinned skill
+references. `npm run pilot -- agent ROLE EXISTING_COMMAND ...` delegates an
+allowed operation to the same helper documented below, preserving its arguments,
+source/permission checks, ledger ownership and exit behavior. Use
+`agent ROLE help` for the role's operation list.
+
+The facade wraps accepted invocations as `agent-operation-result-v1` with the
+original result or safe error. It does not infer role success or acceptance from
+helper completion: retain all exact-source references, explicit partial/held/
+blocked/uncertain states and the underlying batch/cohort/assignment contract.
+No live source read, provider submission, dispatch or continuation is authorized
+by the facade itself. It never invokes a second worker/publisher implementation.
+
 Role procedures live in `.github\skills` and can be shared with this repository:
 
 | Skill | Role |
@@ -27,6 +44,171 @@ identity; the two repo owners retain their distinct logical IDs. This change
 does not create separate daemons, enable automation, change approved scopes or
 remove activation gates. The shared repo-owner reference avoids diverging
 validation and draft-only policies.
+
+## Recorded-source role handoff
+
+These role operations connect a selected, genuine saved source and its original
+decisions to an already-authored candidate. They do not collect new data, run a
+new review model, accept an entire FILTER cohort, or authorize execution.
+
+```powershell
+npm run pilot -- agent collector replay-evidence --file captured-inputs.json --config held-replay.local.json
+npm run pilot -- agent filter replay-review --file recorded-review.json --config held-replay.local.json
+npm run pilot -- agent proposer continue-local-validation --prepare --file continuation.json --config next.local.json
+npm run pilot -- agent proposer continue-local-validation --execute --file execution.json --config next.local.json
+```
+
+Collector and FILTER use a separate approved audit ledger, with collection and
+dispatch disabled. Review activation and the original configured review method
+remain required. All artifact references are `{path, sha256}` pairs with absolute
+paths and exact file-byte hashes. Outputs retain the outer role envelope;
+the underlying `recordedRoleHandoff` identifies a persisted receipt by
+`stateDirectory`, `operationId` and canonical receipt SHA256.
+
+Collector input is `recorded-evidence-replay-v1` with an explicit nonempty
+`evidence` array of `{record, capture}` artifact references, bounded by the
+configured `limits.maxItems`. It validates and
+imports exact source records and canonical capture bytes through the existing
+evidence importer. Original identities, provenance and observation times remain
+unchanged; the new receipt records import time, controller/skill pins and source
+references, never fresh-source coverage.
+
+FILTER input is `recorded-review-replay-v1` with `collectorReceipt` plus pinned
+`review` (investigation and full `exclusionsChecked`), `improvement`,
+`testCoveragePlan`, `planningInput` and original `assignment` artifacts.
+`inputProvenance.mode` must be `captured-inputs` or
+`recovered-input-projection`; recovery additionally requires pinned `sources`
+such as the original review notebook and assembly script. Recovery artifacts are
+read as data, never executed. Replaying inputs must reproduce the exact original
+decision records, versions and timestamps. Output remains held, with no new
+review or full-cohort acceptance.
+
+Proposer retains the standalone-execution mode guard and requires exactly one
+of `--prepare` or `--execute`. Preparation input
+contains `previousConfigPath`, `previousAssignmentId`, `authorization`,
+`preservedProposal` and `recordedRoleHandoff` from FILTER. The adapter checks the
+entire imported evidence/review/plan/capture chain against the prior worker
+ledger before calling the guarded validation-continuation helper. The successor
+worker ledger remains separate and initially empty. Execution input is
+`{assignmentId}` from preparation; it uses the canonical validation-only
+dispatcher and publisher, not another model run or commit.
+
+A separately authorized `authorization.kind: discovery-placement` follow-on keeps
+`previousConfigPath` and `previousAssignmentId` bound to the immediately failed
+continuation. The core must validate its immutable original-model lineage before
+the adapter opens the original authoring ledger read-only to verify the saved
+Collector/FILTER receipts. Preparation pins that origin separately; execution
+rechecks both identities. This does not replay collection/review or convert a
+zero-test invocation into successful validation. The new private runtime root
+must be ignored before use and avoid the diagnosed Windows hidden-ancestor path
+problem. General test failures remain ineligible for this narrow correction.
+
+A measured `native-workspace-bin-path` successor is limited to a sealed
+`native-launcher-cache-path` attempt whose targeted case passed and whose required
+native wrapper then failed to resolve the declared root `gulp` tool before case
+execution. An offline synthetic comparison must establish the exact correction:
+launch that same wrapper through `corepack yarn node`, retaining its quoted
+separator, child command and assertions byte-for-byte. No global tool install,
+shared PATH change, dependency substitution or product edit is allowed. The
+original separator/cache evidence is rechecked at dispatch and publication;
+both native legs, fresh-cache emitted-import proof and pass-only publication
+remain mandatory. Execution still uses the same zero-model CLI and a fresh,
+one-shot reservation, never a reset or retry of the failed attempt.
+
+Authorization must bind the actual controller/configuration, preserved proposal
+and candidate, prior attempt and approved preparation changes. Previous failures
+remain unchanged. Missing, conflicting or superseded records block continuation.
+Preparation, import and a successful result envelope are not native test or
+publication evidence; require terminal source-bound results and verified draft
+identity from execution.
+
+## Diagnostic-only local follow-on
+
+An actual case failure does not qualify for the zero-body discovery correction.
+A separately authorized diagnostic can measure that failure without resetting
+the attempt or treating diagnostic output as validation:
+
+```powershell
+npm run pilot -- agent proposer diagnose-local-validation --prepare --file diagnostic-request.json --config diagnostic.local.json
+npm run pilot -- agent proposer diagnose-local-validation --execute --file diagnostic-execution.json --config diagnostic.local.json
+```
+
+Both commands require explicit `--file`, `--config` and exactly one mode, and
+retain the standalone-execution guard. Preparation passes the unchanged request
+to `prepareLocalValidationDiagnostic(config, ledger, input)`. Its input contains
+`previousConfigPath`, `previousAssignmentId`, `authorization`, `sealed`
+(`terminalReport`, `rawCase`, `nativeArtifact`, `preparedReceipt`),
+`instrumentation`, `test` (`path`, `name`, `packageName`) and
+`recordedRoleHandoff`. The core owns all authorization, sealed-artifact,
+original-role lineage and instrumentation checks; the facade grants none.
+
+The diagnostic config may change only `stateDirectory` and disable collection,
+review and dispatch. Keep its new private runtime ignored and avoid Windows
+hidden-ancestor discovery failures. The predecessor ledger is read-only.
+Snapshot reuse must fail closed rather than silently reinstalling dependencies.
+Disposable instrumentation leaves the original candidate, assertions and
+timeout unchanged.
+
+Execution accepts only `{diagnosticId}` from preparation and calls
+`dispatchLocalValidationDiagnostic(config, ledger, diagnosticId)` without
+injected dependencies. Its diagnostic receipt is returned unchanged inside the
+usual role envelope with `acceptance: not-inferred`, never as a `workerResult`
+or validation acceptance. Its explicit `acceptanceEvidence` and
+`publicationEligible` flags remain false. A returned `diagnostic-failed` receipt
+is still printed in full with exit code 2; rejected operations use the existing
+safe error envelope and exit code 1. The operation does not author, commit, push
+or create a PR. Keep the prior failure and any unexecuted native legs in the
+reconciliation;
+even a passing diagnostic cannot satisfy publication gates.
+
+## Model-backed local authoring successor
+
+A measured setup-time failure can support a separately authorized, bounded
+authoring successor. This is a new model-backed attempt, not a zero-model
+validation continuation or an automatic retry of an exhausted assignment:
+
+```powershell
+npm run pilot -- agent proposer continue-local-authoring --prepare --file authoring-request.json --config successor.local.json
+npm run pilot -- agent proposer continue-local-authoring --execute --file authoring-execution.json --config successor.local.json
+```
+
+The CLI requires explicit `--file`, `--config` and exactly one mode, and retains
+the standalone-execution guard. It forwards preparation input unchanged to
+`prepareLocalAuthoringSuccessor(config, ledger, input)`. The core owns the
+one-shot reservation, user authority, original recorded-role provenance,
+sealed failed attempt and diagnostic lineage, source/write bounds and model
+budget. A diagnostic result cannot itself grant that authority.
+
+Preparation input contains exactly `diagnosticConfigPath`, `diagnosticReceipt`,
+`diagnosticReport`, `sourceReview`, `userAuthorization` and `authorization`.
+The four artifact references are absolute `{path, sha256}` pairs. Authorization
+requires `approved: true`, `authorizedBy: user`,
+`kind: diagnosed-suite-module-loading`, `maxModelAttempts: 1`, `recordedAt`,
+`sourceRevision`, `controllerRevision`, `nextConfigSha256` and `inputsSha256`.
+The latter hashes the UTF-8 `JSON.stringify` of an object whose keys are inserted
+in this order: `diagnosticConfigPath`, `diagnosticReceipt`, `diagnosticReport`,
+`sourceReview`, `userAuthorization`. `nextConfigSha256` binds the resolved config,
+not raw config-file bytes. Preparation returns `{assignment, job, audit}`.
+
+Execution accepts only `{assignmentId}` from preparation and delegates to
+`dispatchLocalAuthoringSuccessor(config, ledger, assignmentId)` without injected
+dependencies. Real planning, skill selection, model execution, native gates and
+publication stay with the canonical core. The failed candidate, exhausted
+attempt and diagnostic records remain immutable; the facade must not reset them
+or provide a second runner or publisher.
+
+Preparation and canonical worker results are wrapped unchanged with
+`acceptance: not-inferred`. A new candidate still requires all source-bound
+native gates and verified exact-head draft identity. Neither setup diagnostics
+nor wrapper completion substitute for that evidence.
+
+This bounded successor permits only a suite-level real SUT import after the
+existing mocks, before the otherwise unchanged behavioral suite, and an
+optional update to its existing behavior card. The core retains the timeout,
+assertions and native profile; it provides fresh private native temporary
+storage and verifies the actual transformed test's runtime import order before
+publication. Shared-harness, product-source and Jest-configuration edits are
+outside this successor.
 
 ## Ownership and safety
 
@@ -782,10 +964,10 @@ results remain unresolved; never choose the first answer silently or report a
 partial cohort as fully reviewed. Material availability/export is not evidence
 that details were actually read. A batch may return zero or more source-bound
 candidates; it does not independently dispatch a proposer. Account for all batches
-before final selection within FILTER. The current milestone ends at the accepted
-FILTER consolidation and existing held handoff to the colleague-owned proposer.
-Proposer implementation, execution and draft-PR production are outside this
-milestone. Pending/blocked members remain disclosed, not silently treated as irrelevant.
+before final selection within FILTER. These helpers stop at the accepted
+FILTER consolidation and held handoff. Proposer execution and draft-PR production
+require the separate downstream authorization described below.
+Pending/blocked members remain disclosed, not silently treated as irrelevant.
 
 Relevance/exclusions are separate from test-layer and executor routing. E2E
 remains eligible through a qualified local/repository harness and its existing
@@ -834,23 +1016,26 @@ publication effects remain explicit limitations, never verified zero effects.
 
 ### Downstream reconciliation boundary
 
-This upstream flow is complementary to draft
-[#4](https://github.com/zhenhuangMSFT/periodic-evidence-agent/pull/4), not a
-plug-compatible producer for its reviewed-handoff command. That draft owns
-downstream review/authorization and repository execution. This change preserves
-the current `master` held Stage2 and PR-review receipt boundaries; it does not
-include the draft's proposer adapter, product changes or a new lineage feature.
+The integrated [`submit-filter-handoff`](README.md#filter-to-proposer-handoff)
+adapter binds the original manifest/results, selected candidate and inspected
+source revision to downstream planning and repository-skill execution. It uses
+the ordinary dispatcher; `submit-reviewed-handoff` remains a separate,
+explicitly authorized synthetic-fixture path. Do not rename, cast or copy
+consolidation into a reviewed handoff and treat that as authorization.
 
-Before combining the branches, reconcile both producers and consumers in
-`src/workers.js`, `src/cli.js`, `scaffold/contracts.schema.json` and related tests
-and instructions. Keep Agency task/selection pins and local worker permissions
-consistent with the downstream assignment/result schemas; preserve both CLI
-dispatch guards. A reviewed downstream input must explicitly bind the accepted
-upstream manifest/result hashes, selected candidate and inspected product source
-revision to its own source-bound authorization contract. Do not rename, cast or
-copy consolidation into a reviewed handoff and treat that as authorization.
-Rerun shared producer/consumer tests after reconciliation; this branch does not
-assert that the two drafts can be combined without changes.
+The read-only execution-cohort check above remains a separate operator gate;
+the proposer adapter does not regrade the original Agency receipts. Preparation
+does not dispatch. Execution requires explicit commit, push and draft-PR
+authorization and the matching repository binding permissions. Neither path
+authorizes merging or bypasses repository skill/source qualification.
+
+Shared producers and consumers in `src/workers.js`, `src/cli.js` and
+`scaffold/contracts.schema.json` carry the selected source and optional structured
+skill input through the coverage plan and assignment. Declarative E2E input
+preserves the mini-spec contract; it is not browser execution evidence.
+The connected offline regression exercises these interfaces with synthetic
+fixtures and a temporary local Git remote. Real repository skills, identities,
+browser prerequisites and validation remain independently qualified.
 
 ## Held Stage2 coverage handoff
 
@@ -945,6 +1130,12 @@ an exact project and project-local integration shell from the isolated checkout.
 
 `app-worker --run ID --production --operation OP --file action.json`:
 
+The selected repository's `flights.proposerExecutor` chooses `"local"` app
+sessions or `"agency"` tasks at preparation. It does not change an existing run
+or bypass claims/qualification. Agency requires its explicit task selection and
+the [private executor/receipt contract](AGENCY-EXECUTOR.md#per-repository-executor-flight);
+an unavailable hosted path never falls back to `create_session`.
+
 | OP | JSON fields |
 |---|---|
 | `prepare` | `investigationId`, `repoId`, `intent` (`rca-only`, `defect-fix`, `improvement`) |
@@ -983,4 +1174,13 @@ activation. These aggregate observations are not inferred from classification.
 The underlying personal configuration, receipt IDs and raw source evidence are
 excluded from the sharing package. This historical outcome is not reproducible
 proof of a colleague's access. No end-to-end qualification is claimed.
+Separately, a bounded local saved-input Collector/FILTER replay and native-skill
+proposer did complete one regression-coverage case through native validation,
+automatic push and one draft PR at a prior private revision. Both required final
+native legs passed once with 26 assertions each, using explicit raw output-file
+results rather than the unavailable wrapper summary. Emitted import/mocks order
+was verified before push. No actual CI builds were observed during that full
+publication window; policy rows were not builds. The reconciled public controller
+is offline-validated only. This is not a new collection/review, incident RCA,
+full-cohort, hosted, browser E2E, unattended or latest-target qualification.
 See [the sharing gate](README.md#validation-and-sharing-gate).

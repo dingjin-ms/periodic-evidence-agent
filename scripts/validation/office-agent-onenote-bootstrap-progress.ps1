@@ -39,10 +39,12 @@ function Invoke-CredentialProvider {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
+        Push-Location -LiteralPath ([System.IO.Path]::GetTempPath())
         $output = @(& $Provider @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
     }
     finally {
+        Pop-Location
         $ErrorActionPreference = $previousPreference
     }
     return [pscustomobject]@{
@@ -75,7 +77,8 @@ if ($stage -in @('authentication-check', 'authentication')) {
         'https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/',
         'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/'
     )
-    $yarnConfig = Get-Content -LiteralPath '.yarnrc.yml' -Raw
+    $yarnConfigPath = (Resolve-Path -LiteralPath '.yarnrc.yml').Path
+    $yarnConfig = Get-Content -LiteralPath $yarnConfigPath -Raw
     foreach ($registry in $expectedRegistries) {
         $pattern = '(?m)^\s*npmRegistryServer:\s*["'']?' +
             [regex]::Escape($registry) + '["'']?\s*$'
@@ -120,7 +123,7 @@ if ($stage -in @('authentication-check', 'authentication')) {
     }
 
     $validation = Invoke-CredentialProvider $provider.Source @(
-        '--validate-only', '--config-file', '.yarnrc.yml', '--verbosity', 'minimal'
+        '--validate-only', '--config-file', $yarnConfigPath, '--verbosity', 'minimal'
     )
     if ($validation.ExitCode -ne 0) {
         if ($stage -eq 'authentication-check') {

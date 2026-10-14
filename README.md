@@ -702,21 +702,28 @@ the verified dependency snapshot. The controller records every ignored
 `node_modules` root produced by the locked install, uses native multithreaded
 copying on Windows, and rewrites every internal junction or symbolic link to the
 corresponding fresh-checkout path. Dependency fingerprints bind that complete
-root inventory, Yarn install state, linker state and normalized internal links.
+root inventory, Yarn install state, normalized internal links, empty
+directories and every ordinary dependency file's size and content hash.
+Test-only classification disables Git rename collapsing so both the removed and
+added sides of a rename must independently remain within approved test paths.
 Production
 or build input changes rerun compile but reuse dependencies. A later test-only
 revision may reuse both receipts. Lockfile/profile/toolchain drift, missing or
 corrupt snapshots and receipts, or ambiguous paths rerun dependency preparation
 and compile. A recoverable retry of the same revision reuses completed
 preparation but reruns policy and test. Snapshot and prepared workspaces are
-serialized per receipt and source cleanliness plus declared outputs are
-rechecked before and after every run. Large output sets retain the same complete
-content/link fingerprint but calculate independent output roots through a
-bounded controller-owned worker pool. Test-only reuse validates the active
-compile workspace and its dependency-receipt lineage; damage to an unused
-dependency source workspace does not invalidate an intact compiled snapshot,
-but is detected and rebuilt before any later compile. Workers and repository
-skills cannot access, write or approve cache metadata.
+serialized per receipt. Creation and process-local loading verify the complete
+content/link fingerprint, then controller-owned recursive output-root watchers
+fail closed on changes between and during runs. File `change` events are accepted
+only when a fresh content hash still matches the verified process-local baseline;
+additions, removals, renames and actual content changes invalidate the cache.
+Large output sets calculate independent output roots
+through a bounded controller-owned worker pool. Test-only reuse validates the
+active compile workspace and stable dependency inputs; regeneration of an
+equivalent dependency receipt does not discard an intact content-verified
+compile snapshot. Damage to an unused dependency source workspace is rebuilt
+before any later compile. Workers and repository skills cannot access, write or
+approve cache metadata.
 
 ## Safety invariants
 

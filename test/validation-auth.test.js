@@ -125,3 +125,47 @@ test('PowerShell authentication check distinguishes provider and sign-in actions
   assert.equal(existsSync(join(bin, 'authenticated')), true);
   assert.doesNotMatch(acquired.stdout + acquired.stderr, /need refresh/i);
 });
+
+test('validation profile authenticates only the declared Yarn configuration', {
+  skip: process.platform !== 'win32'
+}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'validation-profile-auth-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'workspace');
+  const bin = join(root, 'bin');
+  mkdirSync(workspace);
+  mkdirSync(bin);
+  writeFileSync(join(workspace, '.yarnrc.yml'), [
+    'npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/"',
+    'npmScopes:',
+    '  office:',
+    '    npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/"'
+  ].join('\n'));
+  writeFileSync(join(workspace, '.npmrc'),
+    'registry=https://example.invalid/unrelated/npm/registry/\n');
+  writeFileSync(join(bin, 'artifacts-npm-credprovider.cmd'), [
+    '@echo off',
+    'if "%1"=="--version" (echo 1.2.1& exit /b 0)',
+    'if exist ".npmrc" echo need refresh',
+    'exit /b 0'
+  ].join('\r\n'));
+  const profile = join(process.cwd(), 'scripts', 'validation',
+    'office-agent-onenote-bootstrap-progress.ps1');
+  const powershell = join(process.env.SystemRoot, 'System32',
+    'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const result = spawnSync(powershell, [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', profile
+  ], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
+      PILOT_VALIDATION_STAGE: 'authentication-check'
+    }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /"state":"ready"/);
+  assert.doesNotMatch(result.stdout + result.stderr,
+    /accessToken|credentialValue|password|synthetic-secret/i);
+});

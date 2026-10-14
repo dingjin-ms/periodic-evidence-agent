@@ -652,7 +652,8 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
   }
   const checkout = join(s.root, 'synthetic-checkout'); mkdirSync(checkout);
   const git = args => {
-    const child = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+    const child = spawnSync('git', ['-C', checkout, '-c', 'core.autocrlf=false',
+      '-c', 'core.safecrlf=false', ...args], { encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr); return child.stdout.trim();
   };
   git(['init', '--quiet']);

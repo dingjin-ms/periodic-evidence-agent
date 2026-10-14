@@ -572,7 +572,8 @@ test(`${invalidResult} validation prevents push and Draft PR creation`, async t 
         if (['dirty', 'changed-head'].includes(invalidResult)) {
           writeFileSync(join(current.workspace, 'test', 'behavior.test.js'), '// changed after validation\n');
           if (invalidResult === 'changed-head') {
-            await command('git', ['add', '--all'], current.workspace);
+            await command('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+              'add', '--all'], current.workspace);
             await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
               '-c', 'core.hooksPath=.git/no-hooks', 'commit', '--quiet', '-m', 'Post-validation change'], current.workspace);
           }

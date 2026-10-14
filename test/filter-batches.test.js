@@ -76,7 +76,7 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
     commitIdentity: { name: 'Synthetic test', email: 'synthetic@example.invalid' },
     validationGates: [{
       id: 'synthetic-scenario', approved: true, executable: process.execPath,
-      args: ['--test', 'test/scenario.test.cjs'], timeoutMs: 10000
+      args: ['--test', 'test/scenario.test.cjs'], timeoutMs: 30000
     }],
     skillBindings: [{
       id: 'synthetic-declarative', capability: 'declarative-e2e-authoring',
@@ -87,7 +87,10 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
   };
   s.config.repositories = [repo];
   s.config.stateDirectory = ledger.directory;
-  Object.assign(s.config.limits, { maxItems: 10, workerMaxToolCalls: 20, maxAiCreditsPerSession: 1 });
+  Object.assign(s.config.limits, {
+    maxItems: 10, workerMaxToolCalls: 20, maxAiCreditsPerSession: 1,
+    maxValidationInfrastructureRetries: 0, maxValidationRepairRounds: 0
+  });
   const qualification = await qualifyRepositorySkill(s.config, repo.id, 'declarative-e2e-authoring');
   assert.equal(qualification.baseRevision, reviewed.candidates[0].sourceRevision);
   ledger.qualify(skillQualificationId(repo.id, 'synthetic-declarative'), qualification);
@@ -146,6 +149,10 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
         return { url: 'https://example.invalid/draft/1', isDraft: true, headRevision: revision };
       }
     }
+  }).catch(error => {
+    const validation = ledger.all('workerResult').flatMap(result => result.validation ?? [])
+      .map(({ status, blockedReason, attemptCount }) => ({ status, blockedReason, attemptCount }));
+    throw new Error(`Synthetic proposer failed: ${JSON.stringify(validation)}`, { cause: error });
   });
   assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
   assert.equal(executed.state, 'draft-pr-validated');

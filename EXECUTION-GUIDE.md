@@ -234,6 +234,13 @@ these reusable corrections when authoring that profile:
   Do not replace this with an uncontained shell or increase timeouts to mask
   leftover descendants. Model launchers use `localProposerEnvironment()`; native
   runners use their narrow environment and separate approved package auth.
+- Preserve the host's `PATHEXT` including `.EXE`. Missing, empty or unusable
+  values fail before native launch with `blocked-native-environment`; the runner
+  does not synthesize defaults. The supervisor resolves an application and
+  requires its process exit code, without requiring output from silent commands.
+  Restore the host environment and follow the existing explicit reconciliation
+  or continuation procedure; do not reset an attempted validation or retry it
+  just because the environment was corrected.
 - When invoking the native wrapper through a PowerShell function, pass the
   separator as the literal string `'--'`. Launch the wrapper with the pinned
   root Yarn tool environment, not plain `node`, so child root tools resolve:

@@ -155,6 +155,10 @@ config remain inert; synthetic dispatch is enabled only in an in-memory fixture
 configuration. Node.js 24+, Git and (on Windows) PowerShell 7.3+ are required.
 Windows must retain `PATHEXT` including `.EXE`; the demo rejects its absence and
 also requires actual behavior-test output, not merely a zero process exit.
+The production Windows native runner likewise fails closed on missing/empty or
+unusable `PATHEXT`, requires application resolution and a process exit code,
+and preserves legitimate silent successful commands. It does not invent
+environment defaults or treat nonempty output as proof of success.
 To clean up, remove only the specific demo directory printed by that invocation,
 never the whole `.state` tree.
 

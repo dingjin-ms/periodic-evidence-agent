@@ -90,8 +90,15 @@ executes the offline checks and runs the synthetic demo. Omit the `--repo`
 selection only when setup of every configured skill-backed repository is intended.
 
 **Setup does not authenticate product feeds, install product dependencies,
-enable dispatch or create PRs.** `synthetic-demo-passed` means fixture
-assertions passed, not a live integration-test pass.
+enable production dispatch or create PRs.** `synthetic-demo-passed` means fixture
+assertions passed, not a live integration-test pass. The demo now includes real
+FILTER validation/consolidation and isolated local proposer fixture execution,
+with real Node test gates and failed-validation/stale-head/duplicate-dispatch
+checks. Model authoring and push/draft publication are deterministic mocks.
+The original partial synthetic collection is never promoted; proposer execution
+uses the existing explicitly authorized synthetic reviewed-handoff interface.
+See the [demo stage assertions](README.md#offline-demo-coverage) for the exact
+scope and output artifacts.
 
 Use `npm run setup:repos -- --repo office-agent` only when intentionally
 rerunning the repository layer without repeating dependency installation and

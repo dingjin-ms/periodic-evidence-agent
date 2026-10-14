@@ -31,6 +31,7 @@ import {
   parseValidationAuthPreflight, validationAuthAction
 } from './validation-auth.js';
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
+import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
 
 const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
@@ -2027,12 +2028,11 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       const args = gate.args.map(a => a.replaceAll('{workspace}', validationWorkspace)
         .replaceAll('{revision}', revision)
         .replaceAll('{profile}', privateProfile ?? ''));
-      const artifact = join(config.stateDirectory, 'validation', `${hash(id)}.json`);
+      let artifact;
       requireThat(!existsSync(validationWorkspace),
         `Validation attempt workspace already exists for ${gate.id}`, 'blocked-reconciliation');
       mkdirSync(validationRoot, { recursive: true });
       commandOrRunUrl = json([gate.executable, ...args]);
-      artifactRefs.push(artifact);
       ledger.operation(id, job.id, 'validation', {
         gateId: gate.id, revision, attempt, owner: repo.owner,
         profileSha256: profile?.sha256 ?? null,
@@ -2102,12 +2102,12 @@ export async function runValidation(config, ledger, job, repo, revision, execute
         output.cleanupError = cleanupError;
         output.residualPaths = residualPaths;
       }
-      mkdirSync(dirname(artifact), { recursive: true });
-      writeFileSync(artifact, json({
+      artifact = persistRunArtifact(config, job.id, join('validation', `${hash(id)}.json`), json({
         gateId: gate.id, revision, attempt, status, blockedReason,
         executable: gate.executable, args, profileSha256: profile?.sha256 ?? null,
         output, observedAt: now()
-      }), { mode: 0o600 });
+      })).path;
+      artifactRefs.push(artifact);
       ledger.finishOperation(id, status, {
         artifact, revision, attempt, blockedReason, owner: repo.owner
       });
@@ -2607,6 +2607,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     validateRecord(result); ledger.put(result);
     ledger.moveJob(id, 'running', outcome === 'blocked' ? 'blocked' : 'completed');
     deliveredResult = result;
+    completeRunEvidence(config, id, outcome === 'blocked' ? 'blocked' : 'completed');
   } catch (error) {
     const current = ledger.job(id);
     if (current && ['dispatching', 'running'].includes(current.state)) {
@@ -2625,6 +2626,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         nextAction: 'Run reconcile; do not automatically relaunch.'
       });
       ledger.moveJob(id, current.state, 'blocked', { error: detail });
+      completeRunEvidence(config, id, 'blocked');
     }
     throw error;
   } finally { ledger.release('dispatch', owner); }

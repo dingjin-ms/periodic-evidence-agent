@@ -776,8 +776,9 @@ function compileSnapshotContext(config, gate, profile, toolchain, revision,
     profileSha256: profile.sha256, toolchain,
     toolchainSha256: hash(json(toolchain)),
     dependencyKey: dependency.key,
+    dependencyOutputsSha256: dependency.outputs.sha256,
     dependencyIntegrity: dependency.integrity,
-    preparedSnapshotVersion: 3
+    preparedSnapshotVersion: 4
   };
   const key = hash(json(inputs));
   const root = preparedValidationRoot(config, 'c', gate.id, key);

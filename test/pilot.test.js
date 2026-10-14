@@ -172,7 +172,8 @@ async function stagedValidationFixture(t, {
     transientPolicy: false, policyAttempts: 0, failAuthentication: false,
     failDependencyAuthentication: false, mutateDuringAuthentication: false,
     invalidAuthenticationEvidence: false, failTestWithAuthenticationText: false,
-    authenticationPreflight: 'ready', authenticationCheckDelayMs: 0
+    authenticationPreflight: 'ready', authenticationCheckDelayMs: 0,
+    dependencyVersion: '2.0.0'
   };
   const execute = async (executable, args, cwd, timeout, env) => {
     const stage = env.PILOT_VALIDATION_STAGE;
@@ -246,7 +247,7 @@ async function stagedValidationFixture(t, {
         process.platform === 'win32' ? 'junction' : 'dir');
       mkdirSync(join(cwd, 'extra', 'node_modules', 'fixture'), { recursive: true });
       writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
-        '{"version":"2.0.0"}\n');
+        `${JSON.stringify({ version: behavior.dependencyVersion })}\n`);
       writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'resolver.node'),
         'synthetic-native-binary\n');
       symlinkSync(join(cwd, 'src'),
@@ -263,7 +264,7 @@ async function stagedValidationFixture(t, {
           'source-link', 'value.js'), 'utf8'),
         readFileSync(join(cwd, 'src', 'value.js'), 'utf8'));
       assert.equal(JSON.parse(readFileSync(join(cwd, 'extra', 'node_modules',
-        'fixture', 'package.json'))).version, '2.0.0');
+        'fixture', 'package.json'))).version, behavior.dependencyVersion);
       if (parallelOutputs) {
         for (let index = 0; index < 8; index++) {
           mkdirSync(join(cwd, '.pilot', `output-${index}`), { recursive: true });
@@ -1228,6 +1229,20 @@ test('dependency file mutations invalidate a warm compile receipt', async t => {
     assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
     assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
   }
+});
+test('changed dependency contents cannot reuse an older compile receipt', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  rmSync(dirname(prepared.staged.dependencyReceiptPath),
+    { recursive: true, force: true });
+  ctx.behavior.dependencyVersion = '3.0.0';
+  const regenerated = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.notEqual(regenerated.staged.inputs.dependencyOutputsSha256,
+    prepared.staged.inputs.dependencyOutputsSha256);
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
 test('runner dependency file mutation invalidates the prepared cache', async t => {
   const ctx = await stagedValidationFixture(t);

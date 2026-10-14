@@ -43,6 +43,14 @@ helpers and their permission gates; they do not automatically advance stages.
 An operation-result envelope is not proof of role completion, complete-cohort
 acceptance or native validation. See [README.md](./README.md) for the interface.
 
+For the stricter fresh-cohort path, use the
+[bounded one-shot controls](ONE-SHOT.md). They coordinate the existing local
+collectors, reserve whole-cohort FILTER budgets before task reservation and
+gate one proposer on complete source plus accepted execution evidence. The
+existing Copilot session/host remains the orchestrator; external FILTER
+submission/observation, approvals and runtime qualification remain its
+responsibility. Legacy selected-case replay below keeps its original scope.
+
 ## 1. Clone and initialize the devbox
 
 Prerequisites are **Node.js 24+, npm and Git**. Windows native validation and

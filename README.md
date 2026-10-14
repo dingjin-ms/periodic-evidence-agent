@@ -20,6 +20,13 @@ contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) req
 the installed coverage-analysis skill and pinned reference, read source ledgers
 read-only, and cannot authorize product dispatch.
 
+[Bounded one-shot controls](ONE-SHOT.md) add coordinator-callable aggregate
+collection/FILTER reservations, offline recovery and complete accepted-cohort
+release to the existing helpers. They preserve authenticated WorkIQ provenance
+in collection-only storage and keep saved replay distinct. The coordinating host
+still supplies the authorized external FILTER executor; this is not a standalone
+service or qualified unattended end-to-end run.
+
 ## Account-free quick start
 
 Prerequisites: **Node.js 24 LTS**, npm and Git on PATH. Windows PowerShell is

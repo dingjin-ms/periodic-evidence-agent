@@ -430,6 +430,7 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
       guard.dirtyReason ??= reason;
       stopWatching();
     };
+    guard.baselineFiles = collectPreparedOutputFiles(workspace, normalizedPaths);
     for (const path of normalizedPaths) {
       const target = join(workspace, path);
       if (!existsSync(target)) {
@@ -460,7 +461,6 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
       watcher.unref();
       guard.watchers.push(watcher);
     }
-    guard.baselineFiles = collectPreparedOutputFiles(workspace, normalizedPaths);
     retainPreparedOutputGuard(receiptPath, guard);
     return guard;
   } catch {
@@ -969,9 +969,12 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs))
-        .valid, `Gate ${gate.id} dependency snapshot changed while it was recorded`,
-      'blocked-validation');
+      const verification =
+        await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs);
+      requireThat(verification.valid,
+        `Gate ${gate.id} dependency snapshot changed while it was recorded` +
+        `${verification.reason ? ` (${verification.reason})` : ''}`,
+        'blocked-validation');
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
         outputsVerified: true

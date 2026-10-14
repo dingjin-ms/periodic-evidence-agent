@@ -458,7 +458,7 @@ function startPreparedOutputGuard(
         watchPathKey(path),
         value.type === 'directory' ? { type: 'directory' } : value
       ])),
-      changedEntries: new Set(), active: 0
+      changedEntries: new Set(), unknownInitialChange: false, active: 0
     };
     const stopWatching = () => {
       for (const watcher of guard.watchers) watcher.close();
@@ -480,6 +480,10 @@ function startPreparedOutputGuard(
       const expectedName = directory ? null : target.slice(dirname(target).length + 1);
       const watcher = watch(watchRoot, { recursive: directory }, (eventType, filename) => {
         if (filename === null) {
+          if (eventType === 'change' && !guard.verified) {
+            guard.unknownInitialChange = true;
+            return;
+          }
           markDirty(`${path}:${eventType}:unknown`);
           return;
         }
@@ -531,6 +535,7 @@ async function settlePreparedOutputGuard(guard) {
     }
   }
   guard.changedEntries.clear();
+  guard.unknownInitialChange = false;
   return true;
 }
 async function withActivePreparedOutputGuard(guard, operation) {
@@ -542,7 +547,7 @@ async function withActivePreparedOutputGuard(guard, operation) {
     evictPreparedOutputGuards();
   }
 }
-async function verifyPreparedOutputs(
+export async function verifyPreparedOutputs(
   receiptPath, workspace, outputs, capturedBaseline = null) {
   let baseline = capturedBaseline;
   if (!baseline) {

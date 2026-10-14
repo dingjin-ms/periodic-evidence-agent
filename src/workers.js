@@ -189,11 +189,14 @@ function quarantineValidationPath(path) {
   if (!existsSync(path)) return null;
   const quarantine = `${path}.stale-${process.pid}-${uuid()}`;
   renameSync(path, quarantine);
-  removeAsync(quarantine, {
+  return quarantine;
+}
+function removeQuarantinedValidationPath(path) {
+  if (!path) return;
+  removeAsync(path, {
     recursive: true, force: true, maxRetries: 10, retryDelay: 250
   }).catch(error => process.emitWarning(
-    `Background validation cleanup failed for ${quarantine}: ${safeError(error).message}`));
-  return quarantine;
+    `Background validation cleanup failed for ${path}: ${safeError(error).message}`));
 }
 const preparationPromises = new Map();
 const authenticationPreflightPromises = new Map();
@@ -946,7 +949,7 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
   if (existing) return existing;
   const preparing = (async () => {
     closePreparedOutputGuard(receiptPath);
-    quarantineValidationPath(root);
+    const quarantinedRoot = quarantineValidationPath(root);
     mkdirSync(root, { recursive: true });
     const timings = [fingerprintRun.telemetry];
     try {
@@ -1009,6 +1012,8 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
         error.preparationTimings.push(error.stageTelemetry);
       error.dependencyCache = 'miss';
       throw error;
+    } finally {
+      removeQuarantinedValidationPath(quarantinedRoot);
     }
   })().finally(() => preparationPromises.delete(promiseKey));
   preparationPromises.set(promiseKey, preparing);
@@ -1061,7 +1066,7 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
   if (existing) return existing;
   const preparing = (async () => {
     closePreparedOutputGuard(receiptPath);
-    quarantineValidationPath(root);
+    const quarantinedRoot = quarantineValidationPath(root);
     mkdirSync(dirname(root), { recursive: true });
     mkdirSync(root, { recursive: true });
     const timings = dependency.cache === 'miss'
@@ -1125,6 +1130,8 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       error.dependencyCache = dependency.cache;
       error.dependencyReceiptPath = dependency.receiptPath;
       throw error;
+    } finally {
+      removeQuarantinedValidationPath(quarantinedRoot);
     }
   })().finally(() => preparationPromises.delete(promiseKey));
   preparationPromises.set(promiseKey, preparing);
@@ -1379,7 +1386,8 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
         } catch (error) {
           cleanupError = safeError(error).message;
           closePreparedOutputGuard(receipt.receiptPath);
-          quarantineValidationPath(dirname(receipt.workspace));
+          removeQuarantinedValidationPath(
+            quarantineValidationPath(dirname(receipt.workspace)));
         }
         timings.push({
           ...stageTelemetry('cleanup', cleanupStarted,

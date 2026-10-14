@@ -336,9 +336,10 @@ and compile. A recoverable retry of the same revision reuses completed
 preparation but reruns policy and test. Snapshot and prepared workspaces are
 serialized per receipt. Creation and process-local loading verify the complete
 content/link fingerprint, then controller-owned recursive output-root watchers
-fail closed on changes between and during runs. Native executable load events
-are accepted only when a fresh content hash still matches the verified
-process-local baseline. Large output sets calculate independent output roots
+fail closed on changes between and during runs. File `change` events are accepted
+only when a fresh content hash still matches the verified process-local baseline;
+additions, removals, renames and actual content changes invalidate the cache.
+Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an
 equivalent dependency receipt does not discard an intact content-verified

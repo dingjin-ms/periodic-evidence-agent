@@ -864,6 +864,8 @@ test('test-only repair reuses dependency and compile receipts with phase telemet
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
     ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(prepared.staged.error, undefined,
+    JSON.stringify(prepared.staged.error));
   const revision = await ctx.commit('test/behavior.test.js', 'repaired\n', 'Repair test only');
   const receipt = prepared.staged;
   const persisted = JSON.parse(readFileSync(receipt.receiptPath, 'utf8'));
@@ -876,7 +878,7 @@ test('test-only repair reuses dependency and compile receipts with phase telemet
     receipt.workspace)).stdout.trim(), '');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed', JSON.stringify(result[0]));
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1,
     JSON.stringify(ctx.calls));
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
@@ -1277,6 +1279,30 @@ test('metadata-only native module changes preserve an identical prepared cache',
       const nativeModule = join(cwd, 'extra', 'node_modules', 'fixture',
         'resolver.node');
       writeFileSync(nativeModule, readFileSync(nativeModule));
+    }
+    return result;
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(existsSync(prepared.staged.workspace), true);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.telemetry.validationTimings.find(stage =>
+    stage.id === 'cleanup').cache, 'preserved');
+});
+test('metadata-only ordinary file changes preserve an identical prepared cache', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Exercise ordinary file metadata tolerance');
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , cwd, , env] = args;
+    if (env.PILOT_VALIDATION_STAGE === 'test') {
+      const packageJson = join(cwd, 'extra', 'node_modules', 'fixture',
+        'package.json');
+      writeFileSync(packageJson, readFileSync(packageJson));
     }
     return result;
   };

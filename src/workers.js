@@ -29,6 +29,7 @@ import {
 const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const preparedOutputGuards = new Map();
+const maxPreparedOutputGuards = 2;
 export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
   return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
@@ -361,17 +362,13 @@ function watchPathKey(path) {
   const normalized = normalizedOutputPath(path);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
-function volatileOutputFile(path) {
-  return /\.(?:dll|dylib|exe|node|so|wasm)$/i.test(path);
-}
-function collectVolatileOutputFiles(workspace, paths) {
+function collectPreparedOutputFiles(workspace, paths) {
   const files = new Map();
   const visit = (target, path) => {
     const info = lstatSync(target);
     if (info.isSymbolicLink()) return;
     if (info.isFile()) {
-      if (volatileOutputFile(path))
-        files.set(watchPathKey(path), fileContentSha256(target));
+      files.set(watchPathKey(path), fileContentSha256(target));
       return;
     }
     if (!info.isDirectory()) return;
@@ -380,7 +377,7 @@ function collectVolatileOutputFiles(workspace, paths) {
       const relativePath = `${normalizedOutputPath(path)}/${entry.name}`;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) visit(entryPath, relativePath);
-      else if (entry.isFile() && volatileOutputFile(relativePath))
+      else if (entry.isFile())
         files.set(watchPathKey(relativePath), fileContentSha256(entryPath));
     }
   };
@@ -393,19 +390,36 @@ function closePreparedOutputGuard(receiptPath) {
   for (const watcher of guard.watchers ?? []) watcher.close();
   preparedOutputGuards.delete(receiptPath);
 }
+function evictPreparedOutputGuards(excludedReceiptPath = null) {
+  while (preparedOutputGuards.size > maxPreparedOutputGuards) {
+    const candidate = [...preparedOutputGuards.entries()].find(
+      ([receiptPath, guard]) =>
+        receiptPath !== excludedReceiptPath && guard.active === 0);
+    if (!candidate) return;
+    closePreparedOutputGuard(candidate[0]);
+  }
+}
+function retainPreparedOutputGuard(receiptPath, guard) {
+  preparedOutputGuards.delete(receiptPath);
+  preparedOutputGuards.set(receiptPath, guard);
+  evictPreparedOutputGuards(receiptPath);
+}
 function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256) {
   const normalizedPaths = paths.map(normalizedOutputPath).sort();
   const current = preparedOutputGuards.get(receiptPath);
   if (current && current.workspace === workspace &&
     current.expectedSha256 === expectedSha256 &&
-    json(current.paths) === json(normalizedPaths)) return current;
+    json(current.paths) === json(normalizedPaths)) {
+    retainPreparedOutputGuard(receiptPath, current);
+    return current;
+  }
   closePreparedOutputGuard(receiptPath);
   let guard = null;
   try {
     guard = {
       workspace, paths: normalizedPaths, expectedSha256,
       dirty: false, dirtyReason: null, verified: false, watchers: [],
-      volatileFiles: new Map(), changedVolatileFiles: new Set()
+      baselineFiles: new Map(), changedFiles: new Set(), active: 0
     };
     const stopWatching = () => {
       for (const watcher of guard.watchers) watcher.close();
@@ -435,8 +449,8 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
           relativePath !== normalizedOutputPath(expectedName)) return;
         const changedPath = watchPathKey(
           `${path}${directory ? `/${relativePath}` : ''}`);
-        if (eventType === 'change' && guard.volatileFiles.has(changedPath)) {
-          guard.changedVolatileFiles.add(changedPath);
+        if (eventType === 'change' && guard.baselineFiles.has(changedPath)) {
+          guard.changedFiles.add(changedPath);
           return;
         }
         markDirty(`${eventType}:${changedPath}`);
@@ -446,8 +460,8 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
       watcher.unref();
       guard.watchers.push(watcher);
     }
-    guard.volatileFiles = collectVolatileOutputFiles(workspace, normalizedPaths);
-    preparedOutputGuards.set(receiptPath, guard);
+    guard.baselineFiles = collectPreparedOutputFiles(workspace, normalizedPaths);
+    retainPreparedOutputGuard(receiptPath, guard);
     return guard;
   } catch {
     for (const watcher of guard?.watchers ?? []) watcher.close();
@@ -457,10 +471,10 @@ function startPreparedOutputGuard(receiptPath, workspace, paths, expectedSha256)
 async function settlePreparedOutputGuard(guard) {
   await delay(100);
   if (guard.dirty) return false;
-  for (const path of guard.changedVolatileFiles) {
+  for (const path of guard.changedFiles) {
     const target = join(guard.workspace, path);
     if (!existsSync(target) || !lstatSync(target).isFile() ||
-      fileContentSha256(target) !== guard.volatileFiles.get(path)) {
+      fileContentSha256(target) !== guard.baselineFiles.get(path)) {
       guard.dirty = true;
       guard.dirtyReason = `content-changed:${path}`;
       for (const watcher of guard.watchers) watcher.close();
@@ -468,38 +482,48 @@ async function settlePreparedOutputGuard(guard) {
       return false;
     }
   }
-  guard.changedVolatileFiles.clear();
+  guard.changedFiles.clear();
   return true;
 }
-async function verifyPreparedOutputs(receiptPath, workspace, outputs, alreadyVerified = false) {
+async function withActivePreparedOutputGuard(guard, operation) {
+  guard.active += 1;
+  try {
+    return await operation();
+  } finally {
+    guard.active -= 1;
+    evictPreparedOutputGuards();
+  }
+}
+async function verifyPreparedOutputs(receiptPath, workspace, outputs) {
   const guard = startPreparedOutputGuard(receiptPath, workspace,
     outputs.paths, outputs.sha256);
   if (guard?.dirty) return { valid: false, method: 'watch', reason: guard.dirtyReason };
-  if (alreadyVerified && guard) {
-    guard.verified = true;
-    return { valid: true, method: 'watch' };
-  }
   if (guard?.verified) return { valid: true, method: 'watch' };
-  const actual = await outputFingerprint(workspace, outputs.paths);
-  if ((guard && !(await settlePreparedOutputGuard(guard))) ||
-    actual !== outputs.sha256) {
-    closePreparedOutputGuard(receiptPath);
-    return {
-      valid: false, method: 'content',
-      reason: guard?.dirtyReason ?? 'content-fingerprint-mismatch'
-    };
-  }
-  if (guard) guard.verified = true;
-  return { valid: true, method: guard ? 'content+watch' : 'content' };
+  const verify = async () => {
+    const actual = await outputFingerprint(workspace, outputs.paths);
+    if ((guard && !(await settlePreparedOutputGuard(guard))) ||
+      actual !== outputs.sha256) {
+      closePreparedOutputGuard(receiptPath);
+      return {
+        valid: false, method: 'content',
+        reason: guard?.dirtyReason ?? 'content-fingerprint-mismatch'
+      };
+    }
+    if (guard) guard.verified = true;
+    return { valid: true, method: guard ? 'content+watch' : 'content' };
+  };
+  return guard ? withActivePreparedOutputGuard(guard, verify) : verify();
 }
 async function preparedOutputsRemainValid(receipt) {
   const guard = preparedOutputGuards.get(receipt.receiptPath);
   if (guard?.verified) {
-    await settlePreparedOutputGuard(guard);
-    return {
-      valid: !guard.dirty, method: 'watch',
-      reason: guard.dirtyReason
-    };
+    return withActivePreparedOutputGuard(guard, async () => {
+      await settlePreparedOutputGuard(guard);
+      return {
+        valid: !guard.dirty, method: 'watch',
+        reason: guard.dirtyReason
+      };
+    });
   }
   return verifyPreparedOutputs(receipt.receiptPath, receipt.workspace, receipt.outputs);
 }
@@ -945,8 +969,8 @@ async function prepareDependencySnapshot(config, job, gate, revision, profile, p
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs,
-        true)).valid, `Gate ${gate.id} dependency snapshot changed while it was recorded`,
+      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs))
+        .valid, `Gate ${gate.id} dependency snapshot changed while it was recorded`,
       'blocked-validation');
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
@@ -1060,8 +1084,8 @@ async function prepareValidationGate(config, job, gate, revision, execute = comm
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs,
-        true)).valid, `Gate ${gate.id} prepared outputs changed while they were recorded`,
+      requireThat((await verifyPreparedOutputs(receiptPath, workspace, receipt.outputs))
+        .valid, `Gate ${gate.id} prepared outputs changed while they were recorded`,
       'blocked-validation');
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',

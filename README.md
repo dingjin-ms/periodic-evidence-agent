@@ -186,6 +186,22 @@ npm run pilot -- app-status --run RUN_ID --config .\pilot.local.json
 Resolve the designated delegated user/tenant/object ID, exact WorkIQ resources,
 explicit UTC window, read/item budgets, protected storage approval/retention,
 and enabled source scopes. Never copy another person's identity or credentials.
+Local raw validation evidence must use `statePolicy.retention: "bounded-local"`
+with `rawEvidenceDays` from 1 through 7. New controller-owned artifacts are
+written beneath `.state\runs\<run-id>` with a manifest and SHA-256 metadata.
+Completed or blocked runs are pruned at CLI startup and exit; active runs are
+never deleted. Preview or apply cleanup explicitly with:
+
+```powershell
+npm run pilot -- state-prune --dry-run --config .\pilot.local.json
+npm run pilot -- state-prune --config .\pilot.local.json
+```
+
+The state directory must be gitignored when it is inside the repository.
+Pruning refuses malformed manifests, path escapes, symlinks, junctions and
+hard-linked files instead of following or deleting them. Durable ledger records,
+remote PR/build/test-run identifiers, hashes and verdicts remain outside the
+pruned run directory.
 Source reads require separate authorization; importing a local file is not
 proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.

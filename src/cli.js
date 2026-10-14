@@ -22,6 +22,7 @@ import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
+import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
@@ -52,6 +53,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --prepare
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --execute --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
+  node src\\cli.js state-prune [--dry-run] [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
   node src\\cli.js auth-check
@@ -100,6 +102,7 @@ App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger;
+let automaticPruneConfig;
 try {
   if (action === 'help') console.log(help);
   else if (action === 'setup') {
@@ -150,13 +153,18 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
+    if (action !== 'state-prune') {
+      automaticPruneConfig = config;
+      pruneState(config);
+    }
     const appAction = action.startsWith('app-');
     if (config.executionMode === 'app-native' && !appAction &&
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
-    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check',
+    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check'].includes(action))
       ledger = new Ledger(config.stateDirectory);
@@ -167,6 +175,9 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'state-prune':
+        result = pruneState(config, { dryRun: args.includes('--dry-run') });
+        break;
       case 'filter-batch-size':
         requireThat(option('--output'), 'Batch measurement requires --output');
         result = sizeFilterGroups(config, input(), option('--output')); break;
@@ -349,4 +360,13 @@ try {
 } catch (error) {
   console.error(JSON.stringify(safeError(error), null, 2));
   process.exitCode = 1;
-} finally { ledger?.close(); }
+} finally {
+  ledger?.close();
+  if (automaticPruneConfig) {
+    try { pruneState(automaticPruneConfig); }
+    catch (error) {
+      console.error(JSON.stringify(safeError(error), null, 2));
+      process.exitCode = 1;
+    }
+  }
+}

@@ -74,7 +74,10 @@ export function configAt(path) {
   windowCheck(config.window);
   requireThat(config.activation && ['collect', 'review', 'dispatch'].every(k => typeof config.activation[k] === 'boolean'),
     'Explicit collect/review/dispatch activation booleans are required');
-  requireThat(config.statePolicy?.retention === 'manual-no-auto-delete', 'Only explicit manual retention is supported');
+  requireThat(config.statePolicy?.retention === 'bounded-local' &&
+    Number.isInteger(config.statePolicy.rawEvidenceDays) &&
+    config.statePolicy.rawEvidenceDays >= 1 && config.statePolicy.rawEvidenceDays <= 7,
+  'State retention must be bounded-local with rawEvidenceDays from 1 through 7');
   requireThat([0, 1].includes(config.followUp.maxDepth), 'Follow-up is limited to zero or one level');
   if (config.followUp.maxDepth === 1) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');

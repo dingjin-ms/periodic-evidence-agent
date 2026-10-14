@@ -4,7 +4,7 @@
   "agent": { "id": "excel-evidence-coordinator", "role": "collector-coordinator", "scheduleAuthority": "disabled" },
   "activation": { "collect": false, "review": false, "dispatch": false },
   "stateDirectory": ".state",
-  "statePolicy": { "accessApproved": false, "retention": "manual-no-auto-delete" },
+  "statePolicy": { "accessApproved": false, "retention": "bounded-local", "rawEvidenceDays": 7 },
   "identity": {
     "designatedUser": "collector@example.invalid",
     "displayName": "Synthetic example - replace before live use",

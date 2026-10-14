@@ -460,6 +460,43 @@ push and Draft PR effects:
 npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
+#### Authoring provider modes
+
+The default remains `copilot-sdk`. A repository skill binding may explicitly
+select `agency-local` or `agency-remote`; there is no repository-wide switch and
+no automatic fallback between providers.
+
+| Mode | Authoring compute | Source transport | Validation, final push and Draft PR |
+| --- | --- | --- | --- |
+| `copilot-sdk` | Local Controller process | Controller-owned workspace | Controller-owned |
+| `agency-local` | Local Agency process with the five authenticated `pilot_*` tools | Controller-owned workspace | Controller-owned |
+| `agency-remote` | Agency remote job on a qualified exact-base branch | One bounded result commit on a separate `pilot-agency-result/...` branch | Controller fetches, audits and imports allowed files, then owns all remaining steps |
+
+`agency-remote` requires an Azure DevOps repository and an explicit provider:
+
+```json
+{
+  "authoringProviders": {
+    "agency-oa": {
+      "type": "agency-remote",
+      "executable": "C:\\absolute\\path\\to\\agency.exe",
+      "profile": "periodic-evidence-isolated",
+      "model": "gpt-5.6-sol",
+      "pollSeconds": 30
+    }
+  }
+}
+```
+
+The remote worker may commit and push only the deterministic result ref. It may
+not create the final PR or merge. The Controller requires terminal Agency
+success, exact-base ancestry, a bounded commit range, approved regular-file
+paths, file-size limits and a matching
+`.periodic-evidence-agent/result.json` envelope before importing anything.
+Remote logs are diagnostic only; source state is the transport authority.
+See [Authoring providers](AGENCY-LOCAL-AUTHORING.md) for the complete comparison
+and operational limitations.
+
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
 explicitly authorized synthetic receipt. A repository worker may follow a

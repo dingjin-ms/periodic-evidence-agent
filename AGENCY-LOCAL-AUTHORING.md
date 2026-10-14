@@ -1,11 +1,12 @@
-# Local Agency authoring provider
+# Authoring providers
 
-The Local Agency authoring provider is an optional model transport for
-repository-skill assignments. It does not replace the evidence controller, the
-hosted Agency executor, or any repository side effect.
+The Controller supports three authoring transports for repository-skill
+assignments. `copilot-sdk` remains the default. `agency-local` and
+`agency-remote` are explicit opt-in providers; neither replaces the evidence
+controller, the hosted Agency executor, or final publication policy.
 
-When selected, Agency performs only the bounded authoring conversation. The
-existing local controller still:
+When either Agency provider is selected, Agency performs only bounded
+investigation and authoring. The Controller still:
 
 - provisions and attests the isolated checkout;
 - loads the pinned repository skill;
@@ -16,30 +17,29 @@ existing local controller still:
 - pushes the final branch and creates an active Draft PR; and
 - prohibits merge.
 
-## Copilot SDK comparison
+## Comparison
 
-Local Agency is an alternative authoring transport, not a replacement
-controller. Provider choice does not change the repository policy or delivery
-pipeline.
+Provider choice changes authoring compute and result transport, not repository
+policy or delivery authority.
 
-| Dimension | Copilot SDK | Local Agency |
-|---|---|---|
-| Selection | Default when no provider is configured | Explicit repository-skill binding |
-| Model transport | Direct `@github/copilot-sdk` session | Agency CLI driving an explicit Copilot session |
-| Additional runtime | Existing SDK configuration | Absolute Agency executable, generated private profile and authenticated MCP bridge |
-| Model-visible tools | The five controller-owned `pilot_*` tools | The same five controller-owned `pilot_*` tools |
-| Repair continuity | Existing SDK authoring context | Exact Agency session UUID; never the most recent session |
-| Commit and validation | Controller-owned | Controller-owned |
-| Push and Draft PR | Controller-owned | Controller-owned |
-| Merge | Prohibited | Prohibited |
-| Recommended use | Stable, lowest-complexity baseline | Opt-in Agency qualification and orchestration experiments |
+| Dimension | Copilot SDK | Local Agency | Remote Agency |
+|---|---|---|---|
+| Selection | Default when omitted or `copilot-sdk` | Explicit skill binding | Explicit skill binding |
+| Authoring compute | Local Controller process | Local Agency process | Agency remote job |
+| Model transport | Direct SDK session | Agency CLI with authenticated MCP bridge | Agency CLI remote job on an exact staging branch |
+| Source result | Controller workspace | Controller workspace through `pilot_write` | One commit on a separate deterministic result branch |
+| Repair continuity | Existing SDK context | Exact Agency session UUID | New source-bound remote round with bounded diagnostics |
+| Commit and validation | Controller-owned | Controller-owned | Controller imports approved files, commits and validates locally |
+| Final push and Draft PR | Controller-owned | Controller-owned | Controller-owned |
+| Merge | Prohibited | Prohibited | Prohibited |
+| Recommended use | Stable baseline | Local orchestration experiments | Qualified remote compute without final publication authority |
 
 There is no automatic fallback between providers. Missing, changed or failing
 Agency configuration blocks the assignment instead of silently switching to
 the SDK path. Qualify both paths against the same repository skill and
 validation contract before enabling Agency for that binding.
 
-## Configuration
+## Local Agency configuration
 
 The SDK provider remains the default. An omitted
 `skillBindings[].authoringProvider`, or the explicit value `copilot-sdk`, uses
@@ -87,6 +87,52 @@ reconciliation to fail rather than silently switching transports. The
 assignment remains `execution: "local"`;
 `config.agency.selections` and the hosted executor are not involved.
 
+## Remote Agency configuration
+
+Remote Agency is selected on one exact skill binding:
+
+```json
+{
+  "authoringProviders": {
+    "agency-oa": {
+      "type": "agency-remote",
+      "executable": "C:\\.Tools\\agency\\CurrentVersion\\agency.exe",
+      "profile": "periodic-evidence-isolated",
+      "model": "gpt-5.6-sol",
+      "pollSeconds": 30
+    }
+  },
+  "repositories": [
+    {
+      "id": "office-agent",
+      "skillBindings": [
+        {
+          "id": "oa-integration-test-core",
+          "authoringProvider": "agency-oa"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The Controller prepares local validation dependencies and compile outputs before
+submitting a remote job. Authentication or runner preparation failures therefore
+block without consuming remote compute. It pushes an immutable exact-base branch
+named `pilot-agency-base/<assignment>/round-<n>`.
+
+The remote prompt requires one transport commit containing only approved source
+paths and `.periodic-evidence-agent/result.json`, followed by a non-force push
+of `pilot-agency-result/<assignment>/round-<n>` through the full Agency proxy
+with LFS push disabled. Agency v2 does not otherwise persist workspace edits,
+and parsed logs may contain no authoritative diff.
+
+Before import, the Controller verifies terminal success, exact-base ancestry,
+a commit count from 1 through 20, bounded approved paths, regular Git blob
+modes, file-size limits and exact assignment/round/base envelope bindings. Only
+approved source files are restored; the transport envelope is never copied into
+the final commit. Accepted or uncertain jobs are never automatically replaced.
+
 ## Permission boundary
 
 For every dispatch attempt, the controller:
@@ -122,7 +168,7 @@ omits `pilot_finish`, the assignment blocks. Unknown tools, malformed requests,
 incorrect tokens, process startup failures, timeouts, nonzero exits and failed
 session resume all fail closed.
 
-## Repair rounds
+## Local Agency repair rounds
 
 Round zero starts the explicit session ID. Each validation repair round resumes
 that exact ID; it never selects the most recent session. The controller sends

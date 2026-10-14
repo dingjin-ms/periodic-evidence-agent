@@ -92,12 +92,47 @@ export function configAt(path) {
   'authoringProviders must be an object');
   for (const [id, provider] of Object.entries(config.authoringProviders)) {
     requireThat(id !== 'copilot-sdk' && /^[a-zA-Z0-9_.-]+$/.test(id) &&
-      provider?.type === 'agency-local' &&
-      Object.keys(provider).every(key => ['type', 'executable', 'profile'].includes(key)),
-      `Authoring provider ${id} must be an agency-local provider`);
-    requireThat(typeof provider.executable === 'string' && isAbsolute(provider.executable) &&
-      typeof provider.profile === 'string' && /^[a-zA-Z0-9_.-]+$/.test(provider.profile),
-    `Authoring provider ${id} needs an absolute executable and profile-only name`);
+      ['agency-local', 'agency-remote'].includes(provider?.type),
+    `Authoring provider ${id} must select a supported Agency provider`);
+    requireThat(typeof provider.executable === 'string' && isAbsolute(provider.executable),
+      `Authoring provider ${id} needs an absolute executable`);
+    if (provider.type === 'agency-local') {
+      requireThat(Object.keys(provider).every(key =>
+        ['type', 'executable', 'profile'].includes(key)) &&
+        typeof provider.profile === 'string' &&
+        /^[a-zA-Z0-9_.-]+$/.test(provider.profile),
+      `Authoring provider ${id} needs a profile-only Local Agency configuration`);
+      continue;
+    }
+    const remoteKeys = [
+      'type', 'executable', 'profile', 'model', 'modelReasoningEffort',
+      'modelContext', 'plugin', 'compute', 'computeTag',
+      'pipelineProjectId', 'pipelineId', 'pipelineRef', 'pollSeconds'
+    ];
+    requireThat(Object.keys(provider).every(key => remoteKeys.includes(key)),
+      `Authoring provider ${id} has an unsupported Agency remote option`);
+    for (const key of remoteKeys.filter(key =>
+      !['type', 'executable', 'pipelineId', 'pollSeconds'].includes(key))) {
+      if (provider[key] !== undefined)
+        requireThat(typeof provider[key] === 'string' && provider[key].length > 0 &&
+          !/[\r\n\0]/.test(provider[key]),
+        `Authoring provider ${id} has an invalid ${key}`);
+    }
+    if (provider.profile !== undefined)
+      requireThat(/^[a-zA-Z0-9_.-]+$/.test(provider.profile),
+        `Authoring provider ${id} has an invalid profile`);
+    if (provider.compute !== undefined)
+      requireThat(['adc', 'pipeline', 'dynamic-pipeline'].includes(provider.compute),
+        `Authoring provider ${id} has an invalid compute type`);
+    if (provider.compute === 'pipeline')
+      positive(provider.pipelineId, `authoringProviders.${id}.pipelineId`);
+    if (provider.pipelineId !== undefined)
+      positive(provider.pipelineId, `authoringProviders.${id}.pipelineId`);
+    if (provider.pollSeconds !== undefined) {
+      positive(provider.pollSeconds, `authoringProviders.${id}.pollSeconds`);
+      requireThat(provider.pollSeconds <= 300,
+        `Authoring provider ${id} pollSeconds must not exceed 300`);
+    }
   }
   config.limits.maxValidationRepairRounds =
     nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
@@ -153,7 +188,7 @@ export function configAt(path) {
     }
   }
   if (config.repositories.some(repo => repo.skillBindings?.some(binding =>
-    (binding.authoringProvider ?? 'copilot-sdk') !== 'copilot-sdk'))) {
+    config.authoringProviders?.[binding.authoringProvider]?.type === 'agency-local'))) {
     requireThat(Number.isFinite(config.limits.maxAiCreditsPerSession) &&
       config.limits.maxAiCreditsPerSession >= 30,
     'Local Agency requires maxAiCreditsPerSession of at least 30');

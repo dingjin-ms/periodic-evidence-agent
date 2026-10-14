@@ -27,7 +27,8 @@ import { cleanupWorkspaces } from './workspace-gc.js';
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
-  ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff', 'workspace-gc'].includes(action)
+['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
+  'workspace-gc'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];

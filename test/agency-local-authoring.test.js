@@ -204,6 +204,31 @@ test('configuration keeps SDK default and validates explicit Agency providers', 
   assert.throws(() => configAt(invalidPath), /unknown authoring provider/);
 });
 
+test('configuration validates an explicit Agency remote provider', t => {
+  const root = mkdtempSync(join(tmpdir(), 'agency-remote-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const base = JSON.parse(readFileSync('pilot.example.json', 'utf8'));
+  base.stateDirectory = '.state';
+  base.authoringProviders = {
+    'agency-remote-oa': {
+      type: 'agency-remote',
+      executable: process.execPath,
+      profile: 'qualified-remote',
+      model: 'gpt-5.6-sol',
+      pollSeconds: 15
+    }
+  };
+  base.repositories[2].skillBindings[0].authoringProvider = 'agency-remote-oa';
+  const validPath = join(root, 'valid.json');
+  writeFileSync(validPath, JSON.stringify(base));
+  assert.equal(configAt(validPath).authoringProviders['agency-remote-oa'].type,
+    'agency-remote');
+  base.authoringProviders['agency-remote-oa'].pollSeconds = 301;
+  const invalidPath = join(root, 'invalid.json');
+  writeFileSync(invalidPath, JSON.stringify(base));
+  assert.throws(() => configAt(invalidPath), /pollSeconds must not exceed/);
+});
+
 test('Local Agency requires pilot_finish even after a successful process exit', async t => {
   const root = mkdtempSync(join(tmpdir(), 'agency-run-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

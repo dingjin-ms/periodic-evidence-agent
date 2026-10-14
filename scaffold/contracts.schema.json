@@ -869,7 +869,7 @@
         "blockedReason": {
           "anyOf": [
             { "type": "null" },
-            { "enum": ["runner-timeout", "runner-unavailable", "runner-mutated-source",
+            { "enum": ["blocked-auth", "runner-timeout", "runner-unavailable", "runner-mutated-source",
               "validation-workspace-unavailable", "validation-profile-changed",
               "validation-cleanup-failed"] }
           ]

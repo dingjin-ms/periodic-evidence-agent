@@ -42,7 +42,8 @@ async function setup(t) {
   config.limits = {
     ...config.limits,
     maxItems: 100,
-    workerMaxToolCalls: 20
+    workerMaxToolCalls: 20,
+    workerMinutes: 1
   };
   config.limits.maxItems = 10;
   config.limits.workerMaxToolCalls = 20;
@@ -410,6 +411,107 @@ test('Agency authoring provider uses the same local repair loop and exact sessio
     attempt.validation[0].status), repairDrill.expectedValidationStatuses);
   assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
   assert.equal(executed.result.toolUsage.used, 5);
+});
+
+test('Agency remote authoring imports only the remote diff into the local repair loop', async t => {
+  const { root, remote, config, ledger } = await setup(t);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.limits.maxValidationRepairRounds = 2;
+  config.authoringProviders = {
+    'agency-remote-oa': {
+      type: 'agency-remote',
+      executable: process.execPath,
+      profile: 'qualified-remote',
+      pollSeconds: 1
+    }
+  };
+  config.repositories[0].pr = {
+    provider: 'ado',
+    organization: 'fixture',
+    project: 'fixture',
+    repositoryId: 'fixture',
+    targetRef: 'refs/heads/main'
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-remote-oa';
+  await command('git', ['init', '--bare', '--quiet', remote], root);
+  const prompts = [];
+  let validationPrepared = false;
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      prepareValidation: async () => {
+        validationPrepared = true;
+        return {};
+      },
+      agencyRemote: {
+        getToken: async () => 'synthetic-token',
+        executeRemoteJob: async (currentConfig, currentLedger, current, repo,
+          provider, input) => {
+          assert.equal(validationPrepared, true);
+          prompts.push(input.prompt);
+          const round = repairDrill.rounds[input.round];
+          assert.ok(round);
+          const workspace = join(root, `agency-round-${input.round}`);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'clone', '--quiet', remote, workspace], root);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'checkout', '--quiet', '-b',
+            `agency-result-${input.round}`, `origin/${input.branch}`], workspace);
+          for (const [path, content] of Object.entries(round.writes)) {
+            mkdirSync(join(workspace, path, '..'), { recursive: true });
+            writeFileSync(join(workspace, path), content);
+          }
+          const resultPath = join(workspace,
+            '.periodic-evidence-agent', 'result.json');
+          mkdirSync(join(resultPath, '..'), { recursive: true });
+          writeFileSync(resultPath, JSON.stringify({
+            schemaVersion: '1.0',
+            assignmentId: current.id,
+            round: input.round,
+            baseRevision: input.baseRevision,
+            proposal: {
+              outcome: 'propose-change',
+              findings: round.findings,
+              title: round.title,
+              description: 'Authorized synthetic Agency remote draft.',
+              skillResult: repairDrill.skillResult
+            }
+          }));
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'add', '--all'], workspace);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', '-c', 'user.name=Agency Fixture',
+            '-c', 'user.email=agency@example.invalid', 'commit', '--quiet',
+            '-m', `Agency fixture round ${input.round}`], workspace);
+          const sourceBranch = `agency/result-${input.round}`;
+          await command('git', ['push', '--quiet', 'origin',
+            `HEAD:refs/heads/${sourceBranch}`], workspace);
+          return { sourceBranch: `refs/heads/${sourceBranch}` };
+        }
+      },
+      createDraft: async (currentConfig, currentLedger, current, repo,
+        revision) => ({
+        url: 'https://example.invalid/reviewed-handoff/draft/agency-remote-repair',
+        isDraft: true,
+        headRevision: revision
+      })
+    }
+  });
+  assert.equal(executed.result.outcome, 'draft-pr-validated');
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0], /Agency remote checkout/);
+  assert.match(prompts[0], /\.periodic-evidence-agent\/result\.json/);
+  assert.match(prompts[1], /"status":"failed"/);
+  assert.deepEqual(executed.result.validationAttempts.map(attempt =>
+    attempt.validation[0].status), repairDrill.expectedValidationStatuses);
+  assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used),
+    [3, 2]);
+  assert.equal(executed.result.skillExecution.status, 'succeeded');
 });
 
 test('prepared Agency assignments reject provider configuration drift', async t => {

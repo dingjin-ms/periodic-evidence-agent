@@ -1,9 +1,13 @@
 import { parentPort } from 'node:worker_threads';
-import { outputPathFingerprint } from './output-fingerprint.js';
+import {
+  dependencyEntryFingerprint, outputPathFingerprint
+} from './output-fingerprint.js';
 
-parentPort.on('message', ({ workspace, index, path }) => {
+parentPort.on('message', ({ workspace, index, mode, path, dependencyPath, entryPath }) => {
   try {
-    const value = outputPathFingerprint(workspace, path);
+    const value = mode === 'dependency-entry'
+      ? dependencyEntryFingerprint(workspace, dependencyPath, entryPath)
+      : outputPathFingerprint(workspace, path);
     parentPort.postMessage({
       index, valid: value !== null, serialized: JSON.stringify(value)
     });

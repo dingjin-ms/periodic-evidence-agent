@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync } from 'node:fs';
+import {
+  existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync,
+  symlinkSync, writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,6 +20,7 @@ import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPri
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, prepareValidation, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
+import { outputPathFingerprint } from '../src/output-fingerprint.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -109,6 +113,7 @@ async function stagedValidationFixture(t, { parallelOutputs = false } = {}) {
   writeFileSync(join(ctx.repo.referenceCheckout, 'build.config.js'), 'export default {};\n');
   mkdirSync(join(ctx.repo.referenceCheckout, 'src'), { recursive: true });
   writeFileSync(join(ctx.repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
+  writeFileSync(join(ctx.repo.referenceCheckout, 'src', 'unused.js'), 'export const unused = true;\n');
   mkdirSync(join(ctx.repo.referenceCheckout, 'test'));
   writeFileSync(join(ctx.repo.referenceCheckout, 'test', 'behavior.test.js'), 'pass\n');
   await ctx.g(['add', '.']);
@@ -164,6 +169,8 @@ async function stagedValidationFixture(t, { parallelOutputs = false } = {}) {
       mkdirSync(join(cwd, 'extra', 'node_modules', 'fixture'), { recursive: true });
       writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
         '{"version":"2.0.0"}\n');
+      writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'resolver.node'),
+        'synthetic-native-binary\n');
       symlinkSync(join(cwd, 'src'),
         join(cwd, 'extra', 'node_modules', 'source-link'),
         process.platform === 'win32' ? 'junction' : 'dir');
@@ -212,6 +219,20 @@ async function stagedValidationFixture(t, { parallelOutputs = false } = {}) {
 test('portable scaffold config and all synthetic example records remain valid', () => {
   validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
   validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
+});
+test('dependency fingerprint rejects chained links that resolve outside the workspace', t => {
+  const root = mkdtempSync(join(tmpdir(), 'dependency-fingerprint-test-'));
+  const workspace = join(root, 'workspace');
+  const outside = join(root, 'outside');
+  mkdirSync(join(workspace, 'node_modules'), { recursive: true });
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'package.js'), 'external\n');
+  symlinkSync(outside, join(workspace, 'bridge'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  symlinkSync(join(workspace, 'bridge'), join(workspace, 'node_modules', 'package'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(outputPathFingerprint(workspace, 'node_modules'), null);
 });
 test('worker-result audit fields and validation attempt metadata are mandatory', () => {
   const examples = JSON.parse(readFileSync('scaffold/example-flows.json'));
@@ -799,6 +820,26 @@ test('failed test-only revision repairs without repeating dependency or compile 
   assert.equal(ctx.calls.filter(stage => stage === 'policy').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'test').length, 2);
 });
+test('production-to-test rename cannot reuse a test-only compile receipt', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  renameSync(join(ctx.current.workspace, 'src', 'unused.js'),
+    join(ctx.current.workspace, 'test', 'unused.js'));
+  const gitArgs = args => command('git', ['-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', ...args], ctx.current.workspace);
+  await gitArgs(['add', '--all']);
+  await gitArgs(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Move production source into tests']);
+  const revision = (await gitArgs(['rev-parse', 'HEAD'])).stdout.trim();
+  assert.equal((await gitArgs(['diff', '--name-only',
+    prepared.staged.inputs.sourceRevision, revision])).stdout.trim(), 'test/unused.js');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
 test('production changes reuse dependencies while lockfile changes invalidate them', async t => {
   for (const [path, content, dependencyRuns] of [
     ['src/value.js', 'export const value = 2;\n', 1],
@@ -921,6 +962,69 @@ test('parallel prepared-output fingerprint detects cache mutation', async t => {
   assert.equal(result[0].status, 'passed');
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+test('dependency file mutations invalidate a warm compile receipt', async t => {
+  for (const mutation of ['modify', 'delete', 'add']) {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    const packagePath = join(prepared.staged.workspace, 'extra', 'node_modules',
+      'fixture', 'package.json');
+    if (mutation === 'modify') writeFileSync(packagePath, '{"version":"corrupt"}\n');
+    else if (mutation === 'delete') rmSync(packagePath);
+    else writeFileSync(join(dirname(packagePath), 'injected.js'), 'injected\n');
+    const revision = await ctx.commit('test/behavior.test.js', `${mutation}\n`,
+      `${mutation} dependency file before test-only validation`);
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, ctx.execute, rmSync, prepared);
+    assert.equal(result[0].status, 'passed');
+    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+    assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+  }
+});
+test('runner dependency file mutation invalidates the prepared cache', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Exercise dependency mutation detection');
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , cwd, , env] = args;
+    if (env.PILOT_VALIDATION_STAGE === 'test')
+      writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
+        '{"version":"mutated-by-runner"}\n');
+    return result;
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'prepared-cache-corrupt');
+  assert.equal(existsSync(dirname(prepared.staged.workspace)), false);
+});
+test('metadata-only native module changes preserve an identical prepared cache', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+    'Exercise native module metadata tolerance');
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , cwd, , env] = args;
+    if (env.PILOT_VALIDATION_STAGE === 'test') {
+      const nativeModule = join(cwd, 'extra', 'node_modules', 'fixture',
+        'resolver.node');
+      writeFileSync(nativeModule, readFileSync(nativeModule));
+    }
+    return result;
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(existsSync(prepared.staged.workspace), true);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.equal(artifact.telemetry.validationTimings.find(stage =>
+    stage.id === 'cleanup').cache, 'preserved');
 });
 test('same-revision infrastructure retry reuses expensive prepared stages', async t => {
   const ctx = await stagedValidationFixture(t);

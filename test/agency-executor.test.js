@@ -25,7 +25,7 @@ test('local FILTER policy requires explicit provenance and cannot relax proposer
     assert.throws(() => validateFilterAnalysisPolicy({ ...policy, ...changed }, scope));
 });
 
-function fixture(t, { analysis = false } = {}) {
+function fixture(t, { analysis = false, executor } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'agency-offline-'));
   const config = configAt('pilot.example.json');
   config.stateDirectory = root; config.statePolicy.accessApproved = true;
@@ -79,6 +79,7 @@ function fixture(t, { analysis = false } = {}) {
   config.agency = { profiles: { 'fixture-profile': profile }, selections: [selection], budgetId: 'fixture-budget',
     maxRequests: 1, maxConcurrent: 1, maxDraftPullRequests: 1, maxExecutionSeconds: 600, preflightMaxAgeSeconds: 300,
     monitorOwner: 'fixture-owner', monitorCadenceSeconds: 60 };
+  if (executor) config.repositories[0].flights = { proposerExecutor: executor };
   const assignment = makeAssignment(config, investigation, 'fixture', intent);
   const request = json({ organization: profile.organization, project: profile.project, repository: profile.repository,
     targetBranch: 'main', prompt, options: { allowPush: selection.allowPush, pullRequest: { create: false, publish: false } },
@@ -129,8 +130,57 @@ test('Agency is per task/suite/profile, while local assignments and E2E stay loc
   assert.throws(() => requireCurrentAssignment(f.config, f.ledger, f.investigation, f.assignment), /changed/);
 });
 
-test('request is durable before injected transport and hosted dispatch never uses local model/provision/push', async t => {
-  const f = fixture(t);
+test('explicit local flight ignores Agency selections and blocks direct proposer reservations', t => {
+  const f = fixture(t, { executor: 'local' });
+  assert.deepEqual(f.assignment, f.local);
+  requireCurrentAssignment(f.config, f.ledger, f.investigation, f.assignment);
+  assert.throws(() => reserveAgencyRequest(f.config, f.ledger, f.selection.taskId, f.input), /local executor flight/);
+  assert.equal(inspectAgencyRequest(f.ledger, f.selection.taskId), null);
+});
+
+test('Agency flight requires an exact selection while another repository stays local', t => {
+  const f = fixture(t, { executor: 'agency' });
+  f.config.repositories.push({ ...f.config.repositories[0], id: 'other-repo',
+    flights: { proposerExecutor: 'local' } });
+  const investigation = { ...f.investigation, repoIds: ['fixture', 'other-repo'] };
+  assert.equal(makeAssignment(f.config, investigation, 'other-repo', 'defect-fix').execution, 'local');
+  f.config.agency.selections = [];
+  assert.throws(() => makeAssignment(f.config, f.investigation, 'fixture', 'defect-fix'),
+    /explicit task selection; no local fallback/);
+  assert.equal(inspectAgencyRequest(f.ledger, f.selection.taskId), null);
+});
+
+for (const executor of ['local', 'agency'])
+test(`switching a prepared ${executor} flight requires reconciliation before SDK or native dispatch`, async t => {
+  const f = fixture(t, { executor });
+  f.config.repositories[0].projectId = 'fixture-project';
+  beginApp(f.config, { runId: 'flight-run', dryRun: false, provenance: 'app-tool' });
+  const { ledger } = openApp(f.config, 'flight-run', false);
+  f.ledgers.push(ledger);
+  ledger.put(f.evidence); ledger.put(f.investigation); ledger.qualify(f.selection.qualificationId, f.q);
+  const prepared = appWorker(f.config, ledger, 'flight-run', 'prepare', {
+    investigationId: f.investigation.id, repoId: 'fixture', intent: 'defect-fix'
+  });
+  assert.equal(prepared.execution, executor === 'local' ? 'external-app-native-session' : 'agency');
+  f.config.repositories[0].flights.proposerExecutor = executor === 'local' ? 'agency' : 'local';
+  const changed = makeAssignment(f.config, f.investigation, 'fixture', 'defect-fix');
+  assert.throws(() => ledger.prepare(changed), /different execution semantics/);
+  assert.throws(() => openApp(f.config, 'flight-run', false), /Run configuration changed/);
+  assert.throws(() => appWorker(f.config, ledger, 'flight-run', 'claim', {
+    assignmentId: prepared.id, claimId: 'fixture-claim', coordinatorAgentId: f.config.agent.id
+  }), /changed after preparation/);
+  await assert.rejects(dispatch(f.config, ledger, prepared.id, {
+    agencyRequest: f.input,
+    agencyTransport: () => assert.fail('flight change must not submit'),
+    runModel: () => assert.fail('flight change must not execute locally')
+  }), /changed after preparation/);
+  assert.equal(ledger.job(prepared.id).state, 'prepared');
+  assert.equal(inspectAgencyRequest(ledger, f.selection.taskId), null);
+  assert.equal(existsSync(join(f.root, 'workspaces')), false);
+});
+
+test('Agency flight persists request before injected transport and never uses local model/provision/push', async t => {
+  const f = fixture(t, { executor: 'agency' });
   f.ledger.prepare(f.assignment);
   let calls = 0;
   const receipt = await dispatch(f.config, f.ledger, f.assignment.id, {
@@ -150,6 +200,9 @@ test('request is durable before injected transport and hosted dispatch never use
   assert.equal(receipt.submissionState, 'accepted'); assert.equal(calls, 1);
   assert.equal(existsSync(join(f.root, 'workspaces')), false);
   assert.equal(f.ledger.job(f.assignment.id).workspace, null);
+  f.config.repositories[0].flights.proposerExecutor = 'local';
+  assert.throws(() => f.ledger.prepare(makeAssignment(f.config, f.investigation, 'fixture', 'defect-fix')),
+    /different execution semantics/);
   const completed = reconcileHostedAssignment(f.ledger, f.assignment.id, f.result);
   assert.equal(completed.result.outcome, 'draft-pr-validated');
   assert.equal(completed.verdict.validationQualified, true);
@@ -158,8 +211,8 @@ test('request is durable before injected transport and hosted dispatch never use
   await assert.rejects(dispatch(f.config, f.ledger, f.assignment.id), /never-dispatched/);
 });
 
-test('uncertain POST stays latched across restart and cannot fall back or resubmit', async t => {
-  const f = fixture(t);
+test('uncertain POST stays latched across restart and flight switches without fallback or resubmission', async t => {
+  const f = fixture(t, { executor: 'agency' });
   f.ledger.prepare(f.assignment);
   let calls = 0;
   const dependencies = { agencyRequest: f.input, agencyTransport: async () => { calls++; throw Error('timeout'); } };
@@ -173,6 +226,10 @@ test('uncertain POST stays latched across restart and cannot fall back or resubm
     await assert.rejects(dispatch(f.config, reopened, f.assignment.id, dependencies), /never-dispatched/);
     assert.throws(() => reconcileAgencyResult(reopened, f.selection.taskId, f.result), /unbound/);
   } finally { reopened.close(); }
+  f.config.repositories[0].flights.proposerExecutor = 'local';
+  assert.throws(() => f.ledger.prepare(makeAssignment(f.config, f.investigation, 'fixture', 'defect-fix')),
+    /different execution semantics/);
+  await assert.rejects(dispatch(f.config, f.ledger, f.assignment.id, dependencies), /never-dispatched/);
   assert.equal(calls, 1);
 });
 
@@ -232,9 +289,23 @@ test('crash after reservation with no POST receipt remains uncertain and immutab
   } finally { reopened.close(); }
 });
 
-test('hosted dispatch with no approved transport does not provision or consume request budget', async t => {
-  const f = fixture(t); f.ledger.prepare(f.assignment);
+test('Agency flight without approved transport does not provision or consume request budget', async t => {
+  const f = fixture(t, { executor: 'agency' }); f.ledger.prepare(f.assignment);
   await assert.rejects(dispatch(f.config, f.ledger, f.assignment.id), /no local fallback/);
+  assert.equal(f.ledger.job(f.assignment.id).state, 'prepared');
+  assert.equal(inspectAgencyRequest(f.ledger, f.selection.taskId), null);
+});
+
+test('Agency flight cannot replace qualification or dispatch activation', async t => {
+  const f = fixture(t, { executor: 'agency' }); f.ledger.prepare(f.assignment);
+  const dependencies = { agencyRequest: f.input,
+    agencyTransport: () => assert.fail('unqualified or disabled work must not submit'),
+    runModel: () => assert.fail('unqualified work must not fall back') };
+  f.ledger.qualify(f.selection.qualificationId, { ...f.q, status: 'unqualified' });
+  await assert.rejects(dispatch(f.config, f.ledger, f.assignment.id, dependencies), /qualification/);
+  f.ledger.qualify(f.selection.qualificationId, f.q);
+  f.config.activation.dispatch = false;
+  await assert.rejects(dispatch(f.config, f.ledger, f.assignment.id, dependencies), /dispatch is disabled/);
   assert.equal(f.ledger.job(f.assignment.id).state, 'prepared');
   assert.equal(inspectAgencyRequest(f.ledger, f.selection.taskId), null);
 });
@@ -323,10 +394,12 @@ test('analysis with allowPush false forbids publication and unknown side effects
   assert.equal(reconcileAgencyResult(f.ledger, f.selection.taskId, f.result).state, 'blocked');
 });
 
-test('app-native hosted path shares assignment budget/claim CAS without local project or workspace', t => {
-  const f = fixture(t);
+test('app-native Agency flight shares budget/claim CAS with a local-flight repository without provisioning', t => {
+  const f = fixture(t, { executor: 'agency' });
   f.config.limits.maxAssignments = 2;
   f.config.repositories[0].projectId = 'fixture-local-project';
+  f.config.repositories.push({ ...f.config.repositories[0], id: 'local-fixture',
+    flights: { proposerExecutor: 'local' } });
   beginApp(f.config, { runId: 'agency-run', dryRun: false, provenance: 'app-tool' });
   const { ledger } = openApp(f.config, 'agency-run', false);
   ledger.put(f.evidence); ledger.put(f.investigation); ledger.qualify(f.selection.qualificationId, f.q);
@@ -337,10 +410,10 @@ test('app-native hosted path shares assignment budget/claim CAS without local pr
   assert.equal(ledger.db.prepare('SELECT COUNT(*) n FROM assignment_budgets').get().n, 1);
   const claim = { assignmentId: prepared.id, claimId: 'fixture-claim', coordinatorAgentId: f.config.agent.id };
   appWorker(f.config, ledger, 'agency-run', 'claim', claim);
-  const secondInvestigation = { ...f.investigation, id: 'another-investigation' };
+  const secondInvestigation = { ...f.investigation, id: 'another-investigation', repoIds: ['local-fixture'] };
   ledger.put(secondInvestigation);
   const local = appWorker(f.config, ledger, 'agency-run', 'prepare', {
-    investigationId: secondInvestigation.id, repoId: 'fixture', intent: 'rca-only'
+    investigationId: secondInvestigation.id, repoId: 'local-fixture', intent: 'rca-only'
   });
   assert.equal(local.execution, 'external-app-native-session');
   assert.throws(() => appWorker(f.config, ledger, 'agency-run', 'claim', {
@@ -417,7 +490,7 @@ function setRequest(f, wire) {
 }
 
 test('qualified FILTER runner admits only its exact repo-agent and protected capture metadata', t => {
-  const f = fixture(t, { analysis: true }), wire = runnerFilter(f); setRequest(f, wire);
+  const f = fixture(t, { analysis: true, executor: 'local' }), wire = runnerFilter(f); setRequest(f, wire);
   const reserved = reserveAgencyRequest(f.config, f.ledger, f.selection.taskId, f.input);
   assert.equal(JSON.parse(reserved.request).agent.name, 'filter-evidence-reader');
   assert.equal(JSON.parse(reserved.request).metadata.agentProfileDigest, f.selection.captureVerification.agentProfileSha256);

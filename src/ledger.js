@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { hash, json, now, uuid, requireThat, validateRecord } from './common.js';
 
 export class Ledger {
-  constructor(directory) {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+  constructor(directory, { readOnly = false } = {}) {
+    if (!readOnly) mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.directory = directory;
-    this.db = new DatabaseSync(join(directory, 'ledger.sqlite'));
+    this.db = new DatabaseSync(join(directory, 'ledger.sqlite'), { readOnly });
+    if (readOnly) return;
     this.db.exec(`
       PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS records (

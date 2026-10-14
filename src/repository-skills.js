@@ -1,12 +1,29 @@
-import { readFileSync, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { boundedPath, hash, json, requireThat } from './common.js';
+import { boundedPath, hash, json, requireThat, validateRecord, validationPackageAuth, validationLfsPaths } from './common.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
 export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
+
+export function normalizeSkillInput(binding, input) {
+  if (!binding.inputFormat) {
+    requireThat(input === undefined || input === null,
+      `Repository skill binding ${binding.id} does not accept a structured skill input`,
+      'blocked-scope');
+    return null;
+  }
+  requireThat(input && input.format === binding.inputFormat,
+    `Repository skill binding ${binding.id} requires ${binding.inputFormat}`,
+    'blocked-reconciliation');
+  validateRecord(structuredClone(input), 'declarativeE2ESpecBatch');
+  const ids = input.items.map(item => item.inputItemId);
+  requireThat(new Set(ids).size === ids.length,
+    'Repository skill input item IDs must be unique', 'blocked-reconciliation');
+  return structuredClone(input);
+}
 
 export function repositoryValidationContract(repo) {
   const version = repo.validationContractVersion ?? '1.0';
@@ -16,7 +33,9 @@ export function repositoryValidationContract(repo) {
     executable: gate.executable,
     args: gate.args,
     timeoutMs: gate.timeoutMs,
-    profileSha256: gate.profileSha256 ?? null
+    profileSha256: gate.profileSha256 ?? null,
+    ...(gate.packageAuth !== undefined ? { packageAuth: validationPackageAuth(gate) } : {}),
+    ...(gate.lfsPaths !== undefined ? { lfsPaths: validationLfsPaths(gate) } : {})
   }));
   return { version, sha256: hash(json(gates)) };
 }
@@ -66,6 +85,14 @@ export function pinSkillQualification(receipt) {
   };
 }
 
+function failSkillGit(operation, error) {
+  const reason = /filename too long/i.test(String(error.stderr ?? ''))
+    ? 'filename-too-long' : error.code === 'ENOENT' ? 'git-unavailable' : 'native-command-failed';
+  const status = Number.isInteger(error.status) ? error.status : 'unavailable';
+  requireThat(false, `Repository skill Git ${operation} failed (${reason}; exit status ${status}); content drift is not established`,
+    'blocked-repository-git');
+}
+
 export function loadRepositorySkill(config, assignment, workspace, sourceRevision, qualification) {
   requireThat(assignment.skillBindingId && assignment.capability,
     'Repository skill execution requires an assignment capability and binding');
@@ -90,12 +117,43 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
   const path = boundedPath(workspace, binding.skillPath);
   requireThat(statSync(path).isFile() && statSync(path).size <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
-  const instructions = readFileSync(path, 'utf8');
-  requireThat(hash(instructions) === qualification.skillSha256,
+  let source = readFileSync(path);
+  if (existsSync(join(workspace, '.git'))) {
+    try {
+      execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true',
+        'cat-file', '-e', `${sourceRevision}^{commit}`], {
+        cwd: workspace, windowsHide: true, stdio: 'pipe'
+      });
+    } catch (error) {
+      failSkillGit('cat-file', error);
+    }
+    try {
+      execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true',
+        'diff', '--quiet', sourceRevision,
+        '--', binding.skillPath.replaceAll('\\', '/')], {
+        cwd: workspace, windowsHide: true, stdio: 'pipe'
+      });
+    } catch (error) {
+      requireThat(error.status !== 1, 'Repository skill content changed after qualification',
+        'blocked-reconciliation');
+      failSkillGit('diff', error);
+    }
+    try {
+      source = execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true', 'show',
+        `${sourceRevision}:${binding.skillPath.replaceAll('\\', '/')}`], {
+        cwd: workspace, windowsHide: true, stdio: 'pipe', maxBuffer: config.limits.maxFileBytes
+      });
+    } catch (error) {
+      failSkillGit('show', error);
+    }
+  }
+  requireThat(source.length <= config.limits.maxFileBytes,
+    'Repository skill exceeds the configured read limit', 'blocked-budget');
+  requireThat(hash(source) === qualification.skillSha256,
     'Repository skill content changed after qualification', 'blocked-reconciliation');
   return {
     binding,
-    instructions,
+    instructions: source.toString('utf8'),
     skillRevision: sourceRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/')
   };
@@ -109,7 +167,7 @@ export function verifyRepositorySkillWorkspace(config, assignment, workspace, so
   try {
     requireThat(statSync(workspace).isDirectory(), 'Repository skill workspace is not a directory',
       'blocked-reconciliation');
-    const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+    const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
       '-c', 'core.safecrlf=false', ...args], {
       cwd: workspace, windowsHide: true, encoding: 'utf8', timeout: 30000
     }).trim();
@@ -167,7 +225,10 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
     `Repository ${repoId} origin does not match its configured remote`, 'blocked-scope');
   const refresh = repo.qualificationRefresh ?? 'local';
   if (refresh === 'fetch') {
-    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', repo.baseRef];
+    const fetchRef = repo.baseRef.startsWith('origin/')
+      ? repo.baseRef.slice('origin/'.length)
+      : repo.baseRef;
+    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', fetchRef];
     const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(remote);
     const env = adoRemote
       ? adoGitEnvironment(await getToken(config, 'ADO repository skill qualification'))

@@ -19,7 +19,7 @@ parentPort.on('message', ({
       : outputPathFingerprint(workspace, path));
     parentPort.postMessage({
       index, valid: value !== null, serialized: JSON.stringify(value),
-      entries: result?.entries ?? null
+      ...(captureEntries ? { entries: result?.entries ?? null } : {})
     });
   } catch (error) {
     parentPort.postMessage({ index, error: error.message });

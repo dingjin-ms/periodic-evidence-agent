@@ -4,7 +4,9 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { hash, json } from './common.js';
+import { hash } from './hash.js';
+
+const json = JSON.stringify;
 
 const FILE_HASH_BUFFER = Buffer.allocUnsafe(1024 * 1024);
 

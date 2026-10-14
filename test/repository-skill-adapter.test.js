@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { configAt, hash } from '../src/common.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill,
-  repositoryValidationContract, resolveSkillBinding
+  normalizeSkillInput, repositoryValidationContract, resolveSkillBinding
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -62,6 +62,41 @@ test('adapter loads exactly the configured repository skill at the bound source 
   assert.equal(loaded.skillRevision, 'a'.repeat(40));
 });
 
+test('adapter uses committed skill bytes when checkout line endings differ', async t => {
+  const { workspace, config, assignment } = setup(t);
+  writeFileSync(join(workspace, '.gitattributes'), '*.md text eol=crlf\n');
+  const run = args => new Promise((resolve, reject) => {
+    import('node:child_process').then(({ execFile }) =>
+      execFile('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+        '-c', 'core.safecrlf=false', ...args], { cwd: workspace }, (error, stdout, stderr) =>
+        error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
+  });
+  await run(['init', '--quiet']);
+  await run(['add', '.']);
+  await run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Fixture']);
+  const revision = (await run(['rev-parse', 'HEAD'])).trim();
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Synthetic OA integration skill\r\n');
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
+  assert.equal(loaded.instructions, '# Synthetic OA integration skill\n');
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Changed skill\n');
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt),
+    error => error.code === 'blocked-reconciliation' && /content changed/.test(error.message));
+});
+
+test('skill Git execution failure is not reported as established content drift', t => {
+  const { workspace, config, assignment } = setup(t);
+  mkdirSync(join(workspace, '.git'));
+  const revision = 'a'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt),
+    error => error.code === 'blocked-repository-git' &&
+      /Git cat-file failed \(native-command-failed; exit status \d+\); content drift is not established/.test(error.message));
+});
+
 test('skill binding is fail-closed when disabled, unqualified or ambiguous', t => {
   const { config } = setup(t);
   config.repositories[0].skillBindings[0].enabled = false;
@@ -108,6 +143,7 @@ test('trusted-remote qualification fetches before resolving and binds the valida
   const { config } = setup(t);
   const repo = config.repositories[0];
   repo.qualificationRefresh = 'fetch';
+  repo.baseRef = 'origin/feature/synthetic-validation';
   repo.validationContractVersion = 'oa-v2';
   repo.validationGates = [{
     id: 'oa-test', approved: true, executable: process.execPath,
@@ -127,6 +163,9 @@ test('trusted-remote qualification fetches before resolving and binds the valida
     }, async () => 'synthetic-token');
   assert.deepEqual(calls.map(args => args[0]),
     ['remote', 'fetch', 'rev-parse', 'cat-file', 'show']);
+  assert.equal(calls.find(args => args[0] === 'fetch').at(-1), 'feature/synthetic-validation');
+  assert.equal(calls.find(args => args[0] === 'rev-parse').at(-1),
+    'FETCH_HEAD^{commit}');
   assert.equal(result.qualificationSource, 'trusted-remote');
   assert.equal(result.validationContractVersion, 'oa-v2');
   assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
@@ -202,6 +241,31 @@ test('skill result normalization is deterministic and rejects success-shaped emp
     changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
     unknowns: [], needsHumanDecision: false
   }), /existing coverage/);
+});
+
+test('declarative E2E skill input is versioned, complete and has unique item IDs', t => {
+  const { config } = setup(t);
+  const binding = config.repositories[0].skillBindings[0];
+  binding.inputFormat = 'declarative-e2e-mini-spec-batch-v1';
+  const input = {
+    format: 'declarative-e2e-mini-spec-batch-v1',
+    items: [{
+      inputItemId: 'bizchat-excel-canary',
+      title: 'Create an Excel workbook from BizChat',
+      account: 'AAD',
+      entryUrl: 'https://example.invalid/chat',
+      preconditions: ['Signed in with the qualified AAD profile'],
+      orderedTestSteps: ['Open BizChat', 'Create the workbook'],
+      expectedUserVisibleAndDataOutcomes: ['A real workbook opens'],
+      cleanup: ['Close only the test-owned tab']
+    }]
+  };
+  assert.deepEqual(normalizeSkillInput(binding, input), input);
+  assert.throws(() => normalizeSkillInput(binding, null),
+    /requires declarative-e2e-mini-spec-batch-v1/);
+  const duplicate = structuredClone(input);
+  duplicate.items.push(structuredClone(input.items[0]));
+  assert.throws(() => normalizeSkillInput(binding, duplicate), /unique/);
 });
 
 test('adapter rejects missing, changed or source-mismatched qualification receipts', t => {

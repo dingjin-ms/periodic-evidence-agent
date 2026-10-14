@@ -33,7 +33,7 @@ function capturePayload(capture) {
   }
 }
 
-function importEvidence(ledger, binding, corpus) {
+export function importCapturedEvidence(ledger, binding, corpus, sourcePrefix = 'filter-proposer') {
   const selected = new Set(binding.retainedIds);
   const records = corpus.evidence.filter(record => selected.has(record.id));
   requireThat(records.length === selected.size,
@@ -50,7 +50,7 @@ function importEvidence(ledger, binding, corpus) {
   const windows = corpus.index.sources.map(source => source.window);
   requireThat(windows.length > 0 && windows.every(window => json(window) === json(windows[0])),
     'FILTER proposer evidence must use one exact collection window', 'blocked-reconciliation');
-  const runId = ledger.startRun(`filter-proposer:${binding.cohortId}`, windows[0]);
+  const runId = ledger.startRun(`${sourcePrefix}:${binding.cohortId}`, windows[0]);
   for (const record of records) {
     const existing = ledger.get('evidence', record.id);
     if (existing) {
@@ -152,7 +152,7 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
     sources: manifest.request.sources
   });
   return ledger.transaction(() => {
-    const evidence = importEvidence(ledger, binding, corpus);
+    const evidence = importCapturedEvidence(ledger, binding, corpus);
     const proposedInvestigation = investigation(
       ledger, candidate, evidence, reviewedAt, reviewer);
     requireCompleteExclusionReview(exclusions);
@@ -186,7 +186,10 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
         existingTests: [],
         coverageGaps: [candidate.definition.missingAssertion],
         unknowns: [],
-        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`
+        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`,
+        ...(input.routing.skillInput
+          ? { skillInput: input.routing.skillInput }
+          : {})
       }
     });
     const assignment = makePlannedImprovementAssignment(config, ledger,

@@ -2,11 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 # PILOT_VALIDATION_PLAN: {"version":3,"stages":["dependencies","compile","policy","test"],"authentication":{"type":"azure-artifacts-npm","provider":"artifacts-npm-credprovider","providerVersion":"1.2.1","feeds":[{"scope":null,"registry":"https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/"},{"scope":"office","registry":"https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/"}]},"testOnlyPrefixes":["agents/office-agent/tests/integration/"],"lockfilePaths":["package.json","yarn.lock",".yarnrc.yml"],"buildConfigPaths":["lage.config.js","tsconfig.json","agents/office-agent/package.json","agents/office-agent/tsconfig.json","jest.config.js"],"dependencySnapshotPaths":["node_modules",".yarn/install-state.gz"],"preparedOutputPaths":["node_modules",".yarn/install-state.gz"]}
 
-$yarnCache = 'C:\.tools\.yarn'
+$yarnCache = Join-Path $PSScriptRoot 'yarn-cache'
 New-Item -ItemType Directory -Path $yarnCache -Force | Out-Null
 $env:YARN_CACHE_FOLDER = $yarnCache
 $env:YARN_AFTER_INSTALL = 'node -e "process.exit(0)"'
 $env:OAGENT_SKIP_PYTHON_POSTINSTALL = '1'
+# Reuse configured feed credentials; validation must not refresh auth or install a credential provider.
+$env:OAGENT_ADO_ARTIFACTS_AUTHENTICATED = '1'
 $stage = if ($env:PILOT_VALIDATION_STAGE) { $env:PILOT_VALIDATION_STAGE } else { 'all' }
 if ($stage -notin @('all', 'fingerprint', 'authentication-check', 'authentication', 'dependencies', 'compile', 'policy', 'test')) {
     throw "Unsupported validation stage: $stage"

@@ -4,7 +4,8 @@ The local runtime and SQLite ledger remain the scheduler and state owner.
 `collector`, `filter`, and `proposer` are the only selectable roles. Agency is
 an explicitly qualified task executor, not a replacement main controller or a
 replacement model callback. Local execution, including qualified local E2E
-harnesses, remains the default. No repository-wide hosted switch exists.
+harnesses, remains the example default. Both proposer implementations are
+available through the per-repository executor flight below.
 
 This module does not contain endpoints, authentication, private repository
 identifiers, a provider client, or automatic polling/submission. Resolve these
@@ -14,6 +15,59 @@ to infer defaults. The explicit bounded FILTER estimation exception below is
 the only alternative to verified tokenizer/capacity accounting.
 A qualified integration suite does not qualify E2E or another
 repository. Local E2E source/account/ring requirements are unchanged.
+
+## Per-repository executor flight
+
+Set `flights` on the intended entry in `repositories` in a new private runtime
+configuration:
+
+```json
+{
+  "id": "office-agent",
+  "flights": { "proposerExecutor": "agency" }
+}
+```
+
+This fragment supplements the existing repository entry; its ownership, skill,
+write bounds and validation settings are still required. Select `"local"` to
+use the local SDK worker or app-native repo session, according to the existing
+execution mode. Select `"agency"` to require the existing Agency proposer
+executor. OA and 1JS can select different backends; neither flight changes
+collector/FILTER routing, the local controller, or E2E qualification.
+
+The example selects `"local"` for every repository. A local flight ignores
+configured Agency proposer selections and blocks new direct Agency proposer
+reservations. An Agency flight requires an exact task selection; a missing
+selection blocks preparation rather than falling back locally. For compatibility,
+omitting `flights` retains the previous per-task behavior: a selected task uses
+Agency, otherwise it stays local. Invalid or misspelled flights are rejected.
+`doctor` reports each selection, not runtime readiness.
+
+Agency `selection.taskId` is the original assignment ID before hosted binding.
+Resolve it with a non-persisting `makeAssignment` or
+`makePlannedImprovementAssignment` preview using a copied configuration with the
+local flight, then configure the exact selection and Agency flight before
+preparation. Do not prepare/claim a local assignment just to obtain that ID:
+switching that persisted assignment is deliberately blocked.
+
+Selection does not authorize execution. The existing activation, evidence,
+native-skill and Agency profile/source/suite qualification, transport, case,
+budget, concurrency and publication checks still apply. Agency must establish
+its own package-feed access and native command execution; changing a flight is
+not proof that it can run OA integration tests or browser E2E.
+
+Flights select **new** work, not failover or migration. The assignment's existing
+execution binding is immutable; a changed backend blocks dispatch/claim of
+prepared work and cannot create a duplicate assignment for the same
+investigation/repository. Running or uncertain requests must be reconciled with
+their original source/configuration and receipts, never retried on another
+backend. App-native run configurations remain immutable: use a separately
+configured new run, keeping the shared ledger and existing assignment ownership.
+
+Hosted SDK dispatch still needs the approved private `agencyTransport` and exact
+request envelope. App-native execution still uses reserve/submission/result
+receipts through its approved external executor. The public CLI does not acquire
+a provider client, credentials or a submission endpoint from this flight.
 
 ## Private configuration and qualification
 

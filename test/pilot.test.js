@@ -10,14 +10,14 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { probeWorkiq } from '../scripts/Workiq-Auth-Repro.mjs';
 import { Ledger } from '../src/ledger.js';
-import { configAt, hash, json, now, exclusions, PilotError, boundedPath, validateRecord, workspaceCleanupPolicy } from '../src/common.js';
+import { configAt, hash, json, now, exclusions, PilotError, boundedPath, validateRecord, workspaceCleanupPolicy, proposerExecutorFlight, validationLfsPaths } from '../src/common.js';
 import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, area, wiql, adoRecord } from '../src/sources.js';
 import { dryRun } from '../src/dry-run.js';
 import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -81,7 +81,8 @@ function repoConfig(config, root) {
   const repo = {
     id: 'fixture', owner: 'synthetic-owner', routingApproved: true, routingRules: ['synthetic only'],
     referenceCheckout: join(root, 'reference'), baseRef: 'HEAD', remote: join(root, 'remote.git'),
-    allowedWritePrefixes: ['src', 'test'], validationGates: [], commitIdentity: { name: 'Pilot fixture', email: 'fixture@example.invalid' }
+    allowedWritePrefixes: ['src', 'test'], allowedWriteFiles: [],
+    validationGates: [], commitIdentity: { name: 'Pilot fixture', email: 'fixture@example.invalid' }
   };
   config.repositories = [repo]; return repo;
 }
@@ -299,7 +300,7 @@ async function stagedValidationFixture(t, {
   return { ...ctx, isolated, current, profilePath, calls, behavior, execute, commit };
 }
 
-async function deliveredWorkspace(t) {
+async function deliveredWorkspace(t, { historicalFailure = false } = {}) {
   const ctx = await fixture(t, 'authenticated-source', 'defect-fix');
   const isolated = await provision(ctx.config, ctx.job, ctx.repo);
   ctx.ledger.moveJob(ctx.job.id, 'prepared', 'dispatching');
@@ -308,17 +309,19 @@ async function deliveredWorkspace(t) {
   await pushDraftBranch(ctx.config, isolated.workspace, ctx.repo,
     `HEAD:refs/heads/pilot/${ctx.job.id}`);
   const artifact = join(ctx.config.stateDirectory, 'delivery-validation.json');
-  writeFileSync(artifact, json({ sourceRevision: isolated.baseRevision, status: 'passed' }));
+  const status = historicalFailure ? 'failed' : 'passed';
+  writeFileSync(artifact, json({ sourceRevision: isolated.baseRevision, status }));
   const result = structuredClone(JSON.parse(readFileSync('scaffold/example-flows.json'))
     .records.find(record => record.recordType === 'workerResult'));
   Object.assign(result, {
     id: `delivery-${ctx.job.id}`, assignmentId: ctx.job.id, attemptId: ctx.job.session_id,
-    reportedAt: now(), outcome: 'draft-pr-validated', sourceRevision: isolated.baseRevision,
+    reportedAt: now(), outcome: historicalFailure ? 'draft-pr-validation-failed' : 'draft-pr-validated',
+    sourceRevision: isolated.baseRevision,
     draftPR: { url: 'https://example.invalid/draft/1', isDraft: true, headRevision: isolated.baseRevision },
     skillExecution: null, blocker: null
   });
   result.validation = [{
-    ...result.validation[0], gateId: 'source-test', status: 'passed',
+    ...result.validation[0], gateId: 'source-test', status,
     sourceRevision: isolated.baseRevision, artifactRefs: [artifact]
   }];
   result.validationAttempts = [{
@@ -369,7 +372,38 @@ test('portable example uses a fixed UTC fixture window and leaves live permissio
   assert.equal(config.statePolicy.accessApproved, false);
   assert.ok(Object.values(config.sources).every(s => !s.enabled && !s.scopeApproved));
   assert.ok(config.repositories.every(r => !r.projectId && !r.referenceCheckout && !r.routingApproved));
+  assert.ok(config.repositories.every(r => proposerExecutorFlight(r) === 'local'));
   assert.match(config.identity.designatedUser, /@example\.invalid$/);
+});
+test('executor flights validate exact backend choices and preserve omitted legacy configuration', t => {
+  const { root } = setup(t);
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  const repo = config.repositories.find(r => r.id === 'office-agent');
+  const configPath = join(root, 'flight-config.json');
+  for (const executor of ['local', 'agency']) {
+    repo.flights = { proposerExecutor: executor };
+    writeFileSync(configPath, json(config));
+    const loaded = configAt(configPath);
+    assert.equal(proposerExecutorFlight(loaded.repositories.find(r => r.id === 'office-agent')), executor);
+    assert.equal(proposerExecutorFlight(loaded.repositories.find(r => r.id === '1js')), 'local');
+    assert.deepEqual(loaded.activation, { collect: false, review: false, dispatch: false });
+  }
+  const doctor = spawnSync(process.execPath, ['src/cli.js', 'doctor', '--config', configPath],
+    { encoding: 'utf8' });
+  assert.equal(doctor.status, 0, doctor.stderr);
+  assert.deepEqual(JSON.parse(doctor.stdout).proposerExecutors.find(r => r.repoId === 'office-agent'),
+    { repoId: 'office-agent', selection: 'agency', readinessVerified: false });
+  for (const flights of [null, false, [], {}, { proposerExecutor: null },
+    { proposerExecutor: 'hosted' }, { proposerExecutor: true },
+    { proposerExecutor: 'agency', fallback: 'local' }, { proposerExecuter: 'agency' }]) {
+    repo.flights = flights;
+    writeFileSync(configPath, json(config));
+    assert.throws(() => configAt(configPath), /executorFlights/);
+    assert.throws(() => proposerExecutorFlight(repo), /executorFlights/);
+  }
+  delete repo.flights;
+  writeFileSync(configPath, json(config));
+  assert.equal(proposerExecutorFlight(configAt(configPath).repositories.find(r => r.id === 'office-agent')), null);
 });
 test('configuration resolves and content-binds relative validation profiles', t => {
   const root = mkdtempSync(join(tmpdir(), 'profile-config-'));
@@ -399,6 +433,49 @@ test('configuration resolves and content-binds relative validation profiles', t 
   delete gate.profileSha256;
   writeFileSync(configPath, JSON.stringify(config));
   assert.throws(() => configAt(configPath), /bind profilePath and profileSha256 together/);
+});
+
+test('package authentication configuration is explicit, value-free and contract-bound', t => {
+  const { root } = setup(t);
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  const repo = config.repositories[0];
+  const gate = { id: 'auth-config', args: [], timeoutMs: 1000 };
+  repo.validationGates = [gate];
+  const originalContract = repositoryValidationContract(repo);
+  const configPath = join(root, 'auth-config.json');
+  gate.packageAuth = { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' };
+  writeFileSync(configPath, json(config));
+  assert.deepEqual(configAt(configPath).repositories[0].validationGates[0].packageAuth,
+    gate.packageAuth);
+  assert.notEqual(repositoryValidationContract(repo).sha256, originalContract.sha256);
+  for (const invalid of [null, false, [], {}, { kind: 'azure-cli' },
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PATH' },
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'YARN_NPM_AUTH_TOKEN' },
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN', token: 'secret' }]) {
+    gate.packageAuth = invalid;
+    writeFileSync(configPath, json(config));
+    assert.throws(() => configAt(configPath), /Validation packageAuth/);
+    assert.throws(() => repositoryValidationContract(repo), /Validation packageAuth/);
+  }
+  delete gate.packageAuth;
+  assert.deepEqual(repositoryValidationContract(repo), originalContract);
+});
+
+test('worker writes honor exact files without broadening directory prefixes', t => {
+  const { root, config } = setup(t);
+  const repo = repoConfig(config, root);
+  repo.allowedWritePrefixes = [];
+  repo.allowedWriteFiles = ['config/allowed.yaml'];
+  const workspace = join(root, 'workspace');
+  mkdirSync(join(workspace, 'config'), { recursive: true });
+  const assignment = {
+    repoId: repo.id,
+    permissions: { editCode: true },
+    bounds: { maxToolCalls: 3 }
+  };
+  const tools = new WorkerTools(config, assignment, workspace);
+  assert.equal(tools.write('config\\allowed.yaml', 'allowed\n'), 'written');
+  assert.throws(() => tools.write('config\\other.yaml', 'blocked\n'), /approved edit bounds/);
 });
 test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   const window = configAt('pilot.example.json').window;
@@ -620,6 +697,42 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
 });
+test('Windows provisioned authoring checkout supports native Git long paths without changing the reference', {
+  skip: process.platform !== 'win32'
+}, async t => {
+  const { config, job, repo } = await fixture(t);
+  const { path } = await longPathFixture(repo.referenceCheckout);
+  const referenceConfig = readFileSync(join(repo.referenceCheckout, '.git', 'config'), 'utf8');
+  const { workspace, baseRevision } = await provision(config, job, repo);
+  assert.ok(join(workspace, path).length > 260);
+  assert.equal((await command('git', ['config', '--local', '--get', 'core.longpaths'],
+    workspace)).stdout.trim(), 'true');
+  const source = await command('git', ['show', `${baseRevision}:${path.replaceAll('\\', '/')}`],
+    workspace);
+  assert.equal(source.stdout, 'export const value = 1;\n');
+  assert.equal(readFileSync(join(repo.referenceCheckout, '.git', 'config'), 'utf8'), referenceConfig);
+});
+test('repository provisioning timeout must be a positive integer', async t => {
+  const { config, repo } = await fixture(t);
+  repo.provisionTimeoutMs = 0;
+  assert.throws(() => repoFor(config, repo.id), /provisionTimeoutMs must be a positive integer/);
+  repo.provisionTimeoutMs = 900000;
+  assert.equal(repoFor(config, repo.id).provisionTimeoutMs, 900000);
+});
+test('sparse provisioning materializes configured directories and keeps bounded listings', async t => {
+  const { config, job, repo, assignment, g } = await fixture(t);
+  mkdirSync(join(repo.referenceCheckout, 'unrelated'), { recursive: true });
+  writeFileSync(join(repo.referenceCheckout, 'unrelated', 'large.js'), 'export const unrelated = true;\n');
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Add unrelated fixture']);
+  repo.sparseCheckoutPaths = ['src'];
+  const { workspace } = await provision(config, job, repo);
+  assert.equal(existsSync(join(workspace, 'src', 'value.js')), true);
+  assert.equal(existsSync(join(workspace, 'unrelated', 'large.js')), false);
+  const tools = new WorkerTools(config, assignment, workspace);
+  assert.equal((await tools.list()).includes('src/value.js'), true);
+});
 test('trusted qualification fetches its exact revision before isolated checkout', async t => {
   const { config, job, repo, g } = await fixture(t);
   const revision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
@@ -648,7 +761,7 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   const editable = structuredClone(assignment); editable.permissions.editCode = true;
   const tools = new WorkerTools(config, editable, workspace);
   for (const path of ['..\\outside', '.git\\config', 'src\\x:stream', 'src\\..\\..\\outside', 'src\\..\\README.md']) assert.throws(() => tools.write(path, 'bad'));
-  assert.throws(() => tools.write('other\\value.js', 'bad'), /prefixes/);
+  assert.throws(() => tools.write('other\\value.js', 'bad'), /edit bounds/);
   mkdirSync(join(root, 'outside'));
   symlinkSync(join(root, 'outside'), join(workspace, 'src', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => tools.write('src\\linked\\value.js', 'bad'), /Symlink/);
@@ -755,6 +868,241 @@ test('validation requires approved runner and never inherits credential environm
     if (localAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = localAppData;
   }
+});
+function packageToken(t, name = 'PILOT_FIXTURE_TOKEN', token = 'synthetic-package-token:/+=') {
+  const previous = process.env[name];
+  process.env[name] = token;
+  t.after(() => {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  });
+  return token;
+}
+test('opt-in package auth reaches only the selected runner and redacts successful output', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const token = packageToken(t);
+  packageToken(t, 'NPM_CONFIG_USERCONFIG', 'untrusted-config');
+  packageToken(t, 'PILOT_UNRELATED_TOKEN', 'unrelated-secret');
+  repo.validationGates = ['authenticated', 'legacy'].map(id => ({
+    id, approved: true, isolationVerified: true, executable: process.execPath,
+    args: [], timeoutMs: 10000,
+    ...(id === 'authenticated' ? {
+      packageAuth: { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' }
+    } : {})
+  }));
+  let calls = 0;
+  const results = await runValidation(config, ledger, { ...job, workspace: isolated.workspace },
+    repo, isolated.baseRevision, async (executable, args, cwd, timeout, env) => {
+      assert.equal(env.YARN_NPM_AUTH_TOKEN, calls++ === 0 ? token : undefined);
+      for (const name of ['PILOT_FIXTURE_TOKEN', 'PILOT_UNRELATED_TOKEN', 'NPM_CONFIG_USERCONFIG'])
+        assert.equal(env[name], undefined);
+      assert.equal(args.includes(token), false);
+      return { stdout: calls === 1 ? token : 'legacy', stderr: calls === 1
+        ? `${Buffer.from(token).toString('base64')} ${encodeURIComponent(token)}` : '' };
+    });
+  assert.ok(results.every(result => result.status === 'passed'));
+  const artifact = readFileSync(results[0].artifactRefs[0], 'utf8');
+  for (const secret of [token, Buffer.from(token).toString('base64'), encodeURIComponent(token)])
+    assert.equal(artifact.includes(secret), false);
+  assert.match(artifact, /\[REDACTED\]/);
+  assert.equal(process.env.PILOT_FIXTURE_TOKEN, token);
+  assert.equal(minimalEnvironment().YARN_NPM_AUTH_TOKEN, undefined);
+});
+test('authenticated runner failures redact diagnostics without losing exit status', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const token = packageToken(t);
+  repo.validationGates = [{ id: 'auth-failure', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000,
+    packageAuth: { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' } }];
+  const results = await runValidation(config, ledger, { ...job, workspace: isolated.workspace },
+    repo, isolated.baseRevision, async () => {
+      throw Object.assign(new Error(token), { code: 7, stdout: token, stderr: token,
+        secret: token });
+    });
+  assert.equal(results[0].status, 'failed');
+  const artifact = readFileSync(results[0].artifactRefs[0], 'utf8');
+  assert.equal(artifact.includes(token), false);
+  assert.equal(JSON.parse(artifact).output.exitCode, 7);
+});
+test('real authenticated subprocesses receive an isolated environment and leave redacted artifacts', async t => {
+  const token = packageToken(t);
+  for (const exitCode of [0, 7]) {
+    const { config, ledger, job, repo } = await fixture(t);
+    const isolated = await provision(config, job, repo);
+    repo.validationGates = [{ id: 'auth-process', approved: true, isolationVerified: true,
+      executable: process.execPath, args: ['-e', `
+        const assert = require('node:assert/strict');
+        assert.ok(process.env.YARN_NPM_AUTH_TOKEN);
+        assert.equal(process.env.PILOT_FIXTURE_TOKEN, undefined);
+        console.log(process.env.YARN_NPM_AUTH_TOKEN);
+        console.error(Buffer.from(process.env.YARN_NPM_AUTH_TOKEN).toString('base64'));
+        process.exit(${exitCode});
+      `], timeoutMs: 10000,
+      packageAuth: { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' } }];
+    const results = await runValidation(config, ledger,
+      { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision);
+    assert.equal(results[0].status, exitCode ? 'failed' : 'passed');
+    const artifact = readFileSync(results[0].artifactRefs[0], 'utf8');
+    assert.equal(artifact.includes(token), false);
+    assert.equal(artifact.includes(Buffer.from(token).toString('base64')), false);
+    assert.match(artifact, /\[REDACTED\]/);
+  }
+});
+test('missing package auth blocks without executing or retrying the runner', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  packageToken(t, 'PILOT_FIXTURE_TOKEN', '');
+  config.limits.maxValidationInfrastructureRetries = 2;
+  repo.validationGates = [{ id: 'auth-missing', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000,
+    packageAuth: { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' } }];
+  const results = await runValidation(config, ledger, { ...job, workspace: isolated.workspace },
+    repo, isolated.baseRevision, async () => assert.fail('Must not execute'));
+  assert.equal(results[0].status, 'blocked');
+  assert.equal(results[0].blockedReason, 'blocked-auth');
+  assert.equal(results[0].attemptCount, 1);
+});
+test('omitted package auth preserves legacy runner error classification', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{ id: 'legacy-error', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000 }];
+  const results = await runValidation(config, ledger, { ...job, workspace: isolated.workspace },
+    repo, isolated.baseRevision, async () => { throw new PilotError('blocked-auth', 'fixture'); });
+  assert.equal(results[0].blockedReason, 'runner-unavailable');
+});
+test('staged package auth stays out of fingerprint, policy, test and preparation receipts', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const token = packageToken(t);
+  ctx.repo.validationGates[0].packageAuth =
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' };
+  const execute = async (executable, args, cwd, timeout, env) => {
+    const needsAuth = ['dependencies', 'compile'].includes(env.PILOT_VALIDATION_STAGE);
+    assert.equal(env.YARN_NPM_AUTH_TOKEN, needsAuth ? token : undefined);
+    const output = await ctx.execute(executable, args, cwd, timeout, env);
+    return needsAuth ? { stdout: token, stderr: token } : output;
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute);
+  assert.ok(prepared.staged.receiptPath, json(prepared));
+  for (const path of [prepared.staged.receiptPath, prepared.staged.dependencyReceiptPath]) {
+    const receipt = readFileSync(path, 'utf8');
+    assert.equal(receipt.includes(token), false);
+    assert.equal(JSON.parse(receipt).inputs.packageAuth.kind, 'yarn-token');
+  }
+  process.env.PILOT_FIXTURE_TOKEN = 'rotated-synthetic-package-token';
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.deepEqual(ctx.calls, ['fingerprint', 'dependencies', 'compile',
+    'fingerprint', 'policy', 'test']);
+  assert.equal(readFileSync(result[0].artifactRefs[0], 'utf8').includes(token), false);
+});
+test('staged dependency auth failures are redacted before telemetry and receipts', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const token = packageToken(t);
+  ctx.repo.validationGates[0].packageAuth =
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, async (...args) => {
+      if (args[4].PILOT_VALIDATION_STAGE === 'dependencies')
+        throw Object.assign(new Error(token), { code: 1, stdout: token, stderr: token });
+      return ctx.execute(...args);
+    });
+  assert.equal(result[0].status, 'failed');
+  const artifact = readFileSync(result[0].artifactRefs[0], 'utf8');
+  assert.equal(artifact.includes(token), false);
+  assert.equal(JSON.parse(artifact).output.stderr, '[REDACTED]');
+});
+test('missing staged package auth blocks after fingerprint without restore or retries', async t => {
+  const ctx = await stagedValidationFixture(t);
+  packageToken(t, 'PILOT_FIXTURE_TOKEN', '');
+  ctx.repo.validationGates[0].packageAuth =
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'blocked-auth');
+  assert.equal(result[0].attemptCount, 1);
+  assert.deepEqual(ctx.calls, ['fingerprint']);
+});
+test('changing the package auth contract invalidates prepared dependencies and compile', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  packageToken(t);
+  ctx.repo.validationGates[0].packageAuth =
+    { kind: 'yarn-token', tokenEnvironmentVariable: 'PILOT_FIXTURE_TOKEN' };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+async function longPathFixture(workspace) {
+  const path = join('src', 'long-native-path-'.repeat(8), 'value.js');
+  mkdirSync(dirname(join(workspace, path)), { recursive: true });
+  writeFileSync(join(workspace, path), 'export const value = 1;\n');
+  await command('git', ['-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', 'add', '--', path], workspace);
+  await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Add long-path fixture'], workspace);
+  const revision = (await command('git', ['rev-parse', 'HEAD'], workspace)).stdout.trim();
+  return { path, revision };
+}
+test('Windows staged native Git handles long paths in new and reused validation clones', {
+  skip: process.platform !== 'win32'
+}, async t => {
+  const ctx = await stagedValidationFixture(t);
+  const authoredConfig = readFileSync(join(ctx.isolated.workspace, '.git', 'config'), 'utf8');
+  const referenceConfig = readFileSync(join(ctx.repo.referenceCheckout, '.git', 'config'), 'utf8');
+  const longPath = await longPathFixture(ctx.isolated.workspace);
+  const execute = async (executable, args, cwd, timeout, env) => {
+    if (env.PILOT_VALIDATION_STAGE !== 'fingerprint') {
+      const path = join(cwd, longPath.path);
+      assert.ok(path.length > 260, `Expected an actual long path, got ${path.length}`);
+      const local = await command('git', ['config', '--local', '--get', 'core.longpaths'], cwd);
+      assert.equal(local.stdout.trim(), 'true');
+      const native = await command('git', ['hash-object', '--', path], cwd);
+      assert.match(native.stdout.trim(), /^[a-f0-9]{40,64}$/);
+    }
+    return ctx.execute(executable, args, cwd, timeout, env);
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    longPath.revision, execute);
+  assert.ok(prepared.staged.receiptPath, json(prepared));
+  await command('git', ['config', '--local', '--unset', 'core.longpaths'],
+    prepared.staged.workspace);
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    longPath.revision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.deepEqual(ctx.calls, ['fingerprint', 'dependencies', 'compile',
+    'fingerprint', 'policy', 'test']);
+  assert.equal(readFileSync(join(ctx.isolated.workspace, '.git', 'config'), 'utf8'), authoredConfig);
+  assert.equal(readFileSync(join(ctx.repo.referenceCheckout, '.git', 'config'), 'utf8'), referenceConfig);
+});
+test('Windows non-staged native Git gets clone-local long paths without editing authored config', {
+  skip: process.platform !== 'win32'
+}, async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  const authoredConfig = readFileSync(join(isolated.workspace, '.git', 'config'), 'utf8');
+  const longPath = await longPathFixture(isolated.workspace);
+  repo.validationGates = [{ id: 'native-longpaths', approved: true, isolationVerified: true,
+    executable: process.execPath, timeoutMs: 10000, args: ['-e', `
+      const assert = require('node:assert/strict');
+      const path = require('node:path').resolve(${JSON.stringify(longPath.path)});
+      assert.ok(path.length > 260);
+      const hash = require('node:child_process').execFileSync('git',
+        ['hash-object', '--', path], {encoding: 'utf8'}).trim();
+      assert.match(hash, /^[a-f0-9]{40,64}$/);
+    `] }];
+  const results = await runValidation(config, ledger, { ...job, workspace: isolated.workspace },
+    repo, longPath.revision);
+  assert.equal(results[0].status, 'passed');
+  assert.equal(readFileSync(join(isolated.workspace, '.git', 'config'), 'utf8'), authoredConfig);
 });
 test('validation profiles are content-bound and substituted by the controller', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -1366,6 +1714,143 @@ test('staged preparation failures persist terminal validation evidence', async t
   assert.ok(artifact.telemetry.preparationTimings.some(stage =>
     stage.id === 'dependencies'));
 });
+for (const failingStage of ['dependencies', 'compile']) {
+  test(`prestarted ${failingStage} failure is preserved without an implicit infrastructure retry`, async t => {
+    const ctx = await stagedValidationFixture(t);
+    ctx.config.limits.maxValidationInfrastructureRetries = 0;
+    const calls = [];
+    const execute = async (...args) => {
+      const stage = args[4].PILOT_VALIDATION_STAGE;
+      calls.push(stage);
+      if (stage === failingStage)
+        throw Object.assign(new Error('original native failure'), {
+          code: 17, stderr: 'original native failure', stdout: 'original output'
+        });
+      return ctx.execute(...args);
+    };
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, execute);
+    assert.equal(prepared.staged.failure.output.exitCode, 17);
+    const revision = await ctx.commit('test/behavior.test.js', 'new case\n', 'Add test');
+    const before = [...calls];
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, execute, rmSync, JSON.parse(JSON.stringify(prepared)));
+    assert.deepEqual(calls, before);
+    assert.equal(calls.filter(stage => stage === failingStage).length, 1);
+    assert.equal(result[0].status, 'failed');
+    assert.equal(result[0].attemptCount, 1);
+    assert.equal(result[0].sourceRevision, revision);
+    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+    assert.equal(artifact.output.exitCode, 17);
+    assert.equal(artifact.output.stderr, 'original native failure');
+    assert.equal(artifact.telemetry.preparedSourceRevision, ctx.isolated.baseRevision);
+    assert.equal(artifact.telemetry.validationRevision, revision);
+    assert.equal(artifact.telemetry.validationTimings.length, 0);
+  });
+}
+test('LFS paths are exact, bounded and bound into the native validation contract', () => {
+  const gate = { id: 'fixture', lfsPaths: ['fixtures/required template.xlsx'] };
+  assert.deepEqual(validationLfsPaths(gate), gate.lfsPaths);
+  for (const paths of [[], ['../secret'], ['fixtures/*.xlsx'], ['fixtures/a,fixtures/b'],
+    ['C:\\file'], ['fixtures\\file'], ['/file'], ['a\nb'], ['a', 'a']])
+    assert.throws(() => validationLfsPaths({ lfsPaths: paths }), /lfsPaths/);
+  assert.notEqual(repositoryValidationContract({ validationGates: [gate] }).sha256,
+    repositoryValidationContract({ validationGates: [{ id: 'fixture' }] }).sha256);
+});
+const gitLfsAvailable = spawnSync('git', ['lfs', 'version'], { windowsHide: true }).status === 0;
+async function lfsValidationFixture(t) {
+  const ctx = await stagedValidationFixture(t);
+  await command('git', ['lfs', 'install', '--local', '--skip-smudge'], ctx.isolated.workspace);
+  await command('git', ['config', '--local', 'lfs.storage', 'lfs'], ctx.isolated.workspace);
+  mkdirSync(join(ctx.isolated.workspace, 'fixtures'));
+  writeFileSync(join(ctx.isolated.workspace, '.gitattributes'),
+    'fixtures/*.xlsx filter=lfs diff=lfs merge=lfs -text\n');
+  const content = Buffer.from('source-bound native-build fixture\n');
+  writeFileSync(join(ctx.isolated.workspace, 'fixtures', 'unrelated.xlsx'), 'unrelated LFS object\n');
+  const path = 'fixtures/required template.xlsx';
+  const revision = await ctx.commit(path, content, 'Add exact LFS fixtures');
+  ctx.repo.remote = ctx.isolated.workspace;
+  ctx.repo.validationGates[0].lfsPaths = [path];
+  return { ...ctx, path, revision, content };
+}
+test('staged native build hydrates only approved LFS objects at the exact revision', {
+  skip: !gitLfsAvailable
+}, async t => {
+  const ctx = await lfsValidationFixture(t);
+  const execute = async (...args) => {
+    const cwd = args[2], stage = args[4].PILOT_VALIDATION_STAGE;
+    if (stage === 'compile' || stage === 'test') {
+      assert.deepEqual(readFileSync(join(cwd, ctx.path)), ctx.content);
+      assert.match(readFileSync(join(cwd, 'fixtures', 'unrelated.xlsx'), 'utf8'),
+        /^version https:\/\/git-lfs.github.com\/spec\/v1/);
+    }
+    return ctx.execute(...args);
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.revision, execute);
+  assert.ok(prepared.staged.receiptPath, json(prepared));
+  assert.deepEqual(prepared.staged.outputs.lfs, {
+    revision: ctx.revision,
+    objects: [{ path: ctx.path, oid: hash(ctx.content), size: ctx.content.length }]
+  });
+  const revision = await ctx.commit('test/behavior.test.js', 'changed test\n', 'Add case');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  assert.equal((await command('git', ['status', '--porcelain'], ctx.isolated.workspace)).stdout, '');
+});
+test('LFS fetch errors preserve sanitized native evidence and do not start the compiler', {
+  skip: !gitLfsAvailable
+}, async t => {
+  const ctx = await lfsValidationFixture(t);
+  const workspace = join(ctx.root, 'lfs-probe');
+  await command('git', ['clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    ctx.isolated.workspace, workspace], ctx.root);
+  await command('git', ['-c', 'core.autocrlf=false', 'checkout', '--quiet', '--detach', ctx.revision],
+    workspace, 10000, checkoutEnvironment());
+  ctx.repo.remote = 'https://dev.azure.com/example/project/_git/repository';
+  const token = 'fixture-private-token';
+  let calls = 0;
+  await assert.rejects(hydrateValidationLfs(ctx.config, ctx.repo, ctx.repo.validationGates[0],
+    workspace, ctx.revision, {
+      getToken: async () => token,
+      executeGit: async (cwd, args, env) => {
+        calls++;
+        assert.equal(cwd, workspace);
+        assert.ok(args.includes(`--include=/${ctx.path}`));
+        assert.ok(args.includes(ctx.revision));
+        assert.ok(args.includes('lfs.fetchrecentalways=false'));
+        assert.ok(args.includes('lfs.transfer.maxretries=0'));
+        assert.ok(!json(args).includes(token));
+        assert.equal(env.GIT_CURL_VERBOSE, '');
+        assert.equal(env.GIT_CONFIG_VALUE_0, `AUTHORIZATION: bearer ${token}`);
+        throw Object.assign(new Error(`unsafe ${token}`), {
+          code: 2, stderr: `HTTP 403 ${token}`, stdout: ''
+        });
+      }
+    }), error => {
+    assert.equal(error.code, 'blocked-validation-lfs');
+    assert.equal(error.nativeGitExitCode, 2);
+    assert.equal(error.stderr, 'HTTP 403 [REDACTED]');
+    assert.ok(!error.message.includes(token));
+    return true;
+  });
+  assert.equal(calls, 1);
+  assert.match(readFileSync(join(workspace, ctx.path), 'utf8'), /^version /);
+});
+test('LFS materialization rejects an unchanged pointer after a success-shaped checkout', {
+  skip: !gitLfsAvailable
+}, async t => {
+  const ctx = await lfsValidationFixture(t);
+  const workspace = join(ctx.root, 'lfs-incomplete');
+  await command('git', ['clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    ctx.isolated.workspace, workspace], ctx.root);
+  await command('git', ['-c', 'core.autocrlf=false', 'checkout', '--quiet', '--detach', ctx.revision],
+    workspace, 10000, checkoutEnvironment());
+  await assert.rejects(hydrateValidationLfs(ctx.config, ctx.repo, ctx.repo.validationGates[0],
+    workspace, ctx.revision, { executeGit: async () => '' }), /pointer OID and size/);
+});
 test('ADO draft provider creates only a draft and reconciles by stable source branch', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.remote = 'https://dev.azure.com/test/project/_git/fixture';
@@ -1436,14 +1921,16 @@ test('unresolved changed-evidence policy blocks recurring collection', async t =
   ledger.qualify('manual-run', { fingerprint: readinessFingerprint(config) });
   await assert.rejects(tick(config, ledger), /changed-evidence policy/);
 });
-test('complete controller path: simulated adapter/model/PR, real isolated edit commit source-test and local push', async t => {
+test('local flight controller path: simulated adapter/model/PR, real isolated edit commit source-test and local push', async t => {
   const { config, ledger, job, repo, g, root } = await fixture(t, 'authenticated-source', 'defect-fix');
+  repo.flights = { proposerExecutor: 'local' };
   config.activation.dispatch = true; config.limits.maxAiCreditsPerSession = 1;
   config.workspaceCleanup.enabled = true;
   await command('git', ['init', '--bare', '--quiet', repo.remote], root);
   const primaryHead = (await g(['rev-parse', 'HEAD'])).stdout;
   let modelCalls = 0, draftCalls = 0, authenticationReady = false;
   const dependencies = {
+    agencyTransport: () => assert.fail('local flight must not submit to Agency'),
     preflightValidationAuthentication: async () => authenticationReady ? [] : [{
       state: 'action-required-auth',
       code: 'validation-authentication-required'
@@ -1823,8 +2310,16 @@ test('workspace GC cleans historical clones only when the copied base branch has
   assert.match(retained.reason, /Inherited base branch/);
   assert.equal(existsSync(isolated.workspace), true);
 });
-test('automatic delivery cleanup honors opt-out, retains failure metadata and cleans terminal failed-validation drafts', async t => {
-  for (const mode of ['disabled', 'absent-policy', 'failure', 'retention', 'validation-failed']) {
+test('workspace GC retains support for historical failed-validation delivery receipts', async t => {
+  const { config, ledger, job, artifact } = await deliveredWorkspace(t, { historicalFailure: true });
+  const result = await cleanupWorkspace(config, ledger, job.id, { execute: true });
+  assert.equal(result.state, 'removed', json(result));
+  assert.equal(existsSync(ledger.job(job.id).workspace), false);
+  assert.equal(existsSync(artifact), true);
+  assert.equal(ledger.all('workerResult')[0].outcome, 'draft-pr-validation-failed');
+});
+test('automatic delivery cleanup honors opt-out and retains failure metadata', async t => {
+  for (const mode of ['disabled', 'absent-policy', 'failure', 'retention']) {
     await t.test(mode, async t => {
       const { config, ledger, job, repo, root } = await fixture(t, 'authenticated-source', 'defect-fix');
       config.activation.dispatch = true;
@@ -1834,7 +2329,7 @@ test('automatic delivery cleanup honors opt-out, retains failure metadata and cl
       await command('git', ['init', '--bare', '--quiet', repo.remote], root);
       const result = await dispatch(config, ledger, job.id, {
         runModel: async (c, l, current, assignment, investigation, toolkit) => {
-          toolkit.write('src\\value.js', `export const value = ${mode === 'validation-failed' ? 3 : 2};\n`);
+          toolkit.write('src\\value.js', 'export const value = 2;\n');
           toolkit.finish({
             outcome: 'propose-change', findings: 'Synthetic change',
             title: 'Synthetic delivery', description: 'Fixture only'
@@ -1852,9 +2347,9 @@ test('automatic delivery cleanup honors opt-out, retains failure metadata and cl
           }
         } : undefined
       });
-      assert.equal(result.outcome, mode === 'validation-failed' ? 'draft-pr-validation-failed' : 'draft-pr-validated');
+      assert.equal(result.outcome, 'draft-pr-validated');
       assert.equal(ledger.job(job.id).state, 'completed');
-      assert.equal(existsSync(ledger.job(job.id).workspace), mode !== 'validation-failed');
+      assert.equal(existsSync(ledger.job(job.id).workspace), true);
       if (mode === 'disabled' || mode === 'absent-policy') {
         assert.equal(result.workspaceCleanup, undefined);
         assert.equal(ledger.workspaceCleanup(job.id), null);

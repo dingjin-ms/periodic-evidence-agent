@@ -16,7 +16,7 @@ import { prepareTitleIndex, materializeTitleScreen } from './filter.js';
 import { prepareFilterBatches, sizeFilterGroups, checkFilterBatchFiles, consolidateFilterBatches } from './filter-batches.js';
 import { reconcileFilterExecutionCohort } from './filter-execution.js';
 import { planImprovement } from './improvements.js';
-import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
+import { qualifyRepositorySkill, resolveSkillBinding, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
@@ -30,6 +30,7 @@ import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } f
 import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
 import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
 import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
+import { qualify1jsE2eEvidence } from './e2e-qualification.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -121,6 +122,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-worker --run ID --production --operation prepare|claim|bind|result|uncertain --file action.json
   node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
   node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
+  node src\\cli.js qualify-1js-e2e --repo 1js --capability declarative-e2e-authoring --binding 1js-declarative-e2e-authoring --file qualification.json --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
@@ -374,6 +376,17 @@ try {
         requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
         result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
+        break;
+      }
+      case 'qualify-1js-e2e': {
+        requireThat(option('--repo') && option('--capability') && option('--binding') && option('--file'),
+          'qualify-1js-e2e requires --repo, --capability, --binding and --file');
+        const { binding } = resolveSkillBinding(config, option('--repo'), option('--capability'),
+          option('--binding'), { requireQualified: false, requireEnabled: false, requireRouted: false });
+        const id = skillQualificationId(option('--repo'), binding.id);
+        result = qualify1jsE2eEvidence(binding, ledger.qualification(id),
+          readJson(resolve(option('--file'))));
+        ledger.qualify(id, result);
         break;
       }
       case 'submit-reviewed-handoff': {

@@ -138,6 +138,9 @@
               "inputFormat": {
                 "enum": ["declarative-e2e-mini-spec-batch-v1"]
               },
+              "executionQualification": {
+                "enum": ["1js-e2e-live-v1"]
+              },
               "enabled": { "type": "boolean" },
               "qualification": { "enum": ["unqualified", "qualified"] },
               "requestedOutcomes": { "$ref": "#/$defs/texts" },
@@ -724,7 +727,8 @@
             "remote": { "$ref": "#/$defs/text" },
             "qualificationSource": { "enum": ["local-reference", "trusted-remote"] },
             "validationContractVersion": { "$ref": "#/$defs/text" },
-            "validationContractSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            "validationContractSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "executionQualificationSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
           }
         },
         "state": { "enum": ["prepared", "dispatched", "running", "blocked", "completed", "superseded"] },

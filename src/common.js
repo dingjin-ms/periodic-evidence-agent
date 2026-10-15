@@ -165,6 +165,9 @@ export function configAt(path) {
         ['unqualified', 'qualified'].includes(binding.qualification) &&
         Array.isArray(binding.requestedOutcomes) && binding.requestedOutcomes.length > 0,
       `Repository ${repo.id} skill binding ${binding.id} activation is incomplete`);
+      requireThat(binding.executionQualification === undefined ||
+        binding.executionQualification === '1js-e2e-live-v1',
+      `Repository ${repo.id} skill binding ${binding.id} has an unsupported execution qualification`);
       requireThat(Array.isArray(binding.allowedWritePrefixes) &&
         binding.allowedWritePrefixes.every(prefix => typeof prefix === 'string' && prefix.length > 0 &&
           !isAbsolute(prefix) && !prefix.split(/[\\/]/).includes('..')) &&

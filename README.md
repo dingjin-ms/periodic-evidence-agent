@@ -664,6 +664,56 @@ for the same final commit. Repeated attempts inside one build are not distinct
 successful builds. If the repository skill requires five consecutive local
 runs and five consecutive builds, fewer successes must be reported as partial
 qualification rather than a completed authoring result.
+
+The binding declares `executionQualification: "1js-e2e-live-v1"`. After
+`qualify-skill`, import a private qualification manifest with:
+
+```powershell
+npm run pilot -- qualify-1js-e2e `
+  --repo 1js `
+  --capability declarative-e2e-authoring `
+  --binding 1js-declarative-e2e-authoring `
+  --file .\private\1js-e2e-qualification.json `
+  --config .\pilot.local.json
+```
+
+The manifest must bind the exact qualified source revision and contain both
+`cross-app` and `excel-agent`, each with at least five ordered, distinct,
+retry-disabled passing local runs and five ordered, distinct Pipeline 36540
+build/test runs. Every run carries an immutable evidence digest. The controller
+hashes this receipt into the assignment and blocks before worker execution when
+the proof is absent, stale or source-mismatched. This command records evidence;
+it does not turn on routing, writes or publication. Keep the checked-in example
+disabled and unqualified, and enable only an ignored, owner-approved local
+configuration after the receipt is present.
+
+Each suite entry has this shape; sequences start at 1 and use strictly
+increasing UTC completion times:
+
+```json
+{
+  "id": "cross-app",
+  "localRuns": [{
+    "sequence": 1,
+    "runId": "private-local-run-id",
+    "status": "passed",
+    "retriesDisabled": true,
+    "completedAt": "2026-10-15T00:00:00.000Z",
+    "sourceRevision": "<exact-1JS-commit>",
+    "evidenceSha256": "<64-hex-digest>"
+  }],
+  "ciRuns": [{
+    "sequence": 1,
+    "buildId": 123456,
+    "testRunId": 654321,
+    "status": "passed",
+    "retriesDisabled": true,
+    "completedAt": "2026-10-15T01:00:00.000Z",
+    "sourceRevision": "<same-exact-1JS-commit>",
+    "evidenceSha256": "<distinct-64-hex-digest>"
+  }]
+}
+```
 ### Staged validation receipts
 
 A content-bound profile may opt into controller-managed staged validation with

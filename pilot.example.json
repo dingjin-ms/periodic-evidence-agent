@@ -77,6 +77,7 @@
           "capability": "declarative-e2e-authoring",
           "skillPath": ".github/skills/author-declarative-e2e-test/SKILL.md",
           "inputFormat": "declarative-e2e-mini-spec-batch-v1",
+          "executionQualification": "1js-e2e-live-v1",
           "enabled": false,
           "qualification": "unqualified",
           "requestedOutcomes": ["add-declarative-e2e-tests"],

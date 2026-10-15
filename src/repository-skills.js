@@ -4,6 +4,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { boundedPath, hash, json, requireThat, validateRecord, validationPackageAuth, validationLfsPaths } from './common.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
+import { requireExecutionQualification } from './e2e-qualification.js';
 
 const exec = promisify(execFile);
 export const skillQualificationId = (repoId, bindingId) => `repository-skill:${repoId}:${bindingId}`;
@@ -104,9 +105,12 @@ export function resolveSkillBinding(config, repoId, capability, bindingId = null
   return { repo, binding };
 }
 
-export function pinSkillQualification(receipt) {
+export function pinSkillQualification(receipt, binding = null) {
   requireThat(receipt?.state === 'qualified-read-only', 'Repository skill qualification receipt is missing',
     'blocked-config');
+  const executionQualificationSha256 = binding
+    ? requireExecutionQualification(binding, receipt)
+    : receipt.executionQualification ? hash(json(receipt.executionQualification)) : null;
   return {
     qualificationId: skillQualificationId(receipt.repoId, receipt.bindingId),
     baseRevision: receipt.baseRevision,
@@ -115,7 +119,8 @@ export function pinSkillQualification(receipt) {
     remote: receipt.remote,
     qualificationSource: receipt.qualificationSource,
     validationContractVersion: receipt.validationContractVersion,
-    validationContractSha256: receipt.validationContractSha256
+    validationContractSha256: receipt.validationContractSha256,
+    ...(executionQualificationSha256 ? { executionQualificationSha256 } : {})
   };
 }
 
@@ -132,7 +137,7 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
     'Repository skill execution requires an assignment capability and binding');
   const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability,
     assignment.skillBindingId);
-  const pinned = pinSkillQualification(qualification);
+  const pinned = pinSkillQualification(qualification, binding);
   requireThat(json(pinned) === json(assignment.skillQualification),
     'Repository skill qualification changed after assignment preparation', 'blocked-reconciliation');
   requireThat(qualification.repoId === assignment.repoId &&

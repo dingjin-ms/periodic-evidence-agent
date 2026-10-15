@@ -17,7 +17,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -174,7 +174,8 @@ async function stagedValidationFixture(t, {
     failDependencyAuthentication: false, mutateDuringAuthentication: false,
     invalidAuthenticationEvidence: false, failTestWithAuthenticationText: false,
     authenticationPreflight: 'ready', authenticationCheckDelayMs: 0,
-    dependencyVersion: '2.0.0'
+    dependencyVersion: '2.0.0',
+    failTestWithProfileError: false
   };
   const execute = async (executable, args, cwd, timeout, env) => {
     const stage = env.PILOT_VALIDATION_STAGE;
@@ -286,6 +287,11 @@ async function stagedValidationFixture(t, {
       throw Object.assign(new Error('test failed'), {
         code: 1, stdout: '', stderr: 'expected HTTP 403 in application behavior'
       });
+    if (stage === 'test' && behavior.failTestWithProfileError)
+      throw Object.assign(new Error('profile failed'), {
+        code: 1, stdout: '',
+        stderr: 'PILOT_VALIDATION_PROFILE_ERROR: invalid package-relative selector'
+      });
     return { stdout: `${stage} passed\n`, stderr: '' };
   };
   const commit = async (path, content, message) => {
@@ -374,6 +380,29 @@ test('portable example uses a fixed UTC fixture window and leaves live permissio
   assert.ok(config.repositories.every(r => !r.projectId && !r.referenceCheckout && !r.routingApproved));
   assert.ok(config.repositories.every(r => proposerExecutorFlight(r) === 'local'));
   assert.match(config.identity.designatedUser, /@example\.invalid$/);
+  assert.equal(config.limits.maxValidationRepairRounds, 10);
+});
+test('validation repair budget defaults to ten and rejects larger values', t => {
+  const root = mkdtempSync(join(tmpdir(), 'repair-budget-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  delete config.limits.maxValidationRepairRounds;
+  const configPath = join(root, 'pilot.json');
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.equal(configAt(configPath).limits.maxValidationRepairRounds, 10);
+  config.limits.maxValidationRepairRounds = 11;
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => configAt(configPath), /must not exceed 10/);
+});
+test('OfficeAgent Excel validation profile converts selectors to package-relative paths', () => {
+  const profile = readFileSync('scripts/validation/office-agent-excel-entry-model.ps1', 'utf8');
+  assert.match(profile, /PILOT_VALIDATION_BASE_REVISION/);
+  assert.match(profile, /git diff --name-only "\$baseRevision\.\.HEAD" -- 'agents\/office-agent\/tests\/integration/);
+  assert.match(profile, /\^agents\/office-agent\/\(tests\/integration\/\.\+\\\.test\\\.ts\)\$/);
+  assert.match(profile, /Join-Path 'agents\\office-agent' \$test/);
+  assert.match(profile, /PILOT_VALIDATION_PROFILE_ERROR:/);
+  assert.doesNotMatch(profile,
+    /--runTestsByPath\s+agents\/office-agent\/tests\/integration/);
 });
 test('executor flights validate exact backend choices and preserve omitted legacy configuration', t => {
   const { root } = setup(t);
@@ -769,8 +798,18 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.ok(existsSync(join(workspace, 'src', 'new.js')));
   assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
   assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
-  assert.ok((await tools.search('value = 1', 'src')).some(match =>
-    match.includes('src/value.js')));
+  tools.replaceLines('src\\value.js', 1, 1,
+    'export const value = 1;', 'export const value = 3;');
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 3;');
+  assert.throws(() => tools.replaceLines('src\\value.js', 1, 1,
+    'export const value = 1;', 'bad'), /does not match/);
+  tools.allowedWritePrefixes = ['src/value.js'];
+  tools.replaceLines('src\\value.js', 1, 1,
+    'export const value = 3;', 'export const value = 4;');
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 4;');
+  assert.throws(() => tools.write('src\\another.js', 'bad'), /bounds/);
+  assert.equal((await tools.search('value = 1', 'src')).some(match =>
+    match.includes('src/value.js')), false);
 });
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);
@@ -808,6 +847,25 @@ test('failed validation is terminal evidence, not a success-shaped result', asyn
   assert.equal(result[0].status, 'failed');
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 9);
+});
+test('validation profile errors block without entering source repair retries', async t => {
+  const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
+  config.limits.maxValidationInfrastructureRetries = 2;
+  repo.validationGates = [{ id: 'profile-error', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000 }];
+  let attempts = 0;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => {
+      attempts++;
+      throw Object.assign(new Error('invalid profile selection'), {
+        code: 1, stdout: '', stderr: 'PILOT_VALIDATION_PROFILE_ERROR: no authored test selected'
+      });
+    });
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-profile-error');
+  assert.equal(result[0].attemptCount, 1);
+  assert.equal(attempts, 1);
 });
 test('source mutation during validation retries in a clean checkout then blocks', async t => {
   const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
@@ -1380,6 +1438,18 @@ test('auth-like test output remains a test failure rather than an auth blocker',
   assert.equal(result[0].status, 'failed');
   assert.equal(result[0].blockedReason, null);
   assert.equal(result[0].attemptCount, 1);
+});
+test('staged validation profile errors block without retrying or entering source repair', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  ctx.behavior.failTestWithProfileError = true;
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-profile-error');
+  assert.equal(result[0].attemptCount, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'test').length, 1);
 });
 test('authentication cannot modify the exact-revision source workspace', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
@@ -1996,6 +2066,7 @@ test('planned OA skill path creates a source-bound validated draft result throug
     id: 'oa-integration-test-core', capability: 'integration-test-authoring',
     skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
     requestedOutcomes: ['add-or-update-tests'],
+    allowedWritePrefixes: ['test'], requiresBehaviorCard: true,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   }];
   repo.validationGates = [{
@@ -2048,7 +2119,8 @@ test('planned OA skill path creates a source-bound validated draft result throug
   const rejected = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
     binding: repo.skillBindings[0],
     skillPath: repo.skillBindings[0].skillPath,
-    skillRevision: baseRevision
+    skillRevision: baseRevision,
+    allowedWritePrefixes: ['test']
   });
   assert.throws(() => rejected.finish({
     outcome: 'propose-change', findings: 'Skill could not safely complete.',
@@ -2063,15 +2135,17 @@ test('planned OA skill path creates a source-bound validated draft result throug
   const needsDecision = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
     binding: repo.skillBindings[0],
     skillPath: repo.skillBindings[0].skillPath,
-    skillRevision: baseRevision
+    skillRevision: baseRevision,
+    allowedWritePrefixes: ['test']
   });
   assert.throws(() => needsDecision.finish({
     outcome: 'propose-change', findings: 'Skill needs a human decision.',
     title: 'Must not publish', description: 'Must not publish',
     skillResult: {
       status: 'succeeded', classification: 'missing-coverage',
-      changedFiles: ['test/behavior.test.js'], testsAddedOrUpdated: ['OA behavior'],
-      behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: true
+      changedFiles: ['test/behavior-card.md', 'test/behavior.test.js'],
+      testsAddedOrUpdated: ['OA behavior'],
+      behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: true
     }
   }), /Only a successful repository skill result/);
   assert.equal(needsDecision.proposal, null);
@@ -2083,16 +2157,21 @@ test('planned OA skill path creates a source-bound validated draft result throug
     runModel: async (config, ledger, current, currentAssignment, currentInvestigation, toolkit, loadedSkill) => {
       assert.match(loadedSkill.instructions, /Synthetic OA skill/);
       assert.equal(loadedSkill.skillRevision, baseRevision);
+      assert.throws(() => toolkit.write('src\\value.js', 'export const value = 2;\n'),
+        /outside approved edit bounds/);
       toolkit.write('test\\behavior.test.js',
         "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('OA behavior', () => assert.equal(1, 1));\n");
+      toolkit.write('test\\behavior.behavior-card.md', '# OA behavior\n\nSynthetic behavior card.\n');
       toolkit.finish({
         outcome: 'propose-change', findings: 'Added focused OA integration coverage.',
         title: '[Periodic Evidence Agent Canary] Add OA behavior coverage',
         description: 'Synthetic draft used to verify the source-bound OA skill pipeline.',
         skillResult: {
           status: 'succeeded', classification: 'missing-coverage',
-          changedFiles: ['test/behavior.test.js'], testsAddedOrUpdated: ['OA behavior'],
-          behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: false
+          changedFiles: ['test/behavior.behavior-card.md', 'test/behavior.test.js'],
+          testsAddedOrUpdated: ['OA behavior'],
+          behaviorCardsAddedOrUpdated: ['test/behavior.behavior-card.md'],
+          unknowns: [], needsHumanDecision: false
         }
       });
     },
@@ -2102,7 +2181,8 @@ test('planned OA skill path creates a source-bound validated draft result throug
   });
   assert.equal(result.outcome, 'draft-pr-validated');
   assert.equal(result.skillExecution.bindingId, 'oa-integration-test-core');
-  assert.deepEqual(result.skillExecution.changedFiles, ['test/behavior.test.js']);
+  assert.deepEqual(result.skillExecution.changedFiles,
+    ['test/behavior.behavior-card.md', 'test/behavior.test.js']);
   assert.equal(result.validation[0].sourceRevision, result.sourceRevision);
   assert.equal(result.draftPR.headRevision, result.sourceRevision);
 });
@@ -2344,6 +2424,7 @@ test('automatic delivery cleanup honors opt-out and retains failure metadata', a
       const { config, ledger, job, repo, root } = await fixture(t, 'authenticated-source', 'defect-fix');
       config.activation.dispatch = true;
       config.limits.maxAiCreditsPerSession = 1;
+      if (mode === 'validation-failed') config.limits.maxValidationRepairRounds = 0;
       config.workspaceCleanup = { enabled: mode !== 'disabled', retentionHours: mode === 'retention' ? 24 : 0 };
       if (mode === 'absent-policy') delete config.workspaceCleanup;
       await command('git', ['init', '--bare', '--quiet', repo.remote], root);
@@ -2389,6 +2470,20 @@ test('workspace cleanup is opt-in and rejects invalid retention configuration', 
   assert.throws(() => workspaceCleanupPolicy({
     workspaceCleanup: { enabled: 'yes', retentionHours: 0 }
   }), /Invalid workspaceCleanupPolicy/);
+});
+test('test-only skill diff gate rejects production paths including rename sources', () => {
+  assert.doesNotThrow(() => requireAllowedSkillChanges(
+    ['test/behavior.behavior-card.md', 'test/behavior.test.js'], ['test'],
+    ['test/behavior.behavior-card.md', 'test/behavior.test.js']));
+  assert.doesNotThrow(() => requireAllowedSkillChanges(
+    ['shared/registry.yaml'], ['test'], ['shared/registry.yaml'], ['shared/registry.yaml']));
+  assert.throws(() => requireAllowedSkillChanges(
+    ['test/behavior.test.js', 'src/app.js'], ['test']),
+  /src\/app\.js/);
+  assert.throws(() => requireAllowedSkillChanges(
+    ['test/behavior.test.js'], ['test'],
+    ['test/behavior-card.md', 'test/behavior.test.js']),
+  /does not match the workspace diff/);
 });
 test('interrupted worker persists blocked result and cannot relaunch', async t => {
   const { config, ledger, job } = await fixture(t, 'authenticated-source');

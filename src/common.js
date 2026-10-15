@@ -114,9 +114,9 @@ export function configAt(path) {
   }
   requireThat(Array.isArray(config.repositories), 'repositories must be an array');
   config.limits.maxValidationRepairRounds =
-    nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
-  requireThat(config.limits.maxValidationRepairRounds <= 5,
-    'maxValidationRepairRounds must not exceed 5');
+    nonNegative(config.limits.maxValidationRepairRounds ?? 10, 'maxValidationRepairRounds');
+  requireThat(config.limits.maxValidationRepairRounds <= 10,
+    'maxValidationRepairRounds must not exceed 10');
   config.limits.maxValidationInfrastructureRetries =
     nonNegative(config.limits.maxValidationInfrastructureRetries ?? 0,
       'maxValidationInfrastructureRetries');
@@ -154,6 +154,14 @@ export function configAt(path) {
         ['unqualified', 'qualified'].includes(binding.qualification) &&
         Array.isArray(binding.requestedOutcomes) && binding.requestedOutcomes.length > 0,
       `Repository ${repo.id} skill binding ${binding.id} activation is incomplete`);
+      requireThat(Array.isArray(binding.allowedWritePrefixes) &&
+        binding.allowedWritePrefixes.every(prefix => typeof prefix === 'string' && prefix.length > 0 &&
+          !isAbsolute(prefix) && !prefix.split(/[\\/]/).includes('..')) &&
+        Array.isArray(binding.allowedWriteFiles ?? []) &&
+        (binding.allowedWriteFiles ?? []).every(path => typeof path === 'string' && path.length > 0 &&
+          !isAbsolute(path) && !path.split(/[\\/]/).includes('..')) &&
+        typeof binding.requiresBehaviorCard === 'boolean',
+      `Repository ${repo.id} skill binding ${binding.id} write policy is incomplete`);
       requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
         typeof binding.sideEffects[key] === 'boolean'),
       `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);

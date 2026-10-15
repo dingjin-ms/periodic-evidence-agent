@@ -130,7 +130,7 @@
           "type": "array",
           "items": {
             "type": "object", "additionalProperties": false,
-            "required": ["id", "capability", "skillPath", "enabled", "qualification", "requestedOutcomes", "sideEffects"],
+            "required": ["id", "capability", "skillPath", "enabled", "qualification", "requestedOutcomes", "allowedWritePrefixes", "requiresBehaviorCard", "sideEffects"],
             "properties": {
               "id": { "$ref": "#/$defs/text" },
               "capability": { "$ref": "#/$defs/text" },
@@ -141,6 +141,9 @@
               "enabled": { "type": "boolean" },
               "qualification": { "enum": ["unqualified", "qualified"] },
               "requestedOutcomes": { "$ref": "#/$defs/texts" },
+              "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
+              "allowedWriteFiles": { "$ref": "#/$defs/texts" },
+              "requiresBehaviorCard": { "type": "boolean" },
               "sideEffects": {
                 "type": "object", "additionalProperties": false,
                 "required": ["commit", "push", "createDraftPR"],
@@ -707,6 +710,8 @@
         "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
         "skillBindingId": { "$ref": "#/$defs/text" },
         "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
+        "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
+        "allowedWriteFiles": { "$ref": "#/$defs/texts" },
         "skillQualification": {
           "type": "object", "additionalProperties": false,
           "required": ["qualificationId", "baseRevision", "skillSha256", "skillPath", "remote",
@@ -771,7 +776,7 @@
           "if": { "required": ["skillBindingId"] },
           "then": {
             "required": ["capability", "requestedOutcome", "improvementId", "improvementVersion",
-              "testCoveragePlanId", "testCoveragePlanVersion", "skillQualification"]
+              "testCoveragePlanId", "testCoveragePlanVersion", "allowedWritePrefixes", "skillQualification"]
           }
         }
       ]
@@ -900,6 +905,7 @@
             { "type": "null" },
             { "enum": ["runner-timeout", "runner-unavailable", "runner-mutated-source",
               "validation-workspace-unavailable", "validation-profile-changed",
+              "validation-profile-error", "prepared-cache-corrupt",
               "validation-cleanup-failed"] }
           ]
         }
@@ -980,6 +986,7 @@
                 "pilot_search": { "type": "integer", "minimum": 0 },
                 "pilot_read": { "type": "integer", "minimum": 0 },
                 "pilot_write": { "type": "integer", "minimum": 0 },
+                "pilot_replace_lines": { "type": "integer", "minimum": 0 },
                 "pilot_finish": { "type": "integer", "minimum": 0 }
               }
             },
@@ -1106,6 +1113,56 @@
           "then": { "properties": { "gaps": { "maxItems": 0 }, "endedAt": { "$ref": "#/$defs/utc" } } }
         }
       ]
+    },
+    "e2eProofRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "runId", "collection", "filter", "controller"],
+      "properties": {
+        "format": {
+          "enum": ["e2e-proof-request-v1", "e2e-proof-request-v2"]
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "collection": {
+          "type": "object", "additionalProperties": false,
+          "required": ["sourcesPath"],
+          "properties": { "sourcesPath": { "$ref": "#/$defs/text" } }
+        },
+        "filter": {
+          "type": "object", "additionalProperties": false,
+          "required": ["manifestPath", "resultPaths"],
+          "properties": {
+            "manifestPath": { "$ref": "#/$defs/text" },
+            "resultPaths": {
+              "type": "array", "minItems": 1,
+              "items": { "$ref": "#/$defs/text" }
+            }
+          }
+        },
+        "controller": {
+          "type": "object", "additionalProperties": false,
+          "required": ["resultPath"],
+          "properties": { "resultPath": { "$ref": "#/$defs/text" } }
+        },
+        "appRun": {
+          "type": "object", "additionalProperties": false,
+          "required": ["summaryPath", "assignmentId"],
+          "properties": {
+            "summaryPath": { "$ref": "#/$defs/text" },
+            "assignmentId": { "$ref": "#/$defs/text" }
+          }
+        }
+      },
+      "allOf": [{
+        "if": {
+          "properties": { "format": { "const": "e2e-proof-request-v2" } },
+          "required": ["format"]
+        },
+        "then": { "required": ["appRun"] },
+        "else": { "not": { "required": ["appRun"] } }
+      }]
     },
     "examples": {
       "type": "object", "additionalProperties": false,

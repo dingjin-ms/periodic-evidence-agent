@@ -151,7 +151,7 @@ export function assertStateDirectoryIgnored(config, cwd = process.cwd()) {
   let repository;
   try {
     repository = execFileSync('git', ['rev-parse', '--show-toplevel'],
-      { cwd, encoding: 'utf8', windowsHide: true }).trim();
+      { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   } catch {
     return { checked: false, reason: 'outside-git-repository' };
   }
@@ -161,7 +161,7 @@ export function assertStateDirectoryIgnored(config, cwd = process.cwd()) {
   requireThat(candidate && !candidate.startsWith('..'), 'State root cannot be the repository root', 'blocked-scope');
   try {
     execFileSync('git', ['check-ignore', '--quiet', '--no-index', '--', `${candidate}/`],
-      { cwd: repository, windowsHide: true });
+      { cwd: repository, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch {
     requireThat(false, `State directory must be gitignored before evidence is stored: ${root}`, 'blocked-scope');
   }

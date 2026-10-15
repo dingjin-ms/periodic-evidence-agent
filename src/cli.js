@@ -23,12 +23,14 @@ import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.j
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
+import { schedulePreparedAssignments } from './assignment-scheduler.js';
+import { cleanupAgencyTransports } from './agency-transport-gc.js';
 
 const [action = 'help', ...args] = process.argv.slice(2);
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
 ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
-  'workspace-gc'].includes(action)
+  'workspace-gc', 'transport-gc', 'dispatch-ready'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
@@ -44,7 +46,8 @@ function failedOutcome(result) {
     ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed'].includes(result.outcome) ||
-    ['collection', 'reviews', 'workers', 'result', 'workspaces'].some(key => failedOutcome(result[key]));
+    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces']
+      .some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
@@ -57,6 +60,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --execute --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js workspace-gc --config pilot.local.json [--execute]
+  node src\\cli.js transport-gc --config pilot.local.json [--execute]
+  node src\\cli.js dispatch-ready --config pilot.local.json [--execute --limit N --authorize-commit --authorize-push --authorize-draft-pr]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
   node src\\cli.js auth-check
@@ -320,6 +325,20 @@ try {
         });
         break;
       }
+      case 'dispatch-ready':
+        result = await schedulePreparedAssignments(config, ledger, {
+          execute: args.includes('--execute'),
+          limit: option('--limit') === null ? null : Number(option('--limit')),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        });
+        break;
+      case 'transport-gc':
+        result = await cleanupAgencyTransports(config, ledger, {
+          execute: args.includes('--execute')
+        });
+        break;
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
       case 'report': result = report(ledger); break;
       case 'reconcile': result = reconcile(ledger); break;

@@ -18,7 +18,8 @@ import { requireEligibleImprovementInvestigation } from './review-decisions.js';
 import { outputPathFingerprint } from './output-fingerprint.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
-  recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount } from './agency-executor.js';
+  recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount,
+  activeRepositoryWorkerCount } from './agency-executor.js';
 import { runAgencyLocal } from './agency-local-authoring.js';
 import { executeAgencyRemoteJob } from './agency-remote-authoring.js';
 import { workerToolDefinitions } from './worker-tool-contract.js';
@@ -1762,8 +1763,20 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
   const remote = await execute(config, ledger, current, repo, provider, {
     round: authoring.round, baseRevision, branch: seedBranch, resultBranch, prompt
   }, dependencies.transport ?? {});
-  return materializeAgencyRemoteResult(config, current, assignment, repo, toolkit,
+  const materialized = await materializeAgencyRemoteResult(config, current, assignment, repo, toolkit,
     baseRevision, { ...remote, round: authoring.round }, dependencies);
+  const resultOperation = `${assignment.id}:agency-remote-result:${authoring.round}`;
+  const resultDetail = {
+    round: authoring.round,
+    baseRevision,
+    resultRevision: materialized.sourceRevision,
+    inputRef: `refs/heads/${seedBranch}`,
+    resultRef: `refs/heads/${resultBranch}`
+  };
+  ledger.operation(resultOperation, assignment.id, 'agency-remote-result',
+    resultDetail);
+  ledger.finishOperation(resultOperation, 'completed', resultDetail);
+  return materialized;
 }
 async function runConfiguredModel(config, ledger, current, assignment, investigation, toolkit,
   loadedSkill, authoring, dependencies) {
@@ -1820,7 +1833,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       'An approved Agency transport is required; no local fallback is permitted', 'blocked-config');
     requireAgencyQualification(config, ledger, agencyTaskId(assignment));
   } else modelPreflight(config);
-  const owner = ledger.acquire('dispatch');
+  const ownershipName = `dispatch:${id}`;
+  const owner = ledger.acquire(ownershipName);
   let proposal = null, revision = null, draftPR = null, validation = [], validationAttempts = [];
   let deliveredResult;
   const toolUsage = {
@@ -1837,6 +1851,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     requireThat(activeWorkerCount(ledger) <
       positive(config.limits.maxWorkers, 'maxWorkers'),
     'Worker limit reached', 'overlap');
+    requireThat(activeRepositoryWorkerCount(ledger, assignment.repoId) <
+      positive(config.limits.maxWorkersPerRepository ?? 1,
+        'maxWorkersPerRepository'),
+    `Repository worker limit reached for ${assignment.repoId}`, 'overlap');
     if (assignment.execution !== 'hosted') {
       const baseRevision = await resolvedBaseRevision(repo, qualification);
       let authenticationActions =
@@ -1878,6 +1896,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     ledger.transaction(() => {
       const active = activeWorkerCount(ledger);
       requireThat(active < positive(config.limits.maxWorkers, 'maxWorkers'), 'Worker limit reached', 'overlap');
+      requireThat(activeRepositoryWorkerCount(ledger, assignment.repoId) <
+        positive(config.limits.maxWorkersPerRepository ?? 1,
+          'maxWorkersPerRepository'),
+      `Repository worker limit reached for ${assignment.repoId}`, 'overlap');
       ledger.moveJob(id, 'prepared', 'dispatching');
       if (assignment.execution === 'hosted')
         reserveAgencyRequest(config, ledger, agencyTaskId(assignment), dependencies.agencyRequest);
@@ -2021,7 +2043,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       ledger.moveJob(id, current.state, 'blocked', { error: detail });
     }
     throw error;
-  } finally { ledger.release('dispatch', owner); }
+  } finally { ledger.release(ownershipName, owner); }
   if (deliveredResult.draftPR && workspaceCleanupPolicy(config).enabled) {
     try {
       deliveredResult.workspaceCleanup = await cleanupWorkspace(config, ledger, id,

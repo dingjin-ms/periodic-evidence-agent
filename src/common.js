@@ -143,6 +143,12 @@ export function configAt(path) {
       'maxValidationInfrastructureRetries');
   requireThat(config.limits.maxValidationInfrastructureRetries <= 2,
     'maxValidationInfrastructureRetries must not exceed 2');
+  positive(config.limits.maxWorkers, 'maxWorkers');
+  config.limits.maxWorkersPerRepository =
+    positive(config.limits.maxWorkersPerRepository ?? 1,
+      'maxWorkersPerRepository');
+  requireThat(config.limits.maxWorkersPerRepository <= config.limits.maxWorkers,
+    'maxWorkersPerRepository must not exceed maxWorkers');
   for (const repo of config.repositories) {
     repo.qualificationRefresh ??= 'local';
     repo.validationContractVersion ??= '1.0';

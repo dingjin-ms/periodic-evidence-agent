@@ -133,6 +133,30 @@ modes, file-size limits and exact assignment/round/base envelope bindings. Only
 approved source files are restored; the transport envelope is never copied into
 the final commit. Accepted or uncertain jobs are never automatically replaced.
 
+## Concurrent repository scheduling
+
+The Controller can launch several prepared assignments with `dispatch-ready`.
+`limits.maxWorkers` bounds all local and hosted workers together.
+`limits.maxWorkersPerRepository` defaults to one, allowing OA, 1JS and Office
+to progress concurrently without placing two heavy validation jobs in the same
+repository lane. Every assignment uses its own durable dispatch lock, while
+the active-count check and `prepared -> dispatching` transition occur together
+in one immediate SQLite transaction.
+
+The scheduler does not weaken publication policy: execution still requires
+explicit commit, push and Draft PR authorization, every assignment passes
+normal dispatch admission, and no merge is performed. An overlapping
+scheduler cannot resubmit a claimed or uncertain job. This is same-machine
+concurrency only; a future multi-machine Controller requires shared durable
+leases and external validation runners rather than a network-shared SQLite
+database.
+
+After the delivery retention interval, `transport-gc` can preview or remove
+only the exact deterministic `pilot-agency-base/...` and
+`pilot-agency-result/...` refs recorded for completed remote rounds. It first
+verifies their remote tips and the preserved final `pilot/<assignment>` branch.
+The final branch and Draft PR are never automatically deleted.
+
 ## Permission boundary
 
 For every dispatch attempt, the controller:

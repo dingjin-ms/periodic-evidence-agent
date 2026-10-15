@@ -497,6 +497,33 @@ Remote logs are diagnostic only; source state is the transport authority.
 See [Authoring providers](AGENCY-LOCAL-AUTHORING.md) for the complete comparison
 and operational limitations.
 
+#### Bounded multi-repository scheduling
+
+`limits.maxWorkers` is the shared Controller-wide admission cap.
+`limits.maxWorkersPerRepository` defaults to `1` and must not exceed the global
+cap. Different repositories can therefore author and validate concurrently
+while a repository uses one heavy validation lane by default. Admission is
+committed in the SQLite ledger before authoring starts; each assignment owns an
+independent `dispatch:<assignment-id>` lock, so a long remote job does not hold a
+global dispatch lock.
+
+Prepared assignments can be previewed and then launched concurrently:
+
+```powershell
+npm run pilot -- dispatch-ready --config .\pilot.local.json
+npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
+  --authorize-commit --authorize-push --authorize-draft-pr
+```
+
+The scheduler selects jobs deterministically, rotates across configured
+repositories, respects active hosted and local workers, and launches only jobs
+that are still `prepared`. Each selected assignment is atomically admitted
+again by normal `dispatch`; an overlapping scheduler can therefore observe an
+`overlap` result but cannot submit a duplicate remote job. Scheduler batches
+and per-assignment outcomes are durable ledger operations. This supports
+concurrent repositories on one Controller machine; the SQLite ledger is not a
+multi-machine lease service.
+
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
 explicitly authorized synthetic receipt. A repository worker may follow a
@@ -581,6 +608,23 @@ is retained if safety checks cannot be satisfied. Remote PRs and branches,
 evidence, delivery receipts, the ledger, primary checkouts and prepared
 dependency/compile caches are preserved. This repository does not restore
 delivered workspaces, review PRs or merge them.
+
+Remote Agency input and result branches have a separate fail-closed cleanup:
+
+```powershell
+npm run pilot -- transport-gc --config .\pilot.local.json
+npm run pilot -- transport-gc --config .\pilot.local.json --execute
+```
+
+Preview is the default. Cleanup requires a completed Draft PR delivery after
+the configured retention interval, no unfinished task operation, a retained
+per-round result receipt, exact remote tips for every deterministic
+`pilot-agency-base/...` and `pilot-agency-result/...` ref, and a final
+`pilot/<assignment-id>` branch that still matches the delivered revision. Only
+the exact transport refs are deleted. The final branch, Draft PR, validation
+artifacts, delivery records and repository checkout are never deleted. Missing
+or mismatched refs are retained for reconciliation, and successful cleanup is
+idempotently recorded in the ledger.
 
 ### FILTER-to-proposer handoff
 

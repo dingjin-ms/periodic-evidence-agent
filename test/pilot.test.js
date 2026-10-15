@@ -17,7 +17,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, verifyPreparedOutputs } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -1561,6 +1561,22 @@ test('parallel prepared-output fingerprint detects cache mutation', async t => {
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
+test('concurrent prepared-output settlements cannot race past cache mutation',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    writeFileSync(join(prepared.staged.workspace, 'extra', 'node_modules',
+      'fixture', 'package.json'), '{"version":"concurrently-corrupt"}\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const results = await Promise.all([
+      verifyPreparedOutputs(prepared.staged.receiptPath,
+        prepared.staged.workspace, prepared.staged.outputs),
+      verifyPreparedOutputs(prepared.staged.receiptPath,
+        prepared.staged.workspace, prepared.staged.outputs)
+    ]);
+    assert.deepEqual(results.map(result => result.valid), [false, false]);
+  });
 test('dependency file mutations invalidate a warm compile receipt', async t => {
   for (const mutation of ['modify', 'delete', 'add']) {
     const ctx = await stagedValidationFixture(t);
@@ -1679,8 +1695,54 @@ test('metadata-only ordinary file changes preserve an identical prepared cache',
   assert.equal(result[0].status, 'passed');
   assert.equal(existsSync(prepared.staged.workspace), true);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
-  assert.equal(artifact.telemetry.validationTimings.find(stage =>
-    stage.id === 'cleanup').cache, 'preserved');
+  const cleanup = artifact.telemetry.validationTimings.find(stage =>
+    stage.id === 'cleanup');
+  assert.equal(cleanup.cache, 'preserved');
+  const verification = cleanup.subphases.find(stage =>
+    stage.id === 'verify-prepared-outputs');
+  assert.ok(verification.details.observedEventCount > 0);
+  assert.ok(verification.details.rehashedEntryCount > 0);
+  assert.ok(verification.details.hashedFileCount > 0);
+  assert.ok(verification.details.durationMs >= 100);
+});
+test('metadata event batches preserve cache with incremental verification telemetry',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const execute = async (...args) => {
+      const result = await ctx.execute(...args);
+      const [, , cwd, , env] = args;
+      const bulk = join(cwd, 'extra', 'node_modules', 'fixture', 'bulk');
+      if (env.PILOT_VALIDATION_STAGE === 'dependencies') {
+        mkdirSync(bulk, { recursive: true });
+        for (let index = 0; index < 32; index++)
+          writeFileSync(join(bulk, `${index}.js`), `export default ${index};\n`);
+      }
+      if (env.PILOT_VALIDATION_STAGE === 'test') {
+        for (let index = 0; index < 32; index++) {
+          const path = join(bulk, `${index}.js`);
+          writeFileSync(path, readFileSync(path));
+        }
+      }
+      return result;
+    };
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, execute);
+    const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+      'Exercise batched metadata tolerance');
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, execute, rmSync, prepared);
+    assert.equal(result[0].status, 'passed');
+    assert.equal(existsSync(prepared.staged.workspace), true);
+    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+    const cleanup = artifact.telemetry.validationTimings.find(stage =>
+      stage.id === 'cleanup');
+    assert.equal(cleanup.cache, 'preserved');
+    const details = cleanup.subphases.find(stage =>
+      stage.id === 'verify-prepared-outputs').details;
+    assert.ok(details.observedEventCount > 0);
+    assert.ok(details.changedEntryCount > 0);
+    assert.ok(details.rehashedEntryCount > 0);
+    assert.ok(details.hashedFileCount > 0);
 });
 test('same-revision infrastructure retry reuses expensive prepared stages', async t => {
   const ctx = await stagedValidationFixture(t);

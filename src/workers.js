@@ -173,7 +173,7 @@ export function makePlannedImprovementAssignment(config, ledger, investigation, 
     'Planned repository work requires a source-bound coverage revision', 'blocked-reconciliation');
   const binding = resolveSkillBinding(config, plan.repoId, plan.capability).binding;
   const qualification = ledger.qualification(skillQualificationId(plan.repoId, binding.id));
-  const pinned = pinSkillQualification(qualification, binding);
+  const pinned = pinSkillQualification(qualification);
   requireThat(qualification.baseRevision === plan.sourceRevision,
     'Coverage plan and repository skill qualification use different source revisions',
     'blocked-reconciliation');

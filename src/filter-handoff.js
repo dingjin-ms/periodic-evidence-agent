@@ -33,7 +33,7 @@ function capturePayload(capture) {
   }
 }
 
-function importEvidence(ledger, binding, corpus) {
+export function importCapturedEvidence(ledger, binding, corpus, sourcePrefix = 'filter-proposer') {
   const selected = new Set(binding.retainedIds);
   const records = corpus.evidence.filter(record => selected.has(record.id));
   requireThat(records.length === selected.size,
@@ -50,7 +50,7 @@ function importEvidence(ledger, binding, corpus) {
   const windows = corpus.index.sources.map(source => source.window);
   requireThat(windows.length > 0 && windows.every(window => json(window) === json(windows[0])),
     'FILTER proposer evidence must use one exact collection window', 'blocked-reconciliation');
-  const runId = ledger.startRun(`filter-proposer:${binding.cohortId}`, windows[0]);
+  const runId = ledger.startRun(`${sourcePrefix}:${binding.cohortId}`, windows[0]);
   for (const record of records) {
     const existing = ledger.get('evidence', record.id);
     if (existing) {
@@ -67,7 +67,7 @@ function importEvidence(ledger, binding, corpus) {
   return records;
 }
 
-function investigation(ledger, candidate, evidence, reviewedAt, reviewer) {
+function investigation(ledger, candidate, evidence, reviewedAt, reviewer, intent) {
   const primary = evidence[0];
   const id = `investigation-${hash(json([
     primary.source.namespace, primary.source.recordId
@@ -95,7 +95,9 @@ function investigation(ledger, candidate, evidence, reviewedAt, reviewer) {
     review: { method: 'agent-evidence-review', reviewer, reviewedAt },
     repoIds: [candidate.definition.repository],
     existingFixes: [],
-    nextAction: `Inspect ${candidate.definition.harness} at ${candidate.definition.sourceRevision} and add or update ${candidate.definition.layer} coverage for: ${candidate.definition.missingAssertion}`
+    nextAction: intent === 'defect-fix'
+      ? `Inspect ${candidate.definition.harness} at ${candidate.definition.sourceRevision}, reproduce and fix the production behavior, and add or update ${candidate.definition.layer} coverage for: ${candidate.definition.missingAssertion}`
+      : `Inspect ${candidate.definition.harness} at ${candidate.definition.sourceRevision} and add or update ${candidate.definition.layer} coverage for: ${candidate.definition.missingAssertion}`
   };
   const previous = ledger.get('investigation', id);
   if (!previous) return record;
@@ -134,9 +136,13 @@ export function validateFilterProposerHandoff(config, input) {
   };
 }
 
-export function prepareFilterProposerHandoff(config, ledger, input) {
+export function prepareFilterProposerHandoff(config, ledger, input, {
+  intent = 'improvement'
+} = {}) {
   requireThat(config.statePolicy.accessApproved === true,
     'FILTER proposer handoff requires approved local state storage', 'blocked-config');
+  requireThat(intent === 'improvement',
+    'FILTER proposer handoff is test-only and cannot become a defect-fix assignment', 'blocked-scope');
   const validated = validateFilterProposerHandoff(config, input);
   const { binding, candidate, reviewedAt, reviewer, requestedOutcome, skill } = validated;
   const qualification = ledger.qualification(skillQualificationId(
@@ -152,9 +158,9 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
     sources: manifest.request.sources
   });
   return ledger.transaction(() => {
-    const evidence = importEvidence(ledger, binding, corpus);
+    const evidence = importCapturedEvidence(ledger, binding, corpus);
     const proposedInvestigation = investigation(
-      ledger, candidate, evidence, reviewedAt, reviewer);
+      ledger, candidate, evidence, reviewedAt, reviewer, intent);
     requireCompleteExclusionReview(exclusions);
     requireEligibleImprovementInvestigation(proposedInvestigation);
     const persistedInvestigation = persistReviewedInvestigation(config, ledger, {
@@ -186,7 +192,10 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
         existingTests: [],
         coverageGaps: [candidate.definition.missingAssertion],
         unknowns: [],
-        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`
+        rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`,
+        ...(input.routing.skillInput
+          ? { skillInput: input.routing.skillInput }
+          : {})
       }
     });
     const assignment = makePlannedImprovementAssignment(config, ledger,
@@ -200,6 +209,7 @@ export function prepareFilterProposerHandoff(config, ledger, input) {
 }
 
 export async function acceptFilterProposerHandoff(config, ledger, input, {
+  intent = 'improvement',
   execute = false,
   authorizeCommit = false,
   authorizePush = false,
@@ -220,7 +230,7 @@ export async function acceptFilterProposerHandoff(config, ledger, input, {
     'Repository skill binding is not authorized for commit, push and Draft PR side effects',
     'blocked-config');
   }
-  const prepared = prepareFilterProposerHandoff(config, ledger, input);
+  const prepared = prepareFilterProposerHandoff(config, ledger, input, { intent });
   if (!execute) return { state: 'prepared', ...prepared };
   const result = await dispatch(config, ledger, prepared.assignment.id, dispatchDependencies);
   return { state: result.outcome, ...prepared, result };

@@ -1,5 +1,6 @@
 node_modules/
 .state/
+private-runtime/
 pilot.local.json
 *.local.json
 .env

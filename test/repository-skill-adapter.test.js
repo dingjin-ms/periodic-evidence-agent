@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { configAt, hash } from '../src/common.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill,
-  repositoryValidationContract, resolveSkillBinding
+  normalizeSkillInput, repositoryValidationContract, resolveSkillBinding
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -21,10 +21,12 @@ function setup(t) {
     id: 'office-src', owner: 'oa-owner', routingApproved: true,
     referenceCheckout: workspace, baseRef: 'main',
     remote: 'https://office.visualstudio.com/ISS/_git/OfficeAgent',
+    allowedWritePrefixes: ['test'],
     skillBindings: [{
       id: 'oa-integration-test-core', capability: 'integration-test-authoring',
       skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
+      allowedWritePrefixes: ['test'], requiresBehaviorCard: true,
       sideEffects: { commit: false, push: false, createDraftPR: false }
     }]
   }];
@@ -37,6 +39,7 @@ function setup(t) {
 }
 function qualification(config, assignment, revision, instructions = '# Synthetic OA integration skill\n') {
   const binding = config.repositories[0].skillBindings[0];
+  assignment.allowedWritePrefixes = [...binding.allowedWritePrefixes];
   const contract = repositoryValidationContract(config.repositories[0]);
   const receipt = {
     state: 'qualified-read-only', repoId: assignment.repoId, bindingId: assignment.skillBindingId,
@@ -60,6 +63,41 @@ test('adapter loads exactly the configured repository skill at the bound source 
   assert.match(loaded.instructions, /Synthetic OA integration skill/);
   assert.equal(loaded.skillPath, 'docs/skills/Integration-test-core/SKILL.md');
   assert.equal(loaded.skillRevision, 'a'.repeat(40));
+});
+
+test('adapter uses committed skill bytes when checkout line endings differ', async t => {
+  const { workspace, config, assignment } = setup(t);
+  writeFileSync(join(workspace, '.gitattributes'), '*.md text eol=crlf\n');
+  const run = args => new Promise((resolve, reject) => {
+    import('node:child_process').then(({ execFile }) =>
+      execFile('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+        '-c', 'core.safecrlf=false', ...args], { cwd: workspace }, (error, stdout, stderr) =>
+        error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
+  });
+  await run(['init', '--quiet']);
+  await run(['add', '.']);
+  await run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Fixture']);
+  const revision = (await run(['rev-parse', 'HEAD'])).trim();
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Synthetic OA integration skill\r\n');
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
+  assert.equal(loaded.instructions, '# Synthetic OA integration skill\n');
+  writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
+    '# Changed skill\n');
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt),
+    error => error.code === 'blocked-reconciliation' && /content changed/.test(error.message));
+});
+
+test('skill Git execution failure is not reported as established content drift', t => {
+  const { workspace, config, assignment } = setup(t);
+  mkdirSync(join(workspace, '.git'));
+  const revision = 'a'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  assert.throws(() => loadRepositorySkill(config, assignment, workspace, revision, receipt),
+    error => error.code === 'blocked-repository-git' &&
+      /Git cat-file failed \(native-command-failed; exit status \d+\); content drift is not established/.test(error.message));
 });
 
 test('skill binding is fail-closed when disabled, unqualified or ambiguous', t => {
@@ -108,6 +146,7 @@ test('trusted-remote qualification fetches before resolving and binds the valida
   const { config } = setup(t);
   const repo = config.repositories[0];
   repo.qualificationRefresh = 'fetch';
+  repo.baseRef = 'origin/feature/synthetic-validation';
   repo.validationContractVersion = 'oa-v2';
   repo.validationGates = [{
     id: 'oa-test', approved: true, executable: process.execPath,
@@ -127,6 +166,9 @@ test('trusted-remote qualification fetches before resolving and binds the valida
     }, async () => 'synthetic-token');
   assert.deepEqual(calls.map(args => args[0]),
     ['remote', 'fetch', 'rev-parse', 'cat-file', 'show']);
+  assert.equal(calls.find(args => args[0] === 'fetch').at(-1), 'feature/synthetic-validation');
+  assert.equal(calls.find(args => args[0] === 'rev-parse').at(-1),
+    'FETCH_HEAD^{commit}');
   assert.equal(result.qualificationSource, 'trusted-remote');
   assert.equal(result.validationContractVersion, 'oa-v2');
   assert.match(result.validationContractSha256, /^[a-f0-9]{64}$/);
@@ -191,17 +233,53 @@ test('skill result normalization is deterministic and rejects success-shaped emp
   const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
   const result = normalizeSkillResult(loaded, {
     status: 'succeeded', classification: 'missing-coverage',
-    changedFiles: ['test/new.test.js', 'test/new.test.js'],
-    testsAddedOrUpdated: ['new test'], behaviorCardsAddedOrUpdated: [],
+    changedFiles: ['test/new.test.js', 'test/new.test.js', 'test/new.behavior-card.md'],
+    testsAddedOrUpdated: ['new test'], behaviorCardsAddedOrUpdated: ['test/new.behavior-card.md'],
     unknowns: [], needsHumanDecision: false
   });
-  assert.deepEqual(result.changedFiles, ['test/new.test.js']);
+  assert.deepEqual(result.changedFiles, ['test/new.behavior-card.md', 'test/new.test.js']);
   assert.equal(result.bindingId, 'oa-integration-test-core');
+  assert.throws(() => normalizeSkillResult(loaded, {
+    status: 'succeeded', classification: 'missing-coverage',
+    changedFiles: ['test/new.test.js'], testsAddedOrUpdated: ['new test'],
+    behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: false
+  }), /behavior-card update/);
+  assert.throws(() => normalizeSkillResult(loaded, {
+    status: 'succeeded', classification: 'missing-coverage',
+    changedFiles: ['test/new.test.js'], testsAddedOrUpdated: ['new test'],
+    behaviorCardsAddedOrUpdated: ['test/new.behavior-card.md'],
+    unknowns: [], needsHumanDecision: false
+  }), /included in changedFiles/);
   assert.throws(() => normalizeSkillResult(loaded, {
     status: 'succeeded', classification: 'missing-coverage',
     changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
     unknowns: [], needsHumanDecision: false
   }), /existing coverage/);
+});
+
+test('declarative E2E skill input is versioned, complete and has unique item IDs', t => {
+  const { config } = setup(t);
+  const binding = config.repositories[0].skillBindings[0];
+  binding.inputFormat = 'declarative-e2e-mini-spec-batch-v1';
+  const input = {
+    format: 'declarative-e2e-mini-spec-batch-v1',
+    items: [{
+      inputItemId: 'bizchat-excel-canary',
+      title: 'Create an Excel workbook from BizChat',
+      account: 'AAD',
+      entryUrl: 'https://example.invalid/chat',
+      preconditions: ['Signed in with the qualified AAD profile'],
+      orderedTestSteps: ['Open BizChat', 'Create the workbook'],
+      expectedUserVisibleAndDataOutcomes: ['A real workbook opens'],
+      cleanup: ['Close only the test-owned tab']
+    }]
+  };
+  assert.deepEqual(normalizeSkillInput(binding, input), input);
+  assert.throws(() => normalizeSkillInput(binding, null),
+    /requires declarative-e2e-mini-spec-batch-v1/);
+  const duplicate = structuredClone(input);
+  duplicate.items.push(structuredClone(input.items[0]));
+  assert.throws(() => normalizeSkillInput(binding, duplicate), /unique/);
 });
 
 test('adapter rejects missing, changed or source-mismatched qualification receipts', t => {

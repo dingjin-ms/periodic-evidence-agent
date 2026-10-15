@@ -18,14 +18,165 @@ import { prepareFilterBatches, sizeFilterGroups, expandFilterSharing, expandFilt
   consolidateFilterBatches, bindFilterConsolidation } from '../src/filter-batches.js';
 import { prepareStage2, coverageSkillName } from '../src/stage2.js';
 import { reconcileFilterExecutionCohort } from '../src/filter-execution.js';
-import { prepareFilterProposerHandoff } from '../src/filter-handoff.js';
+import { acceptFilterProposerHandoff, prepareFilterProposerHandoff } from '../src/filter-handoff.js';
 import {
-  repositoryValidationContract, skillQualificationId
+  qualifyRepositorySkill, repositoryValidationContract, skillQualificationId
 } from '../src/repository-skills.js';
 
 const bytes = v => `${JSON.stringify(v, null, 2)}\n`;
 const sha = v => hash(bytes(v));
 const inputOf = b => JSON.parse(JSON.parse(b.payload).payload);
+const declarativeSkillPath = '.github/skills/author-declarative-e2e-test/SKILL.md';
+const declarativeInput = {
+  format: 'declarative-e2e-mini-spec-batch-v1',
+  items: [{
+    inputItemId: 'synthetic-canary',
+    title: 'Synthetic workbook contract',
+    account: 'AAD',
+    entryUrl: 'https://example.invalid/chat',
+    preconditions: ['Use the approved dedicated test profile'],
+    orderedTestSteps: ['Create a Canary worksheet with a four-row, three-column table'],
+    expectedUserVisibleAndDataOutcomes: ['The workbook has the requested worksheet and table'],
+    cleanup: ['Close only the test-owned tab']
+  }]
+};
+function writeProposerSource(checkout) {
+  mkdirSync(join(checkout, '.github', 'skills', 'author-declarative-e2e-test'), { recursive: true });
+  mkdirSync(join(checkout, 'scenarios'));
+  mkdirSync(join(checkout, 'test'));
+  writeFileSync(join(checkout, declarativeSkillPath),
+    '# Synthetic declarative skill\nPreserve the complete mini-spec in a scenario and register its ID.\n');
+  writeFileSync(join(checkout, 'scenarios', 'baseline.json'), '{}\n');
+  writeFileSync(join(checkout, 'resources.json'), '[]\n');
+  writeFileSync(join(checkout, 'test', 'expected-input.json'), bytes(declarativeInput.items[0]));
+  writeFileSync(join(checkout, 'test', 'scenario.test.cjs'), [
+    "const test = require('node:test');",
+    "const assert = require('node:assert/strict');",
+    "const fs = require('node:fs');",
+    "const read = path => JSON.parse(fs.readFileSync(path, 'utf8'));",
+    "test('generated scenario preserves the reviewed mini-spec', () => {",
+    "  const expected = read('test/expected-input.json');",
+    "  assert.deepEqual(read('scenarios/canary.json'), expected);",
+    "  assert.deepEqual(read('resources.json'), [expected.inputItemId]);",
+    '});', ''
+  ].join('\n'));
+}
+async function exerciseFilterProposer(s, ledger, checkout, git, manifest, reviewed) {
+  const sourceHash = hash(readFileSync(s.ledgerPath));
+  const receipts = ledger.db.prepare('SELECT kind,body FROM agency_receipts ORDER BY kind').all();
+  const remote = join(s.root, 'synthetic-remote.git');
+  git(['init', '--bare', '--quiet', remote]);
+  git(['remote', 'add', 'origin', remote]);
+  const repo = {
+    id: 'synthetic', projectId: 'synthetic-project', owner: 'synthetic-owner',
+    routingApproved: true, routingRules: ['Synthetic FILTER flow'],
+    referenceCheckout: checkout, remote, baseRef: 'HEAD',
+    sparseCheckoutPaths: ['.github', 'scenarios', 'test'],
+    allowedWritePrefixes: ['scenarios'], allowedWriteFiles: ['resources.json'],
+    commitIdentity: { name: 'Synthetic test', email: 'synthetic@example.invalid' },
+    validationGates: [{
+      id: 'synthetic-scenario', approved: true, executable: process.execPath,
+      args: ['--test', 'test/scenario.test.cjs'], timeoutMs: 30000
+    }],
+    skillBindings: [{
+      id: 'synthetic-declarative', capability: 'declarative-e2e-authoring',
+      skillPath: declarativeSkillPath, inputFormat: declarativeInput.format,
+      enabled: true, qualification: 'qualified', requestedOutcomes: ['add-declarative-e2e-tests'],
+      allowedWritePrefixes: ['scenarios'], allowedWriteFiles: ['resources.json'],
+      requiresBehaviorCard: false,
+      sideEffects: { commit: true, push: true, createDraftPR: true }
+    }]
+  };
+  s.config.repositories = [repo];
+  s.config.stateDirectory = ledger.directory;
+  Object.assign(s.config.limits, {
+    maxItems: 10, workerMaxToolCalls: 20, maxAiCreditsPerSession: 1,
+    maxValidationInfrastructureRetries: 0, maxValidationRepairRounds: 0
+  });
+  const qualification = await qualifyRepositorySkill(s.config, repo.id, 'declarative-e2e-authoring');
+  assert.equal(qualification.baseRevision, reviewed.candidates[0].sourceRevision);
+  ledger.qualify(skillQualificationId(repo.id, 'synthetic-declarative'), qualification);
+  const resultPath = join(s.root, 'accepted-filter-result.json');
+  writeFileSync(resultPath, bytes(reviewed));
+  const input = {
+    format: 'filter-proposer-handoff-v1',
+    filter: { manifestPath: s.path, resultPaths: [resultPath] },
+    routing: {
+      capability: 'declarative-e2e-authoring', requestedOutcome: 'add-declarative-e2e-tests',
+      skillInput: declarativeInput
+    }
+  };
+  const options = { execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true };
+  for (const permission of ['authorizeCommit', 'authorizePush', 'authorizeDraftPR']) {
+    await assert.rejects(acceptFilterProposerHandoff(s.config, ledger, input,
+      { ...options, [permission]: false }), /Execution requires/);
+    assert.equal(ledger.all('assignment').length, 0);
+  }
+  await assert.rejects(acceptFilterProposerHandoff(s.config, ledger,
+    { ...input, filter: { ...input.filter, resultPaths: [] } }, options), /resultPaths/);
+  const prepared = prepareFilterProposerHandoff(s.config, ledger, input);
+  assert.equal(prepared.assignment.execution, 'local');
+  assert.deepEqual(prepared.assignment.evidenceIds, reviewed.candidates[0].evidenceIds);
+  assert.deepEqual(prepared.assignment.skillInput, declarativeInput);
+  const repeated = prepareFilterProposerHandoff(s.config, ledger, input);
+  assert.equal(repeated.assignment.id, prepared.assignment.id);
+  let modelCalls = 0, draftCalls = 0;
+  const executed = await acceptFilterProposerHandoff(s.config, ledger, input, {
+    ...options,
+    dispatchDependencies: {
+      runModel: async (_config, _ledger, current, assignment, investigation, toolkit, skill) => {
+        modelCalls++;
+        assert.equal(current.base_revision, qualification.baseRevision);
+        assert.equal(skill.skillRevision, qualification.baseRevision);
+        assert.match(skill.instructions, /Synthetic declarative skill/);
+        assert.equal(investigation.review.reviewer, 'FILTER:synthetic-filter');
+        assert.deepEqual(assignment.skillInput, declarativeInput);
+        assert.throws(() => toolkit.write('test/scenario.test.cjs', ''), /approved edit bounds/);
+        toolkit.write('scenarios/canary.json', bytes(assignment.skillInput.items[0]));
+        toolkit.write('resources.json', bytes([assignment.skillInput.items[0].inputItemId]));
+        toolkit.finish({
+          outcome: 'propose-change', findings: 'Synthetic authoring preserves reviewed input.',
+          title: 'Add synthetic declarative scenario', description: 'Offline controller fixture only.',
+          skillResult: {
+            status: 'succeeded', classification: 'missing-test-coverage',
+            changedFiles: ['resources.json', 'scenarios/canary.json'],
+            testsAddedOrUpdated: ['synthetic-canary'], behaviorCardsAddedOrUpdated: [],
+            unknowns: [], needsHumanDecision: false
+          }
+        });
+      },
+      createDraft: async (_config, _ledger, current, _repo, revision) => {
+        draftCalls++;
+        assert.equal(git(['--git-dir', remote, 'rev-parse', `refs/heads/pilot/${current.id}`]), revision);
+        return { url: 'https://example.invalid/draft/1', isDraft: true, headRevision: revision };
+      }
+    }
+  }).catch(error => {
+    const validation = ledger.all('workerResult').flatMap(result => result.validation ?? [])
+      .map(({ status, blockedReason, attemptCount }) => ({ status, blockedReason, attemptCount }));
+    throw new Error(`Synthetic proposer failed: ${JSON.stringify(validation)}`, { cause: error });
+  });
+  assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
+  assert.equal(executed.state, 'draft-pr-validated');
+  assert.equal(executed.assignment.id, prepared.assignment.id);
+  const output = executed.result, gate = output.validation[0];
+  assert.equal(gate.sourceRevision, output.sourceRevision);
+  assert.equal(output.draftPR.headRevision, output.sourceRevision);
+  assert.notEqual(output.sourceRevision, qualification.baseRevision);
+  assert.equal(gate.status, 'passed'); assert.equal(gate.attemptCount, 1);
+  const artifact = readJson(gate.artifactRefs[0]);
+  assert.equal(artifact.revision, output.sourceRevision);
+  assert.match(artifact.output.stdout, /generated scenario preserves the reviewed mini-spec/);
+  assert.equal(ledger.job(prepared.assignment.id).state, 'completed');
+  await assert.rejects(acceptFilterProposerHandoff(s.config, ledger, input, options), /never-dispatched/);
+  assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
+  assert.equal(git(['rev-parse', 'HEAD']), qualification.baseRevision);
+  assert.equal(git(['status', '--porcelain']), '');
+  assert.equal(hash(readFileSync(s.ledgerPath)), sourceHash);
+  assert.deepEqual(ledger.db.prepare('SELECT kind,body FROM agency_receipts ORDER BY kind').all(), receipts);
+  assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(reviewed)]).state,
+    'complete-held');
+}
 const counter = async (_config, input) => ({ sha256: input.sha256, model: input.model,
   tokenizer: input.tokenizer, tokens: input.text.startsWith('{') ? JSON.parse(JSON.parse(input.text).payload).groups.length * 100 + 20 : 5 });
 function setup(t, count = 3, related = false, titles = null, canonicalCapture = false,
@@ -379,9 +530,12 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
       id: 'target-integration',
       capability: 'integration-test-authoring',
       skillPath,
+      inputFormat: 'declarative-e2e-mini-spec-batch-v1',
       enabled: true,
       qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
+      allowedWritePrefixes: ['test'],
+      requiresBehaviorCard: true,
       sideEffects: { commit: true, push: true, createDraftPR: true }
     }]
   }];
@@ -407,13 +561,30 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   const input = {
     format: 'filter-proposer-handoff-v1',
     filter: { manifestPath: s.path, resultPaths: [resultPath] },
-    routing: { capability: 'integration-test-authoring' }
+    routing: {
+      capability: 'integration-test-authoring',
+      skillInput: {
+        format: 'declarative-e2e-mini-spec-batch-v1',
+        items: [{
+          inputItemId: 'filter-authored-canary',
+          title: 'Author a reviewed FILTER canary',
+          account: 'AAD',
+          entryUrl: 'https://example.invalid/chat',
+          preconditions: ['Use the qualified signed-in profile'],
+          orderedTestSteps: ['Open the entry URL', 'Perform the reviewed workflow'],
+          expectedUserVisibleAndDataOutcomes: ['The reviewed outcome is visible'],
+          cleanup: ['Close only the test-owned tab']
+        }]
+      }
+    }
   };
   const preparedHandoff = prepareFilterProposerHandoff(s.config, ledger, input);
   assert.equal(preparedHandoff.candidate.definition.repository, 'target-repo');
   assert.equal(preparedHandoff.evidence[0].source.provenance, 'authenticated-source');
   assert.equal(preparedHandoff.investigation.review.reviewer, 'FILTER:synthetic-filter');
   assert.equal(preparedHandoff.testCoveragePlan.sourceRevision, sourceRevision);
+  assert.deepEqual(preparedHandoff.testCoveragePlan.skillInput, input.routing.skillInput);
+  assert.deepEqual(preparedHandoff.assignment.skillInput, input.routing.skillInput);
   assert.equal(preparedHandoff.assignment.skillBindingId, 'target-integration');
   assert.equal(preparedHandoff.job.state, 'prepared');
   const replay = prepareFilterProposerHandoff(s.config, ledger, input);
@@ -430,6 +601,9 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   ], { encoding: 'utf8' });
   assert.equal(cli.status, 0, cli.stderr);
   assert.equal(JSON.parse(cli.stdout).assignment.id, preparedHandoff.assignment.id);
+  assert.throws(() => prepareFilterProposerHandoff(
+    s.config, ledger, input, { intent: 'defect-fix' }),
+  /test-only and cannot become a defect-fix/);
   ledger.qualify(skillQualificationId('target-repo', 'target-integration'), {
     ...ledger.qualification(skillQualificationId('target-repo', 'target-integration')),
     baseRevision: 'c'.repeat(40)
@@ -472,7 +646,9 @@ for (const mode of ['local-policy', 'missing', 'valid', 'partial-cohort', 'deliv
   'wrong-source', 'wrong-length', 'missing-capture', 'all-excluded'])
 test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
   const count = mode === 'partial-cohort' ? 3 : 1;
-  const s = setup(t, count, false, Array(count).fill('Telemetry only'), true);
+  // Authenticated-shaped fixtures exercise the production handoff without live sources.
+  const s = setup(t, count, false, Array(count).fill('Telemetry only'), true,
+    mode === 'local-policy' ? 'authenticated-source' : 'synthetic');
   const manifest = await prepared(s), batch = manifest.batches[0];
   let verifierPath = resolve('src/filter-capture-verifier.js');
   const verifierSha256 = hash(readFileSync(verifierPath));
@@ -483,10 +659,15 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
   }
   const checkout = join(s.root, 'synthetic-checkout'); mkdirSync(checkout);
   const git = args => {
-    const child = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+    const child = spawnSync('git', ['-C', checkout, '-c', 'core.autocrlf=false',
+      '-c', 'core.safecrlf=false', ...args], { encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr); return child.stdout.trim();
   };
   git(['init', '--quiet']);
+  if (mode === 'local-policy') {
+    writeProposerSource(checkout);
+    git(['add', '.']);
+  }
   git(['-c', 'user.name=Synthetic test', '-c', 'user.email=synthetic@example.invalid',
     '-c', 'core.hooksPath=missing-hooks', 'commit', '--quiet', '--allow-empty', '-m', 'Synthetic verifier source']);
   const sourceRevision = git(['rev-parse', 'HEAD']);
@@ -808,6 +989,9 @@ test(`integrated FILTER worker capture execution gate: ${mode}`, async t => {
   } finally {
     ledger.db.exec('PRAGMA query_only=OFF');
   }
+  if (mode === 'local-policy')
+    await t.test('accepted FILTER analysis reaches source-bound declarative proposer execution offline',
+      () => exerciseFilterProposer(s, ledger, checkout, git, manifest, r));
   if (mode === 'valid') {
     for (const [name, changed] of [
       ['source', { sourceRevision: 'b'.repeat(40) }],

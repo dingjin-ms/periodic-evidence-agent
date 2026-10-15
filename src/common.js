@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, existsSync } from 'node:fs';
 import { resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
+import { hash } from './hash.js';
 
 export class PilotError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -12,7 +13,7 @@ export function requireThat(condition, message, code = 'blocked-config') {
 }
 export const now = () => new Date().toISOString();
 export const uuid = () => randomUUID();
-export const hash = value => createHash('sha256').update(value).digest('hex');
+export { hash };
 export const json = value => JSON.stringify(value);
 export const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
 export function utc(value) {
@@ -72,6 +73,32 @@ export function workspaceCleanupPolicy(config) {
   return validateRecord(config.workspaceCleanup ?? {
     enabled: false, retentionHours: 0
   }, 'workspaceCleanupPolicy');
+}
+export function proposerExecutorFlight(repo) {
+  if (repo?.flights === undefined) return null;
+  validateRecord(repo.flights, 'executorFlights');
+  return repo.flights.proposerExecutor;
+}
+export function validationPackageAuth(gate) {
+  const auth = gate.packageAuth;
+  if (auth === undefined) return null;
+  requireThat(auth && !Array.isArray(auth) &&
+    Object.keys(auth).length === 2 && auth.kind === 'yarn-token' &&
+    typeof auth.tokenEnvironmentVariable === 'string' &&
+    /^PILOT_[A-Z0-9_]+_TOKEN$/.test(auth.tokenEnvironmentVariable),
+  'Validation packageAuth must specify kind yarn-token and a PILOT_*_TOKEN environment variable');
+  return { kind: auth.kind, tokenEnvironmentVariable: auth.tokenEnvironmentVariable };
+}
+export function validationLfsPaths(gate) {
+  if (gate.lfsPaths === undefined) return [];
+  requireThat(Array.isArray(gate.lfsPaths) && gate.lfsPaths.length > 0 &&
+    new Set(gate.lfsPaths).size === gate.lfsPaths.length &&
+    gate.lfsPaths.every(path => typeof path === 'string' && path && path.trim() === path &&
+      !isAbsolute(path) && !/[\0\r\n]/.test(path) &&
+      !['\\', ':', '*', '?', '[', ']', '!', ',', '#'].some(char => path.includes(char)) &&
+      path.split('/').every(part => part && part !== '.' && part !== '..')),
+  'Validation lfsPaths must contain unique exact repository-relative files, not patterns');
+  return [...gate.lfsPaths];
 }
 export function configAt(path) {
   const config = readJson(path);
@@ -135,9 +162,9 @@ export function configAt(path) {
     }
   }
   config.limits.maxValidationRepairRounds =
-    nonNegative(config.limits.maxValidationRepairRounds ?? 0, 'maxValidationRepairRounds');
-  requireThat(config.limits.maxValidationRepairRounds <= 5,
-    'maxValidationRepairRounds must not exceed 5');
+    nonNegative(config.limits.maxValidationRepairRounds ?? 10, 'maxValidationRepairRounds');
+  requireThat(config.limits.maxValidationRepairRounds <= 10,
+    'maxValidationRepairRounds must not exceed 10');
   config.limits.maxValidationInfrastructureRetries =
     nonNegative(config.limits.maxValidationInfrastructureRetries ?? 0,
       'maxValidationInfrastructureRetries');
@@ -150,6 +177,7 @@ export function configAt(path) {
   requireThat(config.limits.maxWorkersPerRepository <= config.limits.maxWorkers,
     'maxWorkersPerRepository must not exceed maxWorkers');
   for (const repo of config.repositories) {
+    proposerExecutorFlight(repo);
     repo.qualificationRefresh ??= 'local';
     repo.validationContractVersion ??= '1.0';
     requireThat(['local', 'fetch'].includes(repo.qualificationRefresh),
@@ -158,6 +186,13 @@ export function configAt(path) {
       repo.validationContractVersion.length > 0,
     `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
+    repo.allowedWriteFiles ??= [];
+    requireThat(Array.isArray(repo.allowedWritePrefixes ?? []) &&
+      Array.isArray(repo.allowedWriteFiles), `Repository ${repo.id} write bounds must be arrays`);
+    for (const allowedPath of [...repo.allowedWritePrefixes, ...repo.allowedWriteFiles])
+      requireThat(typeof allowedPath === 'string' && allowedPath.length > 0 &&
+        !isAbsolute(allowedPath) && !allowedPath.split(/[\\/]/).includes('..'),
+      `Repository ${repo.id} has an invalid write bound`);
     const ids = new Set();
     for (const binding of repo.skillBindings ?? []) {
       requireThat(binding && typeof binding.id === 'string' && binding.id.length > 0 && !ids.has(binding.id),
@@ -166,10 +201,21 @@ export function configAt(path) {
       requireThat(typeof binding.capability === 'string' && binding.capability.length > 0 &&
         typeof binding.skillPath === 'string' && binding.skillPath.length > 0 && !isAbsolute(binding.skillPath),
       `Repository ${repo.id} skill binding ${binding.id} is incomplete`);
+      requireThat(binding.inputFormat === undefined ||
+        binding.inputFormat === 'declarative-e2e-mini-spec-batch-v1',
+      `Repository ${repo.id} skill binding ${binding.id} has an unsupported input format`);
       requireThat(typeof binding.enabled === 'boolean' &&
         ['unqualified', 'qualified'].includes(binding.qualification) &&
         Array.isArray(binding.requestedOutcomes) && binding.requestedOutcomes.length > 0,
       `Repository ${repo.id} skill binding ${binding.id} activation is incomplete`);
+      requireThat(Array.isArray(binding.allowedWritePrefixes) &&
+        binding.allowedWritePrefixes.every(prefix => typeof prefix === 'string' && prefix.length > 0 &&
+          !isAbsolute(prefix) && !prefix.split(/[\\/]/).includes('..')) &&
+        Array.isArray(binding.allowedWriteFiles ?? []) &&
+        (binding.allowedWriteFiles ?? []).every(path => typeof path === 'string' && path.length > 0 &&
+          !isAbsolute(path) && !path.split(/[\\/]/).includes('..')) &&
+        typeof binding.requiresBehaviorCard === 'boolean',
+      `Repository ${repo.id} skill binding ${binding.id} write policy is incomplete`);
       requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
         typeof binding.sideEffects[key] === 'boolean'),
       `Repository ${repo.id} skill binding ${binding.id} needs explicit side effects`);
@@ -179,6 +225,8 @@ export function configAt(path) {
       `Repository ${repo.id} skill binding ${binding.id} references an unknown authoring provider`);
     }
     for (const gate of repo.validationGates ?? []) {
+      validationPackageAuth(gate);
+      validationLfsPaths(gate);
       requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
         `Repository ${repo.id} validation gate ${gate.id} must bind profilePath and profileSha256 together`);
       if (!gate.profilePath) continue;

@@ -1,4 +1,4 @@
-import { hash, json, now, positive, requireThat, utc } from './common.js';
+import { hash, json, now, positive, requireThat, utc, proposerExecutorFlight } from './common.js';
 import { captureVerificationProtocol, verifyFilterCaptureInput, requiredFilterCaptureIds } from './filter-capture-verifier.js';
 import { validateFilterManifest } from './filter-batches.js';
 
@@ -124,7 +124,12 @@ export function agencyTaskId(assignment) {
   return marker.slice('agency-task:'.length);
 }
 export function bindAgencyAssignment(config, assignment) {
+  const executor = proposerExecutorFlight(config.repositories.find(repo => repo.id === assignment.repoId));
+  if (executor === 'local') return assignment;
   const selection = selectAgency(config, assignment.id);
+  requireThat(executor !== 'agency' || selection,
+    'Agency proposer flight requires an explicit task selection; no local fallback is permitted',
+    'blocked-qualification');
   if (!selection) return assignment;
   requireThat(selection.repoId === assignment.repoId && selection.role === 'proposer' &&
     selection.allowPush === assignment.permissions.createDraftPR &&
@@ -140,6 +145,9 @@ export function bindAgencyAssignment(config, assignment) {
 export function requireAgencyQualification(config, ledger, taskId) {
   const selection = selectAgency(config, taskId);
   requireThat(selection, 'Task has no explicit Agency selection', 'blocked-qualification');
+  if (selection.role === 'proposer') requireThat(
+    proposerExecutorFlight(config.repositories.find(repo => repo.id === selection.repoId)) !== 'local',
+    'Agency proposer reservation is disabled by the local executor flight', 'blocked-config');
   const profile = config.agency?.profiles?.[selection.profileId];
   shape(profile, ['organization', 'project', 'repository', 'initMode']);
   requireThat([profile.organization, profile.project, profile.repository].every(text) && profile.initMode === 'lite',

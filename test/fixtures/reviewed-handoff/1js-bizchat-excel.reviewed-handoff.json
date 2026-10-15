@@ -1,0 +1,116 @@
+{
+  "format": "reviewed-handoff-v1",
+  "id": "1js-bizchat-excel-declarative-e2e",
+  "version": 1,
+  "reviewedAt": "2026-10-12T12:00:00.000Z",
+  "source": {
+    "kind": "fixture",
+    "provenance": "synthetic",
+    "namespace": "reviewed-handoff/fixture",
+    "recordId": "1js-bizchat-excel-declarative-e2e",
+    "revision": "1"
+  },
+  "evidence": {
+    "title": "A reviewed BizChat workbook workflow needs declarative E2E coverage",
+    "summary": "Synthetic reviewed evidence used to exercise the production 1JS declarative E2E authoring controller without claiming a live incident.",
+    "fields": {
+      "startingSurface": "Microsoft 365 Copilot BizChat",
+      "artifact": "Excel workbook",
+      "requiredContract": "Create and preview a real workbook with a worksheet named Canary and a four-row by three-column table including one header row."
+    }
+  },
+  "review": {
+    "method": "agent-evidence-review",
+    "reviewer": "synthetic-reviewed-handoff-fixture",
+    "observedBehavior": "The reviewed BizChat-to-Excel workflow has no dedicated lane-specific declarative scenario for the Canary worksheet contract.",
+    "expectedBehavior": "A repository-native Cross-Office declarative scenario should cover the exact BizChat workflow and verify the real generated workbook.",
+    "hypotheses": [
+      "The existing BizChat setup, workbook creation composite and protected workbook verifier can express this case without a new harness capability."
+    ],
+    "counterEvidence": [
+      "A synthetic prior scenario covers different dimensions and must not be renamed or weakened."
+    ],
+    "classification": "functional",
+    "defectConfirmation": "unconfirmed",
+    "reportEligibility": "included",
+    "handoffEligibility": "eligible",
+    "exclusionsChecked": [
+      "task",
+      "feature_enhancement",
+      "tracking",
+      "security_governance_only",
+      "accessibility_only",
+      "telemetry_only",
+      "performance_measurement_only",
+      "test_infrastructure",
+      "cosmetic_ui_only",
+      "copy_text_only",
+      "localization_only",
+      "by_design",
+      "confirmed_non_bug",
+      "service_reliability_only"
+    ],
+    "exclusionReasons": [],
+    "rationale": "The handoff requests source-bound regression coverage for an established workbook creation capability using the qualified repository-native authoring skill.",
+    "confidence": 0.95,
+    "repoIds": ["1js"],
+    "existingFixes": [],
+    "nextAction": "Use the configured 1JS declarative E2E authoring skill. Inspect the selected source and add a distinct scenario only if exact coverage is absent; this fixture is not evidence of a live gap."
+  },
+  "planning": {
+    "improvement": {
+      "category": "missing-test-coverage",
+      "theme": "BizChat Canary worksheet workbook coverage",
+      "rationale": "Protect the reviewed BizChat-to-Excel business contract with a dedicated lane-specific declarative scenario.",
+      "priority": "medium",
+      "repoIds": ["1js"],
+      "capabilities": ["declarative-e2e-authoring"]
+    },
+    "testCoverage": {
+      "repoId": "1js",
+      "capability": "declarative-e2e-authoring",
+      "sourceRevision": "qualified-base",
+      "searchStatus": "complete",
+      "existingTests": [],
+      "coverageGaps": [
+        "No dedicated AAD BizChat scenario verifies a Canary worksheet with a four-row by three-column Excel Table including one header row."
+      ],
+      "unknowns": [],
+      "rationale": "The qualified skill must inspect the exact 1JS revision and reuse current Cross-Office declarations without changing shared harness behavior."
+    },
+    "requestedOutcome": "add-declarative-e2e-tests",
+    "skillInput": {
+      "format": "declarative-e2e-mini-spec-batch-v1",
+      "items": [
+        {
+          "inputItemId": "bizchat-create-canary-excel",
+          "title": "Create a Canary Excel workbook from BizChat",
+          "account": "AAD",
+          "entryUrl": "https://example.invalid/synthetic-chat",
+          "preconditions": [
+            "Use a synthetic signed-in AAD fixture; no real account is selected.",
+            "Record test-owned synthetic feature settings so they can be restored."
+          ],
+          "orderedTestSteps": [
+            "Open the synthetic chat fixture using the entry URL.",
+            "Apply only the fixture's synthetic workbook feature setting.",
+            "Send the exact prompt: Create an Excel workbook with sheet 'Canary' and that contains a 4x3 table (contains header)",
+            "Wait for the response to complete.",
+            "Open the generated Excel workbook in the Excel preview panel."
+          ],
+          "expectedUserVisibleAndDataOutcomes": [
+            "The response produces a real Excel .xlsx workbook.",
+            "The workbook opens in an Excel preview panel.",
+            "The workbook contains a worksheet named Canary.",
+            "The worksheet contains an Excel Table spanning exactly four total rows and three columns.",
+            "The first table row is the header row and the remaining three rows are table body rows; body cells may be empty."
+          ],
+          "cleanup": [
+            "Restore test-owned synthetic feature settings.",
+            "Close only the tab created for this test."
+          ]
+        }
+      ]
+    }
+  }
+}

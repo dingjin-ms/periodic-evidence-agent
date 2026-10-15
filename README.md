@@ -658,16 +658,19 @@ proposals, not completed native-skill execution; this boundary does not block OA
 in-process integration validation.
 
 Static validation and scenario discovery are necessary but do not prove the
-signed-in product flow. Local live evidence must come from the qualified
-profile with retries disabled; CI evidence must identify Pipeline 36540 runs
-for the same final commit. Repeated attempts inside one build are not distinct
-successful builds. If the repository skill requires five consecutive local
-runs and five consecutive builds, that proof applies to each authored batch on
-its final implementation SHA. It is a post-authoring delivery gate, not a
-prerequisite for read-only skill qualification or for enabling an approved
-binding to attempt authoring. Fewer successes must be reported as incomplete
-delivery proof rather than a completed authoring result; they cannot create a
-validated Draft PR.
+signed-in product flow. The controller's blocking authoring gate is a qualified
+local profile that runs the authored batch five consecutive times with retries
+disabled on its final implementation SHA. After those source-bound gates pass,
+an enabled `draftBuild` queues exactly one Pipeline 36540 build for the pushed
+Draft branch and exact revision, records the returned build URL in the Draft PR
+description, and returns immediately without polling the build.
+
+This mirrors the OfficeAgent authoring contract: deterministic local validation
+blocks publication; longer remote validation is transparent asynchronous review
+evidence. A queued build does not make the Draft remotely qualified, and a later
+failure must remain visible to reviewers, but it does not erase the successful
+local authoring proof or require five costly controller-queued builds. Any
+stricter repository-owner delivery policy remains a separate human merge gate.
 ### Staged validation receipts
 
 A content-bound profile may opt into controller-managed staged validation with
@@ -790,12 +793,14 @@ Harness repairs such as workbook-identity resolution require a separate,
 explicitly authorized change/PR rather than broadening an authoring assignment.
 
 Static validation and scenario discovery are necessary but do not prove the
-signed-in product flow. Local live evidence must come from the qualified
-profile with retries disabled; CI evidence must identify Pipeline 36540 runs
-for the same final commit. Repeated attempts inside one build are not distinct
-successful builds. If the repository skill requires five consecutive local
-runs and five consecutive builds, fewer successes must be reported as partial
-qualification rather than a completed authoring result.
+signed-in product flow. The controller requires the qualified local profile to
+run the authored batch five consecutive times with retries disabled on the
+final implementation SHA. It then queues one non-blocking Pipeline 36540 build
+for that exact SHA, writes the build link into the Draft PR and does not wait
+for completion. The Draft is locally validated but remains remotely pending;
+later remote failure is retained as review evidence. Repository-owner policies
+that require additional CI proof remain human merge gates rather than
+controller publication loops.
 
 ## Safety invariants
 

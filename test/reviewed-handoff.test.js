@@ -28,6 +28,9 @@ const oneJsDualSuiteFixture = JSON.parse(readFileSync(
     import.meta.url
   ),
   'utf8'));
+const dualSkillBundle = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/oa-and-1js.reviewed-handoff-bundle.json', import.meta.url),
+  'utf8'));
 
 async function setup(t, { inputFormat = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
@@ -113,6 +116,98 @@ async function setup(t, { inputFormat = null } = {}) {
     rmSync(root, { recursive: true, force: true });
   });
   return { root, remote, config, ledger, baseRevision, additionalLedgers };
+}
+
+async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
+  const reference = join(ctx.root, '1js-reference');
+  const remote = join(ctx.root, '1js-remote.git');
+  const skillPath = '.github/skills/author-declarative-e2e-test/SKILL.md';
+  const scenarioPrefix = 'ooui/apps/cross-office-client-e2e/scenarios';
+  mkdirSync(join(reference, '.github', 'skills', 'author-declarative-e2e-test'), { recursive: true });
+  mkdirSync(join(reference, scenarioPrefix), { recursive: true });
+  mkdirSync(join(reference, 'scripts'), { recursive: true });
+  const skill = '# Fixture declarative E2E skill\nAuthor the validated mini-spec batch.\n';
+  writeFileSync(join(reference, skillPath), skill);
+  writeFileSync(join(reference, scenarioPrefix, 'existing.yaml'), 'name: existing\n');
+  writeFileSync(join(reference, 'scripts', 'validate-generated.mjs'),
+    "import { readFileSync } from 'node:fs';\n" +
+    "const text = readFileSync('ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8');\n" +
+    "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n");
+  const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+    '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
+  await git(['init', '--quiet']);
+  await git(['add', '.']);
+  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Fixture 1JS base']);
+  const baseRevision = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+  const repo = {
+    id: '1js',
+    projectId: 'fixture-1js',
+    owner: 'fixture-1js-owner',
+    routingApproved: true,
+    routingRules: ['Reviewed declarative E2E handoff'],
+    referenceCheckout: reference,
+    baseRef: 'HEAD',
+    remote,
+    allowedWritePrefixes: [scenarioPrefix],
+    allowedWriteFiles: [],
+    commitIdentity: { name: 'Fixture', email: 'fixture@example.invalid' },
+    validationGates: [{
+      id: 'fixture-1js-local-five',
+      approved: true,
+      isolationVerified: true,
+      executable: process.execPath,
+      args: ['scripts/validate-generated.mjs'],
+      timeoutMs: 10000
+    }],
+    skillBindings: [{
+      id: '1js-declarative-e2e-authoring',
+      capability: 'declarative-e2e-authoring',
+      skillPath,
+      inputFormat: 'declarative-e2e-mini-spec-batch-v1',
+      enabled: true,
+      qualification: 'qualified',
+      requestedOutcomes: ['add-declarative-e2e-tests'],
+      allowedWritePrefixes: [scenarioPrefix],
+      allowedWriteFiles: [],
+      requiresBehaviorCard: false,
+      sideEffects: { commit: true, push: true, createDraftPR: true }
+    }],
+    draftBuild: {
+      enabled: enableDraftBuild,
+      provider: 'ado',
+      id: '1js-pipeline-36540',
+      definitionId: 36540,
+      templateParameters: { excelAgentExperience: 'omni' }
+    },
+    pr: {
+      provider: 'ado',
+      organization: 'office',
+      project: 'Office',
+      repositoryId: '1JS',
+      sourceBranchPrefix: 'user/fixture/periodic-evidence-agent',
+      targetRef: 'refs/heads/main'
+    }
+  };
+  ctx.config.repositories.push(repo);
+  const validationContract = repositoryValidationContract(repo);
+  ctx.ledger.qualify(skillQualificationId(repo.id, repo.skillBindings[0].id), {
+    state: 'qualified-read-only',
+    repoId: repo.id,
+    bindingId: repo.skillBindings[0].id,
+    capability: repo.skillBindings[0].capability,
+    referenceCheckout: reference,
+    remote,
+    baseRef: 'HEAD',
+    baseRevision,
+    skillPath,
+    skillSha256: hash(skill),
+    qualificationSource: 'local-reference',
+    validationContractVersion: validationContract.version,
+    validationContractSha256: validationContract.sha256,
+    sideEffects: { commit: true, push: true, createDraftPR: true }
+  });
+  return { repo, reference, remote, baseRevision };
 }
 
 async function blockedPreModelFixture(t, mutateResult = () => {}) {
@@ -457,6 +552,171 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
   assert.equal(executed.result.toolUsage.used, 3);
   assert.equal(executed.result.toolUsage.byTool.pilot_write, 2);
   assert.equal(executed.result.toolUsage.byTool.pilot_finish, 1);
+});
+
+test('authorized 1JS handoff runs the controller end to end and links one non-blocking build', async t => {
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx, { enableDraftBuild: true });
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  await command('git', ['init', '--bare', '--quiet', oneJs.remote], ctx.root);
+  let buildQueueCalls = 0;
+  let draftDescription = '';
+  const executed = await acceptReviewedHandoff(ctx.config, ctx.ledger, oneJsFixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runModel: async (currentConfig, currentLedger, current, assignment, investigation,
+        toolkit, skill) => {
+        assert.equal(assignment.repoId, '1js');
+        assert.equal(assignment.skillBindingId, '1js-declarative-e2e-authoring');
+        assert.equal(assignment.skillInput.items[0].inputItemId, 'bizchat-create-canary-excel');
+        assert.match(skill.instructions, /Fixture declarative E2E skill/);
+        toolkit.write(
+          'ooui\\apps\\cross-office-client-e2e\\scenarios\\bizchat-create-canary-excel.yaml',
+          'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
+        );
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: 'Added the reviewed declarative E2E scenario.',
+          title: 'Add BizChat Canary workbook E2E',
+          description: 'Authorized synthetic 1JS Draft PR.',
+          skillResult: {
+            status: 'succeeded',
+            classification: 'missing-test-coverage',
+            changedFiles: [
+              'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml'
+            ],
+            testsAddedOrUpdated: ['bizchat-create-canary-excel'],
+            behaviorCardsAddedOrUpdated: [],
+            unknowns: [],
+            needsHumanDecision: false
+          }
+        });
+      },
+      queueDraftBuild: async (currentConfig, currentLedger, current, repo, revision) => {
+        buildQueueCalls++;
+        return {
+          id: repo.draftBuild.id,
+          provider: 'ado',
+          definitionId: repo.draftBuild.definitionId,
+          buildId: 57329999,
+          url: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999',
+          status: 'queued',
+          sourceRevision: revision,
+          sourceRef: `refs/heads/user/fixture/periodic-evidence-agent/${current.id}`,
+          queuedAt: now(),
+          blocking: false
+        };
+      },
+      createDraft: async (currentConfig, currentLedger, current, repo, revision, proposal) => {
+        draftDescription = proposal.description;
+        return {
+          url: 'https://example.invalid/1js/draft/1',
+          isDraft: true,
+          headRevision: revision
+        };
+      }
+    }
+  });
+  assert.equal(buildQueueCalls, 1);
+  assert.equal(executed.result.outcome, 'draft-pr-validated');
+  assert.equal(executed.result.remoteValidation.length, 1);
+  assert.equal(executed.result.remoteValidation[0].status, 'queued');
+  assert.equal(executed.result.remoteValidation[0].blocking, false);
+  assert.equal(executed.result.remoteValidation[0].sourceRevision, executed.result.sourceRevision);
+  assert.match(draftDescription, /Remote validation/);
+  assert.match(draftDescription, /buildId=57329999/);
+  assert.match(draftDescription, /does not wait for completion/);
+});
+
+test('OA and 1JS bundle executes as two isolated assignments in one controller ledger', async t => {
+  assert.equal(dualSkillBundle.format, 'reviewed-handoff-bundle-v1');
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx);
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+  await command('git', ['init', '--bare', '--quiet', oneJs.remote], ctx.root);
+  const fixtures = Object.fromEntries([
+    ['onenote-bootstrap-progress.reviewed-handoff.json', fixture],
+    ['1js-bizchat-excel.reviewed-handoff.json', oneJsFixture]
+  ]);
+  const results = [];
+  for (const receiptFile of dualSkillBundle.receiptFiles) {
+    const receipt = fixtures[receiptFile];
+    assert.ok(receipt, `Unknown bundle receipt ${receiptFile}`);
+    results.push(await acceptReviewedHandoff(ctx.config, ctx.ledger, receipt, {
+      execute: true,
+      authorizeSynthetic: true,
+      authorizeCommit: true,
+      authorizePush: true,
+      authorizeDraftPR: true,
+      dispatchDependencies: {
+        runModel: async (currentConfig, currentLedger, current, assignment,
+          investigation, toolkit) => {
+          if (assignment.repoId === '1js') {
+            toolkit.write(
+              'ooui\\apps\\cross-office-client-e2e\\scenarios\\bizchat-create-canary-excel.yaml',
+              'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
+            );
+            toolkit.finish({
+              outcome: 'propose-change',
+              findings: 'Added isolated 1JS fixture coverage.',
+              title: 'Add isolated 1JS coverage',
+              description: '1JS bundle Draft.',
+              skillResult: {
+                status: 'succeeded',
+                classification: 'missing-test-coverage',
+                changedFiles: [
+                  'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml'
+                ],
+                testsAddedOrUpdated: ['bizchat-create-canary-excel'],
+                behaviorCardsAddedOrUpdated: [],
+                unknowns: [],
+                needsHumanDecision: false
+              }
+            });
+            return;
+          }
+          toolkit.write('test\\behavior.test.js',
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n");
+          toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
+          toolkit.finish({
+            outcome: 'propose-change',
+            findings: 'Added isolated OA fixture coverage.',
+            title: 'Add isolated OA coverage',
+            description: 'OA bundle Draft.',
+            skillResult: {
+              status: 'succeeded',
+              classification: 'missing-test-coverage',
+              changedFiles: ['test/behavior-card.md', 'test/behavior.test.js'],
+              testsAddedOrUpdated: ['fixture behavior'],
+              behaviorCardsAddedOrUpdated: ['test/behavior-card.md'],
+              unknowns: [],
+              needsHumanDecision: false
+            }
+          });
+        },
+        createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
+          url: `https://example.invalid/${repo.id}/draft/1`,
+          isDraft: true,
+          headRevision: revision
+        })
+      }
+    }));
+  }
+  assert.deepEqual(results.map(item => item.result.skillExecution.bindingId).sort(), [
+    '1js-declarative-e2e-authoring',
+    'oa-integration-test-core'
+  ]);
+  assert.equal(new Set(results.map(item => item.result.assignmentId)).size, 2);
+  assert.equal(new Set(ctx.ledger.status().jobs.map(job => job.workspace)).size, 2);
+  assert.ok(results.every(item => item.result.outcome === 'draft-pr-validated'));
+  assert.equal(ctx.ledger.all('workerResult').length, 2);
 });
 
 test('controller validation failures feed a bounded repository-skill repair loop', async t => {

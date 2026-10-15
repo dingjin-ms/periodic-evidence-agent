@@ -2154,6 +2154,68 @@ export function draftSourceRef(repo, jobId) {
   'Invalid Draft PR source branch prefix', 'blocked-config');
   return `refs/heads/${prefix}/${jobId}`;
 }
+export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride) {
+  const build = repo.draftBuild;
+  requireThat(build?.enabled === true && build.provider === 'ado' &&
+    Number.isInteger(build.definitionId) && build.definitionId > 0,
+  'Draft build provider is not configured', 'blocked-build');
+  requireThat(repo.pr?.provider === 'ado' && repo.pr.organization && repo.pr.project,
+    'Draft build requires the configured ADO project', 'blocked-build');
+  const sourceRef = draftSourceRef(repo, job.id);
+  const operationId = `${job.id}:draft-build:${build.id}`;
+  ledger.operation(operationId, job.id, 'draft-build', {
+    definitionId: build.definitionId, revision, sourceRef
+  });
+  let request = requestOverride;
+  if (!request) {
+    request = async body => {
+      const token = await adoAccessToken(config, 'ADO Draft build queue');
+      const url = `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_apis/build/builds?api-version=7.1`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: json(body),
+        redirect: 'error',
+        signal: AbortSignal.timeout(60000)
+      });
+      requireThat(response.ok, `ADO Draft build request returned HTTP ${response.status}`,
+        [401, 403].includes(response.status) ? 'blocked-auth' : 'blocked-build');
+      return response.json();
+    };
+  }
+  const queued = await request({
+    definition: { id: build.definitionId },
+    sourceBranch: sourceRef,
+    sourceVersion: revision,
+    templateParameters: build.templateParameters ?? {}
+  });
+  requireThat(Number.isInteger(queued.id) && queued.id > 0,
+    'ADO Draft build response did not include a build ID', 'blocked-build');
+  const fallbackUrl =
+    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_build/results?buildId=${queued.id}`;
+  const url = queued._links?.web?.href ?? fallbackUrl;
+  const approvedUrlPrefixes = [
+    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_build/`,
+    `https://${encodeURIComponent(repo.pr.organization)}.visualstudio.com/${encodeURIComponent(repo.pr.project)}/_build/`
+  ];
+  requireThat(typeof url === 'string' && !url.includes('@') &&
+    approvedUrlPrefixes.some(prefix => url.toLowerCase().startsWith(prefix.toLowerCase())),
+  'ADO Draft build response did not include an approved build URL', 'blocked-build');
+  const receipt = {
+    id: build.id,
+    provider: 'ado',
+    definitionId: build.definitionId,
+    buildId: queued.id,
+    url,
+    status: 'queued',
+    sourceRevision: revision,
+    sourceRef,
+    queuedAt: now(),
+    blocking: false
+  };
+  ledger.finishOperation(operationId, 'queued', receipt);
+  return receipt;
+}
 export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true) {
   requireThat(repo.pr?.provider === 'ado' && repo.pr.repositoryId && repo.pr.project && repo.pr.organization &&
     repo.pr.targetRef?.startsWith('refs/heads/'), 'Draft PR provider is not configured', 'blocked-pr');
@@ -2369,6 +2431,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   } else modelPreflight(config);
   const owner = ledger.acquire('dispatch');
   let proposal = null, revision = null, draftPR = null, validation = [], validationAttempts = [];
+  let remoteValidation = [];
   let deliveredResult;
   const toolUsage = {
     limit: assignment.bounds.maxToolCalls,
@@ -2573,11 +2636,25 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       await (dependencies.pushBranch ?? pushDraftBranch)(
         config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
       ledger.finishOperation(`${id}:push`, 'completed', { revision });
+      if (repo.draftBuild?.enabled) {
+        const queuedBuild = await (dependencies.queueDraftBuild ?? queueAdoDraftBuild)(
+          config, ledger, current, repo, revision);
+        requireThat(queuedBuild?.status === 'queued' && queuedBuild.blocking === false &&
+          queuedBuild.sourceRevision === revision &&
+          queuedBuild.sourceRef === draftSourceRef(repo, id),
+        'Queued Draft build does not match the published revision', 'blocked-build');
+        remoteValidation = [queuedBuild];
+      }
       const publicationProposal = {
         ...proposal,
         description: `${proposal.description}\n\n### Source-bound validation\n\n` +
           `Supersedes proposal-time pending validation: all required native gates passed at clean revision ` +
-          `\`${revision}\`: ${finalValidation.map(gate => `\`${gate.gateId}\``).join(', ')}. Draft only.`
+          `\`${revision}\`: ${finalValidation.map(gate => `\`${gate.gateId}\``).join(', ')}. Draft only.` +
+          (remoteValidation.length === 0 ? '' :
+            `\n\n### Remote validation\n\n` +
+            `Queued non-blocking build [${remoteValidation[0].id}](${remoteValidation[0].url}) ` +
+            `for exact revision \`${revision}\`. The controller does not wait for completion. ` +
+            `A later remote failure remains review evidence and does not erase the local validation result.`)
       };
       draftPR = await (dependencies.createDraft ?? createAdoDraft)(
         config, ledger, current, repo, revision, publicationProposal);
@@ -2591,7 +2668,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     const result = {
       recordType: 'workerResult', schemaVersion: '1.0', id: uuid(), assignmentId: id, attemptId: current.session_id,
       reportedAt: now(), outcome, findings: proposal.findings, evidenceIds: assignment.evidenceIds,
-      sourceRevision: revision, draftPR, validation, validationAttempts,
+      sourceRevision: revision, draftPR, validation, validationAttempts, remoteValidation,
       toolUsage: { ...toolUsage, remaining: toolUsage.limit - toolUsage.used },
       skillExecution: proposal.skillExecution ?? null,
       blocker: outcome === 'blocked' ? {
@@ -2613,7 +2690,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         recordType: 'workerResult', schemaVersion: '1.0', id: uuid(), assignmentId: id, attemptId: current.session_id,
         reportedAt: now(), outcome: 'blocked', findings: proposal?.findings ?? 'Execution interrupted before findings were submitted.',
         evidenceIds: assignment.evidenceIds, sourceRevision: revision, draftPR, validation,
-        validationAttempts,
+        validationAttempts, remoteValidation,
         toolUsage: {
           ...toolUsage,
           remaining: toolUsage.limit - toolUsage.used

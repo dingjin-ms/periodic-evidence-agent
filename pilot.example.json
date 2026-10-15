@@ -98,6 +98,13 @@
       ],
       "commitIdentity": { "name": null, "email": null },
       "validationGates": [],
+      "draftBuild": {
+        "enabled": false,
+        "provider": "ado",
+        "id": "1js-pipeline-36540",
+        "definitionId": 36540,
+        "templateParameters": {}
+      },
       "pr": {
         "provider": "ado",
         "organization": "office",

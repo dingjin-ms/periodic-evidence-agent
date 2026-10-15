@@ -17,7 +17,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -393,6 +393,36 @@ test('validation repair budget defaults to ten and rejects larger values', t => 
   config.limits.maxValidationRepairRounds = 11;
   writeFileSync(configPath, JSON.stringify(config));
   assert.throws(() => configAt(configPath), /must not exceed 10/);
+});
+test('Draft build configuration is explicit, ADO-only and bounded to one definition', t => {
+  const root = mkdtempSync(join(tmpdir(), 'draft-build-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = JSON.parse(readFileSync('pilot.example.json'));
+  const repo = config.repositories.find(item => item.id === '1js');
+  const configPath = join(root, 'pilot.json');
+  repo.draftBuild.enabled = true;
+  repo.pr.targetRef = 'refs/heads/main';
+  writeFileSync(configPath, JSON.stringify(config));
+  assert.deepEqual(configAt(configPath).repositories.find(item => item.id === '1js').draftBuild, {
+    enabled: true,
+    provider: 'ado',
+    id: '1js-pipeline-36540',
+    definitionId: 36540,
+    templateParameters: {}
+  });
+  for (const invalid of [
+    { enabled: true, provider: 'github', id: 'build', definitionId: 1 },
+    { enabled: true, provider: 'ado', id: '../build', definitionId: 1 },
+    { enabled: true, provider: 'ado', id: 'build', definitionId: 0 },
+    { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
+      templateParameters: { 'bad key': 'value' } },
+    { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
+      templateParameters: { account: { secret: true } } }
+  ]) {
+    repo.draftBuild = invalid;
+    writeFileSync(configPath, JSON.stringify(config));
+    assert.throws(() => configAt(configPath), /invalid Draft build configuration/);
+  }
 });
 test('OfficeAgent Excel validation profile converts selectors to package-relative paths', () => {
   const profile = readFileSync('scripts/validation/office-agent-excel-entry-model.ps1', 'utf8');
@@ -1957,6 +1987,50 @@ test('ADO draft provider creates only a draft and reconciles by stable source br
     if (method !== 'GET') writes++; return { value: [pr] };
   });
   assert.equal(writes, 0);
+});
+test('ADO Draft build queues the exact pushed revision once without polling', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.pr = {
+    provider: 'ado',
+    organization: 'office',
+    project: 'Office',
+    repositoryId: '1JS',
+    sourceBranchPrefix: 'user/tester/periodic-evidence-agent',
+    targetRef: 'refs/heads/main'
+  };
+  repo.draftBuild = {
+    enabled: true,
+    provider: 'ado',
+    id: '1js-pipeline-36540',
+    definitionId: 36540,
+    templateParameters: { excelAgentExperience: 'omni' }
+  };
+  const revision = 'd'.repeat(40);
+  const calls = [];
+  const receipt = await queueAdoDraftBuild(config, ledger, job, repo, revision, async body => {
+    calls.push(body);
+    return {
+      id: 57329999,
+      _links: {
+        web: {
+          href: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999'
+        }
+      }
+    };
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    definition: { id: 36540 },
+    sourceBranch: `refs/heads/user/tester/periodic-evidence-agent/${job.id}`,
+    sourceVersion: revision,
+    templateParameters: { excelAgentExperience: 'omni' }
+  });
+  assert.equal(receipt.status, 'queued');
+  assert.equal(receipt.blocking, false);
+  assert.equal(receipt.sourceRevision, revision);
+  assert.equal(receipt.buildId, 57329999);
+  assert.equal(ledger.status().operations.find(operation =>
+    operation.id === `${job.id}:draft-build:1js-pipeline-36540`).state, 'queued');
 });
 test('ADO draft provider uses a configured user source branch namespace', async t => {
   const { config, ledger, job, repo } = await fixture(t);

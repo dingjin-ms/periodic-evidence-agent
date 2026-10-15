@@ -921,6 +921,23 @@
         }
       ]
     },
+    "remoteBuild": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "provider", "definitionId", "buildId", "url", "status",
+        "sourceRevision", "sourceRef", "queuedAt", "blocking"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "provider": { "const": "ado" },
+        "definitionId": { "type": "integer", "minimum": 1 },
+        "buildId": { "type": "integer", "minimum": 1 },
+        "url": { "$ref": "#/$defs/uri" },
+        "status": { "const": "queued" },
+        "sourceRevision": { "$ref": "#/$defs/text" },
+        "sourceRef": { "type": "string", "pattern": "^refs/heads/" },
+        "queuedAt": { "$ref": "#/$defs/utc" },
+        "blocking": { "const": false }
+      }
+    },
     "workerResult": {
       "type": "object", "additionalProperties": false,
       "required": ["recordType", "schemaVersion", "id", "assignmentId", "attemptId",
@@ -952,6 +969,11 @@
           ]
         },
         "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },
+        "remoteValidation": {
+          "type": "array",
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/remoteBuild" }
+        },
         "validationAttempts": {
           "type": "array",
           "items": {

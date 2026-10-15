@@ -1,4 +1,6 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hash, now, requireThat } from './common.js';
@@ -13,6 +15,18 @@ function stateRoot(config) {
 function within(parent, child) {
   const path = relative(parent, child);
   return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+}
+
+function canonicalPath(path) {
+  const suffix = [];
+  let current = resolve(path);
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    requireThat(parent !== current, `Cannot resolve local evidence path: ${path}`, 'blocked-scope');
+    suffix.unshift(current.slice(parent.length).replace(/^[\\/]+/, ''));
+    current = parent;
+  }
+  return resolve(realpathSync.native(current), ...suffix);
 }
 
 function safeRunDirectory(config, runId) {
@@ -155,9 +169,9 @@ export function assertStateDirectoryIgnored(config, cwd = process.cwd()) {
   } catch {
     return { checked: false, reason: 'outside-git-repository' };
   }
-  if (!within(resolve(repository), root))
+  if (!within(canonicalPath(repository), canonicalPath(root)))
     return { checked: false, reason: 'outside-git-repository' };
-  const candidate = relative(resolve(repository), root).replaceAll('\\', '/');
+  const candidate = relative(canonicalPath(repository), canonicalPath(root)).replaceAll('\\', '/');
   requireThat(candidate && !candidate.startsWith('..'), 'State root cannot be the repository root', 'blocked-scope');
   try {
     execFileSync('git', ['check-ignore', '--quiet', '--no-index', '--', `${candidate}/`],

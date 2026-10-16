@@ -747,6 +747,12 @@ content/link fingerprint, then controller-owned recursive output-root watchers
 fail closed on changes between and during runs. File `change` events are accepted
 only when a fresh content hash still matches the verified process-local baseline;
 additions, removals, renames and actual content changes invalidate the cache.
+Directory `change` events require recursive content verification, including when
+only an ancestor event is delivered. Overlapping paths coalesce into bounded
+worker tasks without dropping descendant coverage. Settlements serialize per
+guard and wait for queued events after hashing; unknown filenames and watcher
+errors invalidate trust even during initial verification. Artifacts record
+changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an

@@ -21,8 +21,7 @@ import {
 } from './repository-skills.js';
 import { requireEligibleImprovementInvestigation } from './review-decisions.js';
 import {
-  dependencyOutputFingerprint, fileContentSha256, outputPathFingerprint,
-  outputPathFingerprintWithEntries
+  dependencyOutputFingerprint, outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
@@ -457,13 +456,14 @@ function yarnSubphases(output) {
   }
   return phases;
 }
-function stageTelemetry(id, startedAt, cache, output = null) {
+function stageTelemetry(id, startedAt, cache, output = null, details = null) {
   const finishedAt = now();
   return {
     id, startedAt, finishedAt,
     durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
     cache, outputSha256: output ? hash(json(output)) : null,
-    subphases: output ? yarnSubphases(output) : []
+    subphases: output ? yarnSubphases(output) : [],
+    ...(details ? { details } : {})
   };
 }
 function authenticationFailureText(error) {
@@ -603,38 +603,124 @@ function watchPathKey(path) {
   const normalized = normalizedOutputPath(path);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
-function collectPreparedOutputEntries(workspace, paths) {
-  const entries = new Map();
-  const visit = (target, path) => {
-    const info = lstatSync(target);
-    if (info.isSymbolicLink()) {
-      const resolvedTarget = resolve(dirname(target), readlinkSync(target));
-      const rootRelative = relative(workspace, resolvedTarget);
-      entries.set(watchPathKey(path), {
-        type: 'link',
-        sha256: hash(json(!rootRelative.startsWith('..') &&
-          !isAbsolute(rootRelative)
-          ? rootRelative.replaceAll('\\', '/')
-          : readlinkSync(target).replaceAll('\\', '/')))
-      });
-      return;
-    }
-    if (info.isFile()) {
-      entries.set(watchPathKey(path), {
-        type: 'file', sha256: fileContentSha256(target)
-      });
-      return;
-    }
-    if (!info.isDirectory()) return;
-    entries.set(watchPathKey(path), { type: 'directory' });
-    for (const entry of readdirSync(target, { withFileTypes: true })) {
-      const entryPath = join(target, entry.name);
-      const relativePath = `${normalizedOutputPath(path)}/${entry.name}`;
-      visit(entryPath, relativePath);
-    }
+function outputFingerprintTargetExceedsTaskEntryLimit(target) {
+  let count = 0;
+  const pending = [target];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    const info = lstatSync(current);
+    if (++count > maxOutputFingerprintTaskEntries) return true;
+    if (!info.isDirectory() || info.isSymbolicLink()) continue;
+    for (const entry of readdirSync(current))
+      pending.push(join(current, entry));
+  }
+  return false;
+}
+async function runOutputFingerprintTasks(workspace, tasks, captureEntries) {
+  const serialized = Array(tasks.length);
+  const capturedEntries = [];
+  const workers = [];
+  const taskTimers = new Map();
+  const workerCount = Math.min(8, availableParallelism(), tasks.length);
+  let next = 0;
+  try {
+    const valid = await new Promise((resolvePromise, rejectPromise) => {
+      let completed = 0;
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        rejectPromise(error);
+      };
+      const dispatch = worker => {
+        if (next >= tasks.length) return;
+        const index = next++;
+        const timer = setTimeout(() => fail(new PilotError('blocked-validation',
+          `Output fingerprint task timed out after ${outputFingerprintTaskTimeoutMs} ms: ` +
+          json(tasks[index]))), outputFingerprintTaskTimeoutMs);
+        taskTimers.set(index, timer);
+        worker.postMessage({
+          workspace, index, ...tasks[index], captureEntries
+        });
+      };
+      for (let index = 0; index < workerCount; index++) {
+        const worker = new Worker(new URL('./output-fingerprint-worker.js', import.meta.url));
+        workers.push(worker);
+        worker.on('message', result => {
+          if (settled) return;
+          const timer = taskTimers.get(result.index);
+          if (timer) {
+            clearTimeout(timer);
+            taskTimers.delete(result.index);
+          }
+          if (!Number.isInteger(result.index) || result.index < 0 ||
+            result.index >= tasks.length || result.error) {
+            fail(new Error(`Cannot fingerprint task ${result.index}: ${result.error}`));
+            return;
+          }
+          if (!result.valid) {
+            settled = true;
+            resolvePromise(false);
+            return;
+          }
+          if (captureEntries && Array.isArray(result.entries))
+            for (const entry of result.entries) capturedEntries.push(entry);
+          serialized[result.index] = result.serialized;
+          completed++;
+          if (completed === tasks.length) {
+            settled = true;
+            resolvePromise(true);
+          } else dispatch(worker);
+        });
+        worker.on('error', fail);
+        worker.on('exit', code => {
+          if (!settled)
+            fail(new Error(`Output fingerprint worker exited before completion (${code})`));
+        });
+        dispatch(worker);
+      }
+    });
+    return valid ? { serialized, capturedEntries } : null;
+  } finally {
+    for (const timer of taskTimers.values()) clearTimeout(timer);
+    await Promise.all(workers.map(worker => worker.terminate()));
+  }
+}
+function preparedOutputFingerprintTask(guard, path) {
+  const root = guard.paths
+    .filter(candidate => {
+      const key = watchPathKey(candidate);
+      return path === key || path.startsWith(`${key}/`);
+    })
+    .sort((left, right) => right.length - left.length)[0];
+  if (!root) return null;
+  const rootKey = watchPathKey(root);
+  if (path !== rootKey && root.toLowerCase().endsWith('node_modules'))
+    return {
+      mode: 'dependency-entry',
+      dependencyPath: root,
+      entryPath: path.slice(rootKey.length + 1)
+    };
+  return { mode: 'path', path };
+}
+async function collectPreparedOutputEntries(guard, paths) {
+  const tasks = paths.map(path => preparedOutputFingerprintTask(guard, path));
+  if (tasks.some(task => !task)) return null;
+  const completed =
+    await runOutputFingerprintTasks(guard.workspace, tasks, true);
+  if (!completed) return null;
+  const entries = new Map(completed.capturedEntries.map(([path, value]) => [
+    watchPathKey(path), value.type === 'directory'
+      ? { type: 'directory' } : value
+  ]));
+  return {
+    entries,
+    hashedFileCount: [...entries.values()]
+      .filter(value => value.type === 'file').length,
+    recursiveDirectoryCount: paths.filter(path =>
+      guard.baselineEntries.get(path)?.type === 'directory').length,
+    workerTaskCount: tasks.length
   };
-  for (const path of paths) visit(join(workspace, path), path);
-  return entries;
 }
 function closePreparedOutputGuard(receiptPath) {
   const guard = preparedOutputGuards.get(receiptPath);
@@ -656,6 +742,22 @@ function retainPreparedOutputGuard(receiptPath, guard) {
   preparedOutputGuards.set(receiptPath, guard);
   evictPreparedOutputGuards(receiptPath);
 }
+function preparedOutputEventStats() {
+  return {
+    observedEventCount: 0,
+    changeEventCount: 0,
+    renameEventCount: 0,
+    nullFilenameEventCount: 0,
+    trackedFileEventCount: 0,
+    trackedDirectoryEventCount: 0
+  };
+}
+function invalidatePreparedOutputGuard(guard, reason) {
+  guard.dirty = true;
+  guard.dirtyReason ??= reason;
+  for (const watcher of guard.watchers) watcher.close();
+  guard.watchers = [];
+}
 function startPreparedOutputGuard(
   receiptPath, workspace, paths, expectedSha256, baselineEntries) {
   const normalizedPaths = paths.map(normalizedOutputPath).sort();
@@ -676,16 +778,13 @@ function startPreparedOutputGuard(
         watchPathKey(path),
         value.type === 'directory' ? { type: 'directory' } : value
       ])),
-      changedEntries: new Set(), unknownInitialChange: false, active: 0
+      changedEntries: new Set(), active: 0,
+      eventStats: preparedOutputEventStats(), lastSettlement: null,
+      settlementPromise: null
     };
     const stopWatching = () => {
       for (const watcher of guard.watchers) watcher.close();
       guard.watchers = [];
-    };
-    const markDirty = reason => {
-      guard.dirty = true;
-      guard.dirtyReason ??= reason;
-      stopWatching();
     };
     for (const path of normalizedPaths) {
       const target = join(workspace, path);
@@ -698,30 +797,39 @@ function startPreparedOutputGuard(
       const expectedName = directory ? null : target.slice(dirname(target).length + 1);
       const watcher = watch(watchRoot, { recursive: directory }, (eventType, filename) => {
         if (!existsSync(target)) {
-          markDirty(`missing:${path}`);
+          guard.eventStats.observedEventCount++;
+          invalidatePreparedOutputGuard(guard, `missing:${path}`);
           return;
         }
         if (filename === null) {
-          if (eventType === 'change' && !guard.verified) {
-            guard.unknownInitialChange = true;
-            return;
-          }
-          markDirty(`${path}:${eventType}:unknown`);
+          guard.eventStats.observedEventCount++;
+          if (eventType === 'change') guard.eventStats.changeEventCount++;
+          else guard.eventStats.renameEventCount++;
+          guard.eventStats.nullFilenameEventCount++;
+          invalidatePreparedOutputGuard(guard, `${path}:${eventType}:unknown`);
           return;
         }
         const relativePath = normalizedOutputPath(String(filename));
         if (expectedName !== null &&
           relativePath !== normalizedOutputPath(expectedName)) return;
+        guard.eventStats.observedEventCount++;
+        if (eventType === 'change') guard.eventStats.changeEventCount++;
+        else guard.eventStats.renameEventCount++;
         const changedPath = watchPathKey(
           `${path}${directory ? `/${relativePath}` : ''}`);
-        if (eventType === 'change' && guard.baselineEntries.has(changedPath)) {
+        const baseline = guard.baselineEntries.get(changedPath);
+        if (eventType === 'change' && baseline) {
+          if (baseline.type === 'directory')
+            guard.eventStats.trackedDirectoryEventCount++;
+          else guard.eventStats.trackedFileEventCount++;
           guard.changedEntries.add(changedPath);
           return;
         }
-        markDirty(`${eventType}:${changedPath}`);
+        invalidatePreparedOutputGuard(guard, `${eventType}:${changedPath}`);
       });
       watcher.on('error', error =>
-        markDirty(`${path}:watch-error:${safeError(error).message}`));
+        invalidatePreparedOutputGuard(
+          guard, `${path}:watch-error:${safeError(error).message}`));
       watcher.unref();
       guard.watchers.push(watcher);
     }
@@ -732,33 +840,107 @@ function startPreparedOutputGuard(
     return null;
   }
 }
-async function settlePreparedOutputGuard(guard) {
+async function performPreparedOutputSettlement(guard) {
+  const startedAt = Date.now();
   await delay(100);
-  if (guard.dirty) return false;
-  const changedEntries = [...guard.changedEntries].sort(
-    (left, right) => left.length - right.length)
-    .filter((path, index, values) => !values.slice(0, index)
-      .some(parent => path.startsWith(`${parent}/`)));
-  for (const path of changedEntries) {
-    const target = join(guard.workspace, path);
-    const actual = existsSync(target)
-      ? collectPreparedOutputEntries(guard.workspace, [path])
-      : new Map();
-    const expected = new Map([...guard.baselineEntries]
-      .filter(([entry]) => entry === path || entry.startsWith(`${path}/`)));
-    if (actual.size !== expected.size ||
-      [...actual].some(([entry, value]) =>
-        json(expected.get(entry)) !== json(value))) {
-      guard.dirty = true;
-      guard.dirtyReason = `content-changed:${path}`;
-      for (const watcher of guard.watchers) watcher.close();
-      guard.watchers = [];
-      return false;
+  const telemetry = {
+    ...guard.eventStats,
+    changedEntryCount: guard.changedEntries.size,
+    coalescedPathCount: 0,
+    rehashedEntryCount: 0,
+    hashedFileCount: 0,
+    recursiveDirectoryCount: 0,
+    workerTaskCount: 0,
+    settlementPassCount: 0,
+    coalescedPaths: []
+  };
+  guard.eventStats = preparedOutputEventStats();
+  const finish = valid => {
+    guard.lastSettlement = {
+      ...telemetry, durationMs: Date.now() - startedAt
+    };
+    return valid;
+  };
+  if (guard.dirty) return finish(false);
+  try {
+    for (let pass = 0; pass < 4 && guard.changedEntries.size > 0; pass++) {
+      telemetry.settlementPassCount++;
+      const observedEntries = [...guard.changedEntries];
+      for (const path of observedEntries) guard.changedEntries.delete(path);
+      const changedEntries = observedEntries
+        .sort((left, right) => left.length - right.length ||
+          left.localeCompare(right))
+        .filter((path, index, values) => !values.slice(0, index)
+          .some(parent => path.startsWith(`${parent}/`)));
+      telemetry.coalescedPathCount += changedEntries.length;
+      if (telemetry.coalescedPaths.length < 20)
+        telemetry.coalescedPaths.push(...changedEntries.slice(
+          0, 20 - telemetry.coalescedPaths.length));
+      const missing = changedEntries.find(path =>
+        !existsSync(join(guard.workspace, path)));
+      if (missing) {
+        invalidatePreparedOutputGuard(guard, `content-changed:${missing}`);
+        return finish(false);
+      }
+      const actualResult =
+        await collectPreparedOutputEntries(guard, changedEntries);
+      if (guard.dirty) return finish(false);
+      if (!actualResult) {
+        invalidatePreparedOutputGuard(guard, 'content-revalidation-failed');
+        return finish(false);
+      }
+      telemetry.rehashedEntryCount += actualResult.entries.size;
+      telemetry.hashedFileCount += actualResult.hashedFileCount;
+      telemetry.recursiveDirectoryCount += actualResult.recursiveDirectoryCount;
+      telemetry.workerTaskCount += actualResult.workerTaskCount;
+      const changedPaths = new Set(changedEntries);
+      const expected = new Map();
+      for (const [entry, value] of guard.baselineEntries) {
+        let ancestor = entry;
+        while (ancestor) {
+          if (changedPaths.has(ancestor)) {
+            expected.set(entry, value);
+            break;
+          }
+          const slash = ancestor.lastIndexOf('/');
+          ancestor = slash < 0 ? '' : ancestor.slice(0, slash);
+        }
+      }
+      const mismatch = actualResult.entries.size !== expected.size ||
+        [...actualResult.entries].find(([entry, value]) =>
+          json(expected.get(entry)) !== json(value));
+      if (mismatch) {
+        const entry = Array.isArray(mismatch) ? mismatch[0] : changedEntries[0];
+        invalidatePreparedOutputGuard(guard, `content-changed:${entry}`);
+        return finish(false);
+      }
+      await delay(100);
+      if (guard.dirty) return finish(false);
     }
+    if (guard.changedEntries.size > 0) {
+      invalidatePreparedOutputGuard(guard, 'content-revalidation-unstable');
+      return finish(false);
+    }
+  } catch (error) {
+    invalidatePreparedOutputGuard(
+      guard, `content-revalidation-error:${safeError(error).message}`);
+    return finish(false);
   }
-  guard.changedEntries.clear();
-  guard.unknownInitialChange = false;
-  return true;
+  if (guard.dirty) return finish(false);
+  return finish(true);
+}
+async function settlePreparedOutputGuard(guard) {
+  const previous = guard.settlementPromise ?? Promise.resolve();
+  const settlement = previous
+    .catch(() => false)
+    .then(() => performPreparedOutputSettlement(guard));
+  guard.settlementPromise = settlement;
+  try {
+    return await settlement;
+  } finally {
+    if (guard.settlementPromise === settlement)
+      guard.settlementPromise = null;
+  }
 }
 async function withActivePreparedOutputGuard(guard, operation) {
   guard.active += 1;
@@ -771,6 +953,26 @@ async function withActivePreparedOutputGuard(guard, operation) {
 }
 export async function verifyPreparedOutputs(
   receiptPath, workspace, outputs, capturedBaseline = null) {
+  const normalizedPaths = outputs.paths.map(normalizedOutputPath).sort();
+  const current = preparedOutputGuards.get(receiptPath);
+  if (current && current.workspace === workspace &&
+    current.expectedSha256 === outputs.sha256 &&
+    json(current.paths) === json(normalizedPaths)) {
+    retainPreparedOutputGuard(receiptPath, current);
+    if (current.dirty) return {
+      valid: false, method: 'watch', reason: current.dirtyReason,
+      details: current.lastSettlement
+    };
+    if (current.verified)
+      return withActivePreparedOutputGuard(current, async () => {
+        await settlePreparedOutputGuard(current);
+        return {
+          valid: !current.dirty, method: 'watch',
+          reason: current.dirtyReason,
+          details: current.lastSettlement
+        };
+      });
+  }
   let baseline = capturedBaseline;
   if (!baseline) {
     const captured = await outputFingerprint(workspace, outputs.paths, true);
@@ -783,8 +985,13 @@ export async function verifyPreparedOutputs(
   }
   const guard = startPreparedOutputGuard(
     receiptPath, workspace, outputs.paths, outputs.sha256, baseline);
-  if (guard?.dirty) return { valid: false, method: 'watch', reason: guard.dirtyReason };
-  if (guard?.verified) return { valid: true, method: 'watch' };
+  if (guard?.dirty) return {
+    valid: false, method: 'watch', reason: guard.dirtyReason,
+    details: guard.lastSettlement
+  };
+  if (guard?.verified) return {
+    valid: true, method: 'watch', details: guard.lastSettlement
+  };
   const verify = async () => {
     const actual = await outputFingerprint(workspace, outputs.paths);
     if ((guard && !(await settlePreparedOutputGuard(guard))) ||
@@ -792,26 +999,21 @@ export async function verifyPreparedOutputs(
       closePreparedOutputGuard(receiptPath);
       return {
         valid: false, method: 'content',
-        reason: guard?.dirtyReason ?? 'content-fingerprint-mismatch'
+        reason: guard?.dirtyReason ?? 'content-fingerprint-mismatch',
+        details: guard?.lastSettlement ?? null
       };
     }
     if (guard) guard.verified = true;
-    return { valid: true, method: guard ? 'content+watch' : 'content' };
+    return {
+      valid: true, method: guard ? 'content+watch' : 'content',
+      details: guard?.lastSettlement ?? null
+    };
   };
   return guard ? withActivePreparedOutputGuard(guard, verify) : verify();
 }
 async function preparedOutputsRemainValid(receipt) {
-  const guard = preparedOutputGuards.get(receipt.receiptPath);
-  if (guard?.verified) {
-    return withActivePreparedOutputGuard(guard, async () => {
-      await settlePreparedOutputGuard(guard);
-      return {
-        valid: !guard.dirty, method: 'watch',
-        reason: guard.dirtyReason
-      };
-    });
-  }
-  return verifyPreparedOutputs(receipt.receiptPath, receipt.workspace, receipt.outputs);
+  return verifyPreparedOutputs(
+    receipt.receiptPath, receipt.workspace, receipt.outputs);
 }
 async function parallelOutputFingerprint(workspace, paths, captureEntries = false) {
   const tasks = [];
@@ -819,24 +1021,11 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
     tasks.push(value);
     return tasks.length - 1;
   };
-  const exceedsTaskEntryLimit = target => {
-    let count = 0;
-    const pending = [target];
-    while (pending.length > 0) {
-      const current = pending.pop();
-      const info = lstatSync(current);
-      if (++count > maxOutputFingerprintTaskEntries) return true;
-      if (!info.isDirectory() || info.isSymbolicLink()) continue;
-      for (const entry of readdirSync(current))
-        pending.push(join(current, entry));
-    }
-    return false;
-  };
   const dependencyEntryPlan = (dependencyPath, entryPath) => {
     const target = join(workspace, dependencyPath, entryPath);
     const info = lstatSync(target);
     if (!info.isDirectory() || info.isSymbolicLink() ||
-      !exceedsTaskEntryLimit(target))
+      !outputFingerprintTargetExceedsTaskEntryLimit(target))
       return {
         task: task({
           mode: 'dependency-entry', dependencyPath, entryPath
@@ -888,106 +1077,45 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
       ? { sha256, entries: new Map(results.flatMap(result => result.entries)) }
       : sha256;
   }
-  const serialized = Array(tasks.length);
-  const workers = [];
-  const taskTimers = new Map();
-  const workerCount = Math.min(8, availableParallelism(), tasks.length);
-  let next = 0;
-  try {
-    if (tasks.length === 0) {
-      const values = plans.map(plan => dependencyOutputFingerprint(plan.path,
-        plan.entries.map(entry => ({
-          name: entry.name, type: 'directory', sha256: hash(json([]))
-        }))));
-      const sha256 = hash(json(values));
-      return captureEntries
-        ? {
-          sha256,
-          entries: new Map(plans.map((plan, index) => [
-            plan.path, {
-              type: 'directory', sha256: values[index].manifestSha256
-            }
-          ]))
-        }
-        : sha256;
-    }
-    const valid = await new Promise((resolvePromise, rejectPromise) => {
-      let completed = 0;
-      let settled = false;
-      const fail = error => {
-        if (settled) return;
-        settled = true;
-        rejectPromise(error);
-      };
-      const dispatch = worker => {
-        if (next >= tasks.length) return;
-        const index = next++;
-        const timer = setTimeout(() => fail(new PilotError('blocked-validation',
-          `Output fingerprint task timed out after ${outputFingerprintTaskTimeoutMs} ms: ` +
-          json(tasks[index]))), outputFingerprintTaskTimeoutMs);
-        taskTimers.set(index, timer);
-        worker.postMessage({
-          workspace, index, ...tasks[index], captureEntries
-        });
-      };
-      for (let index = 0; index < workerCount; index++) {
-        const worker = new Worker(new URL('./output-fingerprint-worker.js', import.meta.url));
-        workers.push(worker);
-        worker.on('message', result => {
-          if (settled) return;
-          const timer = taskTimers.get(result.index);
-          if (timer) {
-            clearTimeout(timer);
-            taskTimers.delete(result.index);
-          }
-          if (!Number.isInteger(result.index) || result.index < 0 ||
-            result.index >= tasks.length || result.error) {
-            fail(new Error(`Cannot fingerprint task ${result.index}: ${result.error}`));
-            return;
-          }
-          if (!result.valid) {
-            settled = true;
-            resolvePromise(false);
-            return;
-          }
-          if (captureEntries && Array.isArray(result.entries))
-            capturedEntries.push(...result.entries);
-          serialized[result.index] = result.serialized;
-          completed++;
-          if (completed === tasks.length) {
-            settled = true;
-            resolvePromise(true);
-          } else dispatch(worker);
-        });
-        worker.on('error', fail);
-        worker.on('exit', code => {
-          if (!settled)
-            fail(new Error(`Output fingerprint worker exited before completion (${code})`));
-        });
-        dispatch(worker);
-      }
-    });
-    if (!valid) return null;
-    const values = plans.map(plan => {
-      if (plan.type === 'path') return JSON.parse(serialized[plan.task]);
-      const entries = plan.entries.map(entry =>
-        dependencyEntryValue(entry, serialized));
-      const value = dependencyOutputFingerprint(plan.path, entries);
-      if (captureEntries)
-        capturedEntries.push([
-          plan.path.replaceAll('\\', '/'),
-          { type: 'directory', sha256: value.manifestSha256 }
-        ]);
-      return value;
-    });
+  if (tasks.length === 0) {
+    const values = plans.map(plan => dependencyOutputFingerprint(plan.path,
+      plan.entries.map(entry => ({
+        name: entry.name, type: 'directory', sha256: hash(json([]))
+      }))));
     const sha256 = hash(json(values));
     return captureEntries
-      ? { sha256, entries: new Map(capturedEntries) }
+      ? {
+        sha256,
+        entries: new Map(plans.map((plan, index) => [
+          plan.path, {
+            type: 'directory', sha256: values[index].manifestSha256
+          }
+        ]))
+      }
       : sha256;
-  } finally {
-    for (const timer of taskTimers.values()) clearTimeout(timer);
-    await Promise.all(workers.map(worker => worker.terminate()));
   }
+  const completed =
+    await runOutputFingerprintTasks(workspace, tasks, captureEntries);
+  if (!completed) return null;
+  if (captureEntries)
+    for (const entry of completed.capturedEntries) capturedEntries.push(entry);
+  const values = plans.map(plan => {
+    if (plan.type === 'path')
+      return JSON.parse(completed.serialized[plan.task]);
+    const entries = plan.entries.map(entry =>
+      dependencyEntryValue(entry, completed.serialized));
+    const value = dependencyOutputFingerprint(plan.path, entries);
+    if (captureEntries)
+      capturedEntries.push([
+        plan.path.replaceAll('\\', '/'),
+        { type: 'directory', sha256: value.manifestSha256 }
+      ]);
+    return value;
+  });
+  const sha256 = hash(json(values));
+  return captureEntries
+    ? { sha256, entries: new Map(capturedEntries) }
+    : sha256;
 }
 function materializeSnapshotPath(sourceRoot, targetRoot, path) {
   const source = join(sourceRoot, path);
@@ -1575,10 +1703,13 @@ async function reusablePreparation(gate, job, revision, prepared, execute, repo)
     buildConfigSha256 !== prepared.inputs.buildConfigSha256) return null;
   reuseTimings.push(stageTelemetry('reuse-inputs', inputsStarted, 'hit'));
   const outputsStarted = now();
+  let outputVerification;
   if (await git(prepared.workspace, ['rev-parse', 'HEAD']) !== prepared.inputs.sourceRevision ||
     await git(prepared.workspace, ['status', '--porcelain']) ||
-    !(await preparedOutputsRemainValid(prepared)).valid) return null;
-  reuseTimings.push(stageTelemetry('reuse-prepared-outputs', outputsStarted, 'hit'));
+    !(outputVerification = await preparedOutputsRemainValid(prepared)).valid) return null;
+  reuseTimings.push(stageTelemetry(
+    'reuse-prepared-outputs', outputsStarted, 'hit', null,
+    outputVerification.details));
   return {
     ...prepared, profile, cache: 'hit',
     dependencyCache: 'hit',
@@ -1807,7 +1938,8 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
           cleanupSubphases.push({
             id: 'verify-prepared-outputs', durationMs: Date.now() - outputsStarted,
             method: outputVerification.method,
-            reason: outputVerification.reason ?? null
+            reason: outputVerification.reason ?? null,
+            details: outputVerification.details ?? null
           });
           const sourceStarted = Date.now();
           const dirty = await git(receipt.workspace, ['status', '--porcelain']);

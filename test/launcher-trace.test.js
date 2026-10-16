@@ -18,7 +18,10 @@ for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher trac
       `'console.log(JSON.stringify({marker:process.env.OAGENT_ADO_ARTIFACTS_AUTHENTICATED,` +
       `options:process.env.NODE_OPTIONS,trace:process.env.PILOT_LAUNCHER_DIAGNOSTIC}))'],{stdio:'inherit'});`);
   const tracer = fileURLToPath(new URL('../src/launcher-trace.cjs', import.meta.url));
-  const execution = nativeCommand(process.execPath, [script], root, 5000, {
+  const execution = nativeCommand(process.execPath, [script], root,
+    // The Windows supervisor compiles its job-object helper before launching Node.
+    // Leave enough startup headroom when the full test suite saturates the runner.
+    mode === 'blocked-filesystem' ? 45000 : 5000, {
     ...minimalEnvironment(), OAGENT_ADO_ARTIFACTS_AUTHENTICATED: '1',
     NODE_OPTIONS: `--require=${JSON.stringify(tracer)}`,
     PILOT_LAUNCHER_DIAGNOSTIC: JSON.stringify({ directory: root })

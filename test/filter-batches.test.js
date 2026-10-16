@@ -82,6 +82,8 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
       id: 'synthetic-declarative', capability: 'declarative-e2e-authoring',
       skillPath: declarativeSkillPath, inputFormat: declarativeInput.format,
       enabled: true, qualification: 'qualified', requestedOutcomes: ['add-declarative-e2e-tests'],
+      allowedWritePrefixes: ['scenarios'], allowedWriteFiles: ['resources.json'],
+      requiresBehaviorCard: false,
       sideEffects: { commit: true, push: true, createDraftPR: true }
     }]
   };
@@ -532,6 +534,8 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
       enabled: true,
       qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
+      allowedWritePrefixes: ['test'],
+      requiresBehaviorCard: true,
       sideEffects: { commit: true, push: true, createDraftPR: true }
     }]
   }];
@@ -597,6 +601,9 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   ], { encoding: 'utf8' });
   assert.equal(cli.status, 0, cli.stderr);
   assert.equal(JSON.parse(cli.stdout).assignment.id, preparedHandoff.assignment.id);
+  assert.throws(() => prepareFilterProposerHandoff(
+    s.config, ledger, input, { intent: 'defect-fix' }),
+  /test-only and cannot become a defect-fix/);
   ledger.qualify(skillQualificationId('target-repo', 'target-integration'), {
     ...ledger.qualification(skillQualificationId('target-repo', 'target-integration')),
     baseRevision: 'c'.repeat(40)

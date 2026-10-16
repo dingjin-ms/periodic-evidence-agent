@@ -252,6 +252,22 @@ npm run pilot -- app-status --run RUN_ID --config .\pilot.local.json
 Resolve the designated delegated user/tenant/object ID, exact WorkIQ resources,
 explicit UTC window, read/item budgets, protected storage approval/retention,
 and enabled source scopes. Never copy another person's identity or credentials.
+Local raw validation evidence must use `statePolicy.retention: "bounded-local"`
+with `rawEvidenceDays` from 1 through 7. New controller-owned artifacts are
+written beneath `.state\runs\<run-id>` with a manifest and SHA-256 metadata.
+Completed or blocked runs are pruned at CLI startup and exit; active runs are
+never deleted. Preview or apply cleanup explicitly with:
+
+```powershell
+npm run pilot -- state-prune --dry-run --config .\pilot.local.json
+npm run pilot -- state-prune --config .\pilot.local.json
+```
+
+The state directory must be gitignored when it is inside the repository.
+Pruning refuses malformed manifests, path escapes, symlinks, junctions and
+hard-linked files instead of following or deleting them. Durable ledger records,
+remote PR/build/test-run identifiers, hashes and verdicts remain outside the
+pruned run directory.
 Source reads require separate authorization; importing a local file is not
 proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
@@ -296,7 +312,10 @@ distinguishes linked coverage, a confirmed coverage gap and an unresolved
 search. A planned assignment pins both record versions, capability, requested
 outcome and one qualified repository skill binding. Repository skills execute
 from the exact isolated source revision and cannot grant themselves shell,
-network, commit, push or PR authority.
+network, commit, push or PR authority. Each binding also declares a narrower
+write-prefix allowlist inside the repository bounds. The controller pins that
+allowlist into the assignment, applies it to every authoring and repair tool
+call, and verifies the complete base-to-candidate diff before commit and push.
 
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
@@ -388,7 +407,11 @@ existing pass-only publisher.
 
 The OA skill owns validation intent and failure interpretation: it selects the
 project runner, targeted tests, behavior-card checks and repair procedure. The
-controller owns execution and evidence. A validation gate may bind a versioned
+OfficeAgent integration-test binding is test-only: successful changes must
+report both focused tests and behavior-card updates. A failed test may enter
+the bounded repair loop, but the write boundary never expands to production
+code. Validation that remains failed is recorded as blocked without a push or
+Draft PR. The controller owns execution and evidence. A validation gate may bind a versioned
 pipeline script using `profilePath`, `profileSha256` and the `{profile}`
 argument placeholder. The controller verifies the profile hash before every
 run, executes it outside the model tool surface, records the hash in the
@@ -635,12 +658,19 @@ proposals, not completed native-skill execution; this boundary does not block OA
 in-process integration validation.
 
 Static validation and scenario discovery are necessary but do not prove the
-signed-in product flow. Local live evidence must come from the qualified
-profile with retries disabled; CI evidence must identify Pipeline 36540 runs
-for the same final commit. Repeated attempts inside one build are not distinct
-successful builds. If the repository skill requires five consecutive local
-runs and five consecutive builds, fewer successes must be reported as partial
-qualification rather than a completed authoring result.
+signed-in product flow. The controller's blocking authoring gate is a qualified
+local profile that runs the authored batch five consecutive times with retries
+disabled on its final implementation SHA. After those source-bound gates pass,
+an enabled `draftBuild` queues exactly one Pipeline 36540 build for the pushed
+Draft branch and exact revision, records the returned build URL in the Draft PR
+description, and returns immediately without polling the build.
+
+This mirrors the OfficeAgent authoring contract: deterministic local validation
+blocks publication; longer remote validation is transparent asynchronous review
+evidence. A queued build does not make the Draft remotely qualified, and a later
+failure must remain visible to reviewers, but it does not erase the successful
+local authoring proof or require five costly controller-queued builds. Any
+stricter repository-owner delivery policy remains a separate human merge gate.
 ### Staged validation receipts
 
 A content-bound profile may opt into controller-managed staged validation with
@@ -730,6 +760,53 @@ equivalent dependency receipt does not discard an intact content-verified
 compile snapshot. Damage to an unused dependency source workspace is rebuilt
 before any later compile. Workers and repository skills cannot access, write or
 approve cache metadata.
+
+### 1JS declarative E2E authoring
+
+The optional `1js-declarative-e2e-authoring` binding targets
+`.github/skills/author-declarative-e2e-test/SKILL.md`. It is disabled and
+unqualified in `pilot.example.json`; configuring a checkout or qualifying the
+skill does not enable routing, writes, validation, push or Draft PR creation.
+The binding accepts only `declarative-e2e-mini-spec-batch-v1`. Reviewed and
+FILTER handoffs must provide every batch item before assignment:
+
+```json
+{
+  "format": "declarative-e2e-mini-spec-batch-v1",
+  "items": [{
+    "inputItemId": "bizchat-create-canary-excel",
+    "title": "Create a Canary Excel workbook from BizChat",
+    "account": "AAD",
+    "entryUrl": "https://copilot.cloud.microsoft/chat",
+    "preconditions": ["Use the qualified signed-in AAD profile."],
+    "orderedTestSteps": ["Open BizChat.", "Create and open the workbook."],
+    "expectedUserVisibleAndDataOutcomes": ["A real .xlsx workbook opens and satisfies the declared table contract."],
+    "cleanup": ["Restore changed flight values and close only the test-owned tab."]
+  }]
+}
+```
+
+Missing, malformed, differently versioned or duplicate-ID input blocks before
+the worker starts. The validated object is content-bound into the coverage plan
+and assignment and is shown to the repository skill as
+`repositorySkillInput`; the skill may inspect the exact source revision but may
+not invent omitted authoring requirements.
+
+1JS authoring uses directory prefixes only for scenario directories and exact
+`allowedWriteFiles` for shared declarative composites, UI maps and resource
+registries. This intentionally excludes runner, loader and verifier code.
+Harness repairs such as workbook-identity resolution require a separate,
+explicitly authorized change/PR rather than broadening an authoring assignment.
+
+Static validation and scenario discovery are necessary but do not prove the
+signed-in product flow. The controller requires the qualified local profile to
+run the authored batch five consecutive times with retries disabled on the
+final implementation SHA. It then queues one non-blocking Pipeline 36540 build
+for that exact SHA, writes the build link into the Draft PR and does not wait
+for completion. The Draft is locally validated but remains remotely pending;
+later remote failure is retained as review evidence. Repository-owner policies
+that require additional CI proof remain human merge gates rather than
+controller publication loops.
 
 ## Safety invariants
 
@@ -857,7 +934,9 @@ The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
 explicitly authorized synthetic receipt. A repository worker may follow a
 repository-native skill to author changes, but neither the worker nor skill
-receives shell, Git, network or PR permissions.
+receives shell, Git, network or PR permissions. Synthetic controller fixtures
+verify the test-only write and diff gates without depending on a real incident
+remaining unresolved.
 
 After each authored revision, the controller commits it and runs the fixed
 approved validation gates at the exact commit. Profiles without a valid staged
@@ -882,7 +961,11 @@ policy failures are never auto-approved. A failed revision remains immutable val
 evidence; when `limits.maxValidationRepairRounds` permits, the controller gives
 bounded diagnostic tails to a new repository-skill repair round, commits the
 repair as a new revision and validates again. This is not a retry of the same
-validation operation. The final committed revision is independently validated
+validation operation. The repair budget defaults to 10 rounds and cannot exceed
+10. Controller-owned validation profiles must emit
+`PILOT_VALIDATION_PROFILE_ERROR:` for invalid test selection or other profile
+configuration failures; those failures block publication and never consume a
+repository-skill repair round. The final committed revision is independently validated
 before push and Draft PR creation. Exhausted failed rounds remain blocked
 locally; they cannot create a failed Draft PR. Merge is always
 prohibited. Offline CI injects external model/PR boundaries and performs no
@@ -1019,6 +1102,26 @@ Before push or draft creation, every required gate must pass at the exact clean
 current revision. Exhausted repair rounds, missing or stale gate results, and
 post-validation source changes remain blocked locally; failed drafts are not
 published.
+
+### Sanitized E2E proof bundles
+
+After a real FILTER-to-proposer run reaches a terminal
+`draft-pr-validated` worker result, export a sanitized proof bundle into the
+tracked `e2e-evidence` directory. The private request binds the original source
+ledger manifest, FILTER manifest/results and complete controller output:
+
+```powershell
+npm run pilot -- e2e-proof-export --file .\e2e-proof-request.local.json --output .\e2e-evidence\RUN_ID --config .\pilot.local.json
+npm run pilot -- e2e-proof-check --file .\e2e-proof-request.local.json --bundle .\e2e-evidence\RUN_ID --config .\pilot.local.json
+```
+
+The exporter reopens the source ledgers read-only, reconstructs the full FILTER
+cohort, verifies the selected candidate against the terminal worker result and
+requires every validation gate to pass at the Draft PR head revision. Committed
+files contain aggregate counts, source/result hashes, skill execution, safe
+validation commands, Draft PR metadata and explicit limitations. Raw source
+bodies, identities, captures, local paths, private packets and logs remain in
+ignored approved storage.
 
 ## Public package boundary
 

@@ -46,6 +46,7 @@ const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
 const authoringSuccessorPermit = Symbol('authoring-successor-controller');
+const runtimeContinuationPermit = Symbol('runtime-continuation-controller');
 const preparedOutputGuards = new Map();
 const maxPreparedOutputGuards = 2;
 const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
@@ -2942,12 +2943,17 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
   } finally { priorLedger.close(); }
 }
 export async function dispatch(config, ledger, id, dependencies = {}) {
-  requireThat(config.activation.dispatch, 'Worker dispatch is disabled');
+  requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true,
+    'Worker dispatch is disabled');
   const job = ledger.job(id);
   requireThat(job?.state === 'prepared', 'Only a never-dispatched prepared assignment can launch; reconcile all other states', 'blocked-reconciliation');
   requireThat(!['deleting', 'removed'].includes(ledger.workspaceCleanup(id)?.state),
     'Cleaned workspace cannot be reused; prepare a new assignment', 'blocked-reconciliation');
   const assignment = ledger.get('assignment', id);
+  const runtimeContinuation = ledger.status().operations.find(operation =>
+    operation.job_id === id && operation.kind === 'continued-from-runtime-launch-failure');
+  requireThat(Boolean(runtimeContinuation) === (dependencies[runtimeContinuationPermit] === true),
+    'A runtime continuation requires its explicit recorded dispatch entrypoint', 'blocked-reconciliation');
   const successorOperation = ledger.status().operations.find(operation =>
     operation.job_id === id && operation.kind === 'authoring-successor-from-diagnostic');
   requireThat(Boolean(successorOperation) === (dependencies[authoringSuccessorPermit] === true),
@@ -3099,8 +3105,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         receipt.submissionState === 'rejected' ? 'blocked' : 'uncertain');
       return receipt;
     }
-    const isolated = await provision(
-      config, job, repo, assignment.skillQualification ?? null);
+    const isolated = runtimeContinuation
+      ? await (await import('./runtime-continuation.js')).claimRuntimeWorkspace(config, ledger, id)
+      : await provision(config, job, repo, assignment.skillQualification ?? null);
     try {
       ledger.moveJob(id, 'dispatching', 'running', isolated);
     } catch (error) {
@@ -3361,6 +3368,9 @@ export async function dispatchReviewedHandoff(config, ledger, id, dependencies =
 }
 export async function dispatchLocalValidationContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [validationContinuationPermit]: true });
+}
+export async function dispatchRuntimeContinuation(config, ledger, id, dependencies = {}) {
+  return dispatch(config, ledger, id, { ...dependencies, [runtimeContinuationPermit]: true });
 }
 export async function dispatchRecordedAuthoringSuccessor(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [authoringSuccessorPermit]: true });

@@ -30,6 +30,8 @@ import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
 import { continueRoleValidation } from './role-continuation.js';
 import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } from './local-diagnostic.js';
 import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
+import { prepareRuntimeContinuation } from './runtime-continuation.js';
+import { dispatchRuntimeContinuation } from './workers.js';
 import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
 import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
 
@@ -68,6 +70,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js agent proposer continue-local-validation --prepare|--execute --file request.json --config next.local.json
   node src\\cli.js agent proposer diagnose-local-validation --prepare|--execute --file request.json --config diagnostic.local.json
   node src\\cli.js agent proposer continue-local-authoring --prepare|--execute --file request.json --config successor.local.json
+  node src\\cli.js agent proposer continue-runtime-launch --prepare|--execute --file request.json --config next.local.json
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
@@ -206,7 +209,7 @@ try {
     const appAction = action.startsWith('app-');
     if (config.executionMode === 'app-native' && !appAction &&
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
-        'continue-local-authoring', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
+        'continue-local-authoring', 'continue-runtime-launch', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
@@ -346,6 +349,32 @@ try {
         };
         break;
       case 'runtime-smoke': result = await smokeRuntime(config, process.cwd()); break;
+      case 'continue-runtime-launch': {
+        requireThat(Boolean(option('--config')) && args.includes('--prepare') !== args.includes('--execute'),
+          'Runtime continuation requires explicit --config and exactly one of --prepare or --execute',
+          'blocked-authorization');
+        const request = input();
+        if (args.includes('--prepare')) {
+          requireThat(Object.keys(request).sort().join(',') ===
+            'authorization,previousAssignmentId,previousConfigPath' &&
+            typeof request.previousAssignmentId === 'string' &&
+            typeof request.previousConfigPath === 'string' &&
+            resolve(request.previousConfigPath) === request.previousConfigPath,
+          'Runtime continuation requires the exact predecessor config, assignment and authorization');
+          const previousConfig = configAt(request.previousConfigPath);
+          const previous = new Ledger(previousConfig.stateDirectory);
+          try {
+            result = await prepareRuntimeContinuation(previousConfig, previous,
+              request.previousAssignmentId, config, ledger, request.authorization);
+          } finally { previous.close(); }
+        } else {
+          requireThat(Object.keys(request).join(',') === 'assignmentId' &&
+            typeof request.assignmentId === 'string',
+          'Runtime continuation execution requires only its prepared assignmentId');
+          result = await dispatchRuntimeContinuation(config, ledger, request.assignmentId);
+        }
+        break;
+      }
       case 'dry-run': result = await dryRun(config, {
         collectRequested: args.includes('--collect'), authRefreshed: args.includes('--auth-refreshed')
       }); break;

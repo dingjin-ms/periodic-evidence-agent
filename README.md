@@ -639,6 +639,28 @@ prepares a new session for the same logical assignment. It never launches the
 model, resets the old job, edits its receipts, retries validation or republishes.
 An interrupted reservation or a second continuation requires reconciliation.
 
+For the exact `blocked-runtime` / `Copilot executable not found on PATH`
+rejection, use `agent proposer continue-runtime-launch --prepare|--execute`.
+Preparation takes `previousConfigPath`, `previousAssignmentId` and `authorization`;
+execution takes only the prepared `assignmentId`. The configurations must match
+except for separate state directories. Correct the private launcher's absolute
+path in both configurations first; no source, permission or budget change is
+allowed. Authorization must have kind `runtime-launch-path`, approve one model
+attempt after the failure, pin the previous assignment/attempt, source and
+controller revisions, next configuration hash, launcher `cliSha256` and a
+`runtimeSmoke: { path, sha256 }` receipt. The offline smoke must retain the same
+`cliPath` and `cliSha256`, prove custom-tool execution, rejection of unavailable
+shell tools, and no model or workplace read.
+Preparation requalifies the skill and verifies exactly zero authoring tool calls,
+native invocations and publication operations. Execution rechecks immutable
+predecessor receipts, source eligibility, launcher bytes and the clean qualified
+checkout before claiming the original task workspace once. The blocked job/result
+remain unchanged; a fresh attempt and bilateral reservation record the reuse.
+Ordinary dispatch, changed evidence/configuration, consumed reservations and
+subsequent model/native failures cannot use this narrow recovery path.
+Its recorded one-attempt authorization permits only that continuation even when
+general dispatch stays disabled; it never enables the scheduler or other jobs.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

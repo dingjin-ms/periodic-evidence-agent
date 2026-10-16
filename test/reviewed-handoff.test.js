@@ -11,6 +11,8 @@ import {
 } from '../src/reviewed-handoff.js';
 import { dispatch, dispatchReviewedHandoff, command, provision } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
+import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
+import { dispatchRuntimeContinuation } from '../src/workers.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
@@ -211,7 +213,8 @@ async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
   return { repo, reference, remote, baseRevision };
 }
 
-async function blockedPreModelFixture(t, mutateResult = () => {}) {
+async function blockedPreModelFixture(t, mutateResult = () => {},
+  error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' }) {
   const ctx = await setup(t);
   ctx.config.executionMode = 'standalone-sdk';
   ctx.config.limits.maxAiCreditsPerSession = 10;
@@ -219,7 +222,6 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
   const repo = ctx.config.repositories[0];
   await command('git', ['remote', 'add', 'origin', repo.remote], repo.referenceCheckout);
   const isolated = await provision(ctx.config, prepared.job, repo, prepared.assignment.skillQualification);
-  const error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' };
   ctx.ledger.moveJob(prepared.job.id, 'prepared', 'running', isolated);
   ctx.ledger.moveJob(prepared.job.id, 'running', 'blocked', { error });
   const limit = prepared.assignment.bounds.maxToolCalls;
@@ -234,7 +236,7 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
     blocker: { owner: repo.owner, reason: error.message, unblockCondition: 'Explicit user authorization after fix' },
     nextAction: 'Reconcile without replay'
   };
-  mutateResult(result);
+  mutateResult(result, ctx);
   ctx.ledger.put(result);
   const nextConfig = { ...structuredClone(ctx.config), stateDirectory: join(ctx.root, 'continuation') };
   const nextLedger = new Ledger(nextConfig.stateDirectory);
@@ -248,6 +250,145 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
   };
   return { ...ctx, prepared, isolated, result, nextConfig, nextLedger, authorization };
 }
+
+async function runtimeFixture(t, mutateResult = () => {},
+  failure = { code: 'blocked-runtime', message: 'Copilot executable not found on PATH' }) {
+  const ctx = await blockedPreModelFixture(t, (result, fixture) => {
+    result.sourceRevision = fixture.baseRevision;
+    result.remoteValidation = [];
+    result.toolUsage.rounds = [{ round: 0, used: 0, cumulativeUsed: 0, status: 'failed' }];
+    mutateResult(result);
+  }, failure);
+  ctx.config.runtime.cliPath = process.execPath;
+  ctx.nextConfig.runtime.cliPath = process.execPath;
+  const path = join(ctx.root, 'synthetic-runtime-smoke.json');
+  const smoke = {
+    checkedAt: now(), cliPath: process.execPath, cliSha256: hash(readFileSync(process.execPath)),
+    customTool: 'executed',
+    unavailableShell: 'rejected', modelInvoked: false, workplaceRead: false
+  };
+  writeFileSync(path, json(smoke));
+  Object.assign(ctx.authorization, {
+    kind: 'runtime-launch-path',
+    nextConfigSha256: hash(json(ctx.nextConfig)),
+    cliSha256: hash(readFileSync(process.execPath)),
+    runtimeSmoke: { path, sha256: hash(readFileSync(path)) }
+  });
+  return ctx;
+}
+
+test('runtime continuation reuses the unchanged task checkout once and preserves terminal receipts', async t => {
+  const ctx = await runtimeFixture(t);
+  const before = ctx.ledger.job(ctx.prepared.job.id);
+  const continued = await prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  assert.notEqual(continued.job.session_id, before.session_id);
+  assert.deepEqual(continued.assignment, ctx.prepared.assignment);
+  assert.deepEqual(ctx.nextLedger.get('evidence', ctx.prepared.evidence.id), ctx.prepared.evidence);
+  assert.equal(ctx.nextLedger.all('workerResult').length, 0);
+  const reused = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id);
+  assert.deepEqual(reused, ctx.isolated);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'claimed');
+  assert.equal(ctx.ledger.status().operations[0].state, 'claimed');
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id),
+    /absent or already consumed/);
+  await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /Prior operations/);
+});
+
+for (const condition of ['missing-authorization', 'old-authorization', 'wrong-attempt',
+  'wrong-controller', 'config-drift', 'launcher-drift', 'smoke-drift', 'model-started',
+  'validation-started', 'remote-validation', 'publication-started', 'dirty-workspace',
+  'source-drift', 'superseded-evidence', 'other-runtime-error', 'smoke-used-model',
+  'binary-not-smoked']) {
+  test(`runtime continuation refuses ${condition}`, async t => {
+    const ctx = await runtimeFixture(t, result => {
+      if (condition === 'model-started') result.toolUsage.used = 1;
+      if (condition === 'validation-started') result.validationAttempts.push({
+        round: 0, sourceRevision: result.sourceRevision, validation: [{
+          gateId: 'fixture-test', sourceRevision: result.sourceRevision,
+          commandOrRunUrl: 'synthetic command', status: 'blocked', artifactRefs: [],
+          owner: 'fixture-owner', nextCheckAt: null, attemptCount: 1,
+          blockedReason: 'runner-unavailable'
+        }]
+      });
+      if (condition === 'remote-validation') result.remoteValidation.push({
+        id: 'synthetic-build', provider: 'ado', definitionId: 1, buildId: 1,
+        url: 'https://example.invalid/build/1', status: 'queued',
+        sourceRevision: result.sourceRevision, sourceRef: 'refs/heads/synthetic',
+        queuedAt: now(), blocking: false
+      });
+    }, condition === 'other-runtime-error'
+      ? { code: 'blocked-runtime', message: 'Unrelated runtime error' } : undefined);
+    if (condition === 'missing-authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'wrong-attempt') ctx.authorization.previousAttemptId = 'wrong-attempt';
+    if (condition === 'wrong-controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'config-drift') ctx.nextConfig.limits.workerMaxToolCalls++;
+    if (condition === 'launcher-drift') ctx.authorization.cliSha256 = 'f'.repeat(64);
+    if (condition === 'smoke-drift') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (['smoke-used-model', 'binary-not-smoked'].includes(condition)) {
+      const proof = JSON.parse(readFileSync(ctx.authorization.runtimeSmoke.path));
+      if (condition === 'smoke-used-model') proof.modelInvoked = true;
+      else proof.cliSha256 = 'f'.repeat(64);
+      writeFileSync(ctx.authorization.runtimeSmoke.path, json(proof));
+      ctx.authorization.runtimeSmoke.sha256 = hash(readFileSync(ctx.authorization.runtimeSmoke.path));
+    }
+    if (condition === 'publication-started')
+      ctx.ledger.operation('synthetic-push', ctx.prepared.job.id, 'push', {});
+    if (condition === 'dirty-workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'source-drift')
+      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+        '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
+    if (condition === 'superseded-evidence') {
+      const evidence = structuredClone(ctx.prepared.evidence);
+      evidence.source.revision = 'superseded-fixture';
+      evidence.queriedAt = '2099-01-01T00:00:00Z';
+      ctx.ledger.evidence(evidence, { changed: true }, 'changed-fixture');
+    }
+    await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+    error => ['blocked-authorization', 'blocked-reconciliation', 'invalid-record'].includes(error.code));
+    assert.equal(ctx.ledger.job(ctx.prepared.job.id).state, 'blocked');
+    assert.equal(ctx.nextLedger.status().jobs.length, 0);
+  });
+}
+
+for (const condition of ['config', 'smoke', 'workspace', 'predecessor-result', 'prior-operation']) {
+  test(`runtime claim rechecks ${condition} after preparation`, async t => {
+    const ctx = await runtimeFixture(t);
+    await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+    if (condition === 'config') ctx.nextConfig.runtime.timeoutMs++;
+    if (condition === 'smoke') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (condition === 'workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'predecessor-result')
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+    if (condition === 'prior-operation')
+      ctx.ledger.operation('unexpected-push', ctx.prepared.job.id, 'push', {});
+    await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+      error => error.code === 'blocked-reconciliation');
+    assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+  });
+}
+
+test('runtime continuation cannot use ordinary dispatch or bypass synthetic-evidence protection', async t => {
+  const ctx = await runtimeFixture(t);
+  await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /runtime continuation requires its explicit/);
+  await assert.rejects(dispatchRuntimeContinuation(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /Synthetic evidence cannot launch/);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+});
 
 test('authorized pre-model continuation preserves the blocked attempt and reserves exactly one fresh preparation', async t => {
   const ctx = await blockedPreModelFixture(t);

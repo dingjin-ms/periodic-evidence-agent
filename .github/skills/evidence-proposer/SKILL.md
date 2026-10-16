@@ -66,6 +66,14 @@ Preserve failed and pre-model blocked attempts. Resume only through the existing
 reconciliation path and concrete continuation authorization. Never reset the
 ledger or blindly redispatch because no model call was recorded.
 
+For the exact CLI-not-on-PATH rejection before authoring,
+`agent proposer continue-runtime-launch --prepare|--execute` accepts a fresh
+one-attempt user authorization and content-bound offline launcher smoke. It
+rechecks zero tool/validation/publication activity, immutable predecessor receipts,
+source eligibility and the clean owned checkout. The continuation reuses that
+task checkout once without resetting the blocked job or enabling general
+dispatch. Other runtime or subsequent model/native failures are not admitted.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)

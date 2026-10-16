@@ -892,11 +892,45 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.equal((await tools.search('value = 1', 'src')).some(match =>
     match.includes('src/value.js')), false);
 });
+test('model-visible worker contract exposes bounded surgical edits', async t => {
+  const { config, job, repo, assignment } = await fixture(t);
+  const { workspace } = await provision(config, job, repo);
+  const editable = structuredClone(assignment);
+  editable.permissions.editCode = true;
+  const tools = new WorkerTools(config, editable, workspace);
+  const exposedPatch = tools.tools().find(tool => tool.name === 'pilot_replace_lines');
+  assert.ok(exposedPatch, 'The model-visible tool contract must expose surgical edits');
+  assert.equal(exposedPatch.parameters.additionalProperties, false);
+  assert.deepEqual(exposedPatch.parameters.required,
+    ['path', 'startLine', 'endLine', 'expected', 'replacement']);
+  await exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 1,
+    expected: 'export const value = 1;', replacement: 'export const value = 2;'
+  });
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 2;');
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'other\\value.js', startLine: 1, endLine: 1, expected: '', replacement: 'bad'
+  }), /edit bounds/);
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 1,
+    expected: 'export const value = 1;', replacement: 'bad'
+  }), /does not match/);
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 501, expected: '', replacement: 'bad'
+  }), /at most 500 lines/);
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 2;');
+  assert.equal(tools.usage.byTool.pilot_replace_lines, 4);
+});
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);
   const { workspace } = await provision(config, job, repo);
   const tools = new WorkerTools(config, assignment, workspace);
   assert.throws(() => tools.write('src\\value.js', 'bad'), /not permitted/);
+  await assert.rejects(async () =>
+    tools.tools().find(tool => tool.name === 'pilot_replace_lines').handler({
+      path: 'src\\value.js', startLine: 1, endLine: 1,
+      expected: 'export const value = 1;', replacement: 'bad'
+    }), /not permitted/);
   tools.finish({ outcome: 'investigated', findings: 'Synthetic findings' });
   assert.throws(() => tools.finish({ outcome: 'investigated', findings: 'again' }), /already submitted/);
 });

@@ -2158,6 +2158,33 @@ test('ADO Draft build queues the exact pushed revision once without polling', as
   assert.equal(ledger.status().operations.find(operation =>
     operation.id === `${job.id}:draft-build:1js-pipeline-36540`).state, 'queued');
 });
+test('ADO Draft build URLs accept only configured or response-bound project paths', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.pr = {
+    provider: 'ado', organization: 'office', project: 'Office',
+    sourceBranchPrefix: 'user/tester/periodic-evidence-agent'
+  };
+  repo.draftBuild = {
+    enabled: true, provider: 'ado', id: 'build', definitionId: 36540
+  };
+  const projectId = '11111111-2222-3333-4444-555555555555';
+  const cases = [
+    [true, 'Office', projectId, `https://office.visualstudio.com/${projectId}/_build/results?buildId=42`],
+    [true, 'Office', projectId, `https://dev.azure.com/office/${projectId}/_build/results?buildId=42`],
+    [false, 'Other', projectId, `https://office.visualstudio.com/${projectId}/_build/results?buildId=42`],
+    [false, 'Office', 'other', 'https://office.visualstudio.com/other/_build/results?buildId=42'],
+    [false, 'Office', projectId, `https://office.visualstudio.com.attacker.invalid/${projectId}/_build/results?buildId=42`],
+    [false, 'Office', projectId, `https://office.visualstudio.com/99999999-2222-3333-4444-555555555555/_build/results?buildId=42`]
+  ];
+  for (const [index, [accepted, name, id, href]] of cases.entries()) {
+    const queued = queueAdoDraftBuild(config, ledger, { ...job, id: `${job.id}-${index}` },
+      repo, 'd'.repeat(40), async () => ({
+        id: 42, project: { name, id }, _links: { web: { href } }
+      }));
+    if (accepted) assert.equal((await queued).url, href);
+    else await assert.rejects(queued, /approved build URL/);
+  }
+});
 test('1JS Draft builds select only added scenarios at the final authored SHA', async t => {
   const { config, ledger, job, repo, g } = await fixture(t);
   const excelRoot = 'ooui/apps/excel-agent-declarative-e2e/declarative/scenarios';

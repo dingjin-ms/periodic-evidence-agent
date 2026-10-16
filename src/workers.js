@@ -705,7 +705,7 @@ function startPreparedOutputGuard(
         watchPathKey(path),
         value.type === 'directory' ? { type: 'directory' } : value
       ])),
-      changedEntries: new Set(), unknownInitialChange: false, active: 0,
+      changedEntries: new Set(), active: 0,
       eventStats: preparedOutputEventStats(), lastSettlement: null,
       settlementPromise: null
     };
@@ -733,10 +733,6 @@ function startPreparedOutputGuard(
           if (eventType === 'change') guard.eventStats.changeEventCount++;
           else guard.eventStats.renameEventCount++;
           guard.eventStats.nullFilenameEventCount++;
-          if (eventType === 'change' && !guard.verified) {
-            guard.unknownInitialChange = true;
-            return;
-          }
           invalidatePreparedOutputGuard(guard, `${path}:${eventType}:unknown`);
           return;
         }
@@ -824,9 +820,19 @@ async function performPreparedOutputSettlement(guard) {
       telemetry.hashedFileCount += actualResult.hashedFileCount;
       telemetry.recursiveDirectoryCount += actualResult.recursiveDirectoryCount;
       telemetry.workerTaskCount += actualResult.workerTaskCount;
-      const expected = new Map([...guard.baselineEntries]
-        .filter(([entry]) => changedEntries.some(path =>
-          entry === path || entry.startsWith(`${path}/`))));
+      const changedPaths = new Set(changedEntries);
+      const expected = new Map();
+      for (const [entry, value] of guard.baselineEntries) {
+        let ancestor = entry;
+        while (ancestor) {
+          if (changedPaths.has(ancestor)) {
+            expected.set(entry, value);
+            break;
+          }
+          const slash = ancestor.lastIndexOf('/');
+          ancestor = slash < 0 ? '' : ancestor.slice(0, slash);
+        }
+      }
       const mismatch = actualResult.entries.size !== expected.size ||
         [...actualResult.entries].find(([entry, value]) =>
           json(expected.get(entry)) !== json(value));
@@ -848,7 +854,6 @@ async function performPreparedOutputSettlement(guard) {
     return finish(false);
   }
   if (guard.dirty) return finish(false);
-  guard.unknownInitialChange = false;
   return finish(true);
 }
 async function settlePreparedOutputGuard(guard) {

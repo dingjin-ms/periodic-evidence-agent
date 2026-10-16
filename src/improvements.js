@@ -85,6 +85,7 @@ export function recordTestCoveragePlan(ledger, input) {
     sourceRevision: input.sourceRevision ?? null,
     searchStatus: input.searchStatus, disposition, existingTests,
     coverageGaps, unknowns, rationale: input.rationale,
+    ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
     ...(input.skillInput ? { skillInput: structuredClone(input.skillInput) } : {}),
     createdAt: now()
   };

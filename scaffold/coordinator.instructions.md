@@ -133,7 +133,10 @@ For eligible work:
 
 1. Check existing assignments, fixes and PRs. An existing resolved source item is
    not automatically a new coding task. Reconcile changed evidence with active
-   work before issuing a new assignment version.
+   work before issuing a new assignment version. A fixed production issue can
+   still support an eligible test-only `regression-coverage` plan with complete
+   source-bound discovery and a remaining coverage gap. Preserve source status
+   and existing-fix references; do not dispatch another production fix.
 2. Persist a prepared assignment with stable ID, exact investigation version,
    evidence IDs, repo owner, intent, questions, acceptance criteria, required
    capabilities, bounds, dependency IDs, validation gates and permissions.

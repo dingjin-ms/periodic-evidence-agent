@@ -114,7 +114,7 @@ test('app accepts backend smaller nextLink page cap without broadening channel o
   result = await appendApp(config, ledger, 'test-run', event([call('last', pass.nextRequest.entityUrls[0], { value: [] })]));
   assert.equal(result.collection.find(p => p.pass === 'workiq:created').state, 'complete');
 });
-async function adoBatch(config, ledger, lane = 'created', id = 'ado-event') {
+async function adoBatch(config, ledger, lane = 'created', id = 'ado-event', fields = {}) {
   const date = '2026-10-09T00:00:00Z', pass = `ado:${lane}`;
   const principal = { objectId: config.identity.objectId, tenantId: config.identity.tenantId,
     userPrincipalName: config.identity.designatedUser, verifiedAt: date, toolCallId: 'test-ado-identity' };
@@ -125,7 +125,7 @@ async function adoBatch(config, ledger, lane = 'created', id = 'ado-event') {
     { endpoint: 'workitemsbatch', body: { ids: [1], asOf: date, errorPolicy: 'Fail', $expand: 'Relations' },
       response: { value: [{ id: 1, rev: 1, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area,
         'System.Title': 'Synthetic test', 'System.State': 'Active',
-        'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } }] } }
+        'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z', ...fields } }] } }
   ].map((c, index) => ({ id: `${id}-${index}`, tool: 'ado-delegated-read', observedAt: date,
     request: { endpoint: c.endpoint, body: c.body }, response: c.response }));
   return appendApp(config, ledger, 'test-run', { eventId: id, pass, principal, calls });
@@ -192,7 +192,7 @@ test('app status includes only workers owned by the requested run', t => {
     ['worker-two']);
 });
 
-test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
+async function nativeCoveragePlanning(t, sourceStatus) {
   const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool', configure: config => {
     config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
       executable: process.execPath, args: [], timeoutMs: 1000 }];
@@ -227,7 +227,10 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  await adoBatch(config, ledger);
+  await adoBatch(config, ledger, 'created', 'ado-event', {
+    'System.State': sourceStatus, 'System.Reason': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed'
+  });
   const evidence = ledger.all('evidence')[0];
   const investigation = {
     recordType: 'investigation', schemaVersion: '1.0',
@@ -240,6 +243,10 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     repoIds: ['fixture'], existingFixes: [], nextAction: 'Add focused OA integration coverage.'
   };
   appReview(config, ledger, 'test-run', { investigation, exclusionsChecked: exclusions });
+  if (sourceStatus === 'Resolved')
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
+      investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
+    }), error => error.code === 'blocked-reconciliation');
   const planned = appPlanImprovement(config, ledger, 'test-run', {
     improvement: {
       investigationIds: [investigation.id], category: 'missing-test-coverage',
@@ -249,6 +256,7 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     },
     testCoverage: {
       repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: baseRevision,
+      ...(sourceStatus === 'Resolved' ? { purpose: 'regression-coverage' } : {}),
       searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
@@ -275,7 +283,12 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     workspace, baseRevision
   });
   assert.equal(bound.baseRevision, baseRevision);
-});
+}
+
+for (const sourceStatus of ['Active', 'Resolved']) {
+  test(`app native ${sourceStatus} OA planning pins coverage and qualification before claim`,
+    t => nativeCoveragePlanning(t, sourceStatus));
+}
 
 test('app successful run A cursor survives blocked run B in the shared live ledger', async t => {
   const { config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });

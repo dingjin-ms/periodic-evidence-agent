@@ -20,6 +20,13 @@ Use after evidence review and before a repository assignment is prepared.
 - Select only an enabled, qualified repository skill binding. Do not infer a
   skill path, repository owner, base branch, write prefix or validation gate.
 - Persist `areaToImprove` and `testCoveragePlan` before preparing an assignment.
+- A fixed production issue is valid evidence for missing regression coverage,
+  not a new production-fix request. For ADO `Resolved`/`Closed` records whose
+  reason is `Fixed`, explicitly record `purpose: regression-coverage` on the
+  coverage plan. Require complete discovery at the qualified source revision,
+  a remaining coverage gap and no unknowns. Retain any reviewed fix references.
+  Use the qualified integration or declarative E2E skill's test-only outcome.
+  Do not clear tracked reconciliation, omit source status or reuse stale evidence.
 - Do not read or edit product repositories, run validation, create branches,
   push or create pull requests.
 

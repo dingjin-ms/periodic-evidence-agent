@@ -625,6 +625,7 @@
       "properties": {
         "recordType": { "const": "testCoveragePlan" },
         "schemaVersion": { "const": "1.0" },
+        "purpose": { "const": "regression-coverage" },
         "id": { "$ref": "#/$defs/text" },
         "version": { "type": "integer", "minimum": 1 },
         "improvementId": { "$ref": "#/$defs/text" },

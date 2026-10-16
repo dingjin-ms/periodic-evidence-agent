@@ -5,8 +5,10 @@ import { configAt, hash, json, now, requireThat, utc } from './common.js';
 import { qualifyRepositorySkill, skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
 import { command, makePlannedImprovementAssignment, requireCurrentAssignment,
   verifyPreservedChange, verifyContinuationPredecessor } from './workers.js';
+import { requireCurrentSourceEligibility } from './source-eligibility.js';
 
 export function importReviewedContinuation(config, ledger, nextLedger, assignment, qualification, source) {
+  requireCurrentSourceEligibility(ledger, assignment);
   const runId = nextLedger.startRun(source, config.window);
   for (const evidenceId of assignment.evidenceIds) {
     const evidence = ledger.get('evidence', evidenceId);
@@ -99,10 +101,7 @@ export async function prepareLocalPreModelContinuation(config, ledger, id, nextC
     'Continuation destination must be empty', 'blocked-reconciliation');
     const investigation = ledger.get('investigation', assignment.investigationId);
     requireCurrentAssignment(config, ledger, investigation, assignment);
-    const latestEvidence = new Set(ledger.latestEvidence().map(evidence => evidence.id));
-    requireThat(assignment.evidenceIds.every(evidenceId => latestEvidence.has(evidenceId) &&
-      !['Removed', 'Resolved', 'Closed'].includes(ledger.get('evidence', evidenceId).sourceStatus)),
-    'Continuation source evidence is superseded or no longer eligible', 'blocked-reconciliation');
+    requireCurrentSourceEligibility(ledger, assignment);
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);
     verifyRepositorySkillWorkspace(nextConfig, assignment, job.workspace, job.base_revision, qualification);
@@ -254,10 +253,7 @@ export async function prepareLocalValidationContinuation(config, ledger, id, nex
     'Validation continuation destination must be empty', 'blocked-reconciliation');
     const investigation = ledger.get('investigation', assignment.investigationId);
     requireCurrentAssignment(config, ledger, investigation, assignment);
-    const latest = new Set(ledger.latestEvidence().map(evidence => evidence.id));
-    requireThat(assignment.evidenceIds.every(evidenceId => latest.has(evidenceId) &&
-      !['Removed', 'Resolved', 'Closed'].includes(ledger.get('evidence', evidenceId).sourceStatus)),
-    'Validation continuation evidence is stale or excluded', 'blocked-reconciliation');
+    requireCurrentSourceEligibility(ledger, assignment);
     const files = await verifyPreservedChange(config, assignment, job, result, proposal);
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);

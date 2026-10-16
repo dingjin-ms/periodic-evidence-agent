@@ -317,6 +317,23 @@ write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
 
+A resolved production bug can still justify missing regression coverage. Set
+`testCoveragePlan.purpose` to `"regression-coverage"` for this explicitly
+reviewed, test-only path. It requires complete coverage discovery at the
+qualified repository revision, at least one remaining coverage gap, no
+unresolved unknowns, an integration/declarative E2E authoring skill and the
+`add-or-update-tests` (integration) or `add-declarative-e2e-tests` (declarative
+E2E) outcome. ADO sources in `Resolved` or `Closed` with
+`Microsoft.VSTS.Common.ResolvedReason: Fixed` (or `System.Reason: Fixed`
+when no dedicated resolution field exists) can then be assigned; reviewed existing-fix URLs are
+retained as context rather than treated as a request to fix production again.
+The qualified skill's pinned write bounds and all validation/publication
+permissions still apply. Unplanned/product-fix work, removed or non-fixed
+sources, superseded evidence/plans and tracked items awaiting reconciliation
+remain blocked. Reconcile a tracked source before preparing a regression plan;
+the plan does not clear its recorded reconciliation state. These same source
+rules apply to initial dispatch and explicitly authorized local continuations.
+
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
 project root, delegates to `docs/skills/Integration-test-core/workflow.md` and

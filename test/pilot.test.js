@@ -59,10 +59,11 @@ function transport(items = [adoItem()], capture = []) {
     return { value: items.filter(i => body.ids.includes(i.id)) };
   };
 }
-function addEvidence(ledger, id = '1', revision = '1', payload = { text: 'synthetic' }, provenance = 'synthetic') {
+function addEvidence(ledger, id = '1', revision = '1', payload = { text: 'synthetic' }, provenance = 'synthetic', overrides = {}) {
   const record = evidenceEnvelope('ado', 'office/OC', id, revision,
     `https://dev.azure.com/office/OC/_workitems/edit/${id}`, 'synthetic query', '2026-10-09T01:00:00Z');
   record.source.provenance = provenance;
+  Object.assign(record, overrides);
   return ledger.evidence(record, payload, `run-${revision}-${id}`);
 }
 function review(evidence, version = 1) {
@@ -2284,7 +2285,7 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
 });
-test('planned OA skill path creates a source-bound validated draft result through the controller', async t => {
+test('resolved fixed OA source creates a test-only source-bound validated draft through the controller', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
@@ -2309,9 +2310,13 @@ test('planned OA skill path creates a source-bound validated draft result throug
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--quiet', '-m', 'Synthetic OA fixture']);
-  const evidence = addEvidence(ctx.ledger, 'oa-1', '1', { fixture: true }, 'authenticated-source');
+  const evidence = addEvidence(ctx.ledger, 'oa-1', '1', { fixture: true }, 'authenticated-source',
+    { sourceStatus: 'Resolved', fields: {
+      'System.Reason': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed'
+    } });
   const investigation = review(evidence);
   investigation.repoIds = [repo.id];
+  investigation.existingFixes = ['https://example.invalid/oa/fix/1'];
   investigation.observedBehavior = 'OA behavior lacks a focused integration regression test.';
   investigation.expectedBehavior = 'The established behavior is covered by a focused integration test.';
   ctx.ledger.put(investigation);
@@ -2337,6 +2342,7 @@ test('planned OA skill path creates a source-bound validated draft result throug
   const plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
+    purpose: 'regression-coverage',
     searchStatus: 'complete', existingTests: [], coverageGaps: ['No focused regression test exists.'],
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });

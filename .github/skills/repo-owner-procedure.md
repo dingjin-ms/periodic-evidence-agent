@@ -29,8 +29,11 @@ only in the verified isolated product workspace.
    counterevidence and confirmed causes. Functional symptoms alone are not a
    code-defect confirmation.
 3. Preserve every scanner exclusion for both defect and improvement work. If
-   the assignment is excluded, fixed, misrouted or lacks evidence, report
+   the assignment is excluded, misrouted or lacks evidence, report
    `blocked` with the reason; do not reclassify it to obtain edit authority.
+   A fixed source blocks another production fix, not an explicitly planned
+   `regression-coverage` assignment through a qualified test-only skill.
+   Preserve the fix and source status while filling the reviewed coverage gap.
    Request newly needed source evidence from the collector/coordinator.
 4. For `rca-only`, do not edit code, create PRs or launch validation. For
    authorized defect/improvement work, make the smallest complete change

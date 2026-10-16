@@ -9,6 +9,7 @@ import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordA
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
+import { requireCurrentSourceEligibility } from './source-eligibility.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -590,6 +591,7 @@ export function appWorker(config, ledger, runId, action, input) {
       : makeAssignment(config, investigation, input.repoId, input.intent);
     requireThat(assignment.repoId === input.repoId && assignment.intent === input.intent,
       'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
+    requireCurrentSourceEligibility(ledger, assignment);
     const latest = new Set(ledger.latestEvidence().map(e => e.id));
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
       ['authenticated-source', 'app-tool-reported', 'workiq-cli-verified'].includes(ledger.get('evidence', id).source.provenance) &&
@@ -621,6 +623,7 @@ export function appWorker(config, ledger, runId, action, input) {
       requireThat(current?.version === value.assignment.investigationVersion &&
         !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before native claim', 'blocked-reconciliation');
       requireCurrentAssignment(config, ledger, current, value.assignment);
+      requireCurrentSourceEligibility(ledger, value.assignment);
       if (value.execution === 'agency') requireAgencyQualification(config, ledger, agencyTaskId(value.assignment));
       const latest = new Set(ledger.latestEvidence().map(e => e.id));
       requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
@@ -638,6 +641,7 @@ export function appWorker(config, ledger, runId, action, input) {
           requireThat(current?.version === value.assignment.investigationVersion &&
             !['closed', 'blocked', 'waiting'].includes(current.state), 'Investigation changed before Agency reservation');
           requireCurrentAssignment(config, ledger, current, value.assignment);
+          requireCurrentSourceEligibility(ledger, value.assignment);
           const latest = new Set(ledger.latestEvidence().map(e => e.id));
           requireThat(value.assignment.evidenceIds.every(id => latest.has(id) &&
             !ledger.trackedState(ledger.get('evidence', id))), 'Evidence changed before Agency reservation');

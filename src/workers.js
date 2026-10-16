@@ -20,6 +20,7 @@ import {
   resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
 import { requireEligibleImprovementInvestigation } from './review-decisions.js';
+import { isRegressionCoveragePlan, requireCurrentSourceEligibility } from './source-eligibility.js';
 import {
   dependencyOutputFingerprint, outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
@@ -108,8 +109,15 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
   validateRecord(investigation);
   const repo = repoFor(config, repoId);
   requireEligibleImprovementInvestigation(investigation);
-  requireThat(investigation.repoIds.includes(repoId) && investigation.existingFixes.length === 0,
+  const regression = intent === 'improvement' &&
+    isRegressionCoveragePlan(plan, plan?.requestedOutcome ?? 'add-or-update-tests');
+  requireThat(investigation.repoIds.includes(repoId) &&
+    (investigation.existingFixes.length === 0 || regression),
     'Ownership mismatch or existing fix requires reconciliation', 'blocked-reconciliation');
+  if (plan?.purpose === 'regression-coverage')
+    requireThat(regression,
+      'Regression coverage requires complete source-bound test discovery, a coverage gap, no unknowns and a test-only outcome',
+      'blocked-reconciliation');
   requireThat(['rca-only', 'defect-fix', 'improvement'].includes(intent), 'Invalid assignment intent');
   const edits = intent !== 'rca-only';
   if (edits) requireThat(repo.validationGates.length > 0, 'Code changes require configured validation gates');
@@ -127,6 +135,9 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
     permissions: { editCode: edits, createDraftPR: edits, runValidation: edits, merge: false,
       mutateEvidenceSources: false, retryValidation: false, cancelValidation: false }
   };
+  if (regression)
+    assignment.acceptanceCriteria.push(
+      'Regression coverage only: preserve the production fix and source status; fill the reviewed test gap');
   if (plan) {
     const {
       skillBindingId, skillQualification, requestedOutcome: selectedOutcome, ...planRecord
@@ -199,7 +210,9 @@ export function makePlannedImprovementAssignment(config, ledger, investigation, 
     ...plan, skillBindingId: binding.id, requestedOutcome,
     skillQualification: pinned
   };
-  return makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
+  const assignment = makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
+  requireCurrentSourceEligibility(ledger, assignment);
+  return assignment;
 }
 export function requireCurrentAssignment(config, ledger, investigation, assignment) {
   if (assignment.testCoveragePlanId) {
@@ -2829,8 +2842,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     await verifyPreservedChange(config, continuation.priorAssignment, continuation.priorJob,
       continuation.priorResult, continuation.proposal);
   }
-  const currentEvidence = new Set(ledger.latestEvidence().map(e => e.id));
-  requireThat(assignment.evidenceIds.every(e => currentEvidence.has(e)), 'New source evidence requires review before dispatch', 'blocked-reconciliation');
+  requireCurrentSourceEligibility(ledger, assignment);
   const fixtureEvidence = assignment.evidenceIds.map(e => ledger.get('evidence', e));
   const permittedReviewedHandoff = dependencies[reviewedHandoffPermit] === true &&
     assignment.intent === 'improvement' && assignment.skillBindingId &&
@@ -2839,10 +2851,6 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(permittedReviewedHandoff ||
     fixtureEvidence.every(e => e?.source.provenance !== 'synthetic'),
   'Synthetic evidence cannot launch a live worker');
-  requireThat(assignment.evidenceIds.every(id => {
-    const e = ledger.get('evidence', id);
-    return ledger.trackedState(e)?.state !== 'reconciliation-required' && !['Removed', 'Resolved', 'Closed'].includes(e.sourceStatus);
-  }), 'Tracked source eligibility changed or a fix is recorded; reconcile before dispatch', 'blocked-reconciliation');
   const investigation = ledger.get('investigation', assignment.investigationId);
   requireThat(investigation?.version === assignment.investigationVersion, 'Assignment evidence was superseded');
   requireCurrentAssignment(config, ledger, investigation, assignment);

@@ -4,7 +4,7 @@
   "agent": { "id": "excel-evidence-coordinator", "role": "collector-coordinator", "scheduleAuthority": "disabled" },
   "activation": { "collect": false, "review": false, "dispatch": false },
   "stateDirectory": ".state",
-  "statePolicy": { "accessApproved": false, "retention": "manual-no-auto-delete" },
+  "statePolicy": { "accessApproved": false, "retention": "bounded-local", "rawEvidenceDays": 7 },
   "workspaceCleanup": { "enabled": false, "retentionHours": 0 },
   "identity": {
     "designatedUser": "collector@example.invalid",
@@ -99,11 +99,19 @@
       ],
       "commitIdentity": { "name": null, "email": null },
       "validationGates": [],
+      "draftBuild": {
+        "enabled": false,
+        "provider": "ado",
+        "id": "1js-pipeline-36540",
+        "definitionId": 36540,
+        "templateParameters": {}
+      },
       "pr": {
         "provider": "ado",
         "organization": "office",
         "project": "Office",
         "repositoryId": "1JS",
+        "sourceBranchPrefix": "user/your-alias/periodic-evidence-agent",
         "targetRef": null
       }
     },

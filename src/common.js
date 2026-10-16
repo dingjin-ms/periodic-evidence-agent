@@ -106,7 +106,10 @@ export function configAt(path) {
   windowCheck(config.window);
   requireThat(config.activation && ['collect', 'review', 'dispatch'].every(k => typeof config.activation[k] === 'boolean'),
     'Explicit collect/review/dispatch activation booleans are required');
-  requireThat(config.statePolicy?.retention === 'manual-no-auto-delete', 'Evidence state requires explicit manual retention');
+  requireThat(config.statePolicy?.retention === 'bounded-local' &&
+    Number.isInteger(config.statePolicy.rawEvidenceDays) &&
+    config.statePolicy.rawEvidenceDays >= 1 && config.statePolicy.rawEvidenceDays <= 7,
+  'State retention must be bounded-local with rawEvidenceDays from 1 through 7');
   workspaceCleanupPolicy(config);
   requireThat([0, 1].includes(config.followUp.maxDepth), 'Follow-up is limited to zero or one level');
   if (config.followUp.maxDepth === 1) {
@@ -186,6 +189,35 @@ export function configAt(path) {
       repo.validationContractVersion.length > 0,
     `Repository ${repo.id} validationContractVersion is required`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
+    if (repo.draftBuild !== undefined) {
+      const build = repo.draftBuild;
+      requireThat(build && typeof build === 'object' && !Array.isArray(build) &&
+        typeof build.enabled === 'boolean' && build.provider === 'ado' &&
+        typeof build.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(build.id) &&
+        Number.isInteger(build.definitionId) && build.definitionId > 0 &&
+        (build.templateParameters === undefined ||
+          (build.templateParameters && typeof build.templateParameters === 'object' &&
+            !Array.isArray(build.templateParameters) &&
+            Object.keys(build.templateParameters).length <= 32 &&
+            Object.entries(build.templateParameters).every(([key, value]) =>
+              /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) &&
+              ['string', 'number', 'boolean'].includes(typeof value) &&
+              (typeof value !== 'string' || value.length <= 1024)))),
+      `Repository ${repo.id} has an invalid Draft build configuration`);
+      requireThat(!build.enabled || (repo.pr?.provider === 'ado' &&
+        typeof repo.pr.organization === 'string' && repo.pr.organization.length > 0 &&
+        typeof repo.pr.project === 'string' && repo.pr.project.length > 0 &&
+        typeof repo.pr.targetRef === 'string' && repo.pr.targetRef.startsWith('refs/heads/')),
+        `Repository ${repo.id} Draft build requires an ADO Draft PR provider`);
+    }
+    if (repo.pr?.sourceBranchPrefix !== undefined) {
+      requireThat(typeof repo.pr.sourceBranchPrefix === 'string' &&
+        /^[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$/.test(repo.pr.sourceBranchPrefix) &&
+        !repo.pr.sourceBranchPrefix.includes('//') &&
+        !repo.pr.sourceBranchPrefix.split('/').includes('..') &&
+        !repo.pr.sourceBranchPrefix.startsWith('refs/'),
+      `Repository ${repo.id} has an invalid PR source branch prefix`);
+    }
     repo.allowedWriteFiles ??= [];
     requireThat(Array.isArray(repo.allowedWritePrefixes ?? []) &&
       Array.isArray(repo.allowedWriteFiles), `Repository ${repo.id} write bounds must be arrays`);

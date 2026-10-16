@@ -55,7 +55,6 @@ export function repositorySkillWriteFiles(repo, binding) {
     `Repository skill binding ${binding.id} write files exceed repository bounds`, 'blocked-scope');
   return files;
 }
-
 export function repositoryValidationContract(repo) {
   const version = repo.validationContractVersion ?? '1.0';
   const gates = (repo.validationGates ?? []).map(gate => ({

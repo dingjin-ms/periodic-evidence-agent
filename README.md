@@ -252,6 +252,22 @@ npm run pilot -- app-status --run RUN_ID --config .\pilot.local.json
 Resolve the designated delegated user/tenant/object ID, exact WorkIQ resources,
 explicit UTC window, read/item budgets, protected storage approval/retention,
 and enabled source scopes. Never copy another person's identity or credentials.
+Local raw validation evidence must use `statePolicy.retention: "bounded-local"`
+with `rawEvidenceDays` from 1 through 7. New controller-owned artifacts are
+written beneath `.state\runs\<run-id>` with a manifest and SHA-256 metadata.
+Completed or blocked runs are pruned at CLI startup and exit; active runs are
+never deleted. Preview or apply cleanup explicitly with:
+
+```powershell
+npm run pilot -- state-prune --dry-run --config .\pilot.local.json
+npm run pilot -- state-prune --config .\pilot.local.json
+```
+
+The state directory must be gitignored when it is inside the repository.
+Pruning refuses malformed manifests, path escapes, symlinks, junctions and
+hard-linked files instead of following or deleting them. Durable ledger records,
+remote PR/build/test-run identifiers, hashes and verdicts remain outside the
+pruned run directory.
 Source reads require separate authorization; importing a local file is not
 proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
@@ -642,12 +658,19 @@ proposals, not completed native-skill execution; this boundary does not block OA
 in-process integration validation.
 
 Static validation and scenario discovery are necessary but do not prove the
-signed-in product flow. Local live evidence must come from the qualified
-profile with retries disabled; CI evidence must identify Pipeline 36540 runs
-for the same final commit. Repeated attempts inside one build are not distinct
-successful builds. If the repository skill requires five consecutive local
-runs and five consecutive builds, fewer successes must be reported as partial
-qualification rather than a completed authoring result.
+signed-in product flow. The controller's blocking authoring gate is a qualified
+local profile that runs the authored batch five consecutive times with retries
+disabled on its final implementation SHA. After those source-bound gates pass,
+an enabled `draftBuild` queues exactly one Pipeline 36540 build for the pushed
+Draft branch and exact revision, records the returned build URL in the Draft PR
+description, and returns immediately without polling the build.
+
+This mirrors the OfficeAgent authoring contract: deterministic local validation
+blocks publication; longer remote validation is transparent asynchronous review
+evidence. A queued build does not make the Draft remotely qualified, and a later
+failure must remain visible to reviewers, but it does not erase the successful
+local authoring proof or require five costly controller-queued builds. Any
+stricter repository-owner delivery policy remains a separate human merge gate.
 ### Staged validation receipts
 
 A content-bound profile may opt into controller-managed staged validation with
@@ -731,6 +754,53 @@ equivalent dependency receipt does not discard an intact content-verified
 compile snapshot. Damage to an unused dependency source workspace is rebuilt
 before any later compile. Workers and repository skills cannot access, write or
 approve cache metadata.
+
+### 1JS declarative E2E authoring
+
+The optional `1js-declarative-e2e-authoring` binding targets
+`.github/skills/author-declarative-e2e-test/SKILL.md`. It is disabled and
+unqualified in `pilot.example.json`; configuring a checkout or qualifying the
+skill does not enable routing, writes, validation, push or Draft PR creation.
+The binding accepts only `declarative-e2e-mini-spec-batch-v1`. Reviewed and
+FILTER handoffs must provide every batch item before assignment:
+
+```json
+{
+  "format": "declarative-e2e-mini-spec-batch-v1",
+  "items": [{
+    "inputItemId": "bizchat-create-canary-excel",
+    "title": "Create a Canary Excel workbook from BizChat",
+    "account": "AAD",
+    "entryUrl": "https://copilot.cloud.microsoft/chat",
+    "preconditions": ["Use the qualified signed-in AAD profile."],
+    "orderedTestSteps": ["Open BizChat.", "Create and open the workbook."],
+    "expectedUserVisibleAndDataOutcomes": ["A real .xlsx workbook opens and satisfies the declared table contract."],
+    "cleanup": ["Restore changed flight values and close only the test-owned tab."]
+  }]
+}
+```
+
+Missing, malformed, differently versioned or duplicate-ID input blocks before
+the worker starts. The validated object is content-bound into the coverage plan
+and assignment and is shown to the repository skill as
+`repositorySkillInput`; the skill may inspect the exact source revision but may
+not invent omitted authoring requirements.
+
+1JS authoring uses directory prefixes only for scenario directories and exact
+`allowedWriteFiles` for shared declarative composites, UI maps and resource
+registries. This intentionally excludes runner, loader and verifier code.
+Harness repairs such as workbook-identity resolution require a separate,
+explicitly authorized change/PR rather than broadening an authoring assignment.
+
+Static validation and scenario discovery are necessary but do not prove the
+signed-in product flow. The controller requires the qualified local profile to
+run the authored batch five consecutive times with retries disabled on the
+final implementation SHA. It then queues one non-blocking Pipeline 36540 build
+for that exact SHA, writes the build link into the Draft PR and does not wait
+for completion. The Draft is locally validated but remains remotely pending;
+later remote failure is retained as review evidence. Repository-owner policies
+that require additional CI proof remain human merge gates rather than
+controller publication loops.
 
 ## Safety invariants
 

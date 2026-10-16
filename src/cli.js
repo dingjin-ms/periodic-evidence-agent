@@ -29,6 +29,7 @@ import { continueRoleValidation } from './role-continuation.js';
 import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } from './local-diagnostic.js';
 import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
 import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
+import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -73,6 +74,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --execute [--intent improvement|defect-fix] --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js workspace-gc --config pilot.local.json [--execute]
+  node src\\cli.js state-prune [--dry-run] [--config pilot.local.json]
   node src\\cli.js doctor
   node src\\cli.js runtime-smoke
   node src\\cli.js auth-check
@@ -123,6 +125,7 @@ App commands default to isolated dry-run storage. They never call SDK WorkIQ.
 Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger, agent;
+let automaticPruneConfig;
 try {
   if (roleInvocation) agent = agentInvocation(role, action);
   if (action === 'continue-local-validation')
@@ -189,6 +192,11 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
+    if (action !== 'state-prune') {
+      automaticPruneConfig = config;
+      pruneState(config);
+    }
     const appAction = action.startsWith('app-');
     if (config.executionMode === 'app-native' && !appAction &&
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
@@ -196,7 +204,7 @@ try {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
-    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check',
+    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
       'e2e-proof-export', 'e2e-proof-check'].includes(action))
@@ -235,6 +243,9 @@ try {
         }
         break;
       }
+      case 'state-prune':
+        result = pruneState(config, { dryRun: args.includes('--dry-run') });
+        break;
       case 'filter-batch-size':
         requireThat(option('--output'), 'Batch measurement requires --output');
         result = sizeFilterGroups(config, input(), option('--output')); break;
@@ -435,4 +446,13 @@ try {
   const failure = safeError(error);
   console.error(JSON.stringify(agent ? agentOperationError(agent, failure) : failure, null, 2));
   process.exitCode = 1;
-} finally { ledger?.close(); }
+} finally {
+  ledger?.close();
+  if (automaticPruneConfig) {
+    try { pruneState(automaticPruneConfig); }
+    catch (error) {
+      console.error(JSON.stringify(safeError(error), null, 2));
+      process.exitCode = 1;
+    }
+  }
+}

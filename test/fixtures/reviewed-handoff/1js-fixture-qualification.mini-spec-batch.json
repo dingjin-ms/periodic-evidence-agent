@@ -1,0 +1,175 @@
+{
+  "format": "declarative-e2e-mini-spec-batch-v1",
+  "items": [
+    {
+      "inputItemId": "excel-agent-arcadia-seeded-workbook",
+      "title": "Qualify Arcadia authoring with a seeded workbook",
+      "account": "AAD",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "This is an authoring qualification input, not collected evidence, a coverage decision, an approval or a validation receipt.",
+        "Use the qualified AAD enterprise session and a test-owned disposable blank workbook.",
+        "Select Arcadia and verify the actual visible experience before executing the scenario.",
+        "Reuse the existing workbook seed and protected exact-value assertion providers; any missing registration is an external owning-workflow prerequisite, not permission to edit the harness.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Create and open the test-owned disposable workbook through the existing AAD Hub flow.",
+        "Seed A1 with the exact value 5 and read it back using the existing protected workbook reader.",
+        "Open the Excel Agent pane and confirm Arcadia.",
+        "Send the exact prompt: Read the number currently in A1, add 10, and write the result back into A1.",
+        "Wait for the edit to finish and read A1 through the protected workbook verifier."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "The initial workbook A1 value is exactly 5.",
+        "The final workbook A1 value is exactly 15, read from the real workbook rather than inferred from the chat response.",
+        "The scenario actually executes in Arcadia; an unavailable session, wrong experience, unreadable cell or skipped test is not a pass."
+      ],
+      "cleanup": [
+        "Close only the browser context or tab owned by this test, including when setup or an assertion fails.",
+        "Do not overwrite or delete any pre-existing workbook or user-owned page."
+      ]
+    },
+    {
+      "inputItemId": "excel-agent-omni-msa-conversation-isolation",
+      "title": "Qualify MSA authoring with conversation isolation",
+      "account": "MSA",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "Use the approved consumer MSA login harness; never substitute an AAD session or treat an authentication skip as success.",
+        "Open a test-owned disposable workbook, select Omni, and verify the actual experience.",
+        "Reuse the existing exact-canary conversation and workbook-unchanged assertion contracts without adding generic generated-prose matching.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Open the consumer MSA Excel Agent pane in the test-owned workbook and confirm Omni and the consumer account lane.",
+        "Seed A1 with the sentinel FIXTURE_WORKBOOK_UNCHANGED and read it back.",
+        "Start a new conversation and ask the agent to remember the exact token QUALIFY-1JS-MSA-7D31A9 without writing it to the workbook.",
+        "In a second turn ask for the remembered token without including it in that second prompt.",
+        "Start New Chat, confirm the previous messages are gone, and ask for the previous conversation's remembered token without including it in the prompt.",
+        "Read A1 again with the protected workbook verifier."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "The second turn in the original conversation contains the exact token QUALIFY-1JS-MSA-7D31A9.",
+        "The completed reply after New Chat must not contain QUALIFY-1JS-MSA-7D31A9.",
+        "A1 remains exactly FIXTURE_WORKBOOK_UNCHANGED.",
+        "The test uses the consumer MSA lane and Omni throughout; missing credentials, skipped execution or a substituted enterprise account is not a pass."
+      ],
+      "cleanup": [
+        "Close only the browser context or tab owned by this test, even if login, conversation or workbook verification fails.",
+        "Do not close or sign out any pre-existing consumer session."
+      ]
+    },
+    {
+      "inputItemId": "excel-agent-omni-restore-web-source",
+      "title": "Qualify generated state mutation and restoration",
+      "account": "AAD",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "Use the qualified AAD enterprise account, the actual Omni experience and a test-owned disposable workbook.",
+        "Execute serially with every case sharing this profile or mutable account setting.",
+        "Reuse the existing source toggle, persisted-state assertion and paired restoration contracts; capture the original value before the first mutation.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Open the Excel Agent pane and confirm the Omni experience and AAD account lane.",
+        "Open the source picker and record the current Web source value.",
+        "Enable Web while capturing the original value, then disable Web using existing declarative state-saving operations.",
+        "Close and reopen the picker and assert the disabled value persists.",
+        "Finish the scenario through the existing paired cleanup operation."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "Web is enabled and then disabled, exercising an actual state change regardless of its initial value.",
+        "After cleanup, reopening the picker shows the exact original value, irrespective of whether it was initially enabled or disabled.",
+        "The next execution starts without inheriting a changed setting from the preceding execution."
+      ],
+      "cleanup": [
+        "Restore the exact original Web source value even if an intermediate step or assertion fails; report restoration failure explicitly.",
+        "Close only the browser context or tab owned by this test after restoration is attempted.",
+        "Preserve every pre-existing page and other account setting."
+      ]
+    },
+    {
+      "inputItemId": "excel-agent-arcadia-local-file-upload",
+      "title": "Qualify a local file fixture combined with workbook data",
+      "account": "AAD",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "Use the qualified AAD enterprise session, actual Arcadia experience and a test-owned disposable workbook.",
+        "Use the registered ingestion-source CSV, whose Engineering salaries sum to 2500; do not invent a resource provider or substitute chat-only evidence.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Create a test-owned workbook and confirm Arcadia.",
+        "Seed H1 with exactly 100 and record its protected readback; seed E1 with a non-result sentinel.",
+        "Upload ingestion-source through the existing local-file upload composite and wait for its own completed attachment.",
+        "Ask the agent to total the uploaded file's Engineering salaries plus H1, writing only E1.",
+        "Read E1 and H1 through the protected workbook verifier."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "E1 is exactly 2600 in the real workbook.",
+        "H1 remains exactly 100 throughout the protected unchanged observation.",
+        "The completed attachment belongs to this upload; a restored or unrelated file is not success."
+      ],
+      "cleanup": [
+        "Close only the browser context or tab owned by this test, including on upload or assertion failure.",
+        "Preserve the repository fixture file, pre-existing workbooks and user-owned pages."
+      ]
+    },
+    {
+      "inputItemId": "excel-agent-arcadia-custom-skill-cleanup",
+      "title": "Qualify an owned persistent custom-skill fixture",
+      "account": "AAD",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "Require the existing EXCELAGENT_CUSTOM_SKILL_E2E_ENABLED gate, verified matching principal and explicit SharePoint resource/cleanup authorization; otherwise report this case blocked.",
+        "Use the qualified AAD enterprise session, actual Arcadia experience and a test-owned disposable workbook.",
+        "Reuse the registered sample-custom-skill fixture and its unique per-run owned name; never fetch or save credentials or alter another skill.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Seed A1 with a non-result sentinel and capture a protected neighboring-cell guard in B1.",
+        "Upload the uniquely named sample skill through the existing provider and capture its owned resource descriptor.",
+        "Select and invoke exactly that skill in Arcadia.",
+        "Read A1 and B1 using protected workbook assertions.",
+        "Close Manage Skills and remove exactly the captured owned skill through paired cleanup."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "A1 is exactly 314159 in the real workbook and B1 remains unchanged.",
+        "The newly uploaded skill is invoked by exact identity, not inferred from generated prose.",
+        "The owned skill is removed; removal failures are reported rather than treated as passes."
+      ],
+      "cleanup": [
+        "Attempt removal of only the owned custom-skill resource even when invocation or workbook verification fails.",
+        "Close only the browser context or tab owned by this test after resource cleanup; preserve pre-existing pages and skills."
+      ]
+    },
+    {
+      "inputItemId": "excel-agent-dedicated-sensitivity",
+      "title": "Qualify a dedicated enterprise account and named workbook fixture",
+      "account": "AAD",
+      "entryUrl": "https://excel.cloud.microsoft/",
+      "preconditions": [
+        "This AAD case specifically requires the dedicated-enterprise lane, not the ordinary AAD browser profile.",
+        "Require the approved ENTERPRISE_E2E_ENABLED gate, dedicated external-service login and existing clp-labeled named workbook; otherwise report this case blocked.",
+        "Never fetch or save credentials, invent a fixture URL, relabel the shared workbook or substitute an ordinary blank workbook.",
+        "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
+      ],
+      "orderedTestSteps": [
+        "Resolve the approved clp-labeled workbook through the registered dedicated fixture provider.",
+        "Run the existing external-service login pre-session contract and confirm the dedicated account lane.",
+        "Open the workbook and confirm Arcadia.",
+        "Assert the actual sensitivity label is visible using the existing protected sensitivity provider."
+      ],
+      "expectedUserVisibleAndDataOutcomes": [
+        "The dedicated named workbook's sensitivity label is visible.",
+        "The shared workbook is not mutated and its sensitivity is not changed.",
+        "An unavailable dedicated login or named resource is blocked, not skipped into a successful qualification."
+      ],
+      "cleanup": [
+        "Close only the browser context or tab owned by this test, including when dedicated login or startup fails.",
+        "Preserve the shared named workbook, its label and every pre-existing user session."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const scenario = JSON.parse(readFileSync(
+  'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8'));
+const scratchRoot = mkdtempSync(join(tmpdir(), 'synthetic-1js-repair-'));
+const unownedResource = join(scratchRoot, 'unowned-session.json');
+writeFileSync(unownedResource, 'preserve-this-session');
+const report = {
+  provenance: 'synthetic',
+  sourceRevision,
+  validationWorkspace: process.cwd(),
+  scratchRoot,
+  retries: 0,
+  expectedValue: 15,
+  requiredConsecutivePasses: 5,
+  consecutivePasses: 0,
+  runs: [],
+  failure: null,
+  ownedResourcesRemoved: false,
+  unownedResourcePreserved: false
+};
+try {
+  assert.deepEqual(Object.keys(scenario).sort(),
+    ['increment', 'name', 'restoreSetting', 'seedValue']);
+  assert.equal(scenario.name, 'Synthetic seeded-workbook qualification');
+  assert.equal(typeof scenario.seedValue, 'number');
+  assert.equal(scenario.increment, 10);
+  assert.equal(typeof scenario.restoreSetting, 'boolean');
+  for (let run = 1; run <= report.requiredConsecutivePasses; run++) {
+    const ownedResource = join(scratchRoot, `owned-workbook-${run}.json`);
+    const state = { value: scenario.seedValue, setting: 'original' };
+    let failure = null;
+    try {
+      state.setting = 'changed';
+      state.value += scenario.increment;
+      writeFileSync(ownedResource, JSON.stringify(state));
+      const observed = JSON.parse(readFileSync(ownedResource, 'utf8'));
+      if (observed.value !== report.expectedValue) failure = 'workbook-value-mismatch';
+    } finally {
+      if (scenario.restoreSetting) state.setting = 'original';
+      if (state.setting !== 'original') failure ??= 'setting-not-restored';
+      rmSync(ownedResource);
+    }
+    assert.equal(existsSync(ownedResource), false);
+    assert.equal(readFileSync(unownedResource, 'utf8'), 'preserve-this-session');
+    report.runs.push({ run, status: failure ? 'failed' : 'passed' });
+    if (failure) {
+      report.failure = failure;
+      report.consecutivePasses = 0;
+      break;
+    }
+    report.consecutivePasses++;
+  }
+  report.ownedResourcesRemoved = report.runs.every(({ run }) =>
+    !existsSync(join(scratchRoot, `owned-workbook-${run}.json`)));
+  report.unownedResourcePreserved =
+    readFileSync(unownedResource, 'utf8') === 'preserve-this-session';
+} finally {
+  rmSync(unownedResource);
+  rmSync(scratchRoot, { recursive: true });
+}
+console.log(JSON.stringify(report));
+if (report.consecutivePasses !== report.requiredConsecutivePasses) process.exitCode = 1;

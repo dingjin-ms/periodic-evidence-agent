@@ -515,6 +515,60 @@ This path does not prove source collection, complete FILTER execution or a new
 coverage gap. The native skill must still inspect the selected source rather
 than assume the fixture's historical gap remains open.
 
+### 1JS fixture qualification and edited-commit repair
+
+The existing Cross-App creation/verification case and Omni AAD blank-workbook
+case remain the two baseline shapes; they are not missing fixtures.
+`test/fixtures/reviewed-handoff/1js-fixture-qualification.mini-spec-batch.json`
+adds six authoring inputs for other execution mechanisms:
+
+| Input | Mechanism to qualify |
+|---|---|
+| `excel-agent-arcadia-seeded-workbook` | AAD Arcadia, deterministic input setup and protected workbook readback |
+| `excel-agent-omni-msa-conversation-isolation` | Consumer MSA Omni, exact conversation canary and unchanged workbook |
+| `excel-agent-omni-restore-web-source` | Mutable account state, persisted change and original-value restoration |
+| `excel-agent-arcadia-local-file-upload` | Registered local CSV fixture, workbook input and exact combined result |
+| `excel-agent-arcadia-custom-skill-cleanup` | Authorized, uniquely owned persistent skill resource with paired removal |
+| `excel-agent-dedicated-sensitivity` | Dedicated enterprise login, named labeled workbook and read-only assertion |
+
+These are mini-specs, not generated product scenarios, reviewed evidence,
+authorization or passed validation receipts. Use them as the qualified
+repository skill's input only after the normal routing, registration, account
+and side-effect prerequisites are satisfied. Keep incompatible account,
+experience and shared-state cohorts serial and independently attributable.
+An existing helper or a schema-valid input is not live fixture qualification.
+The skill-resource and dedicated-workbook inputs retain their existing
+authorization gates. A missing approved profile, principal or resource blocks
+that input independently; it must not disappear from the reported inventory.
+
+The local controller regression uses
+`1js-validation-repair-drill.json` and its adjacent `.runner.mjs.txt` fixture.
+The runner text is copied into a disposable synthetic repository, outside the
+model's write allowlist; it is not a product runner or a new supported provider.
+The first commit has an incorrect workbook seed and missing state restoration.
+The first repair fixes only the seed, so a second commit still fails cleanup.
+The second repair restores state, and its new SHA starts a fresh five-pass,
+retry-disabled qualification. The protected expected result remains 15 in all
+rounds. Each earlier failed commit and its diagnostics remain recorded.
+
+The regression runs real local Git commits, isolated validation processes and
+scratch-resource cleanup, but injects model, build and Draft PR boundaries.
+Budgets of zero or one repair must leave the remote empty and create neither
+build nor Draft PR. Two repairs must publish only the final passing SHA, queue
+one non-blocking synthetic build and link it to one synthetic Draft PR.
+Owned scratch resources and validation clones must be removed before the next
+round, while an unrelated-session sentinel remains unchanged during execution.
+This proves controller isolation, not real browser cleanup or product behavior.
+
+For a live edited-commit qualification, diagnose each genuine failure before
+editing only the allowed declarations. Do not deliberately corrupt a shared
+account or weaken an assertion to manufacture a pass. Preserve the initial and
+intermediate failures, derive each repair from its actual native feedback,
+and reset per-case consecutive counters whenever implementation changes.
+Require five consecutive real passes with workers=1 and retries=0 on the final
+implementation SHA, including actual owned-browser cleanup and original-state
+restoration. No failed or earlier-revision evidence may authorize publication.
+
 ## 8. Reconcile terminal evidence
 
 Require the exact final source/profile identity, actual command exits, expected

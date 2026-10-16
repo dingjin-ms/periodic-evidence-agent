@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -9,9 +9,11 @@ import { Ledger } from '../src/ledger.js';
 import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
-import { dispatch, command, provision } from '../src/workers.js';
+import { dispatch, command, provision, runValidation } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
-import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
+import {
+  normalizeSkillInput, repositoryValidationContract, skillQualificationId
+} from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
@@ -31,6 +33,15 @@ const oneJsDualSuiteFixture = JSON.parse(readFileSync(
 const dualSkillBundle = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/oa-and-1js.reviewed-handoff-bundle.json', import.meta.url),
   'utf8'));
+const oneJsQualification = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-fixture-qualification.mini-spec-batch.json', import.meta.url),
+  'utf8'));
+const oneJsRepairDrill = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.json', import.meta.url),
+  'utf8'));
+const oneJsRepairRunner = readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
+  'utf8');
 
 async function setup(t, { inputFormat = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
@@ -118,7 +129,9 @@ async function setup(t, { inputFormat = null } = {}) {
   return { root, remote, config, ledger, baseRevision, additionalLedgers };
 }
 
-async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
+async function addOneJsRepository(ctx, {
+  enableDraftBuild = false, validationScript = null
+} = {}) {
   const reference = join(ctx.root, '1js-reference');
   const remote = join(ctx.root, '1js-remote.git');
   const skillPath = '.github/skills/author-declarative-e2e-test/SKILL.md';
@@ -130,9 +143,9 @@ async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
   writeFileSync(join(reference, skillPath), skill);
   writeFileSync(join(reference, scenarioPrefix, 'existing.yaml'), 'name: existing\n');
   writeFileSync(join(reference, 'scripts', 'validate-generated.mjs'),
-    "import { readFileSync } from 'node:fs';\n" +
+    validationScript ?? ("import { readFileSync } from 'node:fs';\n" +
     "const text = readFileSync('ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8');\n" +
-    "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n");
+    "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n"));
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
   await git(['init', '--quiet']);
@@ -772,6 +785,207 @@ test('controller validation failures feed a bounded repository-skill repair loop
     executed.result.validation[0].sourceRevision);
   assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
   assert.equal(executed.result.toolUsage.used, 5);
+});
+
+test('1JS qualification specs preserve separate fixture cohorts and cleanup contracts', () => {
+  const normalized = normalizeSkillInput({
+    id: '1js-declarative-e2e-authoring',
+    inputFormat: 'declarative-e2e-mini-spec-batch-v1'
+  }, oneJsQualification);
+  assert.deepEqual(normalized.items.map(item => [item.inputItemId, item.account]), [
+    ['excel-agent-arcadia-seeded-workbook', 'AAD'],
+    ['excel-agent-omni-msa-conversation-isolation', 'MSA'],
+    ['excel-agent-omni-restore-web-source', 'AAD'],
+    ['excel-agent-arcadia-local-file-upload', 'AAD'],
+    ['excel-agent-arcadia-custom-skill-cleanup', 'AAD'],
+    ['excel-agent-dedicated-sensitivity', 'AAD']
+  ]);
+  for (const item of normalized.items) {
+    assert.ok(item.cleanup.length > 0);
+    assert.match(item.preconditions.join('\n'), /five consecutive.*final.*SHA/);
+    assert.match(item.preconditions.join('\n'), /retries=0/);
+    assert.match(item.cleanup.join('\n'), /only.*owned/);
+  }
+  assert.match(normalized.items[0].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /A1.*15/);
+  assert.match(normalized.items[1].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /must not contain/);
+  assert.match(normalized.items[2].cleanup.join('\n'), /even.*fails/);
+  assert.match(normalized.items[3].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /E1.*2600/);
+  assert.match(normalized.items[4].preconditions.join('\n'),
+    /EXCELAGENT_CUSTOM_SKILL_E2E_ENABLED.*blocked/);
+  assert.match(normalized.items[4].cleanup.join('\n'),
+    /only.*owned.*even.*fails/);
+  assert.match(normalized.items[5].preconditions.join('\n'),
+    /dedicated-enterprise.*not.*ordinary AAD/);
+  assert.match(normalized.items[5].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /not mutated/);
+  normalized.items[0].title = 'Changed copy';
+  assert.notEqual(normalized.items[0].title, oneJsQualification.items[0].title);
+});
+
+for (const repairBudget of [0, 1, 2])
+test(`1JS edited-commit repair budget ${repairBudget} preserves failures and validation isolation`, async t => {
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx, {
+    enableDraftBuild: true, validationScript: oneJsRepairRunner
+  });
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  ctx.config.limits.maxValidationRepairRounds = repairBudget;
+  ctx.config.limits.maxValidationInfrastructureRetries = 0;
+  await command('git', ['init', '--bare', '--quiet', oneJs.remote], ctx.root);
+  const scenarioPath =
+    'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml';
+  const referenceSkill = readFileSync(join(oneJs.reference, oneJs.repo.skillBindings[0].skillPath));
+  const publicationCalls = [];
+  const reports = [];
+  const revisions = [];
+  let modelCalls = 0;
+
+  function assertPriorValidationCleaned(currentLedger, jobId) {
+    const operations = currentLedger.status().operations.filter(operation =>
+      operation.job_id === jobId && operation.kind === 'validation');
+    for (const operation of operations) {
+      const artifact = JSON.parse(readFileSync(JSON.parse(operation.detail).artifact, 'utf8'));
+      const report = JSON.parse(artifact.output.stdout);
+      assert.equal(report.provenance, 'synthetic');
+      assert.equal(report.sourceRevision, artifact.revision);
+      assert.equal(report.retries, 0);
+      assert.equal(report.requiredConsecutivePasses, 5);
+      assert.equal(report.ownedResourcesRemoved, true);
+      assert.equal(report.unownedResourcePreserved, true);
+      assert.equal(existsSync(report.scratchRoot), false);
+      assert.equal(existsSync(report.validationWorkspace), false);
+    }
+  }
+
+  const executed = await acceptReviewedHandoff(ctx.config, ctx.ledger, oneJsFixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runModel: async (_config, currentLedger, current, assignment, _investigation,
+        toolkit, skill, authoring) => {
+        assert.equal(assignment.repoId, '1js');
+        assert.equal(authoring.round, modelCalls++);
+        assert.match(skill.instructions, /Fixture declarative E2E skill/);
+        assertPriorValidationCleaned(currentLedger, current.id);
+        const round = oneJsRepairDrill.rounds[authoring.round];
+        if (authoring.round === 0) {
+          assert.deepEqual(authoring.validationFeedback, []);
+        } else {
+          const feedback = authoring.validationFeedback[0];
+          assert.equal(feedback.status, 'failed');
+          assert.equal(feedback.exitCode, 1);
+          const report = JSON.parse(feedback.stdoutTail);
+          assert.equal(report.failure, round.expectedFeedbackFailure);
+          assert.equal(report.sourceRevision, feedback.sourceRevision);
+          assert.equal(report.expectedValue, 15);
+          assert.equal(report.consecutivePasses, 0);
+          assert.deepEqual(report.runs.map(run => run.status), ['failed']);
+        }
+        toolkit.write(scenarioPath.replaceAll('/', '\\'), json(round.scenario));
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: round.findings,
+          title: round.title,
+          description: 'Synthetic 1JS edited-commit qualification drill, not live product proof.',
+          skillResult: {
+            status: 'succeeded',
+            classification: 'missing-test-coverage',
+            changedFiles: [scenarioPath],
+            testsAddedOrUpdated: ['bizchat-create-canary-excel'],
+            behaviorCardsAddedOrUpdated: [],
+            unknowns: [],
+            needsHumanDecision: false
+          }
+        });
+      },
+      queueDraftBuild: async (_config, currentLedger, current, repo, revision) => {
+        assert.equal(repairBudget, 2);
+        assertPriorValidationCleaned(currentLedger, current.id);
+        assert.equal(revision, revisions.at(-1));
+        publicationCalls.push({ kind: 'build', revision });
+        return {
+          id: repo.draftBuild.id, provider: 'ado', definitionId: 36540,
+          buildId: 57329999,
+          url: 'https://example.invalid/1js/build/57329999',
+          status: 'queued', sourceRevision: revision,
+          sourceRef: `refs/heads/user/fixture/periodic-evidence-agent/${current.id}`,
+          queuedAt: now(), blocking: false
+        };
+      },
+      createDraft: async (_config, _ledger, _current, _repo, revision, proposal) => {
+        assert.equal(repairBudget, 2);
+        assert.equal(revision, revisions.at(-1));
+        assert.match(proposal.description, /57329999/);
+        publicationCalls.push({ kind: 'draft', revision });
+        return {
+          url: 'https://example.invalid/1js/draft/repair',
+          isDraft: true, headRevision: revision
+        };
+      },
+      runValidation: async (...args) => {
+        const result = await runValidation(...args);
+        const report = JSON.parse(JSON.parse(readFileSync(result[0].artifactRefs[0], 'utf8'))
+          .output.stdout);
+        reports.push(report);
+        revisions.push(args[4]);
+        return result;
+      }
+    }
+  });
+
+  const attempts = executed.result.validationAttempts;
+  assert.equal(modelCalls, repairBudget + 1);
+  assert.deepEqual(attempts.map(attempt => attempt.validation[0].status),
+    oneJsRepairDrill.expectedValidationStatuses.slice(0, repairBudget + 1));
+  assert.equal(new Set(revisions).size, repairBudget + 1);
+  assert.deepEqual(attempts.map(attempt => attempt.sourceRevision), revisions);
+  assert.deepEqual(reports.map(report => report.sourceRevision), revisions);
+  assert.deepEqual(reports.map(report => report.consecutivePasses),
+    [0, 0, 5].slice(0, repairBudget + 1));
+  const job = ctx.ledger.job(executed.result.assignmentId);
+  assertPriorValidationCleaned(ctx.ledger, job.id);
+  for (let index = 0; index < revisions.length; index++) {
+    const parent = (await command('git', ['rev-parse', `${revisions[index]}^`], job.workspace))
+      .stdout.trim();
+    assert.equal(parent, index === 0 ? oneJs.baseRevision : revisions[index - 1]);
+    const scenario = JSON.parse((await command('git',
+      ['show', `${revisions[index]}:${scenarioPath}`], job.workspace)).stdout);
+    assert.deepEqual(scenario, oneJsRepairDrill.rounds[index].scenario);
+    const validator = (await command('git', ['show',
+      `${revisions[index]}:scripts/validate-generated.mjs`], job.workspace)).stdout;
+    assert.equal(validator, oneJsRepairRunner);
+  }
+  assert.deepEqual(readFileSync(join(oneJs.reference, oneJs.repo.skillBindings[0].skillPath)),
+    referenceSkill);
+  assert.equal((await command('git', ['rev-parse', 'HEAD'], oneJs.reference)).stdout.trim(),
+    oneJs.baseRevision);
+  assert.equal((await command('git', ['status', '--porcelain'], oneJs.reference)).stdout.trim(), '');
+  assert.equal(executed.result.sourceRevision, revisions.at(-1));
+  assert.ok(executed.result.validation.every(gate => gate.sourceRevision === revisions.at(-1)));
+  const remoteRefs = (await command('git', ['--git-dir', oneJs.remote,
+    'for-each-ref', '--format=%(objectname)'], ctx.root)).stdout.trim();
+  if (repairBudget < 2) {
+    assert.equal(executed.result.outcome, 'blocked');
+    assert.equal(executed.result.draftPR, null);
+    assert.deepEqual(publicationCalls, []);
+    assert.equal(remoteRefs, '');
+  } else {
+    assert.equal(executed.result.outcome, 'draft-pr-validated');
+    assert.equal(executed.result.draftPR.headRevision, revisions[2]);
+    assert.deepEqual(publicationCalls, [
+      { kind: 'build', revision: revisions[2] }, { kind: 'draft', revision: revisions[2] }
+    ]);
+    assert.equal(remoteRefs, revisions[2]);
+    assert.deepEqual(reports[2].runs.map(run => run.status), Array(5).fill('passed'));
+    assert.equal(executed.result.remoteValidation[0].sourceRevision, revisions[2]);
+  }
 });
 
 for (const repairBudget of [0, 1])

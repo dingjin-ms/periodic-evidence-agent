@@ -227,6 +227,12 @@ export function activeWorkerCount(ledger, excludedTaskId = null) {
   if (excludedTaskId !== null) shared.delete(json(['task', excludedTaskId]));
   return shared.size;
 }
+export function activeRepositoryWorkerCount(ledger, repoId, excludedJobId = null) {
+  return ledger.db.prepare(`SELECT COUNT(*) AS n FROM jobs
+    WHERE repo=? AND id<>COALESCE(?, '') AND state IN
+      ('dispatching','claimed','running','uncertain')`)
+    .get(repoId, excludedJobId).n;
+}
 export function agencyFilterRunnerMetadata(selection) {
   const capture = selection.captureVerification;
   requireThat(capture?.inputEvidenceKind === digestInputEvidence &&

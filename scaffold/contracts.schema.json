@@ -140,6 +140,7 @@
               },
               "enabled": { "type": "boolean" },
               "qualification": { "enum": ["unqualified", "qualified"] },
+              "authoringProvider": { "$ref": "#/$defs/text" },
               "requestedOutcomes": { "$ref": "#/$defs/texts" },
               "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
               "allowedWriteFiles": { "$ref": "#/$defs/texts" },
@@ -709,6 +710,8 @@
         "testCoveragePlanId": { "$ref": "#/$defs/text" },
         "testCoveragePlanVersion": { "type": "integer", "minimum": 1 },
         "skillBindingId": { "$ref": "#/$defs/text" },
+        "authoringProvider": { "$ref": "#/$defs/text" },
+        "authoringProviderSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
         "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
         "allowedWriteFiles": { "$ref": "#/$defs/texts" },
@@ -778,6 +781,14 @@
             "required": ["capability", "requestedOutcome", "improvementId", "improvementVersion",
               "testCoveragePlanId", "testCoveragePlanVersion", "allowedWritePrefixes", "skillQualification"]
           }
+        },
+        {
+          "if": { "required": ["authoringProvider"] },
+          "then": { "required": ["authoringProviderSha256"] }
+        },
+        {
+          "if": { "required": ["authoringProviderSha256"] },
+          "then": { "required": ["authoringProvider"] }
         }
       ]
     },
@@ -903,7 +914,7 @@
         "blockedReason": {
           "anyOf": [
             { "type": "null" },
-            { "enum": ["runner-timeout", "runner-unavailable", "runner-mutated-source",
+            { "enum": ["blocked-auth", "runner-timeout", "runner-unavailable", "runner-mutated-source",
               "validation-workspace-unavailable", "validation-profile-changed",
               "validation-profile-error", "prepared-cache-corrupt",
               "validation-cleanup-failed"] }

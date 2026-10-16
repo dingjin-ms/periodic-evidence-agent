@@ -924,6 +924,70 @@ push and Draft PR effects:
 npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
+#### Authoring provider modes
+
+The default remains `copilot-sdk`. A repository skill binding may explicitly
+select `agency-local` or `agency-remote`; there is no repository-wide switch and
+no automatic fallback between providers.
+
+| Mode | Authoring compute | Source transport | Validation, final push and Draft PR |
+| --- | --- | --- | --- |
+| `copilot-sdk` | Local Controller process | Controller-owned workspace | Controller-owned |
+| `agency-local` | Local Agency process with the five authenticated `pilot_*` tools | Controller-owned workspace | Controller-owned |
+| `agency-remote` | Agency remote job on a qualified exact-base branch | One bounded result commit on a separate `pilot-agency-result/...` branch | Controller fetches, audits and imports allowed files, then owns all remaining steps |
+
+`agency-remote` requires an Azure DevOps repository and an explicit provider:
+
+```json
+{
+  "authoringProviders": {
+    "agency-oa": {
+      "type": "agency-remote",
+      "executable": "C:\\absolute\\path\\to\\agency.exe",
+      "profile": "periodic-evidence-isolated",
+      "model": "gpt-5.6-sol",
+      "pollSeconds": 30
+    }
+  }
+}
+```
+
+The remote worker may commit and push only the deterministic result ref. It may
+not create the final PR or merge. The Controller requires terminal Agency
+success, exact-base ancestry, a bounded commit range, approved regular-file
+paths, file-size limits and a matching
+`.periodic-evidence-agent/result.json` envelope before importing anything.
+Remote logs are diagnostic only; source state is the transport authority.
+See [Authoring providers](AGENCY-LOCAL-AUTHORING.md) for the complete comparison
+and operational limitations.
+
+#### Bounded multi-repository scheduling
+
+`limits.maxWorkers` is the shared Controller-wide admission cap.
+`limits.maxWorkersPerRepository` defaults to `1` and must not exceed the global
+cap. Different repositories can therefore author and validate concurrently
+while a repository uses one heavy validation lane by default. Admission is
+committed in the SQLite ledger before authoring starts; each assignment owns an
+independent `dispatch:<assignment-id>` lock, so a long remote job does not hold a
+global dispatch lock.
+
+Prepared assignments can be previewed and then launched concurrently:
+
+```powershell
+npm run pilot -- dispatch-ready --config .\pilot.local.json
+npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
+  --authorize-commit --authorize-push --authorize-draft-pr
+```
+
+The scheduler selects jobs deterministically, rotates across configured
+repositories, respects active hosted and local workers, and launches only jobs
+that are still `prepared`. Each selected assignment is atomically admitted
+again by normal `dispatch`; an overlapping scheduler can therefore observe an
+`overlap` result but cannot submit a duplicate remote job. Scheduler batches
+and per-assignment outcomes are durable ledger operations. This supports
+concurrent repositories on one Controller machine; the SQLite ledger is not a
+multi-machine lease service.
+
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
 explicitly authorized synthetic receipt. A repository worker may follow a
@@ -1019,6 +1083,23 @@ evidence, delivery receipts, the ledger, primary checkouts and prepared
 dependency/compile caches are preserved. This repository does not restore
 delivered workspaces, review PRs or merge them.
 
+Remote Agency input and result branches have a separate fail-closed cleanup:
+
+```powershell
+npm run pilot -- transport-gc --config .\pilot.local.json
+npm run pilot -- transport-gc --config .\pilot.local.json --execute
+```
+
+Preview is the default. Cleanup requires a completed Draft PR delivery after
+the configured retention interval, no unfinished task operation, a retained
+per-round result receipt, exact remote tips for every deterministic
+`pilot-agency-base/...` and `pilot-agency-result/...` ref, and a final
+`pilot/<assignment-id>` branch that still matches the delivered revision. Only
+the exact transport refs are deleted. The final branch, Draft PR, validation
+artifacts, delivery records and repository checkout are never deleted. Missing
+or mismatched refs are retained for reconciliation, and successful cleanup is
+idempotently recorded in the ledger.
+
 ### FILTER-to-proposer handoff
 
 `submit-filter-handoff` is the production bridge from the complete-record
@@ -1084,7 +1165,9 @@ Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
 `pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
 the initial authoring and every repair round. Search and ranged reads are
 repository-local, read-only and bounded; they do not grant shell or network
-access. Each worker result records the limit, total/remaining calls, per-tool
+access. `pilot_list` accepts an optional repository-relative directory and
+requires a narrower scope when the root file inventory exceeds the file-size
+limit. Each worker result records the limit, total/remaining calls, per-tool
 counts and per-round usage so operators can replace bootstrap limits with an
 observed percentile plus explicit headroom.
 
@@ -1096,6 +1179,26 @@ Before push or draft creation, every required gate must pass at the exact clean
 current revision. Exhausted repair rounds, missing or stale gate results, and
 post-validation source changes remain blocked locally; failed drafts are not
 published.
+
+Repository-skill bindings use the existing Copilot SDK authoring transport by
+default. A binding may explicitly select the opt-in
+[Local Agency authoring provider](AGENCY-LOCAL-AUTHORING.md), which exposes the
+same five controller-owned tools through an authenticated stdio MCP bridge and
+resumes the exact Agency session for repair rounds. The assignment remains
+local: provisioning, commits, exact-revision validation, push, Draft PR
+creation, reconciliation and the no-merge invariant are unchanged. This is
+separate from the hosted [Agency executor](AGENCY-EXECUTOR.md).
+
+| Authoring option | Selection | Additional runtime | Recommended use |
+|---|---|---|---|
+| Copilot SDK | Default | Existing SDK session | Lowest-complexity production baseline |
+| Local Agency | Explicit binding opt-in | Agency CLI, private profile and authenticated MCP bridge | Qualifying Agency orchestration without transferring controller authority |
+
+These are two transports for the same controller workflow, not two different
+permission models. Both receive the same bounded tools and repository skill;
+neither can commit, validate, push, create a Draft PR or merge independently.
+See the provider document for the
+[full comparison](AGENCY-LOCAL-AUTHORING.md#copilot-sdk-comparison).
 
 ### Sanitized E2E proof bundles
 

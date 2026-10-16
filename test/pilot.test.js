@@ -370,6 +370,23 @@ test('worker-result audit fields and validation attempt metadata are mandatory',
     assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
   }
 });
+test('worker-result validation permits an authentication blocker', () => {
+  const examples = JSON.parse(readFileSync('scaffold/example-flows.json'));
+  const result = structuredClone(
+    examples.records.find(record => record.recordType === 'workerResult'));
+  result.outcome = 'blocked';
+  result.validation[0].status = 'blocked';
+  result.validation[0].blockedReason = 'blocked-auth';
+  result.validation[0].nextCheckAt = null;
+  result.validationAttempts[0].validation = structuredClone(result.validation);
+  result.draftPR = null;
+  result.blocker = {
+    owner: 'synthetic-worker',
+    reason: 'Authentication is required',
+    unblockCondition: 'Refresh approved validation authentication'
+  };
+  validateRecord(result, 'workerResult');
+});
 test('portable example uses a fixed UTC fixture window and leaves live permissions unapproved', () => {
   const config = configAt('pilot.example.json');
   assert.deepEqual(config.window, { start: '2026-10-08T00:00:00Z', end: '2026-10-09T00:00:00Z' });
@@ -750,10 +767,31 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   const before = (await g(['rev-parse', 'HEAD'])).stdout;
   const result = await provision(config, job, repo);
   assert.notEqual(result.workspace, repo.referenceCheckout);
+  assert.equal(existsSync(`${result.workspace}.provisioning`), false);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, before);
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
+});
+test('provisioning retains and identifies an incomplete staged workspace without publishing it', async t => {
+  const { config, job, repo, g } = await fixture(t);
+  const workspace = join(config.stateDirectory, 'workspaces', job.session_id);
+  const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  await assert.rejects(provision(config, job, repo, {
+    baseRevision,
+    qualificationSource: 'trusted-remote'
+  }, {
+    fetchQualifiedRevision: async () => { throw new Error('synthetic fetch failure'); }
+  }), error => {
+    assert.equal(error.code, 'blocked-provision');
+    assert.match(error.message, /qualified-revision-fetch/);
+    assert.match(error.message, /\.provisioning/);
+    assert.doesNotMatch(error.message, /synthetic fetch failure/);
+    return true;
+  });
+  assert.equal(existsSync(workspace), false);
+  assert.equal(existsSync(`${workspace}.provisioning`), true);
+  await assert.rejects(provision(config, job, repo), /Incomplete workspace provisioning exists/);
 });
 test('Windows provisioned authoring checkout supports native Git long paths without changing the reference', {
   skip: process.platform !== 'win32'
@@ -799,12 +837,14 @@ test('trusted qualification fetches its exact revision before isolated checkout'
     baseRevision: revision,
     qualificationSource: 'trusted-remote'
   }, {
-    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision) => {
-      fetched = { workspace, repo: currentRepo.id, exactRevision };
+    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision,
+      getToken, timeout) => {
+      fetched = { workspace, repo: currentRepo.id, exactRevision, timeout };
     }
   });
   assert.equal(fetched.repo, repo.id);
   assert.equal(fetched.exactRevision, revision);
+  assert.equal(fetched.timeout, 120000);
   assert.equal((await command('git', ['rev-parse', 'HEAD'], result.workspace)).stdout.trim(), revision);
 });
 test('provisioning skips unrelated Git LFS smudges without mutating the controller environment', () => {
@@ -827,6 +867,17 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.ok(existsSync(join(workspace, 'src', 'new.js')));
   assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
   assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
+  assert.ok((await tools.search('value = 1', 'src')).some(match =>
+    match.includes('src/value.js')));
+  assert.deepEqual(await tools.list('src'), ['src/value.js']);
+  mkdirSync(join(workspace, 'docs'));
+  writeFileSync(join(workspace, 'docs', 'value.js'), 'export const documented = true;\r\n');
+  await command('git', ['add', 'docs/value.js'], workspace);
+  const boundedConfig = structuredClone(config);
+  boundedConfig.limits.maxFileBytes = 12;
+  const boundedTools = new WorkerTools(boundedConfig, editable, workspace);
+  await assert.rejects(boundedTools.list(), /narrow pilot_list/);
+  assert.deepEqual(await boundedTools.list('src'), ['src/value.js']);
   tools.replaceLines('src\\value.js', 1, 1,
     'export const value = 1;', 'export const value = 3;');
   assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 3;');
@@ -1383,12 +1434,20 @@ test('authentication preflight returns a safe action before a cold dispatch', as
     'run', 'setup:validation-auth', '--', '-Workspace'
   ]);
   assert.match(actions[0].remediation.args[4],
-    new RegExp(`pv[\\\\/]a[\\\\/].+[\\\\/]w$`));
+    new RegExp(`pv[\\\\/]d[\\\\/].+[\\\\/]w$`));
   const exactConfig = readFileSync(
     join(actions[0].remediation.args[4], '.yarnrc.yml'), 'utf8');
   assert.match(exactConfig, /AugmentationLoop/);
   assert.doesNotMatch(exactConfig, /wrong-revision/);
-  assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
+  const remediationWorkspace = actions[0].remediation.args[4];
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(remediationWorkspace,
+    join(dirname(prepared.staged.dependencyReceiptPath), 'w'));
+  assert.deepEqual(ctx.calls, [
+    'fingerprint', 'authentication-check',
+    'fingerprint', 'authentication', 'dependencies', 'compile'
+  ]);
 });
 test('trusted dependency cache hits skip authentication checks', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });

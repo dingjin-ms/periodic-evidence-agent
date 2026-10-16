@@ -47,6 +47,8 @@ export class Ledger {
         state TEXT NOT NULL, detail TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS workspace_cleanup (
         job_id TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS transport_cleanup (
+        job_id TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS immutable_records_update BEFORE UPDATE ON records
         BEGIN SELECT RAISE(ABORT,'Records are immutable'); END;
       CREATE TRIGGER IF NOT EXISTS immutable_records_delete BEFORE DELETE ON records
@@ -255,6 +257,16 @@ export class Ledger {
       ON CONFLICT(job_id) DO UPDATE SET state=excluded.state,detail=excluded.detail,updated_at=excluded.updated_at`)
       .run(id, detail.state, json(detail), now());
   }
+  transportCleanup(id) {
+    const row = this.db.prepare('SELECT detail FROM transport_cleanup WHERE job_id=?').get(id);
+    return row ? JSON.parse(row.detail) : null;
+  }
+  recordTransportCleanup(id, detail) {
+    if (this.transportCleanup(id)?.state === 'removed' && detail.state !== 'removed') return;
+    this.db.prepare(`INSERT INTO transport_cleanup VALUES(?,?,?,?)
+      ON CONFLICT(job_id) DO UPDATE SET state=excluded.state,detail=excluded.detail,updated_at=excluded.updated_at`)
+      .run(id, detail.state, json(detail), now());
+  }
   evidenceForRuns(ids) {
     return [...new Set(ids.flatMap(id => this.db.prepare('SELECT evidence_id FROM observations WHERE run_id=?').all(id).map(r => r.evidence_id)))]
       .map(id => this.get('evidence', id));
@@ -275,6 +287,8 @@ export class Ledger {
       jobs: this.db.prepare('SELECT * FROM jobs ORDER BY updated_at DESC').all(),
       operations: this.db.prepare('SELECT * FROM operations ORDER BY updated_at DESC').all(),
       workspaceCleanup: this.db.prepare('SELECT detail FROM workspace_cleanup ORDER BY updated_at DESC')
+        .all().map(row => JSON.parse(row.detail)),
+      transportCleanup: this.db.prepare('SELECT detail FROM transport_cleanup ORDER BY updated_at DESC')
         .all().map(row => JSON.parse(row.detail)),
       counts: this.db.prepare('SELECT kind,COUNT(*) AS count FROM records GROUP BY kind').all()
     };

@@ -57,6 +57,13 @@ only in the verified isolated product workspace.
 
 ## Completion and recovery
 
+For a `1js-declarative-e2e-v1` assignment, report canonical scenario IDs and
+only skill-authored files. Do not edit catalog/lifecycle entries, capability
+matrices, package scripts or execution-selection policy. The separately approved
+Controller owner step registers the exact reviewed scenario batch and records
+its own file hashes before the final commit. The native gate, not the skill,
+produces the five-pass final-SHA proof and preserves cleanup receipts.
+
 `rca-complete` is only for RCA-only assignments. A code change/draft is
 `draft-reported` and awaits validation reconciliation; blocked work is
 `blocked`. The coordinator records these with `app-worker --operation result`.

@@ -2287,6 +2287,7 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
 });
 test('resolved fixed OA source creates a test-only source-bound validated draft through the controller', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
+  repo.commitTrailers = ['Copilot-Session: synthetic-session'];
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
     id: 'oa-integration-test-core', capability: 'integration-test-authoring',
@@ -2388,6 +2389,8 @@ test('resolved fixed OA source creates a test-only source-bound validated draft 
     runModel: async (config, ledger, current, currentAssignment, currentInvestigation, toolkit, loadedSkill) => {
       assert.match(loadedSkill.instructions, /Synthetic OA skill/);
       assert.equal(loadedSkill.skillRevision, baseRevision);
+      writeFileSync(join(current.workspace, '.git', 'hooks', 'pre-commit'),
+        '#!/bin/sh\nprintf invoked > .git/synthetic-hook-receipt\n', { mode: 0o755 });
       assert.throws(() => toolkit.write('src\\value.js', 'export const value = 2;\n'),
         /outside approved edit bounds/);
       toolkit.write('test\\behavior.test.js',
@@ -2416,6 +2419,11 @@ test('resolved fixed OA source creates a test-only source-bound validated draft 
     ['test/behavior.behavior-card.md', 'test/behavior.test.js']);
   assert.equal(result.validation[0].sourceRevision, result.sourceRevision);
   assert.equal(result.draftPR.headRevision, result.sourceRevision);
+  const workspace = ctx.ledger.job(job.id).workspace;
+  assert.equal(readFileSync(join(workspace, '.git', 'synthetic-hook-receipt'), 'utf8'), 'invoked');
+  const message = (await command('git', ['log', '-1', '--format=%B'], workspace)).stdout;
+  assert.match(message, /Co-authored-by: Copilot <223556219\+Copilot@users\.noreply\.github\.com>/);
+  assert.match(message, /Copilot-Session: synthetic-session/);
 });
 test('workspace GC previews delivery, reports deletion failure and safely retries without deleting caches or evidence', async t => {
   const ctx = await deliveredWorkspace(t);

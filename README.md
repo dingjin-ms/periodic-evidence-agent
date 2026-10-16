@@ -451,6 +451,74 @@ retry, or credential-bearing configuration is performed. Missing Git LFS,
 unavailable objects, authentication failure or object mismatch blocks validation
 with the original sanitized native failure, never a successful preparation receipt.
 
+### Built-in 1JS declarative execution
+
+The `1js-declarative-e2e-v1` profile is a repository-level execution adapter,
+not a script to write for each incident. Its packaged implementation is
+`scripts/validation/1js-declarative-e2e.cjs`. The example 1JS gate selects this
+profile by name; configuration resolves its fixed arguments and content hash
+automatically. Its execution settings and registration policy participate in
+read-only repository-skill qualification. Changing them requires requalification.
+Example routing, authoring, registration, execution and publication remain off.
+
+Configure the installed product-compatible Node executable, the installed Yarn
+or Corepack JavaScript entry point, and the signed-in loopback HTTP CDP endpoint
+once in private deployment settings. Do not put case IDs or evidence-specific
+commands in that configuration. The Controller derives the batch from the
+qualified assignment's reviewed mini-spec items, skill-reported scenario IDs,
+and changed L3 files. This version supports the Excel Agent ordinary AAD lane,
+one explicitly changed scenario per input item, with a configurable bound of
+one to ten cases. Shared-only changes, other applications and identity lanes
+require an owner capability handoff, not an implicit fallback or whole-suite run.
+The example does not narrow the checkout to app sources: native execution also
+needs the pinned Yarn, scoped installer, build tools and transitive package
+sources. An app-only sparse checkout is not a prepared execution lane.
+Shared YAML changes are restricted to new UI-map keys and appended composites:
+existing entries and resource contracts must remain semantically identical to
+the qualified base. Changes affecting existing consumers require an explicit
+consumer-closure handoff, not an unapproved expansion of the selected live batch.
+
+After the bounded skill returns, a separately approved Controller registration
+step updates only the selected entries in the reviewed catalog, lifecycle
+catalog, capability matrix and canonical package script. These four owner files
+are never added to the model's write allowlist. New cases use observing
+enforcement and the explicitly configured registration priority. Existing
+disabled cases, titles, tags, assertions and cleanup contracts cannot be removed,
+renamed, retagged or weakened by registration. Execution-selection policy is not
+changed. Registration emits an assignment-bound, profile-hashed receipt with
+exact owner file hashes; later source edits invalidate it.
+Repair rounds regenerate metadata against the qualified base, preserving its
+contracts without treating an earlier unsuccessful round's additions as history.
+Explicit validation continuations verify the prior immutable receipt and source
+before recording a new assignment-bound receipt; they do not rerun registration.
+
+The Controller commits the authored declarations and owner metadata together,
+respecting Git hooks. Optional repository `commitTrailers` contain single-line
+Git trailers, such as the invoking session's provenance; do not hard-code a
+session into the reusable profile. Validation uses a clean isolated checkout of
+that final SHA. The native profile runs typecheck, declarative unit tests,
+strict repair/catalog/lifecycle validation, then one native local batch with
+five repetitions, one worker, zero retries and fail-fast behavior. Controller
+infrastructure retries cannot silently rerun this live batch.
+
+Successful exit alone is insufficient: validation checks the exact native
+selection and declaration hashes, five distinct expected passes per scenario,
+protected business-contract events, every declared cleanup step and CDP tab
+preservation. It never closes user tabs or automatically deletes leaked tabs.
+Native output and the source-bound receipt remain under the private Controller
+state directory after the validation checkout is removed. Only an independently
+authorized dispatch with every required gate passing can reach push, Draft PR
+or the separately configured non-blocking build.
+
+Product dependencies and authenticated browser/feed setup are deployment
+prerequisites, not model-authored glue. The profile never accepts credentials in
+the assignment. `installDependencies` is off by default; when separately
+approved, a missing native dependency triggers the repository's scoped Yarn
+installer and native build once, rather than using another checkout's binaries.
+The scoped installer runs with its native `--skip-auth` option; unavailable feed
+access blocks execution rather than starting interactive sign-in inside a gate.
+Neither enabling the profile nor qualification grants publication permissions.
+
 The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 Its version 3 plan retains the controller-owned Azure Artifacts authentication

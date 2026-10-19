@@ -85,7 +85,7 @@ export function verifyNativePreparationContinuation(config, detail) {
   requireThat(auth.failure.path === detail.priorResult.validation[0].artifactRefs[0] &&
     !existsSync(join(detail.priorStateDirectory, 'native-validation', hash(native.id))) &&
     commit.revision === detail.priorResult.sourceRevision && commit.round === 0 &&
-    commit.baseRevision === detail.priorJob.base_revision &&
+    json(Object.keys(commit).sort()) === json(['revision', 'round']) &&
     ownerDetail.requestPath === auth.ownerRequest.path &&
     ownerDetail.requestSha256 === auth.ownerRequest.sha256 &&
     ownerDetail.approvalPath === auth.ownerApproval.path &&

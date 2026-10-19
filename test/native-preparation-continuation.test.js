@@ -57,7 +57,8 @@ for (const condition of ['valid', 'published', 'native-output', 'model', 'native
 }
 
 for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift', 'approval-drift',
-  'native-directory', 'file-drift', 'result-drift', 'operation-drift', 'description-drift', 'config-drift']) {
+  'native-directory', 'file-drift', 'result-drift', 'operation-drift', 'description-drift', 'config-drift',
+  'commit-source', 'commit-extra-field', 'base-authority']) {
   test(`native preparation recovery bindings ${condition}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'native-preparation-proof-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -87,7 +88,7 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
     for (const row of operations) row.detail = '{}';
     operations.find(row => row.kind === 'validation').id = 'synthetic-validation-operation';
     operations.find(row => row.kind === 'commit').detail = json({
-      baseRevision: job.base_revision, revision: result.sourceRevision, round: 0 });
+      revision: result.sourceRevision, round: 0 });
     operations.find(row => row.kind === 'owner-review').detail = json({
       requestPath: requestRef.path, requestSha256: requestRef.sha256,
       approvalPath: approvalRef.path, approvalSha256: approvalRef.sha256,
@@ -115,12 +116,19 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
     if (condition === 'file-drift') detail.files[0].sha256 = 'e'.repeat(64);
     if (condition === 'result-drift') result.sourceRevision = 'e'.repeat(40);
     if (condition === 'operation-drift') operations.find(row => row.kind === 'commit').state = 'started';
+    if (condition === 'commit-source')
+      operations.find(row => row.kind === 'commit').detail = json({ revision: 'd'.repeat(40), round: 0 });
+    if (condition === 'commit-extra-field')
+      operations.find(row => row.kind === 'commit').detail = json({
+        revision: result.sourceRevision, round: 0, baseRevision: job.base_revision });
+    if (condition === 'base-authority') auth.baseRevision = 'd'.repeat(40);
     if (condition === 'description-drift') detail.proposal.description = 'Changed';
     if (condition === 'config-drift') {
       config.limits.maxValidationInfrastructureRetries = 1;
       auth.nextConfigSha256 = hash(json(config));
     }
     detail.authorizationSha256 = hash(json(auth));
+    detail.priorOperationsSha256 = hash(json(operations));
     const verify = () => verifyNativePreparationContinuation(config, detail);
     if (condition === 'valid') assert.doesNotThrow(verify);
     else assert.throws(verify, error => ['blocked-reconciliation', 'blocked-authorization'].includes(error.code));

@@ -161,8 +161,17 @@ export async function finalizeDeclarativeSkill(config, ledger, job, repo, assign
     ledger.finishOperation(id, 'completed', { artifactRef, ...body });
     return { ...skillExecution, registration: { ...body, artifactRef } };
   } catch (error) {
-    ledger.finishOperation(id, 'blocked', { revision, round, error: safeError(error).message });
-    throw error;
+    const feedAuthenticationFailed = /Your token is invalid|Authentication to package feed failed/i
+      .test(`${error.stdout ?? ''}\n${error.stderr ?? ''}`);
+    const failure = feedAuthenticationFailed
+      ? new PilotError('blocked-auth',
+        'Native registration dependency setup failed package-feed authentication. Run the repository-supported yarn auth, then reconcile the preserved authored proposal; no product validation ran.')
+      : error;
+    ledger.finishOperation(id, 'blocked', {
+      revision, round, error: safeError(failure).message,
+      ...(feedAuthenticationFailed ? { prerequisite: 'package-feed-authentication', productInvocations: 0 } : {})
+    });
+    throw failure;
   } finally {
     removeValidationPath(profilePath, { force: true });
   }
@@ -3159,6 +3168,16 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       if (authorization.capabilityResolution)
         authoring.capabilityResolution = await (await import('./authoring-tool-continuation.js'))
           .verifyExistingCapability(authorization, current.workspace, current.base_revision);
+      if (authorization.registrationRecovery) {
+        const { Ledger } = await import('./ledger.js');
+        const detail = JSON.parse(toolContinuation.detail);
+        const previous = new Ledger(detail.priorStateDirectory, { readOnly: true });
+        try {
+          authoring.registrationRecovery = await (await import('./authoring-tool-continuation.js'))
+            .verifyRegistrationRecovery(authorization, previous.get('assignment', id), previous.job(id),
+              previous.get('workerResult', detail.priorResultId));
+        } finally { previous.close(); }
+      }
     }
     let finalValidation = [];
     let controllerRegistration = continuation
@@ -3217,6 +3236,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           proposal.skillExecution = await finalizeDeclarativeSkill(config, ledger, current,
             repo, assignment, proposal.skillExecution, authoring.round, dependencies.execute ?? command);
         controllerRegistration = proposal.skillExecution?.registration ?? null;
+        const reviewDirectory = toolContinuation &&
+          JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory;
+        if (reviewDirectory)
+          await (await import('./owner-review.js')).awaitOwnerReview(ledger, current, authoring.round,
+            reviewDirectory, await workspaceChanges(current.workspace, current.base_revision));
         const commitOperation = `${id}:commit:${authoring.round}`;
         ledger.operation(commitOperation, id, 'commit', { baseRevision: revision, round: authoring.round });
         await git(current.workspace, ['add', '--all']);

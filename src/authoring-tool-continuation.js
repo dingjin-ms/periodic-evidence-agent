@@ -6,7 +6,8 @@ import { Ledger } from './ledger.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { qualifyRepositorySkill, skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
 import { workerToolNames } from './worker-tool-contract.js';
-import { command, makePlannedImprovementAssignment, requireCurrentAssignment } from './workers.js';
+import { command, makePlannedImprovementAssignment, requireAllowedSkillChanges,
+  requireCurrentAssignment } from './workers.js';
 
 const kind = 'continued-from-authoring-tool-failure';
 const operationId = (id, attempt) => `${id}:authoring-tool-continuation:${attempt}`;
@@ -58,28 +59,67 @@ export async function verifyExistingCapability(authorization, workspace, revisio
   return report;
 }
 
-async function predecessor(config, ledger, id, reservation = null, authorization = null, depth = 0) {
+export async function verifyRegistrationRecovery(authorization, assignment, job, result) {
+  const reference = authorization?.registrationRecovery;
+  requireThat(isAbsolute(reference?.path ?? '') && /^[a-f0-9]{64}$/.test(reference?.sha256 ?? ''),
+    'An immutable registration recovery review is required', 'blocked-reconciliation');
+  const bytes = readFileSync(reference.path);
+  requireThat(hash(bytes) === reference.sha256, 'Registration recovery review changed', 'blocked-reconciliation');
+  const review = JSON.parse(bytes);
+  requireThat(review.format === 'uncommitted-registration-recovery-v1' &&
+    review.assignmentId === assignment.id && review.attemptId === job.session_id &&
+    review.workerResultSha256 === hash(json(result)) && review.sourceRevision === job.base_revision &&
+    review.dependencySetup === 'passed' && review.nativeLoader === 'passed' &&
+    review.productInvocations === 0 && review.unknownsResolved === true &&
+    typeof review.explanation === 'string' && review.explanation.trim() &&
+    json(Object.keys(review.fileSha256 ?? {}).sort()) === json([...result.skillExecution.changedFiles].sort()),
+  'Registration recovery must bind the retained proposal and repaired native prerequisites',
+  'blocked-reconciliation');
+  const changed = [...new Set([
+    ...(await git(job.workspace, ['diff', '--name-only', 'HEAD'])).split('\n'),
+    ...(await git(job.workspace, ['ls-files', '--others', '--exclude-standard'])).split('\n')
+  ].filter(Boolean))].sort();
+  requireAllowedSkillChanges(changed, assignment.allowedWritePrefixes,
+    result.skillExecution.changedFiles, assignment.allowedWriteFiles);
+  for (const file of changed)
+    requireThat(hash(readFileSync(join(job.workspace, file))) === review.fileSha256[file],
+      'Uncommitted proposal changed after recovery review', 'blocked-reconciliation');
+  return review;
+}
+
+async function predecessor(config, ledger, id, reservation = null, authorization = null,
+  depth = 0, descendantHasReviewedChanges = false) {
   requireThat(depth <= 3, 'Read-only recovery lineage exceeds its bounded depth', 'blocked-reconciliation');
   const job = ledger.job(id), assignment = ledger.get('assignment', id);
   const results = ledger.all('workerResult').filter(result => result.assignmentId === id);
   const result = results[0], usage = result?.toolUsage, skill = result?.skillExecution;
-  requireThat(job?.state === 'blocked' && !JSON.parse(job.error ?? 'null') &&
+  const registrationRecovery = Boolean(authorization?.registrationRecovery);
+  const admittedSkill = registrationRecovery
+    ? skill?.status === 'succeeded' && skill.classification === 'regression-coverage' &&
+      skill.changedFiles.length > 0 && skill.testsAddedOrUpdated.length > 0 &&
+      skill.unknowns.length === 0 && skill.needsHumanDecision === false
+    : skill?.status === 'blocked' &&
+      ['bounded-edit-capability-unavailable', 'missing-mid-flow-protected-assertion-capability']
+        .includes(skill.classification) &&
+      skill.changedFiles.length === 0 && skill.testsAddedOrUpdated.length === 0 &&
+      (skill.classification !== 'bounded-edit-capability-unavailable' || skill.unknowns.length === 0);
+  requireThat(job?.state === 'blocked' &&
+    (registrationRecovery
+      ? ['failed', 'blocked-auth'].includes(JSON.parse(job.error ?? 'null')?.code)
+      : !JSON.parse(job.error ?? 'null')) &&
     assignment?.execution === 'local' && assignment.skillBindingId && assignment.testCoveragePlanId &&
     results.length === 1 && result.attemptId === job.session_id && result.outcome === 'blocked' &&
     result.sourceRevision === job.base_revision && result.draftPR === null &&
     result.validation.length === 0 && result.validationAttempts.length === 0 &&
     (result.remoteValidation ?? []).length === 0 &&
-    skill?.status === 'blocked' &&
-    ['bounded-edit-capability-unavailable', 'missing-mid-flow-protected-assertion-capability']
-      .includes(skill.classification) &&
+    admittedSkill &&
     skill.bindingId === assignment.skillBindingId && skill.skillRevision === job.base_revision &&
-    skill.changedFiles.length === 0 && skill.testsAddedOrUpdated.length === 0 &&
     skill.behaviorCardsAddedOrUpdated.length === 0 &&
-    (skill.classification !== 'bounded-edit-capability-unavailable' || skill.unknowns.length === 0) &&
     usage?.used > 1 && usage.limit === assignment.bounds.maxToolCalls &&
     usage.remaining === usage.limit - usage.used && usage.byTool.pilot_finish === 1 &&
     Object.entries(usage.byTool).every(([name, count]) =>
-      ['pilot_list', 'pilot_search', 'pilot_read', 'pilot_finish'].includes(name) || count === 0) &&
+      ['pilot_list', 'pilot_search', 'pilot_read', 'pilot_finish',
+        ...(registrationRecovery ? ['pilot_write', 'pilot_replace_lines'] : [])].includes(name) || count === 0) &&
     Object.values(usage.byTool).reduce((sum, count) => sum + count, 0) === usage.used &&
     usage.rounds.length === 1 && usage.rounds[0].round === 0 && usage.rounds[0].status === 'completed' &&
     usage.rounds[0].used === usage.used && usage.rounds[0].cumulativeUsed === usage.used,
@@ -92,7 +132,17 @@ async function predecessor(config, ledger, id, reservation = null, authorization
     ? reservations.length === 1 && reservations[0].state === reservation.state
     : reservations.length === 0,
   'Tool continuation is absent or already reserved', 'blocked-reconciliation');
-  const origins = operations.filter(row => row.id !== reservationId);
+  const finalization = operations.filter(row => row.kind === 'declarative-registration');
+  if (registrationRecovery) {
+    requireThat(finalization.length === 1 && finalization[0].state === 'blocked' &&
+      finalization[0].id === `${id}:declarative-registration:0` &&
+      JSON.parse(finalization[0].detail).revision === job.base_revision &&
+      JSON.parse(finalization[0].detail).round === 0,
+    'Only the first failed pre-commit registration may resume authoring', 'blocked-reconciliation');
+    await verifyRegistrationRecovery(authorization, assignment, job, result);
+  }
+  const origins = operations.filter(row => row.id !== reservationId &&
+    !(registrationRecovery && row === finalization[0]));
   let owned = join(ledger.directory, 'workspaces', job.session_id);
   let originAuthorization = null;
   if (origins.length) {
@@ -117,7 +167,8 @@ async function predecessor(config, ledger, id, reservation = null, authorization
         requireThat(origin.nextConfigSha256 === hash(json(config)),
           'Consumed authoring configuration changed', 'blocked-reconciliation');
         const parent = await predecessor(origin.priorConfig, previous, id,
-          { id: origins[0].id, state: 'claimed' }, origin.authorization, depth + 1);
+          { id: origins[0].id, state: 'claimed' }, origin.authorization, depth + 1,
+          descendantHasReviewedChanges || registrationRecovery);
         owned = parent.job.workspace;
         originAuthorization = origin.authorization;
       } else owned = join(previous.directory, 'workspaces', priorJob.session_id);
@@ -125,7 +176,8 @@ async function predecessor(config, ledger, id, reservation = null, authorization
   }
   requireThat(realpathSync(job.workspace) === realpathSync(owned) &&
     await git(job.workspace, ['rev-parse', 'HEAD']) === job.base_revision &&
-    !await git(job.workspace, ['status', '--porcelain']),
+    (registrationRecovery || descendantHasReviewedChanges ||
+      !await git(job.workspace, ['status', '--porcelain'])),
   'Tool recovery requires the unchanged owned qualified checkout', 'blocked-reconciliation');
   requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
   verifyRepositorySkillWorkspace(config, assignment, job.workspace, job.base_revision,

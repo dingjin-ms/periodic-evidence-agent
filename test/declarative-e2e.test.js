@@ -299,6 +299,22 @@ test('requests reject unbound source, non-local browsers and batch widening', as
   assert.throws(() => native.changedScenarios([`${native.APP}/declarative/ui-map.yaml`]), /explicitly/);
 });
 
+test('registration surfaces feed authentication failure without retaining credential-bearing output', async t => {
+  const ctx = await fixture(t);
+  await assert.rejects(finalize(ctx, async () => {
+    throw Object.assign(new Error('secret transport diagnostic'), {
+      stdout: 'Your token is invalid. SECRET_VALUE_MUST_NOT_PERSIST',
+      stderr: 'Authentication to package feed failed'
+    });
+  }), error => error.code === 'blocked-auth' && /yarn auth/.test(error.message));
+  const operation = [...ctx.operations.values()][0];
+  assert.equal(operation.state, 'blocked');
+  assert.equal(operation.detail.prerequisite, 'package-feed-authentication');
+  assert.equal(operation.detail.productInvocations, 0);
+  assert(!json(operation).includes('SECRET_VALUE'));
+  assert(!json(operation).includes('secret transport'));
+});
+
 test('Controller finalizes only owner metadata, persists its receipt and rejects later tampering', async t => {
   const ctx = await fixture(t);
   const execution = await finalize(ctx);

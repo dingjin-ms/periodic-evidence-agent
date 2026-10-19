@@ -691,6 +691,26 @@ An explicit user grant covering work until native validation may use
 invent a later user approval or authorize a second claim of any attempt; other
 authorizations must still postdate their blocked predecessor.
 
+A successful authored proposal that failed its first owner registration before
+commit may also continue through this entrypoint with a content-bound
+`registrationRecovery` review (`uncommitted-registration-recovery-v1`).
+The review binds the prior assignment, attempt, result and every authored file
+digest, and records repaired dependencies/native loader with zero product
+invocations. Preparation and claim require the exact declared uncommitted diff,
+no commit, native validation or publication, and the single blocked round-zero
+registration. No Controller metadata changes are admitted. Every ancestor is
+still verified; only the reviewed descendant diff may explain a formerly clean
+ancestor's shared checkout. The retained proposal and owner feedback are given
+to a fresh bounded authoring round, rather than resetting the failed job or
+silently rerunning registration. This is not evidence of a passing product test.
+An optional `registrationRecovery.ownerReviewDirectory` holds an external
+pre-commit owner/security review rendezvous. Each round writes a fresh request
+with exact changed-file digests, waits at most five minutes for a matching
+`repository-owner-review-v1` approval, and rechecks source bytes before commit.
+Approval is outside the restricted worker workspace; missing, stale, rejected
+or changed-source reviews block before commit. The host performs the repository's
+required security review and applicable pre-commit checks against that snapshot.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

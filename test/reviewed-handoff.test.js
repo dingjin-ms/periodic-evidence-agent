@@ -311,7 +311,16 @@ async function toolFixture(t, options = {}) {
       result.skillExecution.unknowns = ['Synthetic missing intermediate assertion'];
       result.skillExecution.needsHumanDecision = true;
     }
-  }, null, options);
+    if (options.registrationRecovery) {
+      Object.assign(result.skillExecution, {
+        status: 'succeeded', classification: 'regression-coverage',
+        changedFiles: ['test/authored.test.js'], testsAddedOrUpdated: ['test/authored.test.js']
+      });
+      result.toolUsage.byTool.pilot_read = 0;
+      result.toolUsage.byTool.pilot_write = 1;
+    }
+  }, options.registrationRecovery ? { code: 'failed', message: 'Fixture registration setup failure' } : null,
+  options);
   ctx.nextConfig.limits.workerMaxToolCalls = 180;
   ctx.nextConfig.limits.maxValidationRepairRounds = 2;
   Object.assign(ctx.authorization, {
@@ -333,7 +342,106 @@ async function toolFixture(t, options = {}) {
     }));
     ctx.authorization.capabilityResolution = { path, sha256: hash(readFileSync(path)) };
   }
+  if (options.registrationRecovery) {
+    mkdirSync(join(ctx.isolated.workspace, 'test'));
+    writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Synthetic authored proposal\n');
+    const path = join(ctx.root, 'synthetic-registration-recovery.json');
+    writeFileSync(path, json({
+      format: 'uncommitted-registration-recovery-v1', assignmentId: ctx.prepared.job.id,
+      attemptId: ctx.prepared.job.session_id, workerResultSha256: hash(json(ctx.result)),
+      sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+      productInvocations: 0, unknownsResolved: true,
+      fileSha256: { 'test/authored.test.js': hash('// Synthetic authored proposal\n') },
+      explanation: 'Synthetic recovered setup. No product test or publication.'
+    }));
+    ctx.authorization.registrationRecovery = { path, sha256: hash(readFileSync(path)) };
+    const operation = `${ctx.prepared.job.id}:declarative-registration:0`;
+    ctx.ledger.operation(operation, ctx.prepared.job.id, 'declarative-registration', {});
+    ctx.ledger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  }
   return ctx;
+}
+
+test('reviewed uncommitted recovery preserves consumed authoring ancestors while retaining the descendant diff', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked', {
+    error: { code: 'failed', message: 'Synthetic registration failure' }
+  });
+  mkdirSync(join(isolated.workspace, 'test'));
+  writeFileSync(join(isolated.workspace, 'test', 'retained.js'), 'Synthetic retained source\n');
+  const result = toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'retained-proposal-result',
+    attemptId: prepared.job.session_id, reportedAt: now(),
+    toolUsage: { ...ctx.result.toolUsage, limit: prepared.assignment.bounds.maxToolCalls }
+  }, prepared.assignment);
+  Object.assign(result.skillExecution, {
+    status: 'succeeded', classification: 'regression-coverage',
+    changedFiles: ['test/retained.js'], testsAddedOrUpdated: ['test/retained.js'],
+    needsHumanDecision: false
+  });
+  result.toolUsage.byTool.pilot_read = 0;
+  result.toolUsage.byTool.pilot_write = 1;
+  ctx.nextLedger.put(result);
+  const operation = `${id}:declarative-registration:0`;
+  ctx.nextLedger.operation(operation, id, 'declarative-registration', {});
+  ctx.nextLedger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  const path = join(ctx.root, 'retained-recovery.json');
+  writeFileSync(path, json({
+    format: 'uncommitted-registration-recovery-v1', assignmentId: id,
+    attemptId: prepared.job.session_id, workerResultSha256: hash(json(result)),
+    sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+    productInvocations: 0, unknownsResolved: true,
+    fileSha256: { 'test/retained.js': hash('Synthetic retained source\n') },
+    explanation: 'Synthetic descendant-only source; no product invocation.'
+  }));
+  const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'registration') };
+  const ledger = new Ledger(next.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = {
+    ...ctx.authorization, scope: 'until-native-validation',
+    priorAuthorizationSha256: hash(json(ctx.authorization)),
+    previousAttemptId: prepared.job.session_id, nextConfigSha256: hash(json(next)),
+    registrationRecovery: { path, sha256: hash(readFileSync(path)) }
+  };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id, next, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(next, ledger, id), isolated);
+  assert.equal(readFileSync(join(isolated.workspace, 'test', 'retained.js'), 'utf8'),
+    'Synthetic retained source\n');
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+});
+
+for (const condition of ['valid', 'file-drift', 'result-drift', 'unexpected-file', 'validation-started']) {
+  test(`uncommitted owner registration recovery ${condition}`, async t => {
+    const ctx = await toolFixture(t, { registrationRecovery: true }), id = ctx.prepared.job.id;
+    if (condition === 'file-drift')
+      writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Changed after review\n');
+    if (condition === 'unexpected-file')
+      writeFileSync(join(ctx.isolated.workspace, 'unexpected.txt'), 'Not skill-authored');
+    if (condition === 'result-drift') {
+      const reference = ctx.authorization.registrationRecovery;
+      const review = JSON.parse(readFileSync(reference.path, 'utf8'));
+      review.workerResultSha256 = 'f'.repeat(64);
+      writeFileSync(reference.path, json(review));
+      reference.sha256 = hash(readFileSync(reference.path));
+    }
+    if (condition === 'validation-started')
+      ctx.ledger.operation('unexpected-validation', id, 'validation', {});
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+      assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+      assert.equal(ctx.ledger.job(id).state, 'blocked');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+  });
 }
 
 test('existing capability reconciliation requires a reviewed source-bound proof and rechecks it at claim', async t => {

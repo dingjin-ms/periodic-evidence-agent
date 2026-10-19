@@ -91,6 +91,13 @@ and the prior authorization hash with `scope: "until-native-validation"`; never
 fabricate a fresh approval time. The same native, write-scope and publication
 limits remain mandatory.
 
+If authoring succeeded but first registration failed before any commit or native
+test, preserve that result and exact authored diff. Use a content-bound
+`registrationRecovery` review only after proving native setup recovered. The
+same entrypoint rechecks the unchanged authored bytes and blocked registration
+before a fresh bounded authoring round. Do not admit owner-metadata drift,
+committed proposals, product invocations or publication through this path.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)

@@ -3010,6 +3010,13 @@ export async function verifyPreservedChange(config, assignment, job, result, pro
   return files.map(path => ({ path, sha256: hash(readFileSync(boundedPath(job.workspace, path))) }));
 }
 export function verifyContinuationPredecessor(continuation, operationId, nextAttemptId) {
+  if (continuation.nativePreparationDispatchFailure) {
+    const recovery = continuation.nativePreparationDispatchFailure;
+    verifyContinuationPredecessor(recovery, operationId, nextAttemptId);
+    verifyContinuationPredecessor(recovery.originalContinuation, operationId,
+      recovery.priorJob.session_id);
+    return;
+  }
   const priorLedger = new DatabaseSync(join(continuation.priorStateDirectory, 'ledger.sqlite'),
     { readOnly: true });
   try {
@@ -3206,7 +3213,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       'Preparation recovery workspace origin changed', 'blocked-reconciliation');
     }
     const isolated = continuation?.nativePreparationCorrection
-      ? { workspace: continuation.priorJob.workspace, base_revision: continuation.priorJob.base_revision }
+      ? (await import('./native-preparation-continuation.js')).nativePreparationWorkspace(continuation)
       : runtimeContinuation
       ? await (await import('./runtime-continuation.js')).claimRuntimeWorkspace(config, ledger, id)
       : toolContinuation

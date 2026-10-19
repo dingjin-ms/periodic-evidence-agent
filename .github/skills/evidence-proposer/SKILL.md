@@ -114,6 +114,8 @@ commit, no native output directory or publication operations, and the original
 until-validation grant/time linked by its authorization hash. It reuses the owned
 checkout once in fresh private state with zero initial model calls or commits.
 Native gates, source qualification and zero infrastructure retries cannot change.
+One recorded zero-stage workspace-base field mismatch can be continued once with
+both predecessor reservations intact; nested dispatch corrections are rejected.
 Later test-only repair remains bounded and requires a new external owner review;
 an already-invoked native failure is never admitted as a preparation failure.
 

@@ -52,8 +52,48 @@ export function verifyNativePreparationFailure(job, result, operations, failure,
     state['reuse-owner-reviewed-proposal'] === 'completed' && state.validation === 'blocked',
   'Preparation predecessor has incomplete or unexpected operations', 'blocked-reconciliation');
 }
+export function verifyNativePreparationDispatchFailure(recovery) {
+  const { priorJob: job, priorResult: result, operations, originalContinuation: original } = recovery;
+  requireThat(original?.nativePreparationCorrection && !original.nativePreparationDispatchFailure &&
+    operations.length === 1 && operations[0].kind === 'continued-from-validation-failure' &&
+    operations[0].state === 'prepared' && json(JSON.parse(operations[0].detail)) === json(original) &&
+    hash(json(operations)) === recovery.priorOperationsSha256 &&
+    hash(json(result)) === recovery.priorResultSha256 &&
+    job.state === 'blocked' && job.session_id === original.nextAttemptId &&
+    job.id === original.nextAssignmentId && job.base_revision === null &&
+    job.workspace === original.priorJob.workspace &&
+    json(JSON.parse(job.error)) === json({ code: 'blocked-reconciliation',
+      message: 'Repository skill qualification does not match the isolated source revision' }) &&
+    result.assignmentId === job.id && result.attemptId === job.session_id &&
+    result.outcome === 'blocked' && result.sourceRevision === null && result.skillExecution === null &&
+    result.draftPR === null && result.remoteValidation.length === 0 &&
+    result.validation.length === 0 && result.validationAttempts.length === 0 &&
+    result.toolUsage.used === 0 && result.toolUsage.rounds.length === 0 &&
+    Object.values(result.toolUsage.byTool).every(n => n === 0),
+  'Only the sealed zero-stage preparation field-mapping failure can continue once',
+  'blocked-reconciliation');
+}
+export function nativePreparationWorkspace(detail) {
+  requireThat(detail?.nativePreparationCorrection &&
+    isAbsolute(detail.priorJob?.workspace ?? '') &&
+    /^[a-f0-9]{40}$/.test(detail.priorJob?.base_revision ?? ''),
+  'Preparation recovery requires its pinned owned workspace and base', 'blocked-reconciliation');
+  return { workspace: detail.priorJob.workspace, baseRevision: detail.priorJob.base_revision };
+}
 export function verifyNativePreparationContinuation(config, detail) {
   const auth = detail.authorization, correction = detail.nativePreparationCorrection;
+  const recovery = detail.nativePreparationDispatchFailure;
+  if (recovery) {
+    verifyNativePreparationDispatchFailure(recovery);
+    verifyNativePreparationContinuation({ ...config, stateDirectory: recovery.priorStateDirectory },
+      recovery.originalContinuation);
+    requireThat(json(detail.priorJob) === json(recovery.originalContinuation.priorJob) &&
+      json(detail.priorResult) === json(recovery.originalContinuation.priorResult) &&
+      json(detail.priorAssignment) === json(recovery.originalContinuation.priorAssignment) &&
+      detail.priorStateDirectory === recovery.originalContinuation.priorStateDirectory &&
+      json(correction) === json(recovery.originalContinuation.nativePreparationCorrection),
+    'Preparation dispatch correction changed its approved source lineage', 'blocked-reconciliation');
+  }
   requireThat(auth.kind === 'native-preparation-only' && correction &&
     auth.approved === true && auth.authorizedBy === 'user' &&
     detail.authorizationSha256 === hash(json(auth)) &&
@@ -62,11 +102,12 @@ export function verifyNativePreparationContinuation(config, detail) {
     json(correction.originalGrant) === json(JSON.parse(correction.operations.find(row =>
       row.kind === 'continued-from-authoring-tool-failure')?.detail ?? 'null')?.authorization) &&
     auth.scope === 'until-native-validation' && auth.maxInitialModelAttempts === 0 &&
-    auth.priorAuthorizationSha256 === hash(json(correction.originalGrant)) &&
+    auth.priorAuthorizationSha256 === hash(json(recovery
+      ? recovery.originalContinuation.authorization : correction.originalGrant)) &&
     auth.authorizedAt === correction.originalGrant.authorizedAt &&
     correction.originalGrant.scope === 'until-native-validation' &&
     correction.originalGrant.approved === true && correction.originalGrant.authorizedBy === 'user' &&
-    auth.previousAttemptId === detail.priorJob.session_id &&
+    auth.previousAttemptId === (recovery?.priorJob ?? detail.priorJob).session_id &&
     auth.sourceRevision === detail.priorResult.sourceRevision &&
     auth.baseRevision === detail.priorJob.base_revision &&
     correction.originalGrant.sourceRevision === detail.priorJob.base_revision &&
@@ -138,32 +179,48 @@ export async function prepareNativePreparationContinuation(config, ledger, id,
     const results = ledger.all('workerResult').filter(row => row.assignmentId === id);
     requireThat(results.length === 1 && Date.parse(authorization.recordedAt) >= Date.parse(results[0].reportedAt),
       'Preparation predecessor must have one sealed result', 'blocked-reconciliation');
-    const result = results[0], repo = config.repositories.find(row => row.id === assignment.repoId);
+    const terminalResult = results[0], repo = config.repositories.find(row => row.id === assignment.repoId);
     requireThat(repo.validationGates.length === 1 &&
       repo.validationGates[0].profile === '1js-declarative-e2e-v1' &&
       nextConfig.limits.maxValidationInfrastructureRetries === 0,
     'Preparation recovery requires the unchanged retry-disabled native gate', 'blocked-reconciliation');
     const operations = ledger.status().operations.filter(row => row.job_id === id);
-    const grant = JSON.parse(operations.find(row => row.kind === 'continued-from-authoring-tool-failure')?.detail ?? 'null')?.authorization;
+    const previousContinuation = operations.length === 1 &&
+      operations[0].kind === 'continued-from-validation-failure'
+      ? JSON.parse(operations[0].detail) : null;
+    const recovery = previousContinuation ? { priorStateDirectory: priorRoot, priorJob: job,
+      priorResult: terminalResult, priorResultSha256: hash(json(terminalResult)),
+      operations, priorOperationsSha256: hash(json(operations)),
+      originalContinuation: previousContinuation } : null;
+    if (recovery) verifyNativePreparationDispatchFailure(recovery);
+    const preservedJob = previousContinuation?.priorJob ?? job;
+    const preservedAssignment = previousContinuation?.priorAssignment ?? assignment;
+    const result = previousContinuation?.priorResult ?? terminalResult;
+    const preservedRoot = previousContinuation?.priorStateDirectory ?? priorRoot;
+    const preservedOperations = previousContinuation?.nativePreparationCorrection.operations ?? operations;
+    const grant = JSON.parse(preservedOperations.find(row =>
+      row.kind === 'continued-from-authoring-tool-failure')?.detail ?? 'null')?.authorization;
     const request = pinned(authorization.ownerRequest), approval = pinned(authorization.ownerApproval);
     const proposal = { outcome: 'propose-change', findings: result.findings,
       title: request.publication.title,
       description: approval.publicationDescription ?? request.publication.description,
       skillResult: structuredClone(result.skillExecution) };
-    const files = (await verifyPreservedChange(config, assignment, job, result, proposal))
+    const files = (await verifyPreservedChange({ ...config, stateDirectory: preservedRoot },
+      preservedAssignment, preservedJob, result, proposal))
       .sort((a, b) => a.path.localeCompare(b.path));
-    const detail = { priorStateDirectory: priorRoot, nextStateDirectory: nextRoot,
-      priorAssignment: assignment, priorJob: job, priorResult: result, proposal, files,
-      priorResultSha256: hash(json(result)), priorOperationsSha256: hash(json(operations)),
+    const detail = { priorStateDirectory: preservedRoot, nextStateDirectory: nextRoot,
+      priorAssignment: preservedAssignment, priorJob: preservedJob, priorResult: result, proposal, files,
+      priorResultSha256: hash(json(result)), priorOperationsSha256: hash(json(preservedOperations)),
       authorization, authorizationSha256: hash(json(authorization)), preparedAt: now(),
-      nativePreparationCorrection: { operations, originalGrant: grant,
+      ...(recovery ? { nativePreparationDispatchFailure: recovery } : {}),
+      nativePreparationCorrection: { operations: preservedOperations, originalGrant: grant,
         profileSha256: repo.validationGates[0].profileSha256,
         ownerReviewDirectory: grant?.ownerReviewRecovery?.ownerReviewDirectory } };
     verifyNativePreparationContinuation(nextConfig, detail);
     requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);
-    requireThat(qualification.baseRevision === job.base_revision &&
+    requireThat(qualification.baseRevision === preservedJob.base_revision &&
       qualification.skillSha256 === assignment.skillQualification.skillSha256,
     'Preparation recovery changed the repository skill pin', 'blocked-reconciliation');
     detail.qualification = qualification;

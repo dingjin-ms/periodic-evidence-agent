@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { hash, json } from '../src/common.js';
 import { outputFingerprint } from '../src/workers.js';
 import { outputPathFingerprintWithEntries } from '../src/output-fingerprint.js';
-import { verifyNativePreparationFailure, verifyNativePreparationContinuation } from '../src/native-preparation-continuation.js';
+import { Ledger } from '../src/ledger.js';
+import { nativePreparationWorkspace, verifyNativePreparationFailure,
+  verifyNativePreparationContinuation } from '../src/native-preparation-continuation.js';
 
 function fixture() {
   const revision = 'b'.repeat(40);
@@ -58,7 +60,8 @@ for (const condition of ['valid', 'published', 'native-output', 'model', 'native
 
 for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift', 'approval-drift',
   'native-directory', 'file-drift', 'result-drift', 'operation-drift', 'description-drift', 'config-drift',
-  'commit-source', 'commit-extra-field', 'base-authority']) {
+  'commit-source', 'commit-extra-field', 'base-authority', 'dispatch-recovery',
+  'dispatch-native', 'dispatch-model', 'dispatch-nested', 'dispatch-operation', 'dispatch-source']) {
   test(`native preparation recovery bindings ${condition}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'native-preparation-proof-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -107,6 +110,38 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
       files: [{ path: 'test/synthetic.yaml', sha256: 'f'.repeat(64) }],
       nativePreparationCorrection: { originalGrant: grant, operations,
         profileSha256: failure.profileSha256, ownerReviewDirectory: grant.ownerReviewRecovery.ownerReviewDirectory } };
+    if (condition.startsWith('dispatch-')) {
+      detail.nextAttemptId = 'synthetic-dispatch-attempt'; detail.nextAssignmentId = job.id;
+      detail.authorizationSha256 = hash(json(auth));
+      const original = structuredClone(detail);
+      const previousRoot = config.stateDirectory;
+      const dispatchJob = { id: job.id, session_id: detail.nextAttemptId, state: 'blocked',
+        base_revision: null, workspace: job.workspace,
+        error: json({ code: 'blocked-reconciliation',
+          message: 'Repository skill qualification does not match the isolated source revision' }) };
+      const dispatchResult = { assignmentId: job.id, attemptId: dispatchJob.session_id,
+        outcome: 'blocked', sourceRevision: null, skillExecution: null, draftPR: null,
+        remoteValidation: [], validation: [], validationAttempts: [],
+        toolUsage: { used: 0, rounds: [], byTool: { pilot_write: 0 } } };
+      const dispatchOperations = [{ kind: 'continued-from-validation-failure', state: 'prepared',
+        detail: json(original) }];
+      const recovery = { priorStateDirectory: previousRoot, priorJob: dispatchJob,
+        priorResult: dispatchResult, priorResultSha256: hash(json(dispatchResult)),
+        operations: dispatchOperations, priorOperationsSha256: hash(json(dispatchOperations)),
+        originalContinuation: original };
+      detail.nativePreparationDispatchFailure = recovery;
+      config.stateDirectory = join(directory, 'dispatch-next');
+      auth.nextConfigSha256 = hash(json(config));
+      auth.previousAttemptId = dispatchJob.session_id;
+      auth.priorAuthorizationSha256 = hash(json(original.authorization));
+      if (condition === 'dispatch-native') dispatchResult.validation.push({ status: 'failed' });
+      if (condition === 'dispatch-model') dispatchResult.toolUsage.used = 1;
+      if (condition === 'dispatch-nested') original.nativePreparationDispatchFailure = {};
+      if (condition === 'dispatch-operation') dispatchOperations.push({ kind: 'validation' });
+      if (condition === 'dispatch-source') detail.priorJob = { ...job, base_revision: 'd'.repeat(40) };
+      recovery.priorResultSha256 = hash(json(dispatchResult));
+      recovery.priorOperationsSha256 = hash(json(dispatchOperations));
+    }
     if (condition === 'grant-time') auth.authorizedAt = '2026-01-02T00:00:00Z';
     if (condition === 'unlinked-grant') auth.priorAuthorizationSha256 = 'e'.repeat(64);
     if (condition === 'request-drift') writeFileSync(requestRef.path, '{}');
@@ -130,10 +165,31 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
     detail.authorizationSha256 = hash(json(auth));
     detail.priorOperationsSha256 = hash(json(operations));
     const verify = () => verifyNativePreparationContinuation(config, detail);
-    if (condition === 'valid') assert.doesNotThrow(verify);
+    if (['valid', 'dispatch-recovery'].includes(condition)) assert.doesNotThrow(verify);
     else assert.throws(verify, error => ['blocked-reconciliation', 'blocked-authorization'].includes(error.code));
   });
 }
+
+test('native preparation workspace maps its original base into the actual ledger contract', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-preparation-ledger-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const ledger = new Ledger(directory);
+  try {
+    const id = 'synthetic-assignment';
+    ledger.db.prepare(`INSERT INTO jobs
+      (id,investigation_id,version,repo,state,session_id,updated_at) VALUES(?,?,?,?,?,?,?)`)
+      .run(id, 'synthetic-investigation', 1, 'synthetic-repo',
+        'prepared', 'synthetic-attempt', new Date().toISOString());
+    ledger.moveJob(id, 'prepared', 'dispatching');
+    const detail = { nativePreparationCorrection: {}, priorJob: {
+      workspace: join(directory, 'workspace'), base_revision: 'a'.repeat(40) } };
+    ledger.moveJob(id, 'dispatching', 'running', nativePreparationWorkspace(detail));
+    assert.equal(ledger.job(id).base_revision, detail.priorJob.base_revision);
+    assert.equal(ledger.job(id).workspace, detail.priorJob.workspace);
+    assert.throws(() => nativePreparationWorkspace({ ...detail,
+      priorJob: { ...detail.priorJob, base_revision: null } }));
+  } finally { ledger.close(); }
+});
 
 test('partitioned ordinary dependency paths retain the complete canonical digest and entries',
   { skip: availableParallelism() < 2 }, async t => {

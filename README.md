@@ -749,7 +749,10 @@ block validation, and a failed test remains failed after its diagnostics are sav
 
 `agent proposer continue-native-preparation --prepare|--execute` admits only the
 measured dependency-fingerprint timeout before the first native runner invocation,
-after a single approved candidate commit. It preserves the original bounded
+or one sealed pre-stage dispatch failure caused by the recorded workspace-base
+field mismatch. That correction preserves both predecessor ledgers and reservations,
+requires zero model/native/publication activity, and cannot nest another correction.
+Both paths require a single approved candidate commit. They preserve the original bounded
 until-validation grant and all old results, claims the same clean task checkout,
 and reuses the exact approved commit without initial authoring or another commit.
 It cannot admit a failed/started native case or any publication activity. The

@@ -3013,7 +3013,7 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
   if (continuation.nativePreparationDispatchFailure) {
     const recovery = continuation.nativePreparationDispatchFailure;
     verifyContinuationPredecessor(recovery, operationId, nextAttemptId);
-    verifyContinuationPredecessor(recovery.originalContinuation, operationId,
+    verifyContinuationPredecessor(recovery.originalContinuation, recovery.operations[0].id,
       recovery.priorJob.session_id);
     return;
   }

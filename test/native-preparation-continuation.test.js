@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { tmpdir, availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { hash, json } from '../src/common.js';
-import { outputFingerprint } from '../src/workers.js';
+import { outputFingerprint, verifyContinuationPredecessor } from '../src/workers.js';
 import { outputPathFingerprintWithEntries } from '../src/output-fingerprint.js';
 import { Ledger } from '../src/ledger.js';
 import { nativePreparationWorkspace, verifyNativePreparationFailure,
@@ -123,7 +123,8 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
         outcome: 'blocked', sourceRevision: null, skillExecution: null, draftPR: null,
         remoteValidation: [], validation: [], validationAttempts: [],
         toolUsage: { used: 0, rounds: [], byTool: { pilot_write: 0 } } };
-      const dispatchOperations = [{ kind: 'continued-from-validation-failure', state: 'prepared',
+      const dispatchOperations = [{ id: `${job.id}:validation-continuation`,
+        kind: 'continued-from-validation-failure', state: 'prepared',
         detail: json(original) }];
       const recovery = { priorStateDirectory: previousRoot, priorJob: dispatchJob,
         priorResult: dispatchResult, priorResultSha256: hash(json(dispatchResult)),
@@ -189,6 +190,45 @@ test('native preparation workspace maps its original base into the actual ledger
     assert.throws(() => nativePreparationWorkspace({ ...detail,
       priorJob: { ...detail.priorJob, base_revision: null } }));
   } finally { ledger.close(); }
+});
+
+test('dispatch correction preserves both reservations using distinct operation identifiers', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-preparation-reservations-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const ledgers = [new Ledger(join(directory, 'original')), new Ledger(join(directory, 'dispatch'))];
+  try {
+    const id = 'synthetic-assignment', stamp = new Date().toISOString();
+    for (const [index, ledger] of ledgers.entries()) {
+      ledger.db.prepare(`INSERT INTO jobs
+        (id,investigation_id,version,repo,state,session_id,updated_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(id, 'synthetic-investigation', 1, 'synthetic-repo', 'blocked', `attempt-${index}`, stamp);
+      ledger.db.prepare('INSERT INTO records(kind,id,body,created_at) VALUES(?,?,?,?)')
+        .run('workerResult', `result-${index}`, json({ id: `result-${index}` }), stamp);
+    }
+    const [originalLedger, dispatchLedger] = ledgers;
+    const originalId = `${id}:validation-continuation`;
+    const nextId = `${id}:native-preparation-dispatch-continuation`;
+    const original = { priorStateDirectory: originalLedger.directory,
+      priorJob: originalLedger.job(id), priorResult: { id: 'result-0' },
+      priorResultSha256: hash(json({ id: 'result-0' })), priorOperationsSha256: hash(json([])) };
+    originalLedger.operation(originalId, id, 'validation-continuation', {});
+    originalLedger.finishOperation(originalId, 'prepared', { nextAttemptId: 'attempt-1' });
+    dispatchLedger.operation(originalId, id, 'continued-from-validation-failure', original);
+    dispatchLedger.finishOperation(originalId, 'prepared', original);
+    const recovery = { priorStateDirectory: dispatchLedger.directory,
+      priorJob: dispatchLedger.job(id), priorResult: { id: 'result-1' },
+      priorResultSha256: hash(json({ id: 'result-1' })),
+      operations: dispatchLedger.status().operations,
+      priorOperationsSha256: hash(json(dispatchLedger.status().operations)),
+      originalContinuation: original };
+    dispatchLedger.operation(nextId, id, 'validation-continuation', {});
+    dispatchLedger.finishOperation(nextId, 'prepared', { nextAttemptId: 'attempt-2' });
+    const detail = { nativePreparationDispatchFailure: recovery };
+    assert.doesNotThrow(() => verifyContinuationPredecessor(detail, nextId, 'attempt-2'));
+    assert.throws(() => verifyContinuationPredecessor(detail, originalId, 'attempt-2'));
+    originalLedger.finishOperation(originalId, 'prepared', { nextAttemptId: 'other-attempt' });
+    assert.throws(() => verifyContinuationPredecessor(detail, nextId, 'attempt-2'));
+  } finally { for (const ledger of ledgers) ledger.close(); }
 });
 
 test('partitioned ordinary dependency paths retain the complete canonical digest and entries',

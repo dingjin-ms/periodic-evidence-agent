@@ -56,6 +56,7 @@ export function verifyNativePreparationDispatchFailure(recovery) {
   const { priorJob: job, priorResult: result, operations, originalContinuation: original } = recovery;
   requireThat(original?.nativePreparationCorrection && !original.nativePreparationDispatchFailure &&
     operations.length === 1 && operations[0].kind === 'continued-from-validation-failure' &&
+    operations[0].id === `${job.id}:validation-continuation` &&
     operations[0].state === 'prepared' && json(JSON.parse(operations[0].detail)) === json(original) &&
     hash(json(operations)) === recovery.priorOperationsSha256 &&
     hash(json(result)) === recovery.priorResultSha256 &&
@@ -224,7 +225,8 @@ export async function prepareNativePreparationContinuation(config, ledger, id,
       qualification.skillSha256 === assignment.skillQualification.skillSha256,
     'Preparation recovery changed the repository skill pin', 'blocked-reconciliation');
     detail.qualification = qualification;
-    const operationId = `${id}:validation-continuation`;
+    const operationId = `${id}:${recovery
+      ? 'native-preparation-dispatch-continuation' : 'validation-continuation'}`;
     ledger.operation(operationId, id, 'validation-continuation', detail);
     let rebuilt;
     nextLedger.transaction(() => {

@@ -676,6 +676,21 @@ explicit `executionBounds` changes to `workerMaxToolCalls` (at most 240) and
 remain unchanged. Preparation reserves once; execution rechecks and claims the
 same workspace without resetting old attempts or enabling general dispatch.
 
+The same entrypoint can reconcile a read-only
+`missing-mid-flow-protected-assertion-capability` result only with an owner-reviewed
+`capabilityResolution: { path, sha256 }` artifact. Its
+`existing-declarative-capability-v1` report pins the qualified source, existing
+`assert`/`visible` primitive, native-loader proof and at least three Git source
+file digests. Both preparation and claim recheck the artifact and source bytes;
+the model receives the reviewed explanation, not permission to change the harness.
+Consumed authoring and runtime ancestry is checked recursively with a depth bound
+of three. Reservations are attempt-specific and every previous result is retained.
+An explicit user grant covering work until native validation may use
+`scope: "until-native-validation"` and the immediate predecessor authorization's
+`priorAuthorizationSha256`, retaining its original `authorizedAt`. This does not
+invent a later user approval or authorize a second claim of any attempt; other
+authorizations must still postdate their blocked predecessor.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

@@ -82,6 +82,15 @@ owned clean workspace and any consumed runtime-reuse lineage, and claim reuse
 once. Only explicitly authorized authoring/repair budget changes are allowed;
 never alter native gates, production code or publication limits.
 
+A read-only missing-mid-flow-assertion result may use that entrypoint only after
+an owner-reviewed, source/content-bound existing-capability proof resolves the
+reported gap without changing the harness. Preserve and recheck every consumed
+ancestor and use a new attempt-specific reservation. Where the user's original
+grant explicitly covers continuation until validation, bind its original time
+and the prior authorization hash with `scope: "until-native-validation"`; never
+fabricate a fresh approval time. The same native, write-scope and publication
+limits remain mandatory.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)

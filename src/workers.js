@@ -3154,6 +3154,12 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     let preparedValidation = prePreparedValidation;
     let outcome, blockerReason = null;
     let authoring = { round: 0, validationFeedback: [] };
+    if (toolContinuation) {
+      const authorization = JSON.parse(toolContinuation.detail).authorization;
+      if (authorization.capabilityResolution)
+        authoring.capabilityResolution = await (await import('./authoring-tool-continuation.js'))
+          .verifyExistingCapability(authorization, current.workspace, current.base_revision);
+    }
     let finalValidation = [];
     let controllerRegistration = continuation
       ? rebindDeclarativeRegistration(config, ledger, repo, assignment, current, continuation)

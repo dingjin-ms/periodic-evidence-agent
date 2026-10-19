@@ -35,8 +35,8 @@ function recordEntry(entries, path, value) {
 
 function pathFingerprint(root, path, recordedEntries = null) {
   const target = join(root, path);
-  if (!existsSync(target)) return null;
-  const info = lstatSync(target);
+  const info = lstatSync(target, { throwIfNoEntry: false });
+  if (!info || (info.isSymbolicLink() && !existsSync(target))) return null;
   if (info.isSymbolicLink()) {
     const rawTarget = readlinkSync(target);
     const resolvedTarget = resolve(dirname(target), rawTarget);

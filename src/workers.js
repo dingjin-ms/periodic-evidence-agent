@@ -722,7 +722,13 @@ export async function outputFingerprint(workspace, paths, captureEntries = false
   const hasDependencyDirectory = paths.some(path =>
     path.replaceAll('\\', '/').endsWith('node_modules') &&
     existsSync(join(workspace, path)) && lstatSync(join(workspace, path)).isDirectory());
-  if ((paths.length >= 8 || hasDependencyDirectory) && availableParallelism() > 1)
+  const hasLargePath = paths.length < 8 && paths.some(path => {
+    const target = join(workspace, path);
+    const info = lstatSync(target, { throwIfNoEntry: false });
+    return info?.isDirectory() && !info.isSymbolicLink() &&
+      outputFingerprintTargetExceedsTaskEntryLimit(target);
+  });
+  if ((paths.length >= 8 || hasDependencyDirectory || hasLargePath) && availableParallelism() > 1)
     return parallelOutputFingerprint(workspace, paths, captureEntries);
   const results = paths.map(path => captureEntries
     ? outputPathFingerprintWithEntries(workspace, path)
@@ -741,15 +747,15 @@ function watchPathKey(path) {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 function outputFingerprintTargetExceedsTaskEntryLimit(target) {
-  let count = 0;
+  let count = 1;
   const pending = [target];
   while (pending.length > 0) {
     const current = pending.pop();
-    const info = lstatSync(current);
-    if (++count > maxOutputFingerprintTaskEntries) return true;
-    if (!info.isDirectory() || info.isSymbolicLink()) continue;
-    for (const entry of readdirSync(current))
-      pending.push(join(current, entry));
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (++count > maxOutputFingerprintTaskEntries) return true;
+      if (entry.isDirectory() && !entry.isSymbolicLink())
+        pending.push(join(current, entry.name));
+    }
   }
   return false;
 }
@@ -1154,6 +1160,7 @@ async function preparedOutputsRemainValid(receipt) {
 }
 async function parallelOutputFingerprint(workspace, paths, captureEntries = false) {
   const tasks = [];
+  let partitionedPaths = false;
   const task = value => {
     tasks.push(value);
     return tasks.length - 1;
@@ -1180,6 +1187,22 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
     };
   };
   const capturedEntries = [];
+  const pathPlan = path => {
+    const target = join(workspace, path), info = lstatSync(target);
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+      !outputFingerprintTargetExceedsTaskEntryLimit(target))
+      return { task: task({ mode: 'path', path }) };
+    partitionedPaths = true;
+    return { path, children: readdirSync(target).sort().map(name => pathPlan(join(path, name))) };
+  };
+  const pathValue = (plan, serialized) => {
+    if (Number.isInteger(plan.task)) return JSON.parse(serialized[plan.task]);
+    const entries = plan.children.map(child => pathValue(child, serialized));
+    if (captureEntries) capturedEntries.push([
+      plan.path.replaceAll('\\', '/'), { type: 'directory', sha256: hash(json(entries)) }
+    ]);
+    return { path: plan.path, type: 'directory', entries };
+  };
   const dependencyEntryValue = (entry, serialized) => {
     if (Number.isInteger(entry.task)) return JSON.parse(serialized[entry.task]);
     const children = entry.children.map(child =>
@@ -1196,7 +1219,7 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
     if (!existsSync(target)) return null;
     const info = lstatSync(target);
     if (!info.isDirectory() || !path.replaceAll('\\', '/').endsWith('node_modules'))
-      return { type: 'path', task: task({ mode: 'path', path }) };
+      return { type: 'path', plan: pathPlan(path) };
     const entries = readdirSync(target, { withFileTypes: true })
       .sort((left, right) =>
         left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
@@ -1204,7 +1227,7 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
     return { type: 'dependency', path, entries };
   });
   if (plans.some(plan => !plan)) return null;
-  if (tasks.length < 8) {
+  if (tasks.length < 8 && !partitionedPaths) {
     const results = paths.map(path => captureEntries
       ? outputPathFingerprintWithEntries(workspace, path)
       : { value: outputPathFingerprint(workspace, path), entries: null });
@@ -1238,7 +1261,7 @@ async function parallelOutputFingerprint(workspace, paths, captureEntries = fals
     for (const entry of completed.capturedEntries) capturedEntries.push(entry);
   const values = plans.map(plan => {
     if (plan.type === 'path')
-      return JSON.parse(completed.serialized[plan.task]);
+      return pathValue(plan.plan, completed.serialized);
     const entries = plan.entries.map(entry =>
       dependencyEntryValue(entry, completed.serialized));
     const value = dependencyOutputFingerprint(plan.path, entries);
@@ -3008,7 +3031,8 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
 }
 export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true ||
-    dependencies[authoringToolContinuationPermit] === true,
+    dependencies[authoringToolContinuationPermit] === true ||
+    dependencies[validationContinuationPermit] === true,
     'Worker dispatch is disabled');
   const job = ledger.job(id);
   requireThat(job?.state === 'prepared', 'Only a never-dispatched prepared assignment can launch; reconcile all other states', 'blocked-reconciliation');
@@ -3044,6 +3068,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         await git(new URL('..', import.meta.url), ['rev-parse', 'HEAD']),
     'Validation continuation controller/config/attempt changed', 'blocked-reconciliation');
     verifyContinuationPredecessor(continuation, continuationOperation.id, job.session_id);
+    if (continuation.nativePreparationCorrection)
+      (await import('./native-preparation-continuation.js')).verifyNativePreparationContinuation(config, continuation);
     if (continuation.nativeBinCorrection)
       (await import('./local-native-bin-continuation.js')).verifyNativeBinContinuation(config, continuation);
     else if (continuation.nativeWrapperCorrection)
@@ -3174,7 +3200,14 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         receipt.submissionState === 'rejected' ? 'blocked' : 'uncertain');
       return receipt;
     }
-    const isolated = runtimeContinuation
+    if (continuation?.nativePreparationCorrection) {
+      requireThat((await git(continuation.priorJob.workspace, ['remote', 'get-url', 'origin']))
+        .replace(/\/$/, '').toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
+      'Preparation recovery workspace origin changed', 'blocked-reconciliation');
+    }
+    const isolated = continuation?.nativePreparationCorrection
+      ? { workspace: continuation.priorJob.workspace, base_revision: continuation.priorJob.base_revision }
+      : runtimeContinuation
       ? await (await import('./runtime-continuation.js')).claimRuntimeWorkspace(config, ledger, id)
       : toolContinuation
         ? await (await import('./authoring-tool-continuation.js')).claimAuthoringToolWorkspace(config, ledger, id)
@@ -3194,10 +3227,12 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       ledger.operation(operationId, id, 'reuse-authored-revision', {
         priorAttemptId: continuation.priorJob.session_id, revision: continuation.priorResult.sourceRevision
       });
-      await git(current.workspace, ['fetch', '--no-tags', '--',
-        continuation.priorJob.workspace, continuation.priorResult.sourceRevision]);
-      await git(current.workspace, ['checkout', '--detach', continuation.priorResult.sourceRevision],
-        checkoutEnvironment());
+      if (!continuation.nativePreparationCorrection) {
+        await git(current.workspace, ['fetch', '--no-tags', '--',
+          continuation.priorJob.workspace, continuation.priorResult.sourceRevision]);
+        await git(current.workspace, ['checkout', '--detach', continuation.priorResult.sourceRevision],
+          checkoutEnvironment());
+      }
       requireThat(!await git(current.workspace, ['status', '--porcelain']) &&
         await git(current.workspace, ['rev-parse', 'HEAD']) === continuation.priorResult.sourceRevision &&
         json(await workspaceChanges(current.workspace, current.base_revision)) ===
@@ -3257,7 +3292,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       : null;
     const maxRepairRounds = config.limits.maxValidationRepairRounds ?? 10;
     while (true) {
-      if (continuation) {
+      if (continuation && (!continuation.nativePreparationCorrection || authoring.round === 0)) {
         proposal = structuredClone(continuation.proposal);
         proposal.skillExecution = normalizeSkillResult(loadedSkill, proposal.skillResult);
         if (controllerRegistration)
@@ -3317,9 +3352,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           proposal.skillExecution = await finalizeDeclarativeSkill(config, ledger, current,
             repo, assignment, proposal.skillExecution, authoring.round, dependencies.execute ?? command);
         controllerRegistration = proposal.skillExecution?.registration ?? null;
-        const reviewDirectory = toolContinuation &&
-          (JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory ??
-            JSON.parse(toolContinuation.detail).authorization.ownerReviewRecovery?.ownerReviewDirectory);
+        const reviewDirectory = toolContinuation
+          ? (JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory ??
+            JSON.parse(toolContinuation.detail).authorization.ownerReviewRecovery?.ownerReviewDirectory)
+          : continuation?.nativePreparationCorrection?.ownerReviewDirectory;
         if (reviewDirectory) {
           const description = await (await import('./owner-review.js')).awaitOwnerReview(
             ledger, current, authoring.round, reviewDirectory,
@@ -3358,7 +3394,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         `Validation blocked (${finalValidation.filter(g => g.status === 'blocked')
           .map(g => `${g.gateId}: ${g.blockedReason ?? 'unknown'}`).join(', ')}); no push permitted`,
         'blocked-validation');
-      if (continuation || finalValidation.every(g => g.status === 'passed') ||
+      if ((continuation && !continuation.nativePreparationCorrection) ||
+        finalValidation.every(g => g.status === 'passed') ||
         authoring.round >= maxRepairRounds) break;
       authoring = {
         round: authoring.round + 1,
@@ -3378,6 +3415,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       }
     }
     if (outcome === 'propose-change') {
+      if (continuation?.nativePreparationCorrection) {
+        verifyContinuationPredecessor(continuation, continuationOperation.id, job.session_id);
+        (await import('./native-preparation-continuation.js')).verifyNativePreparationContinuation(config, continuation);
+      }
       if (successor) {
         await successorCore.verifyPreparedAuthoringSuccessor(config, ledger, id);
         successorCore.verifySuccessorNativeEvidence(config, ledger, id, revision, finalValidation);

@@ -747,6 +747,19 @@ other files remain subject to the unchanged clean-source checks; no ignore
 patterns, hooks, test assertions or repository source are changed. Capture errors
 block validation, and a failed test remains failed after its diagnostics are saved.
 
+`agent proposer continue-native-preparation --prepare|--execute` admits only the
+measured dependency-fingerprint timeout before the first native runner invocation,
+after a single approved candidate commit. It preserves the original bounded
+until-validation grant and all old results, claims the same clean task checkout,
+and reuses the exact approved commit without initial authoring or another commit.
+It cannot admit a failed/started native case or any publication activity. The
+fresh ledger keeps infrastructure retries at zero, and the unchanged native
+profile still requires five retry-disabled passes at one final clean SHA. Any
+later test-only repair uses the existing bounds and a fresh external owner review.
+Large ordinary dependency trees are partitioned into bounded fingerprint tasks
+while reconstructing the identical canonical content digest; no hash checks or
+per-task timeout are removed.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

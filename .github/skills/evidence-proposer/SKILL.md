@@ -106,6 +106,17 @@ and FILTER replay receipts must match the original worker ledger. Keep the
 original model proposal and source revision; this operation must not invoke a
 new authoring model or create another candidate commit.
 
+For the specifically recorded dependency-fingerprint timeout after an approved
+commit but before the first native invocation, use
+`agent proposer continue-native-preparation --prepare|--execute`. It requires
+the immutable failure and owner request/approval hashes, the same clean approved
+commit, no native output directory or publication operations, and the original
+until-validation grant/time linked by its authorization hash. It reuses the owned
+checkout once in fresh private state with zero initial model calls or commits.
+Native gates, source qualification and zero infrastructure retries cannot change.
+Later test-only repair remains bounded and requires a new external owner review;
+an already-invoked native failure is never admitted as a preparation failure.
+
 ## Authority
 
 No new evidence collection, reinterpretation of FILTER acceptance, permission

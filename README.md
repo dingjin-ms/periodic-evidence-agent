@@ -661,6 +661,21 @@ subsequent model/native failures cannot use this narrow recovery path.
 Its recorded one-attempt authorization permits only that continuation even when
 general dispatch stays disabled; it never enables the scheduler or other jobs.
 
+For an authoring result classified `bounded-edit-capability-unavailable`, use
+`agent proposer continue-authoring-tools --prepare|--execute` after fixing the
+bounded tool contract. This separate path requires one terminal read-only
+authoring round, zero writes, native validation and publication, and a clean
+owned checkout at the qualified base. It also supports the attested workspace
+previously reused by the runtime-launch continuation, checking both original
+ledgers and immutable receipts. A fresh user authorization with kind
+`bounded-authoring-tool` pins the predecessor, source, controller and next
+configuration, with `maxModelAttempts: 1`. Only separate state placement and
+explicit `executionBounds` changes to `workerMaxToolCalls` (at most 240) and
+`maxValidationRepairRounds` (at most 10) may differ; each change contains
+`before` and `after`. Source, native gates, publication scope and other limits
+remain unchanged. Preparation reserves once; execution rechecks and claims the
+same workspace without resetting old attempts or enabling general dispatch.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

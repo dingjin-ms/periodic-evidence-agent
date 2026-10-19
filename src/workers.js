@@ -13,7 +13,7 @@ import { join, dirname, resolve, relative, isAbsolute, extname } from 'node:path
 import { setTimeout as delay } from 'node:timers/promises';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight, workspaceCleanupPolicy, validationPackageAuth, validationLfsPaths } from './common.js';
 import { cleanupWorkspace } from './workspace-gc.js';
-import { withClient, restrictedSession, defineTool } from './runtime.js';
+import { withClient, authoringSession, defineTool } from './runtime.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification,
   repositorySkillWriteFiles, repositorySkillWritePrefixes,
@@ -47,6 +47,7 @@ const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
 const authoringSuccessorPermit = Symbol('authoring-successor-controller');
 const runtimeContinuationPermit = Symbol('runtime-continuation-controller');
+const authoringToolContinuationPermit = Symbol('authoring-tool-continuation-controller');
 const preparedOutputGuards = new Map();
 const maxPreparedOutputGuards = 2;
 const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
@@ -2709,9 +2710,9 @@ async function runModel(config, ledger, current, assignment, investigation, tool
   authoring = { round: 0, validationFeedback: [] }) {
   const instructions = repositoryWorkerInstructions();
   return withClient(config, current.workspace, async client => {
-    const session = await client.createSession(restrictedSession(toolkit.tools(), {
+    const session = await authoringSession(client, toolkit.tools(), {
       sessionId: current.session_id, workingDirectory: current.workspace, prompt: instructions
-    }));
+    }, authoring.round);
     try {
       await session.sendAndWait({
         prompt: authoringPrompt(ledger, assignment, investigation, loadedSkill, authoring)
@@ -2943,7 +2944,8 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
   } finally { priorLedger.close(); }
 }
 export async function dispatch(config, ledger, id, dependencies = {}) {
-  requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true,
+  requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true ||
+    dependencies[authoringToolContinuationPermit] === true,
     'Worker dispatch is disabled');
   const job = ledger.job(id);
   requireThat(job?.state === 'prepared', 'Only a never-dispatched prepared assignment can launch; reconcile all other states', 'blocked-reconciliation');
@@ -2954,6 +2956,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     operation.job_id === id && operation.kind === 'continued-from-runtime-launch-failure');
   requireThat(Boolean(runtimeContinuation) === (dependencies[runtimeContinuationPermit] === true),
     'A runtime continuation requires its explicit recorded dispatch entrypoint', 'blocked-reconciliation');
+  const toolContinuation = ledger.status().operations.find(operation =>
+    operation.job_id === id && operation.kind === 'continued-from-authoring-tool-failure');
+  requireThat(Boolean(toolContinuation) === (dependencies[authoringToolContinuationPermit] === true),
+    'A tool continuation requires its explicit recorded dispatch entrypoint', 'blocked-reconciliation');
   const successorOperation = ledger.status().operations.find(operation =>
     operation.job_id === id && operation.kind === 'authoring-successor-from-diagnostic');
   requireThat(Boolean(successorOperation) === (dependencies[authoringSuccessorPermit] === true),
@@ -3107,6 +3113,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     }
     const isolated = runtimeContinuation
       ? await (await import('./runtime-continuation.js')).claimRuntimeWorkspace(config, ledger, id)
+      : toolContinuation
+        ? await (await import('./authoring-tool-continuation.js')).claimAuthoringToolWorkspace(config, ledger, id)
       : await provision(config, job, repo, assignment.skillQualification ?? null);
     try {
       ledger.moveJob(id, 'dispatching', 'running', isolated);
@@ -3371,6 +3379,9 @@ export async function dispatchLocalValidationContinuation(config, ledger, id, de
 }
 export async function dispatchRuntimeContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [runtimeContinuationPermit]: true });
+}
+export async function dispatchAuthoringToolContinuation(config, ledger, id, dependencies = {}) {
+  return dispatch(config, ledger, id, { ...dependencies, [authoringToolContinuationPermit]: true });
 }
 export async function dispatchRecordedAuthoringSuccessor(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [authoringSuccessorPermit]: true });

@@ -51,6 +51,7 @@ test('exactly three role packages expose pinned existing procedures and detached
   assert.ok(describeAgent('proposer').operations.includes('diagnose-local-validation'));
   assert.ok(describeAgent('proposer').operations.includes('continue-local-authoring'));
   assert.ok(describeAgent('proposer').operations.includes('continue-runtime-launch'));
+  assert.ok(describeAgent('proposer').operations.includes('continue-authoring-tools'));
 });
 
 test('role routing rejects unknown and cross-role operations without echoing untrusted input', () => {
@@ -62,7 +63,8 @@ test('role routing rejects unknown and cross-role operations without echoing unt
     ['proposer', 'serve'], ['proposer', 'secret-value'],
     ['collector', 'diagnose-local-validation'], ['filter', 'diagnose-local-validation'],
     ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring'],
-    ['collector', 'continue-runtime-launch'], ['filter', 'continue-runtime-launch']
+    ['collector', 'continue-runtime-launch'], ['filter', 'continue-runtime-launch'],
+    ['collector', 'continue-authoring-tools'], ['filter', 'continue-authoring-tools']
   ]) {
     assert.throws(() => agentInvocation(role, command), error =>
       error.code === 'blocked-agent' && !error.message.includes(command));

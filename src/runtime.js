@@ -38,6 +38,12 @@ export function restrictedSession(tools, { sessionId, workingDirectory, prompt =
     onUserInputRequest: () => { throw new PilotError('blocked-input', 'Worker needs operator input; no implicit approval'); }
   };
 }
+export function authoringSession(client, tools, options, round) {
+  const configuration = restrictedSession(tools, options);
+  return round > 0
+    ? client.resumeSession(options.sessionId, configuration)
+    : client.createSession(configuration);
+}
 export async function withClient(config, cwd, fn, workplace = false) {
   const client = createClient(config, cwd, workplace);
   try { await client.start(); return await fn(client); }

@@ -74,6 +74,14 @@ source eligibility and the clean owned checkout. The continuation reuses that
 task checkout once without resetting the blocked job or enabling general
 dispatch. Other runtime or subsequent model/native failures are not admitted.
 
+For the exact read-only `bounded-edit-capability-unavailable` authoring result,
+use `agent proposer continue-authoring-tools --prepare|--execute` only after
+repairing the advertised tool contract and obtaining a fresh explicit user
+authorization. Keep the old result immutable, requalify the source, verify the
+owned clean workspace and any consumed runtime-reuse lineage, and claim reuse
+once. Only explicitly authorized authoring/repair budget changes are allowed;
+never alter native gates, production code or publication limits.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)

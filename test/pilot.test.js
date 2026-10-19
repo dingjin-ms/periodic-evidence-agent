@@ -16,7 +16,7 @@ import { dryRun } from '../src/dry-run.js';
 import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
-import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
+import { validateSeed, restrictedSession, authoringSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges, verifyPreparedOutputs } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
@@ -939,6 +939,22 @@ test('SDK configuration exposes no built-in tools and denies unrelated permissio
   assert.deepEqual(config.availableTools.toArray(), ['custom:pilot_read']);
   assert.equal(config.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
   assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+});
+test('SDK authoring repairs resume the same persisted session with only bounded tools', async () => {
+  const calls = [];
+  const client = {
+    createSession: async config => { calls.push({ kind: 'create', config }); return 'created'; },
+    resumeSession: async (id, config) => { calls.push({ kind: 'resume', id, config }); return 'resumed'; }
+  };
+  const tools = [{ name: 'pilot_replace_lines' }];
+  const options = { sessionId: 'same-attempt', workingDirectory: 'fixture', prompt: 'bounded' };
+  assert.equal(await authoringSession(client, tools, options, 0), 'created');
+  assert.equal(await authoringSession(client, tools, options, 1), 'resumed');
+  assert.equal(calls[1].id, options.sessionId);
+  for (const call of calls) {
+    assert.deepEqual(call.config.availableTools.toArray(), ['custom:pilot_replace_lines']);
+    assert.equal(call.config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+  }
 });
 test('validation records real terminal command execution at exact fixture HEAD and forbids duplicates', async t => {
   const { config, ledger, job, repo } = await fixture(t);

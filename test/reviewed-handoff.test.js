@@ -13,6 +13,8 @@ import { dispatch, dispatchReviewedHandoff, command, provision } from '../src/wo
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
 import { dispatchRuntimeContinuation } from '../src/workers.js';
+import { prepareAuthoringToolContinuation, claimAuthoringToolWorkspace } from '../src/authoring-tool-continuation.js';
+import { dispatchAuthoringToolContinuation } from '../src/workers.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 
 const fixture = JSON.parse(readFileSync(
@@ -233,7 +235,8 @@ async function blockedPreModelFixture(t, mutateResult = () => {},
     validation: [], validationAttempts: [], skillExecution: null,
     toolUsage: { limit, used: 0, remaining: limit,
       byTool: { pilot_list: 0, pilot_search: 0, pilot_read: 0, pilot_write: 0, pilot_finish: 0 }, rounds: [] },
-    blocker: { owner: repo.owner, reason: error.message, unblockCondition: 'Explicit user authorization after fix' },
+    blocker: { owner: repo.owner, reason: error?.message ?? 'Fixture missing bounded edit tool',
+      unblockCondition: 'Explicit user authorization after fix' },
     nextAction: 'Reconcile without replay'
   };
   mutateResult(result, ctx);
@@ -257,7 +260,7 @@ async function runtimeFixture(t, mutateResult = () => {},
     result.sourceRevision = fixture.baseRevision;
     result.remoteValidation = [];
     result.toolUsage.rounds = [{ round: 0, used: 0, cumulativeUsed: 0, status: 'failed' }];
-    mutateResult(result);
+    mutateResult(result, fixture);
   }, failure);
   ctx.config.runtime.cliPath = process.execPath;
   ctx.nextConfig.runtime.cliPath = process.execPath;
@@ -276,6 +279,115 @@ async function runtimeFixture(t, mutateResult = () => {},
   });
   return ctx;
 }
+
+function toolBlockedResult(result, assignment) {
+  result.toolUsage.used = 4;
+  result.toolUsage.remaining = result.toolUsage.limit - 4;
+  result.toolUsage.byTool = {
+    pilot_list: 1, pilot_search: 1, pilot_read: 1,
+    pilot_write: 0, pilot_replace_lines: 0, pilot_finish: 1
+  };
+  result.toolUsage.rounds = [{ round: 0, used: 4, cumulativeUsed: 4, status: 'completed' }];
+  result.skillExecution = {
+    bindingId: assignment.skillBindingId, capability: assignment.capability,
+    skillPath: assignment.skillQualification.skillPath, skillRevision: result.sourceRevision,
+    status: 'blocked', classification: 'bounded-edit-capability-unavailable',
+    changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
+    unknowns: [], needsHumanDecision: false
+  };
+  return result;
+}
+
+async function toolFixture(t) {
+  const ctx = await runtimeFixture(t, (result, fixture) =>
+    toolBlockedResult(result, fixture.ledger.get('assignment', result.assignmentId)), null);
+  ctx.nextConfig.limits.workerMaxToolCalls = 180;
+  ctx.nextConfig.limits.maxValidationRepairRounds = 2;
+  Object.assign(ctx.authorization, {
+    kind: 'bounded-authoring-tool', nextConfigSha256: hash(json(ctx.nextConfig)),
+    executionBounds: {
+      workerMaxToolCalls: { before: ctx.config.limits.workerMaxToolCalls, after: 180 },
+      maxValidationRepairRounds: { before: ctx.config.limits.maxValidationRepairRounds, after: 2 }
+    }
+  });
+  return ctx;
+}
+
+test('tool recovery preserves read-only terminal receipts and claims one unchanged checkout', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  const before = ctx.ledger.job(id);
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.equal(prepared.assignment.bounds.maxToolCalls, 180);
+  assert.equal(prepared.assignment.id, id);
+  assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+  assert.deepEqual(ctx.ledger.job(id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), /already consumed/);
+  await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /already reserved/);
+});
+
+test('tool recovery verifies the previously consumed runtime workspace lineage', async t => {
+  const ctx = await runtimeFixture(t), id = ctx.prepared.job.id;
+  const runtime = await prepareRuntimeContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked');
+  ctx.nextLedger.put(toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'read-only-tool-result',
+    attemptId: runtime.job.session_id, reportedAt: now()
+  }, runtime.assignment));
+  const destination = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'tools') };
+  const ledger = new Ledger(destination.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = { ...ctx.authorization, kind: 'bounded-authoring-tool',
+    authorizedAt: now(), previousAttemptId: runtime.job.session_id,
+    nextConfigSha256: hash(json(destination)) };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id,
+    destination, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(destination, ledger, id), isolated);
+});
+
+for (const condition of ['authorization', 'old-authorization', 'attempt', 'controller', 'bounds',
+  'source-permission', 'workspace', 'publication', 'claim-drift']) {
+  test(`tool recovery refuses ${condition}`, async t => {
+    const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+    if (condition === 'authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'attempt') ctx.authorization.previousAttemptId = 'unrelated-attempt';
+    if (condition === 'controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'bounds') delete ctx.authorization.executionBounds;
+    if (condition === 'source-permission') ctx.nextConfig.repositories[0].routingApproved = false;
+    if (condition === 'workspace') writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'bad');
+    if (condition === 'publication') ctx.ledger.operation('unexpected-push', id, 'push', {});
+    if (condition === 'claim-drift') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+      await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id),
+        error => error.code === 'blocked-reconciliation');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+      error => ['blocked-authorization', 'blocked-reconciliation'].includes(error.code));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+    assert.equal(ctx.ledger.job(id).state, 'blocked');
+  });
+}
+
+test('tool recovery cannot use ordinary dispatch or bypass synthetic source guards', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, id),
+    /tool continuation requires its explicit/);
+  await assert.rejects(dispatchAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id),
+    /Synthetic evidence cannot launch/);
+});
 
 test('runtime continuation reuses the unchanged task checkout once and preserves terminal receipts', async t => {
   const ctx = await runtimeFixture(t);

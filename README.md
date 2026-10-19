@@ -739,6 +739,14 @@ with existing clone files. Copying has a thirty-minute deadline. Missing,
 escaping or changed snapshot content blocks validation; it never counts as a
 passing native test. The five-pass runner/profile and retry policy are unchanged.
 
+The pinned native custom-skill unit fixture writes four known PNG diagnostics to
+its working directory. The Controller archives only those exact, initially
+absent and untracked filenames outside the validation clone, checks the PNG
+signature and size/count bounds, and records every captured file's hash. All
+other files remain subject to the unchanged clean-source checks; no ignore
+patterns, hooks, test assertions or repository source are changed. Capture errors
+block validation, and a failed test remains failed after its diagnostics are saved.
+
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
 a separate empty next config/ledger, the preserved model proposal and an explicit

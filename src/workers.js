@@ -24,6 +24,7 @@ import { isRegressionCoveragePlan, requireCurrentSourceEligibility } from './sou
 import {
   dependencyOutputFingerprint, outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
+import { captureUnitDiagnostics } from './validation-diagnostics.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
   recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount,
@@ -2419,6 +2420,8 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           mkdirSync(dirname(privateProfile), { recursive: true });
           writeFileSync(privateProfile, profile.bytes, { mode: 0o600 });
         }
+        const diagnostics = declarative ? captureUnitDiagnostics(validationWorkspace,
+          join(config.stateDirectory, 'runs', job.id, 'unit-diagnostics', hash(id)), revision) : null;
         try {
           output = await executeValidation(gate, args, validationWorkspace, null, execute, null,
             request ? { PILOT_DECLARATIVE_REQUEST: json(request) } : {});
@@ -2446,6 +2449,8 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           status = failure.status;
           blockedReason = failure.blockedReason;
           output = failure.output;
+        } finally {
+          if (diagnostics) output.unitDiagnostics = diagnostics.finish();
         }
         const actualHead = await git(validationWorkspace, ['rev-parse', 'HEAD']);
         const dirty = await git(validationWorkspace, ['status', '--porcelain']);

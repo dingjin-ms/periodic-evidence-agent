@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { isAbsolute, join, relative } from 'node:path';
 import { hash, json, now, requireThat } from './common.js';
 
-export async function awaitOwnerReview(ledger, job, round, directory, files, timeoutMs = 300000) {
+export async function awaitOwnerReview(ledger, job, round, directory, files, timeoutMs = 300000,
+  publication = null) {
   requireThat(isAbsolute(directory) && Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300000,
     'Owner review needs an explicit directory and bounded timeout', 'blocked-owner');
   mkdirSync(directory, { recursive: true });
@@ -16,7 +17,8 @@ export async function awaitOwnerReview(ledger, job, round, directory, files, tim
   const request = {
     format: 'repository-owner-review-request-v1', assignmentId: job.id,
     attemptId: job.session_id, round, workspace: job.workspace,
-    baseRevision: job.base_revision, fileSha256, requestedAt: now()
+    baseRevision: job.base_revision, fileSha256, requestedAt: now(),
+    ...(publication ? { publication } : {})
   };
   const bytes = json(request), id = `${job.id}:owner-review:${round}`;
   requireThat(!existsSync(requestPath) && !existsSync(approvalPath),
@@ -35,6 +37,10 @@ export async function awaitOwnerReview(ledger, job, round, directory, files, tim
       approval.reviewedBy === 'security-review-agent' &&
       Array.isArray(approval.findings) && approval.findings.length === 0,
     'Owner review did not approve this exact source snapshot', 'blocked-owner');
+    requireThat(approval.publicationDescription === undefined ||
+      (typeof approval.publicationDescription === 'string' &&
+        approval.publicationDescription.trim() && approval.publicationDescription.length <= 3000),
+    'Owner publication description must reserve space for source/build receipts', 'blocked-owner');
     for (const [file, digest] of Object.entries(fileSha256))
       requireThat(hash(readFileSync(join(job.workspace, file))) === digest,
         'Source changed after owner review was requested', 'blocked-reconciliation');
@@ -42,6 +48,7 @@ export async function awaitOwnerReview(ledger, job, round, directory, files, tim
       requestPath, requestSha256: hash(bytes), approvalPath,
       approvalSha256: hash(readFileSync(approvalPath)), fileSha256
     });
+    return approval.publicationDescription ?? null;
   } catch (error) {
     ledger.finishOperation(id, 'blocked', { requestPath, code: error.code ?? 'failed' });
     throw error;

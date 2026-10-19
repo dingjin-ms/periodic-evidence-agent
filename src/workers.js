@@ -3238,9 +3238,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         controllerRegistration = proposal.skillExecution?.registration ?? null;
         const reviewDirectory = toolContinuation &&
           JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory;
-        if (reviewDirectory)
-          await (await import('./owner-review.js')).awaitOwnerReview(ledger, current, authoring.round,
-            reviewDirectory, await workspaceChanges(current.workspace, current.base_revision));
+        if (reviewDirectory) {
+          const description = await (await import('./owner-review.js')).awaitOwnerReview(
+            ledger, current, authoring.round, reviewDirectory,
+            await workspaceChanges(current.workspace, current.base_revision), 300000,
+            { title: proposal.title, description: proposal.description });
+          if (description !== null) proposal.description = description;
+        }
         const commitOperation = `${id}:commit:${authoring.round}`;
         ledger.operation(commitOperation, id, 'commit', { baseRevision: revision, round: authoring.round });
         await git(current.workspace, ['add', '--all']);

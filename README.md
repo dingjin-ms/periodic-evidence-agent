@@ -710,6 +710,10 @@ with exact changed-file digests, waits at most five minutes for a matching
 Approval is outside the restricted worker workspace; missing, stale, rejected
 or changed-source reviews block before commit. The host performs the repository's
 required security review and applicable pre-commit checks against that snapshot.
+The request includes proposal-time publication text. The owner may return a
+`publicationDescription` using the applicable repository PR template, limited to
+3000 characters to reserve room for the Controller's final source/build receipts.
+This changes publisher-owned text only, not the reviewed files or publication scope.
 
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,

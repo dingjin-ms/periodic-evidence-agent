@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { hash, json } from '../src/common.js';
 import { awaitOwnerReview } from '../src/owner-review.js';
 
-for (const mode of ['approved', 'wrong-snapshot', 'source-drift', 'timeout', 'inside-worker']) {
+for (const mode of ['approved', 'publication-template', 'oversized-publication',
+  'wrong-snapshot', 'source-drift', 'timeout', 'inside-worker']) {
   test(`pre-commit owner approval ${mode}`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'owner-review-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -26,12 +27,14 @@ for (const mode of ['approved', 'wrong-snapshot', 'source-drift', 'timeout', 'in
       const request = readFileSync(join(directory, 'attempt-0.request.json'));
       writeFileSync(join(directory, 'attempt-0.approval.json'), json({
         format: 'repository-owner-review-v1', requestSha256: mode === 'wrong-snapshot' ? 'f'.repeat(64) : hash(request),
-        status: 'approved', reviewedBy: 'security-review-agent', findings: []
+        status: 'approved', reviewedBy: 'security-review-agent', findings: [],
+        ...(mode === 'publication-template' ? { publicationDescription: 'Synthetic reviewed template' } : {}),
+        ...(mode === 'oversized-publication' ? { publicationDescription: 'x'.repeat(3001) } : {})
       }));
       if (mode === 'source-drift') writeFileSync(join(workspace, 'test.yaml'), 'Changed\n');
     }
-    if (mode === 'approved') {
-      await pending;
+    if (['approved', 'publication-template'].includes(mode)) {
+      assert.equal(await pending, mode === 'approved' ? null : 'Synthetic reviewed template');
       assert.equal(operations.at(-1)[1], 'approved');
       await assert.rejects(awaitOwnerReview(ledger, job, 0, directory, ['test.yaml'], 1),
         /already exists/);

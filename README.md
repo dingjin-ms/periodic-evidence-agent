@@ -705,7 +705,7 @@ to a fresh bounded authoring round, rather than resetting the failed job or
 silently rerunning registration. This is not evidence of a passing product test.
 An optional `registrationRecovery.ownerReviewDirectory` holds an external
 pre-commit owner/security review rendezvous. Each round writes a fresh request
-with exact changed-file digests, waits at most five minutes for a matching
+with exact changed-file digests, waits at most thirty minutes for a matching
 `repository-owner-review-v1` approval, and rechecks source bytes before commit.
 Approval is outside the restricted worker workspace; missing, stale, rejected
 or changed-source reviews block before commit. The host performs the repository's
@@ -714,6 +714,30 @@ The request includes proposal-time publication text. The owner may return a
 `publicationDescription` using the applicable repository PR template, limited to
 3000 characters to reserve room for the Controller's final source/build receipts.
 This changes publisher-owned text only, not the reviewed files or publication scope.
+
+A first round-zero owner-review timeout after successful registration can use
+`ownerReviewRecovery` instead of `registrationRecovery`. Its immutable
+`owner-review-timeout-recovery-v1` proof binds the unchanged seven-file snapshot,
+prior result, original request and registration artifact, and successful
+build/unit/format/lint receipts with hashed logs. Preparation and claim reject
+any commit, validation, publication, extra files or operations, stale approval,
+changed metadata, or changed gates. The new attempt rebinds registration and
+reuses the qualified proposal with **zero new initial model calls**, then requests
+a fresh owner approval before committing. Native repair rounds remain bounded
+by the unchanged configuration. The original timed-out job and request stay
+terminal; never add a late approval or reset them. Consumed ancestors retain
+their original snapshot proofs while the independently reviewed leaf snapshot
+explains subsequent edits in the same owned checkout.
+
+Declarative validation still runs in a separate clean final-SHA clone. When the
+authored checkout already contains restored dependencies and compiled outputs,
+the Controller copies only Git-ignored `ooui/.store`, `node_modules`, and
+`lib`/`dist`/`out` entries using its existing snapshot materializer. It rebases
+internal links into the validation clone and requires matching content
+fingerprints before/after copying, unchanged clean revisions, and no overlap
+with existing clone files. Copying has a thirty-minute deadline. Missing,
+escaping or changed snapshot content blocks validation; it never counts as a
+passing native test. The five-pass runner/profile and retry policy are unchanged.
 
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,

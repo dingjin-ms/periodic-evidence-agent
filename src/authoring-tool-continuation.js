@@ -6,6 +6,8 @@ import { Ledger } from './ledger.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { qualifyRepositorySkill, skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
 import { workerToolNames } from './worker-tool-contract.js';
+import { skillChangePopulation, verifyDeclarativeRegistration } from './declarative-e2e.js';
+import { verifyOwnerReviewRecovery } from './owner-review.js';
 import { command, makePlannedImprovementAssignment, requireAllowedSkillChanges,
   requireCurrentAssignment } from './workers.js';
 
@@ -59,7 +61,8 @@ export async function verifyExistingCapability(authorization, workspace, revisio
   return report;
 }
 
-export async function verifyRegistrationRecovery(authorization, assignment, job, result) {
+export async function verifyRegistrationRecovery(authorization, assignment, job, result,
+  verifyWorkspace = true) {
   const reference = authorization?.registrationRecovery;
   requireThat(isAbsolute(reference?.path ?? '') && /^[a-f0-9]{64}$/.test(reference?.sha256 ?? ''),
     'An immutable registration recovery review is required', 'blocked-reconciliation');
@@ -75,6 +78,7 @@ export async function verifyRegistrationRecovery(authorization, assignment, job,
     json(Object.keys(review.fileSha256 ?? {}).sort()) === json([...result.skillExecution.changedFiles].sort()),
   'Registration recovery must bind the retained proposal and repaired native prerequisites',
   'blocked-reconciliation');
+  if (!verifyWorkspace) return review;
   const changed = [...new Set([
     ...(await git(job.workspace, ['diff', '--name-only', 'HEAD'])).split('\n'),
     ...(await git(job.workspace, ['ls-files', '--others', '--exclude-standard'])).split('\n')
@@ -94,7 +98,10 @@ async function predecessor(config, ledger, id, reservation = null, authorization
   const results = ledger.all('workerResult').filter(result => result.assignmentId === id);
   const result = results[0], usage = result?.toolUsage, skill = result?.skillExecution;
   const registrationRecovery = Boolean(authorization?.registrationRecovery);
-  const admittedSkill = registrationRecovery
+  const ownerRecovery = Boolean(authorization?.ownerReviewRecovery);
+  requireThat(!(registrationRecovery && ownerRecovery),
+    'Recovery modes must not be combined', 'blocked-reconciliation');
+  const admittedSkill = registrationRecovery || ownerRecovery
     ? skill?.status === 'succeeded' && skill.classification === 'regression-coverage' &&
       skill.changedFiles.length > 0 && skill.testsAddedOrUpdated.length > 0 &&
       skill.unknowns.length === 0 && skill.needsHumanDecision === false
@@ -104,7 +111,10 @@ async function predecessor(config, ledger, id, reservation = null, authorization
       skill.changedFiles.length === 0 && skill.testsAddedOrUpdated.length === 0 &&
       (skill.classification !== 'bounded-edit-capability-unavailable' || skill.unknowns.length === 0);
   requireThat(job?.state === 'blocked' &&
-    (registrationRecovery
+    (ownerRecovery
+      ? JSON.parse(job.error ?? 'null')?.code === 'blocked-owner' &&
+        JSON.parse(job.error).message === 'Owner review did not arrive before commit'
+      : registrationRecovery
       ? ['failed', 'blocked-auth'].includes(JSON.parse(job.error ?? 'null')?.code)
       : !JSON.parse(job.error ?? 'null')) &&
     assignment?.execution === 'local' && assignment.skillBindingId && assignment.testCoveragePlanId &&
@@ -119,7 +129,7 @@ async function predecessor(config, ledger, id, reservation = null, authorization
     usage.remaining === usage.limit - usage.used && usage.byTool.pilot_finish === 1 &&
     Object.entries(usage.byTool).every(([name, count]) =>
       ['pilot_list', 'pilot_search', 'pilot_read', 'pilot_finish',
-        ...(registrationRecovery ? ['pilot_write', 'pilot_replace_lines'] : [])].includes(name) || count === 0) &&
+        ...(registrationRecovery || ownerRecovery ? ['pilot_write', 'pilot_replace_lines'] : [])].includes(name) || count === 0) &&
     Object.values(usage.byTool).reduce((sum, count) => sum + count, 0) === usage.used &&
     usage.rounds.length === 1 && usage.rounds[0].round === 0 && usage.rounds[0].status === 'completed' &&
     usage.rounds[0].used === usage.used && usage.rounds[0].cumulativeUsed === usage.used,
@@ -139,10 +149,34 @@ async function predecessor(config, ledger, id, reservation = null, authorization
       JSON.parse(finalization[0].detail).revision === job.base_revision &&
       JSON.parse(finalization[0].detail).round === 0,
     'Only the first failed pre-commit registration may resume authoring', 'blocked-reconciliation');
-    await verifyRegistrationRecovery(authorization, assignment, job, result);
+    await verifyRegistrationRecovery(authorization, assignment, job, result, !descendantHasReviewedChanges);
+  }
+  const reviews = operations.filter(row => row.kind === 'owner-review');
+  if (ownerRecovery) {
+    requireThat(finalization.length === 1 && finalization[0].state === 'completed' &&
+      finalization[0].id === `${id}:declarative-registration:0` &&
+      reviews.length === 1 && reviews[0].state === 'blocked' &&
+      reviews[0].id === `${id}:owner-review:0` &&
+      JSON.parse(reviews[0].detail).code === 'blocked-owner' &&
+      assignment.capability === 'declarative-e2e-authoring',
+    'Only the first completed registration with an uncommitted owner-review timeout may continue',
+    'blocked-reconciliation');
+    verifyOwnerReviewRecovery(authorization, assignment, job, result);
+    verifyDeclarativeRegistration(config, config.repositories.find(repo => repo.id === assignment.repoId),
+      assignment, job.workspace, skill);
+    requireAllowedSkillChanges(skill.changedFiles, assignment.allowedWritePrefixes,
+      skill.changedFiles, assignment.allowedWriteFiles);
+    const changed = [...new Set([
+      ...(await git(job.workspace, ['diff', '--name-only', 'HEAD'])).split('\n'),
+      ...(await git(job.workspace, ['ls-files', '--others', '--exclude-standard'])).split('\n')
+    ].filter(Boolean))].sort();
+    requireThat(json(changed) === json(skillChangePopulation(skill)),
+      'Owner recovery requires the exact retained skill and registration diff',
+      'blocked-reconciliation');
   }
   const origins = operations.filter(row => row.id !== reservationId &&
-    !(registrationRecovery && row === finalization[0]));
+    !((registrationRecovery || ownerRecovery) && row === finalization[0]) &&
+    !(ownerRecovery && row === reviews[0]));
   let owned = join(ledger.directory, 'workspaces', job.session_id);
   let originAuthorization = null;
   if (origins.length) {
@@ -168,7 +202,7 @@ async function predecessor(config, ledger, id, reservation = null, authorization
           'Consumed authoring configuration changed', 'blocked-reconciliation');
         const parent = await predecessor(origin.priorConfig, previous, id,
           { id: origins[0].id, state: 'claimed' }, origin.authorization, depth + 1,
-          descendantHasReviewedChanges || registrationRecovery);
+          descendantHasReviewedChanges || registrationRecovery || ownerRecovery);
         owned = parent.job.workspace;
         originAuthorization = origin.authorization;
       } else owned = join(previous.directory, 'workspaces', priorJob.session_id);
@@ -176,7 +210,7 @@ async function predecessor(config, ledger, id, reservation = null, authorization
   }
   requireThat(realpathSync(job.workspace) === realpathSync(owned) &&
     await git(job.workspace, ['rev-parse', 'HEAD']) === job.base_revision &&
-    (registrationRecovery || descendantHasReviewedChanges ||
+    (registrationRecovery || ownerRecovery || descendantHasReviewedChanges ||
       !await git(job.workspace, ['status', '--porcelain'])),
   'Tool recovery requires the unchanged owned qualified checkout', 'blocked-reconciliation');
   requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);

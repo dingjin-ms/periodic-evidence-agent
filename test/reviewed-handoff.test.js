@@ -362,8 +362,8 @@ async function toolFixture(t, options = {}) {
   return ctx;
 }
 
-test('reviewed uncommitted recovery preserves consumed authoring ancestors while retaining the descendant diff', async t => {
-  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+async function retainedRecoveryFixture(t, registeredAncestor) {
+  const ctx = await toolFixture(t, { registrationRecovery: registeredAncestor }), id = ctx.prepared.job.id;
   const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
     ctx.nextConfig, ctx.nextLedger, ctx.authorization);
   const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
@@ -371,7 +371,7 @@ test('reviewed uncommitted recovery preserves consumed authoring ancestors while
   ctx.nextLedger.moveJob(id, 'running', 'blocked', {
     error: { code: 'failed', message: 'Synthetic registration failure' }
   });
-  mkdirSync(join(isolated.workspace, 'test'));
+  mkdirSync(join(isolated.workspace, 'test'), { recursive: true });
   writeFileSync(join(isolated.workspace, 'test', 'retained.js'), 'Synthetic retained source\n');
   const result = toolBlockedResult({
     ...structuredClone(ctx.result), id: 'retained-proposal-result',
@@ -380,7 +380,8 @@ test('reviewed uncommitted recovery preserves consumed authoring ancestors while
   }, prepared.assignment);
   Object.assign(result.skillExecution, {
     status: 'succeeded', classification: 'regression-coverage',
-    changedFiles: ['test/retained.js'], testsAddedOrUpdated: ['test/retained.js'],
+    changedFiles: [...(registeredAncestor ? ['test/authored.test.js'] : []), 'test/retained.js'],
+    testsAddedOrUpdated: ['test/retained.js'],
     needsHumanDecision: false
   });
   result.toolUsage.byTool.pilot_read = 0;
@@ -395,7 +396,10 @@ test('reviewed uncommitted recovery preserves consumed authoring ancestors while
     attemptId: prepared.job.session_id, workerResultSha256: hash(json(result)),
     sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
     productInvocations: 0, unknownsResolved: true,
-    fileSha256: { 'test/retained.js': hash('Synthetic retained source\n') },
+    fileSha256: {
+      ...(registeredAncestor ? { 'test/authored.test.js': hash('// Synthetic authored proposal\n') } : {}),
+      'test/retained.js': hash('Synthetic retained source\n')
+    },
     explanation: 'Synthetic descendant-only source; no product invocation.'
   }));
   const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'registration') };
@@ -412,7 +416,10 @@ test('reviewed uncommitted recovery preserves consumed authoring ancestors while
   assert.equal(readFileSync(join(isolated.workspace, 'test', 'retained.js'), 'utf8'),
     'Synthetic retained source\n');
   assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
-});
+}
+for (const registeredAncestor of [false, true])
+  test(`reviewed uncommitted recovery preserves consumed ancestors (registration=${registeredAncestor})`,
+    t => retainedRecoveryFixture(t, registeredAncestor));
 
 for (const condition of ['valid', 'file-drift', 'result-drift', 'unexpected-file', 'validation-started']) {
   test(`uncommitted owner registration recovery ${condition}`, async t => {

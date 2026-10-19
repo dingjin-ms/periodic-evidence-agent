@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync,
+  realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { configAt, hash, json, validateRecord } from '../src/common.js';
@@ -11,7 +12,8 @@ import {
 } from '../src/declarative-e2e.js';
 import { repositoryValidationContract } from '../src/repository-skills.js';
 import {
-  command, finalizeDeclarativeSkill, rebindDeclarativeRegistration, runValidation
+  command, finalizeDeclarativeSkill, rebindDeclarativeRegistration, runValidation,
+  seedDeclarativeDependencies
 } from '../src/workers.js';
 
 const require = createRequire(import.meta.url);
@@ -424,3 +426,50 @@ test('an exit-zero runner without native five-pass proof is blocked without auto
   assert.equal(calls, 1);
   assert.equal(results[0].status, 'blocked');
 });
+
+for (const condition of ['valid', 'source-dirty', 'different-revision', 'existing-output', 'external-link']) {
+  test(`declarative final-SHA dependency seed ${condition}`, async t => {
+    const ctx = await fixture(t);
+    writeFileSync(join(ctx.workspace, '.gitignore'), 'node_modules/\nlib/\n.store/\n.npmrc\n');
+    const packageRoot = join(ctx.workspace, 'ooui', 'packages', 'synthetic');
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), '{"name":"synthetic"}\n');
+    await ctx.g(['add', '.']);
+    await ctx.g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-m', 'Synthetic final revision']);
+    const revision = await ctx.g(['rev-parse', 'HEAD']);
+    for (const path of ['ooui/.store/synthetic/node_modules/synthetic/index.js',
+      'ooui/packages/synthetic/lib/index.js', 'ooui/node_modules/fixture/index.js']) {
+      mkdirSync(dirname(join(ctx.workspace, path)), { recursive: true });
+      writeFileSync(join(ctx.workspace, path), 'Synthetic built output\n');
+    }
+    writeFileSync(join(ctx.workspace, '.npmrc'), 'SYNTHETIC-EXCLUDED-FILE\n');
+    const target = join(ctx.root, 'validation');
+    await command('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+      'clone', '--quiet', '--no-hardlinks', '--', ctx.workspace, target], ctx.root);
+    if (condition === 'source-dirty') writeFileSync(join(ctx.workspace, file), 'Changed source');
+    if (condition === 'different-revision')
+      await command('git', ['checkout', '--quiet', '--detach', ctx.base], target);
+    if (condition === 'existing-output') {
+      mkdirSync(join(target, 'ooui', 'packages', 'synthetic', 'lib'));
+      writeFileSync(join(target, 'ooui', 'packages', 'synthetic', 'lib', 'existing.js'), 'Existing');
+    }
+    symlinkSync(condition === 'external-link' ? ctx.root : packageRoot,
+      join(ctx.workspace, 'ooui', 'node_modules', 'workspace-synthetic'),
+      process.platform === 'win32' ? 'junction' : 'dir');
+    if (condition === 'valid') {
+      assert.equal((await command('git', ['rev-parse', 'HEAD'], target)).stdout.trim(), revision);
+      assert.equal((await command('git', ['-c', 'core.autocrlf=false',
+        'status', '--porcelain'], target)).stdout.trim(), '');
+      const seeded = await seedDeclarativeDependencies(ctx.workspace, target, revision, 30000);
+      assert.equal(seeded.sourceRevision, revision);
+      assert.match(seeded.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(readFileSync(join(target, 'ooui', 'packages', 'synthetic', 'lib', 'index.js'), 'utf8'),
+        'Synthetic built output\n');
+      assert.equal(realpathSync(join(target, 'ooui', 'node_modules', 'workspace-synthetic')),
+        realpathSync(join(target, 'ooui', 'packages', 'synthetic')));
+      assert.equal(existsSync(join(target, '.npmrc')), false);
+      assert.equal(await ctx.g(['status', '--porcelain']), '');
+    } else await assert.rejects(seedDeclarativeDependencies(ctx.workspace, target, revision, 30000));
+  });
+}

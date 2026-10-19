@@ -1279,20 +1279,23 @@ function materializeSnapshotPath(sourceRoot, targetRoot, path) {
   for (const name of readdirSync(source).sort())
     materializeSnapshotPath(sourceRoot, targetRoot, join(path, name));
 }
-async function materializeDependencySnapshot(snapshot, workspace, paths, timeoutMs) {
+async function materializeDependencySnapshot(snapshot, workspace, paths, timeoutMs, deadline = null) {
   for (const path of paths) {
+    const remaining = deadline === null ? timeoutMs : Math.min(timeoutMs, deadline - Date.now());
+    requireThat(remaining > 0, 'Dependency snapshot copy exceeded its bounded deadline',
+      'blocked-validation');
     const source = join(snapshot, path);
     const target = join(workspace, path);
     if (existsSync(target)) removeValidationPath(target, { recursive: true, force: true });
     if (process.platform !== 'win32' || !lstatSync(source).isDirectory() ||
-      !path.replaceAll('\\', '/').endsWith('node_modules')) {
+      (deadline === null && !path.replaceAll('\\', '/').endsWith('node_modules'))) {
       materializeSnapshotPath(snapshot, workspace, path);
       continue;
     }
     mkdirSync(target, { recursive: true });
     try {
       await command('robocopy', [source, target, '/MIR', '/SL', '/SJ', '/MT:32',
-        '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], workspace, timeoutMs);
+        '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], workspace, remaining);
     } catch (error) {
       requireThat(Number.isInteger(error.code) && error.code >= 0 && error.code < 8,
         `Dependency snapshot copy failed for ${path}`, 'blocked-validation');
@@ -1302,6 +1305,8 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
     const source = join(snapshot, path);
     if (!lstatSync(source).isDirectory()) continue;
     const rewriteLinks = (directory, relativePath) => {
+      requireThat(deadline === null || Date.now() < deadline,
+        'Dependency snapshot link rebasing exceeded its bounded deadline', 'blocked-validation');
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const entryPath = join(directory, entry.name);
         const entryRelative = join(relativePath, entry.name);
@@ -1323,6 +1328,46 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
     };
     rewriteLinks(source, path);
   }
+}
+export async function seedDeclarativeDependencies(source, workspace, revision, timeoutMs) {
+  const paths = (await git(source,
+    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
+    .split(/\r?\n/).filter(Boolean).map(path => path.replace(/\/$/, ''))
+    .filter(path => path.startsWith('ooui/') && (path === 'ooui/.store' ||
+      /(^|\/)node_modules$/.test(path) || /(^|\/)(lib|dist|out)(\/|$)/.test(path))).sort();
+  if (!paths.length) return null;
+  requireThat(paths.length <= 2048 && paths.every(path => !existsSync(join(workspace, path))),
+    'Declarative dependency seed overlaps clone files or exceeds its path bound', 'blocked-validation');
+  requireThat(
+    await git(source, ['rev-parse', 'HEAD']) === revision &&
+    !await git(source, ['status', '--porcelain']),
+  'Declarative dependency seed source must be clean at the exact final revision', 'blocked-validation');
+  requireThat(
+    await git(workspace, ['rev-parse', 'HEAD']) === revision &&
+    !await git(workspace, ['status', '--porcelain']),
+  'Declarative dependency seed clone must be clean at the exact final revision',
+  'blocked-validation');
+  const fingerprintPaths = paths.flatMap(path => path === 'ooui/.store'
+    ? readdirSync(join(source, path)).sort().map(name => `${path}/${name}`)
+    : [path]);
+  requireThat(fingerprintPaths.length <= 20000, 'Declarative dependency seed is too large',
+    'blocked-validation');
+  const sha256 = await outputFingerprint(source, fingerprintPaths);
+  requireThat(sha256, 'Declarative dependency seed has missing or unsafe outputs',
+    'blocked-validation');
+  await materializeDependencySnapshot(source, workspace, paths, timeoutMs,
+    Date.now() + Math.min(timeoutMs, 30 * 60 * 1000));
+  const [retained, copied] = await Promise.all([
+    outputFingerprint(source, fingerprintPaths), outputFingerprint(workspace, fingerprintPaths)
+  ]);
+  requireThat(retained === sha256 && copied === sha256 &&
+    await git(source, ['rev-parse', 'HEAD']) === revision &&
+    !await git(source, ['status', '--porcelain']) &&
+    await git(workspace, ['rev-parse', 'HEAD']) === revision &&
+    !await git(workspace, ['status', '--porcelain']),
+  'Declarative dependency seed changed source, tracked files or copied output bytes',
+  'blocked-validation');
+  return { format: 'declarative-dependency-seed-v1', sourceRevision: revision, paths, sha256 };
 }
 async function dependencySnapshotPaths(workspace, configuredPaths) {
   const ignored = (await git(workspace,
@@ -2367,6 +2412,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
         await git(validationWorkspace, ['checkout', '--detach', revision],
           checkoutEnvironment(), timeout);
         await hydrateValidationLfs(config, repo, gate, validationWorkspace, revision);
+        const dependencySeed = declarative
+          ? await seedDeclarativeDependencies(job.workspace, validationWorkspace, revision, gate.timeoutMs)
+          : null;
         if (privateProfile) {
           mkdirSync(dirname(privateProfile), { recursive: true });
           writeFileSync(privateProfile, profile.bytes, { mode: 0o600 });
@@ -2374,6 +2422,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
         try {
           output = await executeValidation(gate, args, validationWorkspace, null, execute, null,
             request ? { PILOT_DECLARATIVE_REQUEST: json(request) } : {});
+          if (dependencySeed) output.dependencySeed = dependencySeed;
           if (request) {
             const receipt = parseDeclarativeOutput(output, 'PILOT_DECLARATIVE_RECEIPT:');
             requireThat(receipt.format === declarativeProfile &&
@@ -3180,8 +3229,26 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       }
     }
     let finalValidation = [];
+    let ownerRecovery = null;
+    if (toolContinuation && JSON.parse(toolContinuation.detail).authorization.ownerReviewRecovery) {
+      const detail = JSON.parse(toolContinuation.detail);
+      const { Ledger } = await import('./ledger.js');
+      const previous = new Ledger(detail.priorStateDirectory, { readOnly: true });
+      try {
+        const priorResult = previous.get('workerResult', detail.priorResultId);
+        const priorAssignment = previous.get('assignment', id);
+        const retained = (await import('./owner-review.js')).verifyOwnerReviewRecovery(
+          detail.authorization, priorAssignment, previous.job(id), priorResult);
+        ownerRecovery = {
+          proposal: retained.proposal, priorResult, priorAssignment,
+          priorJob: previous.job(id), priorStateDirectory: detail.priorStateDirectory
+        };
+      } finally { previous.close(); }
+    }
     let controllerRegistration = continuation
       ? rebindDeclarativeRegistration(config, ledger, repo, assignment, current, continuation)
+      : ownerRecovery
+        ? rebindDeclarativeRegistration(config, ledger, repo, assignment, current, ownerRecovery)
       : null;
     const maxRepairRounds = config.limits.maxValidationRepairRounds ?? 10;
     while (true) {
@@ -3197,22 +3264,31 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         const toolkit = new WorkerTools(config, assignment, current.workspace, loadedSkill, toolUsage);
         let roundStatus = 'completed';
         try {
-          await (dependencies.runModel ?? runConfiguredModel)(
-            config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring,
-            dependencies);
-          requireThat(toolkit.proposal, 'Worker ended without a structured result', 'blocked-result');
+          if (ownerRecovery && authoring.round === 0) {
+            proposal = structuredClone(ownerRecovery.proposal);
+            ledger.operation(`${id}:reuse-owner-reviewed-proposal`, id, 'reuse-owner-reviewed-proposal',
+              { priorResultId: ownerRecovery.priorResult.id,
+                priorResultSha256: hash(json(ownerRecovery.priorResult)) });
+            ledger.finishOperation(`${id}:reuse-owner-reviewed-proposal`, 'completed',
+              { priorResultId: ownerRecovery.priorResult.id, modelInvocations: 0 });
+          } else {
+            await (dependencies.runModel ?? runConfiguredModel)(
+              config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring,
+              dependencies);
+            requireThat(toolkit.proposal, 'Worker ended without a structured result', 'blocked-result');
+            proposal = toolkit.proposal;
+          }
         } catch (error) {
           roundStatus = 'failed';
           throw error;
         } finally {
-          toolUsage.rounds.push({
+          if (!(ownerRecovery && authoring.round === 0)) toolUsage.rounds.push({
             round: authoring.round,
             used: toolUsage.used - startedUsed,
             cumulativeUsed: toolUsage.used,
             status: roundStatus
           });
         }
-        proposal = toolkit.proposal;
         if (controllerRegistration && proposal.skillExecution)
           proposal.skillExecution.registration = controllerRegistration;
         outcome = proposal.outcome;
@@ -3232,16 +3308,17 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
             readFileSync(boundedPath(current.workspace, successor.testPath), 'utf8'));
         }
         requireThat(repo.commitIdentity?.name && repo.commitIdentity?.email, 'Explicit commit identity is required');
-        if (proposal.skillExecution)
+        if (proposal.skillExecution && !(ownerRecovery && authoring.round === 0))
           proposal.skillExecution = await finalizeDeclarativeSkill(config, ledger, current,
             repo, assignment, proposal.skillExecution, authoring.round, dependencies.execute ?? command);
         controllerRegistration = proposal.skillExecution?.registration ?? null;
         const reviewDirectory = toolContinuation &&
-          JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory;
+          (JSON.parse(toolContinuation.detail).authorization.registrationRecovery?.ownerReviewDirectory ??
+            JSON.parse(toolContinuation.detail).authorization.ownerReviewRecovery?.ownerReviewDirectory);
         if (reviewDirectory) {
           const description = await (await import('./owner-review.js')).awaitOwnerReview(
             ledger, current, authoring.round, reviewDirectory,
-            await workspaceChanges(current.workspace, current.base_revision), 300000,
+            await workspaceChanges(current.workspace, current.base_revision), undefined,
             { title: proposal.title, description: proposal.description });
           if (description !== null) proposal.description = description;
         }

@@ -26,6 +26,22 @@ test('controller progress failure preserves an already raised primary rejection'
   });
 });
 
+test('a dot-prefixed nested attempt parent is rejected before reading source or creating state',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'preparation-overlap-fixture-'));
+    const source = join(root, 'source');
+    const parent = join(source, '..attempts');
+    mkdirSync(parent, { recursive: true });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    await assert.rejects(runPreparationAttempt({
+      config: {}, job: { workspace: source },
+      repo: { validationGates: [{ id: 'fixture' }] }, revision: 'a'.repeat(40),
+      attemptParent: parent, wholeTimeoutMs: 60000,
+      stageTimeoutMs: Object.fromEntries(preparationStageNames.map(name => [name, 45000]))
+    }), error => error.code === 'blocked-preparation-plan');
+    assert.equal(existsSync(join(parent, 'controller')), false);
+  });
+
 function receipts(root) {
   if (!existsSync(root)) return [];
   return readdirSync(root, { withFileTypes: true }).flatMap(entry => {

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync,
   openSync, closeSync, fsyncSync, renameSync, rmSync, realpathSync } from 'node:fs';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { command } from './workers.js';
@@ -18,7 +18,8 @@ const stages = new Set([
 ]);
 const within = (root, path) => {
   const suffix = relative(root, path);
-  return suffix !== '' && !suffix.startsWith('..') && !isAbsolute(suffix);
+  return suffix !== '' && suffix !== '..' &&
+    !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
 };
 const processGone = pid => {
   try { process.kill(pid, 0); return false; }

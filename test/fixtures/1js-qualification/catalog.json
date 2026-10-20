@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@1js/excel-agent-declarative-e2e",
+  "sourceTestVerb": "test:e2e:excel-agent:declarative",
+  "tagGroups": {
+    "omni": ["omni-supported", "omni-product-defect", "omni-capability-gap"],
+    "arcadia": ["arcadia-supported", "arcadia-ongoing"],
+    "omni-enforcement": ["omni-observing", "omni-blocking"]
+  },
+  "cases": [
+    {
+      "number": 34,
+      "semanticId": "excel-agent.aad.fixture-seeded-workbook",
+      "priority": "P2",
+      "topology": "AAD",
+      "title": "Enterprise Omni fixture adds to a seeded workbook value",
+      "command": "e2e:ci:excel-agent:aad:fixture-seeded-workbook",
+      "tags": ["omni-supported", "arcadia-ongoing", "omni-observing"],
+      "caseKey": "excel-agent.aad.fixture-seeded-workbook"
+    },
+    {
+      "number": 35,
+      "semanticId": "excel-agent.msa.fixture-conversation-isolation",
+      "priority": "P2",
+      "topology": "MSA",
+      "title": "Consumer Omni fixture isolates conversations without changing workbook data",
+      "command": "e2e:ci:excel-agent:msa:fixture-conversation-isolation",
+      "tags": ["omni-supported", "arcadia-ongoing", "omni-observing"],
+      "caseKey": "excel-agent.msa.fixture-conversation-isolation"
+    },
+    {
+      "number": 36,
+      "semanticId": "excel-agent.aad.fixture-web-source-restoration",
+      "priority": "P2",
+      "topology": "AAD",
+      "title": "Enterprise Omni fixture restores the original Web source setting",
+      "command": "e2e:ci:excel-agent:aad:fixture-web-source-restoration",
+      "tags": ["omni-supported", "arcadia-ongoing", "omni-observing"],
+      "caseKey": "excel-agent.aad.fixture-web-source-restoration"
+    },
+    {
+      "number": 37,
+      "semanticId": "excel-agent.aad.fixture-local-file-upload",
+      "priority": "P2",
+      "topology": "AAD",
+      "title": "Enterprise Arcadia fixture combines an uploaded CSV with a seeded anchor",
+      "command": "e2e:ci:excel-agent:aad:fixture-local-file-upload",
+      "tags": ["omni-capability-gap", "arcadia-supported", "omni-observing"],
+      "caseKey": "excel-agent.aad.fixture-local-file-upload"
+    },
+    {
+      "number": 39,
+      "semanticId": "excel-agent.dedicated.fixture-sensitivity",
+      "priority": "P2",
+      "topology": "AAD",
+      "title": "Dedicated enterprise Omni fixture exposes its workbook sensitivity label",
+      "command": "e2e:ci:excel-agent:dedicated:fixture-sensitivity",
+      "tags": ["omni-supported", "arcadia-ongoing", "omni-observing"],
+      "caseKey": "excel-agent.dedicated.fixture-sensitivity"
+    }
+  ],
+  "disabledCases": [],
+  "reviewedSourceRevision": "b40008ff18d96d8be950683eb5e856bfd11b6932",
+  "legacyBaselineRevision": "a2359b30f5f26e14a7eea1849ee0ec02744c9ef4"
+}

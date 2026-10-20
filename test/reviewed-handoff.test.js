@@ -793,7 +793,7 @@ test('1JS qualification specs preserve separate fixture cohorts and cleanup cont
     inputFormat: 'declarative-e2e-mini-spec-batch-v1'
   }, oneJsQualification);
   assert.deepEqual(normalized.items.map(item => [item.inputItemId, item.account]), [
-    ['excel-agent-arcadia-seeded-workbook', 'AAD'],
+    ['excel-agent-omni-seeded-workbook', 'AAD'],
     ['excel-agent-omni-msa-conversation-isolation', 'MSA'],
     ['excel-agent-omni-restore-web-source', 'AAD'],
     ['excel-agent-arcadia-local-file-upload', 'AAD'],
@@ -808,6 +808,12 @@ test('1JS qualification specs preserve separate fixture cohorts and cleanup cont
   }
   assert.match(normalized.items[0].expectedUserVisibleAndDataOutcomes.join('\n'),
     /A1.*15/);
+  assert.match(normalized.items[0].preconditions.join('\n'),
+    /Select Omni.*actual visible experience/);
+  assert.match(normalized.items[0].orderedTestSteps.join('\n'), /confirm Omni/);
+  assert.doesNotMatch(normalized.items[0].orderedTestSteps.join('\n'), /Arcadia/);
+  assert.match(normalized.items[0].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /B1.*FIXTURE-SEEDED-GUARD.*protected unchanged/);
   assert.match(normalized.items[1].expectedUserVisibleAndDataOutcomes.join('\n'),
     /must not contain/);
   assert.match(normalized.items[2].cleanup.join('\n'), /even.*fails/);
@@ -819,10 +825,57 @@ test('1JS qualification specs preserve separate fixture cohorts and cleanup cont
     /only.*owned.*even.*fails/);
   assert.match(normalized.items[5].preconditions.join('\n'),
     /dedicated-enterprise.*not.*ordinary AAD/);
+  assert.match(normalized.items[5].preconditions.join('\n'),
+    /Select Omni.*actual visible experience/);
+  assert.match(normalized.items[5].orderedTestSteps.join('\n'),
+    /confirm Omni/);
+  assert.doesNotMatch(normalized.items[5].orderedTestSteps.join('\n'),
+    /Arcadia/);
   assert.match(normalized.items[5].expectedUserVisibleAndDataOutcomes.join('\n'),
     /not mutated/);
   normalized.items[0].title = 'Changed copy';
   assert.notEqual(normalized.items[0].title, oneJsQualification.items[0].title);
+});
+
+test('1JS qualification reference assets preserve their separate catalog and protected contracts', () => {
+  const root = new URL('./fixtures/1js-qualification/', import.meta.url);
+  const catalog = JSON.parse(readFileSync(new URL('catalog.json', root), 'utf8'));
+  const matrix = JSON.parse(readFileSync(new URL('capability-matrix.json', root), 'utf8'));
+  const files = new Map([
+    ['excel-agent.aad.fixture-seeded-workbook', 'fixture-seeded-workbook.yaml'],
+    ['excel-agent.msa.fixture-conversation-isolation', 'msa-fixture-conversation-isolation.yaml'],
+    ['excel-agent.aad.fixture-web-source-restoration', 'fixture-web-source-restoration.yaml'],
+    ['excel-agent.aad.fixture-local-file-upload', 'fixture-local-file-upload.yaml'],
+    ['excel-agent.dedicated.fixture-sensitivity', 'fixture-dedicated-sensitivity.yaml']
+  ]);
+  assert.deepEqual(catalog.cases.map(item => item.semanticId), [...files.keys()]);
+  assert.deepEqual(matrix.cases.map(item => item.semanticId), [...files.keys()]);
+  for (const entry of catalog.cases) {
+    const contract = matrix.cases.find(item => item.semanticId === entry.semanticId);
+    const source = readFileSync(new URL(`scenarios/${files.get(entry.semanticId)}`, root), 'utf8')
+      .replace(/\r\n/g, '\n');
+    assert.equal(contract.title, entry.title);
+    assert.ok(source.includes(`\nid: ${entry.semanticId}\n`));
+    assert.ok(source.includes(`\nname: ${entry.title}\n`));
+    assert.ok(source.includes(`\n  lane: ${contract.accountLane}\n`));
+    assert.match(source, /protected: true/);
+    if (entry.semanticId.endsWith('fixture-seeded-workbook') ||
+        entry.semanticId.endsWith('fixture-sensitivity')) {
+      assert.match(source, /^  experience: omni$/m);
+    }
+  }
+  const seeded = matrix.cases.find(item =>
+    item.semanticId === 'excel-agent.aad.fixture-seeded-workbook');
+  assert.ok(seeded.assertions.some(item => item.provider === 'workbook' &&
+    item.assertion === 'exact' && item.parameters.cell === 'A1' &&
+    item.parameters.expected === '15'));
+  assert.ok(seeded.assertions.some(item => item.provider === 'workbook' &&
+    item.assertion === 'unchanged' && item.parameters.cell === 'B1'));
+  const dedicated = matrix.cases.find(item =>
+    item.semanticId === 'excel-agent.dedicated.fixture-sensitivity');
+  assert.equal(dedicated.accountLane, 'dedicated-enterprise');
+  assert.ok(dedicated.assertions.some(item =>
+    item.provider === 'sensitivity' && item.assertion === 'visible'));
 });
 
 for (const repairBudget of [0, 1, 2])

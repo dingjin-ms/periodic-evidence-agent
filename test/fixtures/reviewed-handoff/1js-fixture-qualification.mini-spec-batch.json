@@ -2,28 +2,29 @@
   "format": "declarative-e2e-mini-spec-batch-v1",
   "items": [
     {
-      "inputItemId": "excel-agent-arcadia-seeded-workbook",
-      "title": "Qualify Arcadia authoring with a seeded workbook",
+      "inputItemId": "excel-agent-omni-seeded-workbook",
+      "title": "Qualify Omni authoring with a seeded workbook",
       "account": "AAD",
       "entryUrl": "https://excel.cloud.microsoft/",
       "preconditions": [
         "This is an authoring qualification input, not collected evidence, a coverage decision, an approval or a validation receipt.",
         "Use the qualified AAD enterprise session and a test-owned disposable blank workbook.",
-        "Select Arcadia and verify the actual visible experience before executing the scenario.",
+        "Select Omni and verify the actual visible experience before executing the scenario.",
         "Reuse the existing workbook seed and protected exact-value assertion providers; any missing registration is an external owning-workflow prerequisite, not permission to edit the harness.",
         "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
       ],
       "orderedTestSteps": [
         "Create and open the test-owned disposable workbook through the existing AAD Hub flow.",
-        "Seed A1 with the exact value 5 and read it back using the existing protected workbook reader.",
-        "Open the Excel Agent pane and confirm Arcadia.",
+        "Seed A1 with the exact value 5 and B1 with FIXTURE-SEEDED-GUARD, then read both back using the existing protected workbook reader.",
+        "Open the Excel Agent pane and confirm Omni.",
         "Send the exact prompt: Read the number currently in A1, add 10, and write the result back into A1.",
         "Wait for the edit to finish and read A1 through the protected workbook verifier."
       ],
       "expectedUserVisibleAndDataOutcomes": [
         "The initial workbook A1 value is exactly 5.",
         "The final workbook A1 value is exactly 15, read from the real workbook rather than inferred from the chat response.",
-        "The scenario actually executes in Arcadia; an unavailable session, wrong experience, unreadable cell or skipped test is not a pass."
+        "B1 remains exactly FIXTURE-SEEDED-GUARD through the protected unchanged-workbook assertion.",
+        "The scenario actually executes in Omni; an unavailable session, wrong experience, unreadable cell or skipped test is not a pass."
       ],
       "cleanup": [
         "Close only the browser context or tab owned by this test, including when setup or an assertion fails.",
@@ -146,23 +147,25 @@
     },
     {
       "inputItemId": "excel-agent-dedicated-sensitivity",
-      "title": "Qualify a dedicated enterprise account and named workbook fixture",
+      "title": "Qualify a dedicated enterprise Omni account and named workbook fixture",
       "account": "AAD",
       "entryUrl": "https://excel.cloud.microsoft/",
       "preconditions": [
         "This AAD case specifically requires the dedicated-enterprise lane, not the ordinary AAD browser profile.",
         "Require the approved ENTERPRISE_E2E_ENABLED gate, dedicated external-service login and existing clp-labeled named workbook; otherwise report this case blocked.",
+        "Select Omni and verify the actual visible experience; dedicated-enterprise is the account lane, not an alternative experience.",
         "Never fetch or save credentials, invent a fixture URL, relabel the shared workbook or substitute an ordinary blank workbook.",
         "After authoring, require five consecutive real local passes on the final implementation SHA with workers=1 and retries=0. Any implementation edit resets this case's counter."
       ],
       "orderedTestSteps": [
         "Resolve the approved clp-labeled workbook through the registered dedicated fixture provider.",
         "Run the existing external-service login pre-session contract and confirm the dedicated account lane.",
-        "Open the workbook and confirm Arcadia.",
+        "Open the workbook and confirm Omni.",
         "Assert the actual sensitivity label is visible using the existing protected sensitivity provider."
       ],
       "expectedUserVisibleAndDataOutcomes": [
         "The dedicated named workbook's sensitivity label is visible.",
+        "The scenario actually executes in Omni with the dedicated account; missing entry, wrong experience or skipped execution is not a pass.",
         "The shared workbook is not mutated and its sensitivity is not changed.",
         "An unavailable dedicated login or named resource is blocked, not skipped into a successful qualification."
       ],

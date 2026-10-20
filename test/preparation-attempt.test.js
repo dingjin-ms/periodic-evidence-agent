@@ -193,6 +193,19 @@ async function assertRollback(outcome, ctx) {
     await assertExited(pid, outcome.processExitCheckStartedMs, ctx.root);
 }
 
+function validationImportFault(ctx, marker) {
+  const preload = join(ctx.root, 'validation-import-fault.mjs');
+  writeFileSync(preload, `
+import {registerHooks} from 'node:module';
+registerHooks({load(url,context,nextLoad){
+  if(url===${json(new URL('../src/workers.js', import.meta.url).href)})
+    throw Object.assign(new Error(${json(marker)}),{code:'ENOENT'});
+  return nextLoad(url,context);
+}});
+`);
+  return pathToFileURL(preload).href;
+}
+
 for (const step of ['clone', 'checkout']) {
   test(`real Git ${step} failure retains only its substep and safe diagnostic without preparing receipts`,
     async t => {
@@ -206,7 +219,8 @@ for (const step of ['clone', 'checkout']) {
         revision: step === 'checkout' ? marker : ctx.options.revision
       }));
       const child = fileURLToPath(new URL('../src/preparation-attempt-child.js', import.meta.url));
-      await assert.rejects(command(process.execPath, [child, root], root, 60000),
+      const preload = validationImportFault(ctx, marker);
+      await assert.rejects(command(process.execPath, ['--import', preload, child, root], root, 60000),
         error => error.code === 1);
       const text = readFileSync(join(root, 'progress.jsonl'), 'utf8');
       const events = text.trim().split('\n').map(JSON.parse);
@@ -279,6 +293,38 @@ syncBuiltinESMExports();
     assert.deepEqual(persisted.infrastructureFailure, outcome.infrastructureFailure);
   });
 }
+
+test('validation runtime import failure retains its diagnostic after source materialization',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    const marker = 'fixture-sensitive-validation-import';
+    const preload = validationImportFault(ctx, marker);
+    const previousOptions = process.env.NODE_OPTIONS;
+    let outcome;
+    try {
+      process.env.NODE_OPTIONS = [previousOptions, `--import=${json(preload)}`]
+        .filter(Boolean).join(' ');
+      outcome = await runPreparationAttempt(ctx.options);
+    } finally {
+      if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousOptions;
+    }
+    assert.equal(outcome.status, 'incomplete', json(outcome));
+    assert.equal(outcome.reason, 'controller-incomplete');
+    assert.deepEqual(outcome.infrastructureFailure, {
+      operation: 'validation-preparation',
+      diagnostic: { exitCode: null, systemCode: 'ENOENT', signal: null, killed: false }
+    });
+    await assertRollback(outcome, ctx);
+    const retained = ['progress.jsonl', 'journal.jsonl', 'outcome.json']
+      .map(path => readFileSync(join(outcome.attemptRoot, path), 'utf8')).join('\n');
+    assert.equal(retained.includes(marker), false);
+    const events = readFileSync(join(outcome.attemptRoot, 'progress.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    assert.equal(events.some(event => event.stage === 'source-materialization' &&
+      event.phase === 'finish'), true);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+  });
 
 for (const stage of ['dependencies', 'compile']) {
   test(`cancelling active ${stage} drains descendants, discards partial state and releases ownership`,

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, openSync, closeSync, fsyncSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { command, prepareValidation } from './workers.js';
+import { command } from './command.js';
 import { json } from './common.js';
 import { preparationFailureDiagnostic } from './preparation-progress.js';
 
@@ -40,6 +40,7 @@ try {
   record({ kind: 'stage', gateId: repo.validationGates[0].id,
     id: 0, stage: 'source-materialization', phase: 'finish' });
   operation = 'validation-preparation';
+  const { prepareValidation } = await import('./workers.js');
   const prepared = await prepareValidation(
     { ...config, stateDirectory: join(root, 'data', 'state') },
     { ...job, workspace }, repo, revision, undefined, {

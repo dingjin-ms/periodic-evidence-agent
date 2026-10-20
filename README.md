@@ -1116,14 +1116,20 @@ npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
   --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
-The scheduler selects jobs deterministically, rotates across configured
-repositories, respects active hosted and local workers, and launches only jobs
+The scheduler selects jobs deterministically, visits repositories in order of
+their oldest waiting job, respects active hosted and local workers, and launches only jobs
 that are still `prepared`. Each selected assignment is atomically admitted
 again by normal `dispatch`; an overlapping scheduler can therefore observe an
 `overlap` result but cannot submit a duplicate remote job. Scheduler batches
 and per-assignment outcomes are durable ledger operations. This supports
 concurrent repositories on one Controller machine; the SQLite ledger is not a
 multi-machine lease service.
+
+Authentication actions are retained in each scheduler result while the affected
+job remains `prepared`; other selected repositories may continue. A batch with
+authentication actions, blocked/uncertain jobs or failed outcomes is recorded as
+`partial`, not successful delivery. Follow the returned authentication recovery
+procedure rather than resubmitting the batch blindly.
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the

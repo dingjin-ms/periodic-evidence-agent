@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configAt, now } from '../src/common.js';
+import { configAt, now, PilotError } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import { makeAssignment } from '../src/workers.js';
 import {
@@ -138,4 +138,156 @@ test('scheduler launches different repositories concurrently and retains deferre
   const operation = ledger.status().operations.find(item =>
     item.id === result.operationId);
   assert.equal(operation.state, 'completed');
+});
+
+test('scheduler admits the oldest waiting repository when only one slot is free', t => {
+  const { config, ledger, prepare } = fixture(t);
+  const firstA = prepare('investigation-a1', 'repo-a');
+  const firstB = prepare('investigation-b1', 'repo-b');
+  ledger.db.prepare('UPDATE jobs SET updated_at=? WHERE id=?')
+    .run('2026-10-19T02:00:00.000Z', firstA.id);
+  ledger.db.prepare('UPDATE jobs SET updated_at=? WHERE id=?')
+    .run('2026-10-19T01:00:00.000Z', firstB.id);
+
+  const result = selectPreparedAssignments(config, ledger, { limit: 1 });
+  assert.deepEqual(result.selected.map(job => job.id), [firstB.id]);
+  assert.deepEqual(result.deferred.map(job => job.id), [firstA.id]);
+});
+
+test('scheduler preserves authentication actions while other repositories complete', async t => {
+  const { config, ledger, prepare } = fixture(t);
+  const firstA = prepare('investigation-a1', 'repo-a');
+  const firstB = prepare('investigation-b1', 'repo-b');
+  const actions = [{
+    state: 'action-required-auth',
+    reason: 'interactive-sign-in-required',
+    cwd: config.repositories[0].referenceCheckout,
+    requiresInstallApproval: false,
+    remediation: 'approved-auth-setup'
+  }];
+  const result = await schedulePreparedAssignments(config, ledger, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+  }, {
+    dispatchAssignment: async (_config, currentLedger, id) => {
+      if (id === firstA.id) return { state: 'action-required-auth', actions };
+      currentLedger.moveJob(id, 'prepared', 'dispatching');
+      currentLedger.moveJob(id, 'dispatching', 'completed');
+      return { outcome: 'draft-pr-validated' };
+    }
+  });
+
+  assert.equal(result.results[0].state, 'action-required-auth');
+  assert.equal(result.state, 'partial');
+  assert.deepEqual(result.results[0].actions, actions);
+  assert.equal(ledger.job(firstA.id).state, 'prepared');
+  assert.equal(result.results[1].assignmentId, firstB.id);
+  assert.equal(result.results[1].state, 'completed');
+  const operation = ledger.status().operations.find(item => item.id === result.operationId);
+  assert.equal(operation.state, 'partial');
+  assert.deepEqual(JSON.parse(operation.detail).results, result.results);
+});
+
+test('scheduler records a nonthrowing blocked worker as a partial batch', async t => {
+  const { config, ledger, prepare } = fixture(t);
+  prepare('investigation-a1', 'repo-a');
+  const result = await schedulePreparedAssignments(config, ledger, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+  }, {
+    dispatchAssignment: async (_config, currentLedger, id) => {
+      currentLedger.moveJob(id, 'prepared', 'dispatching');
+      currentLedger.moveJob(id, 'dispatching', 'blocked');
+      return { outcome: 'blocked' };
+    }
+  });
+  assert.equal(result.results[0].outcome, 'blocked');
+  assert.equal(result.state, 'partial');
+  assert.equal(ledger.status().operations.find(item =>
+    item.id === result.operationId).state, 'partial');
+});
+
+test('scheduler preserves a typed authentication blocker without completing the batch', async t => {
+  const { config, ledger, prepare } = fixture(t);
+  const job = prepare('investigation-auth', 'repo-a');
+  const result = await schedulePreparedAssignments(config, ledger, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+  }, {
+    dispatchAssignment: async () => ({ state: 'blocked-auth' })
+  });
+  assert.equal(result.state, 'partial');
+  assert.equal(result.results[0].state, 'blocked-auth');
+  assert.equal(ledger.job(job.id).state, 'prepared');
+  assert.equal(ledger.status().operations.find(item =>
+    item.id === result.operationId).state, 'partial');
+});
+
+for (const outcome of ['draft-pr-validation-failed', 'diagnostic-failed']) {
+  test(`scheduler records completed dispatch with ${outcome} as partial`, async t => {
+    const { config, ledger, prepare } = fixture(t);
+    prepare('investigation-failed-outcome', 'repo-a');
+    const result = await schedulePreparedAssignments(config, ledger, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+    }, {
+      dispatchAssignment: async (_config, currentLedger, id) => {
+        currentLedger.moveJob(id, 'prepared', 'dispatching');
+        currentLedger.moveJob(id, 'dispatching', 'completed');
+        return { outcome };
+      }
+    });
+    assert.equal(result.state, 'partial');
+    assert.equal(result.results[0].state, 'completed');
+    assert.equal(result.results[0].outcome, outcome);
+    assert.equal(ledger.status().operations.find(item =>
+      item.id === result.operationId).state, 'partial');
+  });
+}
+
+test('one repository failure does not cancel or relaunch another repository', async t => {
+  const { config, ledger, prepare } = fixture(t);
+  const firstA = prepare('investigation-a1', 'repo-a');
+  const firstB = prepare('investigation-b1', 'repo-b');
+  const launched = [];
+  const result = await schedulePreparedAssignments(config, ledger, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+  }, {
+    dispatchAssignment: async (_config, currentLedger, id) => {
+      launched.push(id);
+      currentLedger.moveJob(id, 'prepared', 'dispatching');
+      if (id === firstA.id) {
+        currentLedger.moveJob(id, 'dispatching', 'blocked');
+        throw new PilotError('blocked-reconciliation',
+          'Recorded remote job requires reconciliation');
+      }
+      currentLedger.moveJob(id, 'dispatching', 'completed');
+      return { outcome: 'draft-pr-validated' };
+    }
+  });
+  assert.deepEqual(launched, [firstA.id, firstB.id]);
+  assert.equal(result.results[0].error.code, 'blocked-reconciliation');
+  assert.equal(result.results[1].state, 'completed');
+  assert.equal(ledger.status().operations.find(item =>
+    item.id === result.operationId).state, 'partial');
+  assert.equal(selectPreparedAssignments(config, ledger).selected.length, 0);
+});
+
+test('scheduler exposes an uncertain accepted job as a partial result without relaunching', async t => {
+  const { config, ledger, prepare } = fixture(t);
+  const job = prepare('investigation-a1', 'repo-a');
+  let launches = 0;
+  const result = await schedulePreparedAssignments(config, ledger, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+  }, {
+    dispatchAssignment: async (_config, currentLedger, id) => {
+      launches++;
+      currentLedger.moveJob(id, 'prepared', 'dispatching');
+      currentLedger.moveJob(id, 'dispatching', 'uncertain');
+      return { state: 'uncertain' };
+    }
+  });
+  assert.equal(launches, 1);
+  assert.equal(result.state, 'partial');
+  assert.equal(result.results[0].state, 'uncertain');
+  assert.equal(ledger.job(job.id).state, 'uncertain');
+  assert.equal(selectPreparedAssignments(config, ledger).selected.length, 0);
+  assert.equal(ledger.status().operations.find(item =>
+    item.id === result.operationId).state, 'partial');
 });

@@ -22,6 +22,7 @@ import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
 import { cleanupWorkspace, cleanupWorkspaces } from '../src/workspace-gc.js';
+import { schedulePreparedAssignments } from '../src/assignment-scheduler.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -2404,6 +2405,167 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
 });
+test('multi-repository scheduler uses isolated real commits, gates and pushes with same-repository exclusion',
+  { timeout: 60000 }, async t => {
+    const { config, ledger, job, repo, root } =
+      await fixture(t, 'authenticated-source', 'defect-fix');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    config.limits.maxWorkers = 3;
+    config.limits.maxWorkersPerRepository = 1;
+    const secondRepo = {
+      ...structuredClone(repo), id: 'second-fixture',
+      referenceCheckout: join(root, 'second-reference'),
+      remote: join(root, 'second-remote.git')
+    };
+    await command('git', ['clone', '--quiet', '--no-hardlinks',
+      repo.referenceCheckout, secondRepo.referenceCheckout], root);
+    writeFileSync(join(secondRepo.referenceCheckout, 'src', 'value.js'),
+      'export const value = 10;\n');
+    await command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-am', 'Distinct second repository baseline'],
+    secondRepo.referenceCheckout);
+    secondRepo.validationGates[0].args = [
+      '--input-type=module', '-e',
+      "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,20)"
+    ];
+    config.repositories.push(secondRepo);
+    const prepare = (id, target) => {
+      const evidence = addEvidence(ledger, id, '1', { fixture: true }, 'authenticated-source');
+      const investigation = review(evidence);
+      investigation.repoIds = [target.id];
+      ledger.put(investigation);
+      return ledger.prepare(makeAssignment(config, investigation, target.id, 'defect-fix'));
+    };
+    const secondJob = prepare('2', secondRepo);
+    const deferredJob = prepare('3', repo);
+    for (const target of config.repositories)
+      await command('git', ['init', '--bare', '--quiet', target.remote], root);
+    const references = await Promise.all(config.repositories.map(async target => ({
+      workspace: target.referenceCheckout,
+      head: (await command('git', ['rev-parse', 'HEAD'], target.referenceCheckout)).stdout.trim()
+    })));
+    const otherLedger = new Ledger(config.stateDirectory);
+    const entered = new Set();
+    let release;
+    const bothAuthoring = new Promise(resolve => { release = resolve; });
+    const dependencies = {
+      runModel: async (_config, _ledger, current, assignment, _investigation, toolkit) => {
+        entered.add(assignment.repoId);
+        if (entered.size === 2) release();
+        await bothAuthoring;
+        assert.equal(ledger.job(job.id).state, 'running');
+        assert.equal(ledger.job(secondJob.id).state, 'running');
+        await assert.rejects(dispatch(config, otherLedger, deferredJob.id),
+          /Repository worker limit/);
+        assert.equal(otherLedger.job(deferredJob.id).state, 'prepared');
+        const expected = assignment.repoId === repo.id ? 1 : 10;
+        assert.match(toolkit.read('src\\value.js'), new RegExp(`value = ${expected};`));
+        toolkit.write('src\\value.js', `export const value = ${expected * 2};\n`);
+        toolkit.finish({
+          outcome: 'propose-change', findings: 'Isolated synthetic source correction',
+          title: 'Synthetic concurrent correction', description: 'Offline concurrency test'
+        });
+      },
+      createDraft: async (_config, _ledger, current, target, revision) => {
+        const remoteHead = (await command('git', ['--git-dir', target.remote,
+          'rev-parse', `refs/heads/pilot/${current.id}`], root)).stdout.trim();
+        assert.equal(remoteHead, revision);
+        return {
+          url: `https://example.invalid/synthetic-draft/${target.id}`,
+          isDraft: true, headRevision: revision
+        };
+      }
+    };
+    const result = await schedulePreparedAssignments(config, ledger, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+    }, { dispatchDependencies: dependencies }).finally(() => otherLedger.close());
+    assert.deepEqual(result.results.map(value => value.assignmentId), [job.id, secondJob.id]);
+    assert.ok(result.results.every(value => value.outcome === 'draft-pr-validated'));
+    assert.equal(entered.size, 2);
+    assert.equal(ledger.job(deferredJob.id).state, 'prepared');
+    assert.notEqual(ledger.job(job.id).workspace, ledger.job(secondJob.id).workspace);
+    const outputs = ledger.all('workerResult');
+    assert.equal(outputs.length, 2);
+    for (const output of outputs) {
+      assert.equal(output.validation[0].status, 'passed');
+      assert.equal(output.validation[0].sourceRevision, output.sourceRevision);
+      assert.equal(output.draftPR.headRevision, output.sourceRevision);
+    }
+    assert.notEqual(outputs[0].sourceRevision, outputs[1].sourceRevision);
+    for (const reference of references) {
+      assert.equal((await command('git', ['rev-parse', 'HEAD'], reference.workspace))
+        .stdout.trim(), reference.head);
+      assert.equal((await command('git', ['status', '--porcelain'], reference.workspace))
+        .stdout.trim(), '');
+    }
+  });
+test('real dispatch enforces global capacity and duplicate ownership across ledger connections',
+  { timeout: 30000 }, async t => {
+    const { config, ledger, job, repo } = await fixture(t, 'authenticated-source');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    config.limits.maxWorkers = 1;
+    config.limits.maxWorkersPerRepository = 1;
+    const evidence = addEvidence(ledger, '2', '1', { fixture: true }, 'authenticated-source');
+    const investigation = review(evidence);
+    investigation.repoIds = [repo.id];
+    ledger.put(investigation);
+    const waiting = ledger.prepare(makeAssignment(config, investigation, repo.id, 'rca-only'));
+    const otherLedger = new Ledger(config.stateDirectory);
+    let modelCalls = 0;
+    await dispatch(config, ledger, job.id, {
+      runModel: async (_config, _ledger, _current, _assignment, _investigation, toolkit) => {
+        modelCalls++;
+        await assert.rejects(dispatch(config, otherLedger, waiting.id), /Worker limit reached/);
+        await assert.rejects(dispatch(config, otherLedger, job.id), /never-dispatched/);
+        assert.equal(otherLedger.job(waiting.id).state, 'prepared');
+        toolkit.finish({ outcome: 'investigated', findings: 'Synthetic capacity check' });
+      }
+    }).finally(() => otherLedger.close());
+    assert.equal(modelCalls, 1);
+    assert.equal(ledger.job(job.id).state, 'completed');
+    assert.equal(ledger.job(waiting.id).state, 'prepared');
+  });
+test('simultaneous dispatches atomically admit only one worker across ledger connections',
+  { timeout: 30000 }, async t => {
+    const { config, ledger, job, repo } = await fixture(t, 'authenticated-source');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    const evidence = addEvidence(ledger, '2', '1', { fixture: true }, 'authenticated-source');
+    const investigation = review(evidence);
+    investigation.repoIds = [repo.id];
+    ledger.put(investigation);
+    const waiting = ledger.prepare(makeAssignment(config, investigation, repo.id, 'rca-only'));
+    const otherLedger = new Ledger(config.stateDirectory);
+    let preflights = 0, modelCalls = 0, release;
+    const simultaneous = new Promise(resolve => { release = resolve; });
+    const dependencies = {
+      preflightValidationAuthentication: async () => {
+        if (++preflights === 2) release();
+        await simultaneous;
+        return [];
+      },
+      runModel: async (_config, _ledger, _current, _assignment, _investigation, toolkit) => {
+        modelCalls++;
+        toolkit.finish({ outcome: 'investigated', findings: 'Synthetic admission race' });
+      }
+    };
+    const results = await Promise.allSettled([
+      dispatch(config, ledger, job.id, dependencies),
+      dispatch(config, otherLedger, waiting.id, dependencies)
+    ]).finally(() => otherLedger.close());
+    assert.equal(preflights, 2);
+    assert.equal(modelCalls, 1);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = results.find(result => result.status === 'rejected');
+    assert.equal(rejected.reason.code, 'overlap');
+    assert.match(rejected.reason.message, /Worker limit reached/);
+    assert.deepEqual([ledger.job(job.id).state, ledger.job(waiting.id).state].sort(),
+      ['completed', 'prepared']);
+  });
 test('planned OA skill path reconciles a landed product fix and creates a source-bound test-only draft result', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
   repo.allowedWritePrefixes = ['test'];

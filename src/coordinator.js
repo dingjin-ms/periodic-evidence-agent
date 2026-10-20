@@ -216,8 +216,11 @@ export function reconcile(ledger) {
       ...j, nextAction: j.state === 'prepared' ? 'Safe to dispatch once when activated'
         : 'Inspect persisted SDK session/workspace and operation artifacts; never relaunch this assignment blindly'
     })),
-    operations: status.operations.filter(o => o.state === 'started').map(o => ({
-      ...o, nextAction: 'Outcome uncertain. Confirm external acceptance or terminal evidence; no retry/cancel/requeue authorized.'
+    operations: status.operations.filter(o => o.state === 'started' ||
+      (o.kind === 'agency-remote-authoring' && ['accepted', 'uncertain'].includes(o.state))).map(o => ({
+      ...o, nextAction: o.kind === 'agency-remote-authoring'
+        ? 'Use reconcile-remote-authoring with the exact assignment and round to query the recorded job only. Recover a dead dispatch lock explicitly first; never reset or redispatch.'
+        : 'Outcome uncertain. Confirm external acceptance or terminal evidence; no retry/cancel/requeue authorized.'
     })),
     runs: status.runs.filter(r => r.state === 'collecting'),
     locks: status.locks

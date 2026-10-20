@@ -25,6 +25,7 @@ import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
 import { cleanupAgencyTransports } from './agency-transport-gc.js';
+import { reconcileAgencyRemoteJob } from './agency-remote-authoring.js';
 import { describeAgent, describeAgents, agentInvocation, agentOperationResult, agentOperationError } from './agents.js';
 import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
 import { continueRoleValidation } from './role-continuation.js';
@@ -40,7 +41,7 @@ const [action = 'help', ...args] = roleInvocation ? invocationArgs.slice(2) : in
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
 ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
-  'workspace-gc', 'transport-gc', 'dispatch-ready'].includes(action)
+  'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
@@ -79,6 +80,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js workspace-gc --config pilot.local.json [--execute]
   node src\\cli.js transport-gc --config pilot.local.json [--execute]
+  node src\\cli.js reconcile-remote-authoring --assignment ID --round N --config pilot.local.json
   node src\\cli.js dispatch-ready --config pilot.local.json [--execute --limit N --authorize-commit --authorize-push --authorize-draft-pr]
   node src\\cli.js state-prune [--dry-run] [--config pilot.local.json]
   node src\\cli.js doctor
@@ -427,6 +429,12 @@ try {
         result = await cleanupAgencyTransports(config, ledger, {
           execute: args.includes('--execute')
         });
+        break;
+      case 'reconcile-remote-authoring':
+        requireThat(option('--assignment') && /^\d+$/.test(option('--round') ?? ''),
+          'Remote reconciliation requires --assignment ID and --round N');
+        result = await reconcileAgencyRemoteJob(config, ledger,
+          option('--assignment'), Number(option('--round')));
         break;
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
       case 'report': result = report(ledger); break;

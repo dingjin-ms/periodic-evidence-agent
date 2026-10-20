@@ -37,7 +37,8 @@ try {
       { endpoint: 'workitemsbatch', body: { ids: [1], asOf: date, errorPolicy: 'Fail', $expand: 'Relations' },
         response: { value: [{ id: 1, rev: 1, fields: {
           'System.WorkItemType': 'Bug', 'System.Title': 'Synthetic demo record',
-          'System.AreaPath': area, 'System.State': 'Active',
+          'System.AreaPath': area, 'System.State': 'Resolved',
+          'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
           'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z'
         } }] } }
     ].map((c, i) => ({ id: `demo-ado-${lane}-${i}`, observedAt: date, tool: 'ado-delegated-read',

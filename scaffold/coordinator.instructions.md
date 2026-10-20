@@ -29,7 +29,12 @@ send messages, or merge code.
    prior cursor and outstanding gaps before querying. Do not let overlapping
    ticks create duplicate work.
 3. Use the configured ADO cohort query for Bugs under the entire Excel Agent area,
-   including subpaths, excluding Removed. Do not narrow to Automation or Bug Bash.
+   including subpaths, with state Resolved or Closed and
+   Microsoft.VSTS.Common.ResolvedReason Fixed or Duplicate. Reject other/missing
+   resolutions; never substitute System.Reason. Do not narrow to Automation or
+   Bug Bash. This selects regression-coverage inputs, not unresolved bugs to fix.
+   Preserve duplicate identities and canonical links even when the target is
+   outside the area; do not fetch it or infer canonical merging.
    Preserve the creation-date cohort query separately from any configured
    changed-evidence scan. If update/revisit behavior is unresolved, do not claim
    continuous change coverage or enable recurring collection.
@@ -134,6 +139,12 @@ For eligible work:
 1. Check existing assignments, fixes and PRs. An existing resolved source item is
    not automatically a new coding task. Reconcile changed evidence with active
    work before issuing a new assignment version.
+   Only current, qualified test-only coverage improvements may use the
+   Resolved/Closed + Fixed/Duplicate cohort. Preserve known product-fix URLs in
+   existingFixes. If nonempty, bind plan.existingFixesReview to every URL and the
+   exact investigation/evidence/plan/source version. Only reviewed product fixes
+   with a remaining coverage gap qualify; already-satisfied, in-flight or
+   unresolved test work stays blocked. Do not turn this into a new human gate.
 2. Persist a prepared assignment with stable ID, exact investigation version,
    evidence IDs, repo owner, intent, questions, acceptance criteria, required
    capabilities, bounds, dependency IDs, validation gates and permissions.

@@ -114,7 +114,7 @@ test('app accepts backend smaller nextLink page cap without broadening channel o
   result = await appendApp(config, ledger, 'test-run', event([call('last', pass.nextRequest.entityUrls[0], { value: [] })]));
   assert.equal(result.collection.find(p => p.pass === 'workiq:created').state, 'complete');
 });
-async function adoBatch(config, ledger, lane = 'created', id = 'ado-event') {
+async function adoBatch(config, ledger, lane = 'created', id = 'ado-event', fields = {}) {
   const date = '2026-10-09T00:00:00Z', pass = `ado:${lane}`;
   const principal = { objectId: config.identity.objectId, tenantId: config.identity.tenantId,
     userPrincipalName: config.identity.designatedUser, verifiedAt: date, toolCallId: 'test-ado-identity' };
@@ -124,8 +124,10 @@ async function adoBatch(config, ledger, lane = 'created', id = 'ado-event') {
     { endpoint: 'wiql', body: { query: wiql(config.window, lane, date) }, response: { asOf: date, workItems: [{ id: 1 }] } },
     { endpoint: 'workitemsbatch', body: { ids: [1], asOf: date, errorPolicy: 'Fail', $expand: 'Relations' },
       response: { value: [{ id: 1, rev: 1, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area,
-        'System.Title': 'Synthetic test', 'System.State': 'Active',
-        'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } }] } }
+        'System.Title': 'Synthetic test', 'System.State': 'Resolved',
+        'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
+        'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z',
+        ...fields } }] } }
   ].map((c, index) => ({ id: `${id}-${index}`, tool: 'ado-delegated-read', observedAt: date,
     request: { endpoint: c.endpoint, body: c.body }, response: c.response }));
   return appendApp(config, ledger, 'test-run', { eventId: id, pass, principal, calls });
@@ -140,6 +142,23 @@ test('app ADO created/changed replay deduplicates revision and separates new coh
   unavailableApp(ledger, 'test-run', { pass: 'icm:created', reason: 'no-approved-connector' });
   assert.equal(appStatus(ledger, 'test-run').collection.find(p => p.pass === 'icm:created').evidenceCount, null);
 });
+test('ADO receipt imports reject noncohort fields and retain the prior committed cursor', async t => {
+  for (const fields of [
+    { 'System.State': 'New' }, { 'System.State': 'Active' }, { 'System.State': 'Removed' },
+    { 'Microsoft.VSTS.Common.ResolvedReason': undefined, 'System.Reason': 'Fixed' },
+    { 'Microsoft.VSTS.Common.ResolvedReason': 'Not Repro' }
+  ]) {
+    const { config, ledger } = setup(t);
+    await adoBatch(config, ledger);
+    const cursor = ledger.cursor('app:ado:created');
+    await assert.rejects(adoBatch(config, ledger, 'changed', 'ineligible', fields),
+      error => error.code === 'blocked-scope');
+    assert.equal(ledger.cursor('app:ado:changed'), null);
+    assert.deepEqual(ledger.cursor('app:ado:created'), cursor);
+    assert.equal(ledger.all('evidence').length, 1);
+    assert.equal(ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE id=?').get('ineligible').n, 0);
+  }
+});
 test('app dry run rejects reviews/native workers and ignores historic SDK auth blocks', t => {
   const { config, ledger } = setup(t);
   ledger.blockSource('auth:workiq', { code: 'blocked-auth', message: 'Historical SDK failure' });
@@ -149,7 +168,9 @@ test('app dry run rejects reviews/native workers and ignores historic SDK auth b
 });
 test('app native assignment claim/bind/result is idempotent and cannot use primary checkout', async t => {
   const { config, ledger, root } = setup(t, { dry: false, provenance: 'app-tool' });
-  await adoBatch(config, ledger);
+  await appendApp(config, ledger, 'test-run', event([
+    identityCall(config), call('page', rootPath(config), { value: [message()] })
+  ]));
   const evidence = ledger.all('evidence')[0];
   const investigation = {
     recordType: 'investigation', schemaVersion: '1.0', id: `investigation-${hash(json([evidence.source.namespace, evidence.source.recordId]))}`,
@@ -194,13 +215,14 @@ test('app status includes only workers owned by the requested run', t => {
 
 test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
   const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool', configure: config => {
+    config.repositories[0].allowedWritePrefixes = ['test'];
     config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
       executable: process.execPath, args: [], timeoutMs: 1000 }];
     config.repositories[0].skillBindings = [{
       id: 'oa-integration-test-core', capability: 'integration-test-authoring',
       skillPath: 'docs/skills/Integration-test-core/SKILL.md', enabled: true, qualification: 'qualified',
       requestedOutcomes: ['add-or-update-tests'],
-      allowedWritePrefixes: ['src'], requiresBehaviorCard: true,
+      allowedWritePrefixes: ['test'], requiresBehaviorCard: true,
       sideEffects: { commit: false, push: false, createDraftPR: false }
     }];
   } });
@@ -253,6 +275,10 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
   });
+  assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'defect-fix'
+  }), /only for qualified, bounded test-coverage/);
+  ledger.setTrackedState(evidence, 'current', 'Unchanged resolved coverage source');
   const worker = appWorker(config, ledger, 'test-run', 'prepare', {
     investigationId: investigation.id, repoId: 'fixture', intent: 'improvement',
     testCoveragePlanId: planned.testCoveragePlan.id, requestedOutcome: 'add-or-update-tests'
@@ -324,7 +350,8 @@ test('app ADO authentication failure suppresses changed pass without another fac
 });
 
 test('source links with whitespace are URI normalized while original receipt bytes are unchanged', () => {
-  const item = { id: 1, rev: 2, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area, 'System.State': 'Active' },
+  const item = { id: 1, rev: 2, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area, 'System.State': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed' },
     relations: [{ rel: 'Hyperlink', url: 'https://example.invalid/path with space' }] };
   const record = adoRecord(item, 'synthetic query', '2026-10-09T00:00:00Z');
   assert.equal(record.links[0].url, 'https://example.invalid/path%20with%20space');

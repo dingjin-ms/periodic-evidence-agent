@@ -20,6 +20,14 @@ Use after evidence review and before a repository assignment is prepared.
 - Select only an enabled, qualified repository skill binding. Do not infer a
   skill path, repository owner, base branch, write prefix or validation gate.
 - Persist `areaToImprove` and `testCoveragePlan` before preparing an assignment.
+- For ADO regression coverage, require Resolved/Closed with the captured
+  `Microsoft.VSTS.Common.ResolvedReason` Fixed/Duplicate. Retain duplicate and
+  product-fix links. Known `existingFixes` need a complete
+  `testCoveragePlan.existingFixesReview` bound to the current investigation,
+  evidence set, plan version and repository revision; never erase fix URLs to
+  pass a gate. Only product fixes with a reviewed remaining coverage gap can
+  qualify. Satisfied, in-flight or unresolved coverage stays blocked. Use the
+  existing agent-evidence review policy, not a new per-finding human gate.
 - Do not read or edit product repositories, run validation, create branches,
   push or create pull requests.
 

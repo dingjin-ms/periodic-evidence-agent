@@ -346,8 +346,16 @@ proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
 
 **Intentional product-specific selectors:** the current ADO adapter is fixed to
-`office/OC`, non-Removed Bugs under
-`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
+`office/OC`, Bugs with state **Resolved or Closed** and
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**, under
+`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. Both created
+and changed lanes retain their half-open UTC windows, snapshots and budgets.
+Missing or other resolutions are ineligible; `System.Reason` is not a fallback.
+This is regression-coverage input, not a request to fix unresolved product bugs.
+Duplicate records keep their exact identities and canonical links even when the
+linked bug is outside the area; no extra source reads or canonical merging are
+implied. Genuine scanner exclusions remain independent of resolution.
+IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
 These selectors, the 1JS/Office repo URLs and the field names in
@@ -389,6 +397,43 @@ network, commit, push or PR authority. Each binding also declares a narrower
 write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
+
+Resolved/Closed ADO sources may execute only as otherwise eligible,
+source-bound test-coverage improvements in the Fixed/Duplicate cohort.
+They require a current complete coverage plan with a remaining gap and no
+unknowns, a qualified test-authoring binding and its pinned test-only write
+bounds. Generic RCA/product-fix assignments retain terminal-source protection.
+Unchanged terminal-cohort revisits do not themselves invalidate a review;
+changed source captures, superseded plans/qualifications and existing
+reconciliation blockers still block execution across standalone, native and
+continuation paths.
+
+Known product fixes remain in `investigation.existingFixes` and original source
+links. They are not permission to dispatch, nor must they be deleted to propose
+regression coverage. `testCoveragePlan.existingFixesReview` optionally records
+the existing review policy's source-bound reconciliation:
+
+| Field | Required binding |
+|---|---|
+| `investigationId`, `investigationVersion`, `evidenceIds` | Exact current investigation/version and complete evidence set |
+| `planId`, `planVersion`, `sourceRevision` | Exact coverage-plan version and inspected repository revision |
+| `review` | Existing review method, nonblank reviewer and UTC review time at/after the investigation review |
+| `fixes` | Every original fix URL exactly once, each with `url`, `disposition`, `rationale` |
+
+Only all-`product-fix-with-remaining-coverage-gap` entries can pass the qualified
+test-only gate. `coverage-already-satisfied`, `coverage-in-flight` and
+`unresolved` remain durable blocking outcomes. Missing, duplicate, stale or
+mismatched bindings fail closed. This is an agent-evidence review under the
+existing policy, not a new per-finding human approval gate.
+
+Use the existing `plan-improvement` / `app-plan-improvement` input's
+`testCoverage.existingFixesReview` to persist the record. When adding it to an
+existing plan, bind its next version; unchanged replay remains idempotent.
+Changing the plan/source or investigation requires a new bound review. FILTER
+candidates may carry `existingFixes`; handoffs preserve these and previously
+recorded fix URLs and accept the review as `routing.existingFixesReview`.
+Neither fix reconciliation nor retained duplicate relations authorize extra
+source reads or prove canonical duplicate-work merging.
 
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
@@ -1212,8 +1257,9 @@ and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
 
-The input contains only the immutable FILTER binding and the repository
-capability used for routing:
+The input contains the immutable FILTER binding and the repository capability
+used for routing, plus optional structured skill input and a source-bound
+`routing.existingFixesReview` when known product fixes require reconciliation:
 
 ```json
 {

@@ -1,7 +1,30 @@
 import { spawn } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { hash, json, PilotError, positive, requireThat, safeError } from './common.js';
 
 const terminalStates = new Set(['Completed', 'Failed', 'Cancelled']);
+const diagnosticLabels = new Set([
+  'Created', 'Queued', 'Scheduled', 'Starting', 'Initializing', 'InProgress',
+  'Running', 'Completed', 'Failed', 'Cancelled', 'Canceled', 'Succeeded',
+  'Success', 'Failure', 'None'
+]);
+const diagnosticLabel = value => value === null ? null :
+  diagnosticLabels.has(value) ? value : 'Unrecognized';
+const remoteSucceeded = inspected => inspected.state === 'Completed' &&
+  inspected.outcomeCode === 'Succeeded' &&
+  inspected.jobOutcomeType === 'Succeeded' && inspected.result === 'Success';
+
+function persistRemoteOperation(ledger, operationId, state, detail) {
+  try {
+    ledger.finishOperation(operationId, state, detail);
+  } catch {
+    throw new PilotError('blocked-reconciliation',
+      `Agency remote submission may already exist; recovery/timing evidence could not be persisted for ${operationId}. ` +
+      (detail.jobId ? `Preserve original job ID ${detail.jobId} and query only that job. ` :
+        'Its job ID is unknown; the reserved operation is not proof of non-submission. ') +
+      'Do not resubmit, delete the reservation or reset the assignment to prepared.');
+  }
+}
 
 function valueAt(value, path) {
   let current = value;
@@ -169,67 +192,117 @@ export async function executeAgencyRemoteJob(config, ledger, current, repo, prov
     providerSha256: hash(json(provider)),
     promptSha256: hash(input.prompt)
   };
+  const clock = dependencies.monotonicNow ?? (() => performance.now());
+  const started = clock();
+  const timing = {
+    measurement: 'controller-observed',
+    startedAt: new Date().toISOString(),
+    submissionMs: null,
+    pollWaitMs: 0,
+    inspectionMs: 0,
+    pollCount: 0,
+    stateTransitions: [],
+    stateTransitionsTruncated: false,
+    lastObservedAfterMs: null
+  };
+  const snapshot = () => ({
+    ...timing, totalMs: clock() - started,
+    stateTransitions: [...timing.stateTransitions]
+  });
+  const record = (state, detail) => {
+    const measured = snapshot();
+    persistRemoteOperation(ledger, operationId, state,
+      { ...request, ...detail, timing: measured });
+    return measured;
+  };
+  let lastObservedState = null;
+  const observe = inspected => {
+    const observedAfterMs = clock() - started;
+    timing.lastObservedAfterMs = observedAfterMs;
+    const state = diagnosticLabel(inspected.state);
+    if (state === lastObservedState) return;
+    lastObservedState = state;
+    if (timing.stateTransitions.length < 32)
+      timing.stateTransitions.push({ state, observedAfterMs });
+    else timing.stateTransitionsTruncated = true;
+  };
   ledger.operation(operationId, current.id, 'agency-remote-authoring', {
-    ...request, submissionState: 'reserved'
+    ...request, submissionState: 'reserved', timing: snapshot()
   });
   const launch = dependencies.launch ?? launchAgencyRemote;
   const createTimeoutMs = Math.min(
     positive(config.limits.workerMinutes, 'workerMinutes') * 60000,
     120000);
-  let created;
+  let created, jobId;
+  const submissionStarted = clock();
   try {
     created = parseAgencyJson((await launch(
       provider.executable,
       createArguments,
       { cwd: current.workspace, timeoutMs: createTimeoutMs })).stdout);
+    jobId = remoteJobIdentity(created);
   } catch (error) {
+    timing.submissionMs = clock() - submissionStarted;
+    record('started', { submissionState: 'uncertain' });
     throw new PilotError('blocked-reconciliation',
       `Agency remote submission is uncertain; do not submit a replacement job. ${safeError(error).message}`);
   }
-  const jobId = remoteJobIdentity(created);
-  ledger.finishOperation(operationId, 'accepted', {
-    ...request, submissionState: 'accepted', jobId
-  });
+  timing.submissionMs = clock() - submissionStarted;
+  record('accepted', { submissionState: 'accepted', jobId });
+  const uncertainInspection = error => {
+    record('uncertain', {
+      submissionState: 'accepted', jobId,
+      lastState: lastObservedState, inspectionError: safeError(error)
+    });
+    return new PilotError('blocked-reconciliation',
+      'Agency remote job was accepted but its state is uncertain; reconcile the recorded job ID without resubmitting.');
+  };
   const intervalMs = (provider.pollSeconds ?? 30) * 1000;
-  const deadline = Date.now() +
+  const deadline = clock() +
     positive(config.limits.workerMinutes, 'workerMinutes') * 60000;
   const sleep = dependencies.sleep ?? (milliseconds =>
     new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds)));
-  let inspected = inspectRemoteJob(created);
-  while (!inspected.terminal && Date.now() < deadline) {
+  let inspected;
+  try {
+    inspected = inspectRemoteJob(created);
+  } catch (error) {
+    throw uncertainInspection(error);
+  }
+  observe(inspected);
+  record('accepted', { submissionState: 'accepted', jobId, lastState: lastObservedState });
+  while (!inspected.terminal && clock() < deadline) {
+    const waitStarted = clock();
     await sleep(intervalMs);
-    let response;
+    timing.pollWaitMs += clock() - waitStarted;
+    const inspectionStarted = clock();
+    timing.pollCount++;
     try {
-      response = await launch(provider.executable,
+      const response = await launch(provider.executable,
         ['--no-aec', 'remote', 'get', jobId],
         { cwd: current.workspace, timeoutMs: Math.min(intervalMs, 120000) });
+      inspected = inspectRemoteJob(parseAgencyJson(response.stdout));
     } catch (error) {
-      ledger.finishOperation(operationId, 'uncertain', {
-        ...request, submissionState: 'accepted', jobId,
-        inspectionError: safeError(error)
-      });
-      throw new PilotError('blocked-reconciliation',
-        'Agency remote job was accepted but its state is uncertain; reconcile the recorded job ID without resubmitting.');
+      timing.inspectionMs += clock() - inspectionStarted;
+      throw uncertainInspection(error);
     }
-    inspected = inspectRemoteJob(parseAgencyJson(response.stdout));
+    timing.inspectionMs += clock() - inspectionStarted;
+    observe(inspected);
+    record('accepted', { submissionState: 'accepted', jobId, lastState: lastObservedState });
   }
   if (!inspected.terminal) {
-    ledger.finishOperation(operationId, 'uncertain', {
-      ...request, submissionState: 'accepted', jobId,
-      lastState: inspected.state
+    record('uncertain', {
+      submissionState: 'accepted', jobId,
+      lastState: lastObservedState
     });
     throw new PilotError('blocked-reconciliation',
       'Agency remote job exceeded the controller deadline; reconcile the recorded job ID without resubmitting.');
   }
-  const succeeded = inspected.state === 'Completed' &&
-    inspected.outcomeCode === 'Succeeded' &&
-    inspected.jobOutcomeType === 'Succeeded' &&
-    inspected.result === 'Success';
-  ledger.finishOperation(operationId, succeeded ? 'completed' : 'failed', {
-    ...request, submissionState: 'accepted', jobId,
-    state: inspected.state, result: inspected.result,
-    outcomeCode: inspected.outcomeCode,
-    jobOutcomeType: inspected.jobOutcomeType,
+  const succeeded = remoteSucceeded(inspected);
+  const completedTiming = record(succeeded ? 'completed' : 'failed', {
+    submissionState: 'accepted', jobId,
+    state: diagnosticLabel(inspected.state), result: diagnosticLabel(inspected.result),
+    outcomeCode: diagnosticLabel(inspected.outcomeCode),
+    jobOutcomeType: diagnosticLabel(inspected.jobOutcomeType),
     sourceBranch: input.resultBranch,
     contextSourceBranch: inspected.sourceBranch
   });
@@ -237,8 +310,91 @@ export async function executeAgencyRemoteJob(config, ledger, current, repo, prov
     `Agency remote job ${jobId} did not complete successfully`,
     'blocked-result');
   return {
-    jobId, ...inspected,
+    jobId, ...inspected, timing: completedTiming,
     contextSourceBranch: inspected.sourceBranch,
     sourceBranch: input.resultBranch
   };
+}
+
+export async function reconcileAgencyRemoteJob(config, ledger, assignmentId, round,
+  dependencies = {}) {
+  requireThat(typeof assignmentId === 'string' && assignmentId &&
+    Number.isSafeInteger(round) && round >= 0,
+  'Remote reconciliation requires an exact assignment ID and nonnegative round');
+  const lockName = `dispatch:${assignmentId}`;
+  const owner = ledger.acquire(lockName);
+  try {
+    const operationId = `${assignmentId}:agency-remote:${round}`;
+    const operation = ledger.db.prepare(
+      'SELECT * FROM operations WHERE id=? AND job_id=? AND kind=?')
+      .get(operationId, assignmentId, 'agency-remote-authoring');
+    requireThat(operation, 'No recorded Remote authoring operation; no submission authorized',
+      'blocked-reconciliation');
+    const detail = JSON.parse(operation.detail);
+    requireThat(detail.submissionState === 'accepted' && detail.jobId,
+      'Remote submission identity is unknown. A reserved/uncertain operation is not proof of non-submission; reconcile externally without resubmitting.',
+      'blocked-reconciliation');
+    requireThat(['accepted', 'uncertain'].includes(operation.state),
+      'Remote authoring operation is already terminal; observation recovery cannot reopen it',
+      'blocked-reconciliation');
+    const jobId = remoteJobIdentity({ jobId: detail.jobId });
+    const assignment = ledger.get('assignment', assignmentId);
+    const provider = config.authoringProviders?.[assignment?.authoringProvider];
+    requireThat(provider?.type === 'agency-remote' &&
+      hash(json(provider)) === detail.providerSha256,
+    'Remote reconciliation requires the original pinned provider configuration',
+    'blocked-reconciliation');
+    const job = ledger.job(assignmentId);
+    requireThat(job?.workspace, 'Original Remote workspace receipt is missing; reconcile externally',
+      'blocked-reconciliation');
+    const clock = dependencies.monotonicNow ?? (() => performance.now());
+    const started = clock();
+    const recovery = {
+      measurement: 'controller-observed',
+      startedAt: new Date().toISOString(),
+      attemptCount: (detail.reconciliationTiming?.attemptCount ?? 0) + 1,
+      totalInspectionMs: detail.reconciliationTiming?.totalInspectionMs ?? 0
+    };
+    const save = (state, observed) => {
+      const inspectionMs = clock() - started;
+      persistRemoteOperation(ledger, operationId, state, {
+        ...detail, ...observed,
+        reconciliationTiming: {
+          ...recovery, inspectionMs,
+          totalInspectionMs: recovery.totalInspectionMs + inspectionMs
+        }
+      });
+    };
+    let inspected;
+    try {
+      const response = await (dependencies.launch ?? launchAgencyRemote)(
+        provider.executable, ['--no-aec', 'remote', 'get', jobId], {
+          cwd: job.workspace,
+          timeoutMs: Math.min(positive(config.limits.workerMinutes, 'workerMinutes') * 60000, 120000)
+        });
+      const value = parseAgencyJson(response.stdout);
+      if (value.jobId || value.id || value.job?.jobId || value.job?.id)
+        requireThat(remoteJobIdentity(value) === jobId,
+          'Remote inspection returned a different job identity', 'blocked-protocol');
+      inspected = inspectRemoteJob(value);
+    } catch (error) {
+      save('uncertain', { inspectionError: safeError(error) });
+      throw new PilotError('blocked-reconciliation',
+        `Remote job ${jobId} remains uncertain; inspect the same job without resubmitting.`);
+    }
+    const succeeded = remoteSucceeded(inspected);
+    const state = inspected.terminal ? succeeded ? 'completed' : 'failed' : 'accepted';
+    save(state, {
+      lastState: diagnosticLabel(inspected.state), state: diagnosticLabel(inspected.state),
+      result: diagnosticLabel(inspected.result),
+      outcomeCode: diagnosticLabel(inspected.outcomeCode),
+      jobOutcomeType: diagnosticLabel(inspected.jobOutcomeType),
+      inspectionError: null
+    });
+    return {
+      operationId, jobId, state, remoteState: diagnosticLabel(inspected.state),
+      terminal: inspected.terminal, succeeded, recoveryOnly: true,
+      nextAction: 'Observation only: assignment, source import, native validation and publication are not resumed or authorized. Never reset or redispatch this assignment.'
+    };
+  } finally { ledger.release(lockName, owner); }
 }

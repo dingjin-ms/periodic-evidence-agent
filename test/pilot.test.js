@@ -1682,18 +1682,25 @@ test('production changes reuse dependencies while lockfile changes invalidate th
     ['src/value.js', 'export const value = 2;\n', 1],
     ['fixture.lock', 'changed\n', 2]
   ]) {
-    const ctx = await stagedValidationFixture(t);
-    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
-      ctx.isolated.baseRevision, ctx.execute);
-    const revision = await ctx.commit(path, content, `Change ${path}`);
-    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
-      revision, ctx.execute, rmSync, prepared);
-    assert.equal(result[0].status, 'passed');
-    assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, dependencyRuns);
-    assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
-    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
-    assert.equal(artifact.telemetry.dependencyCache,
-      dependencyRuns === 1 ? 'hit' : 'miss');
+    await t.test(path, async t => {
+      const ctx = await stagedValidationFixture(t);
+      const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+        ctx.isolated.baseRevision, ctx.execute);
+      const revision = await ctx.commit(path, content, `Change ${path}`);
+      const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+        revision, ctx.execute, rmSync, prepared);
+      const artifacts = result[0].artifactRefs.map(artifact =>
+        JSON.parse(readFileSync(artifact, 'utf8')));
+      assert.equal(result[0].status, 'passed', json({
+        changedPath: path,
+        preparationFailure: prepared.staged.error ? prepared.staged : null,
+        validation: result[0], artifacts
+      }));
+      assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, dependencyRuns);
+      assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+      assert.equal(artifacts[0].telemetry.dependencyCache,
+        dependencyRuns === 1 ? 'hit' : 'miss');
+    });
   }
 });
 test('profile and toolchain drift invalidate prepared validation', async t => {

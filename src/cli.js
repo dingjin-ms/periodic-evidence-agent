@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, lstatSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { configAt, readJson, safeError, requireThat, proposerExecutorFlight } from './common.js';
 import { Ledger } from './ledger.js';
@@ -8,7 +10,9 @@ import { collect, acceptReview, reviewPending, route, report, reconcile, tick, r
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
 import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, finishApp, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { assertRsiProducerNamespace, rsiAutomationPolicy, rsiErrorHandoff, rsiPolicy, rsiWork } from './rsi-flow.js';
+import { runRsiPending } from './rsi-execution.js';
 import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
 import { persistIcmReplay } from './icm-replay.js';
 import { prepareStage2, checkStage2Files } from './stage2.js';
@@ -57,12 +61,13 @@ function failedOutcome(result) {
     ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
-    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces']
+    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'rsi', 'execution']
       .some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js self-improvement init|observe|prepare|evaluate|decision|status|report --policy rsi.local.json [--file request.json]
   node src\\cli.js agents
-  node src\\cli.js agent collector|filter|proposer help
+  node src\\cli.js agent collector|filter|proposer|rsi help
   node src\\cli.js agent ROLE EXISTING_COMMAND [existing command arguments]
   node src\\cli.js agent collector replay-evidence --file captured-inputs.json --config held-replay.local.json
   node src\\cli.js agent filter replay-review --file recorded-review.json --config held-replay.local.json
@@ -106,6 +111,11 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-unavailable --run ID --file unavailable.json
   node src\\cli.js app-block --run ID --file authentication-failure.json
   node src\\cli.js app-status --run ID
+  node src\\cli.js app-end --run ID [--production] --config pilot.local.json
+  node src\\cli.js agent rsi app-rsi-work --run ID [--production] --operation status|inspect|claim|propose|reserve-publication|result [--file request.json] --config pilot.local.json
+  node src\\cli.js agent rsi rsi-work --operation status|inspect|capture|claim|propose|reserve-publication|result [--file request.json] --config pilot.local.json
+  node src\\cli.js agent rsi rsi-run [--file host-action.json] --config pilot.local.json
+  node src\\cli.js agent rsi app-rsi-run --run ID [--production] [--file host-action.json] --config pilot.local.json
   node src\\cli.js app-ado --run ID --pass ado:created|ado:changed --collect
   node src\\cli.js app-ado-reconcile --run ID --pass ado:created|ado:changed
   node src\\cli.js app-workiq-cli --run ID --pass workiq:created|workiq:changed --collect --config pilot.local.json
@@ -135,7 +145,33 @@ No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger, agent;
 let automaticPruneConfig;
 try {
+  requireThat(!(roleInvocation && action === 'self-improvement'),
+    'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action)) {
+    const allowed = new Set(['--config',
+      ...(action.startsWith('app-') ? ['--run', '--production'] : []),
+      ...(action.endsWith('-work') ? ['--operation', '--file'] : []),
+      ...(action.endsWith('-run') ? ['--file'] : [])]);
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(allowed.has(key) && !seen.has(key), 'Unknown or duplicate RSI option', 'blocked-scope');
+      seen.add(key);
+      if (key !== '--production') requireThat(args[++index] && !args[index].startsWith('--'),
+        'RSI option requires a value', 'blocked-scope');
+    }
+    requireThat(seen.has('--config') && (!action.startsWith('app-') || seen.has('--run')),
+      'RSI flow commands require explicit --config and the app run when applicable', 'blocked-authorization');
+    if (action.endsWith('-work')) {
+      const operation = option('--operation');
+      requireThat(['status', 'inspect', ...(action === 'rsi-work' ? ['capture'] : []),
+        'claim', 'propose', 'reserve-publication', 'result'].includes(operation),
+        'Unknown RSI work operation', 'blocked-scope');
+      requireThat((operation === 'status') !== seen.has('--file'),
+        'RSI status takes no file; all other operations require one', 'blocked-scope');
+    }
+  }
   if (action === 'continue-local-validation')
     requireThat(args.includes('--prepare') !== args.includes('--execute') &&
       option('--file') && option('--config'),
@@ -152,6 +188,16 @@ try {
     ? JSON.stringify(agentOperationResult(agent, describeAgent(role)), null, 2)
     : help);
   else if (action === 'agents') console.log(JSON.stringify(describeAgents(), null, 2));
+  else if (action === 'self-improvement') {
+    // Keep the judge out of this process's normal worker imports and automatic pruning.
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./self-improvement-cli.js', import.meta.url)), ...args
+    ], { stdio: 'inherit', windowsHide: true, shell: false, timeout: 3660000 });
+    requireThat(!result.error && result.status !== null,
+      'RSI command did not finish; inspect retained state without retrying execution',
+      'blocked-reconciliation');
+    process.exitCode = result.status;
+  }
   else if (action === 'setup') {
     const result = await setupLocalEnvironment({
       settingsPath: configFile,
@@ -200,6 +246,12 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiPolicy(config).enabled, 'RSI is disabled for this configuration', 'blocked-authorization');
+    if (config.rsi?.enabled || ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action))
+      assertRsiProducerNamespace(config);
+    if (['rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiAutomationPolicy(config), 'RSI automation is not authorized', 'blocked-authorization');
     if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
     if (action !== 'state-prune') {
       automaticPruneConfig = config;
@@ -224,6 +276,34 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'app-end': result = await finishApp(config, ledger, option('--run')); break;
+      case 'rsi-run':
+      case 'app-rsi-run':
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI host action must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = await runRsiPending(config, ledger, {
+          runId: action === 'app-rsi-run' ? option('--run') : null,
+          hostAction: option('--file') ? input() : null
+        });
+        break;
+      case 'rsi-work':
+      case 'app-rsi-work': {
+        requireThat(option('--operation'), 'RSI work requires --operation');
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI input must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = rsiWork(config, ledger, option('--operation'),
+          option('--file') ? input() : {},
+          { runId: action === 'app-rsi-work' ? option('--run') : null });
+        break;
+      }
       case 'replay-evidence': result = await replayRecordedEvidence(config, ledger, input()); break;
       case 'replay-review': result = await replayRecordedReview(config, ledger, input()); break;
       case 'continue-local-validation':
@@ -310,12 +390,21 @@ try {
       case 'app-runs': result = listAppRuns(config); break;
       case 'app-import-parent': result = await importParentReceipts(config, ledger, option('--run'), input()); break;
       case 'app-append': result = await appendApp(config, ledger, option('--run'), input()); break;
-      case 'app-block': result = blockApp(config, ledger, option('--run'), input()); break;
+      case 'app-block': {
+        result = blockApp(config, ledger, option('--run'), input());
+        if (config.rsi?.enabled) result = await finishApp(config, ledger, option('--run'));
+        break;
+      }
       case 'app-unavailable': result = unavailableApp(ledger, option('--run'), input()); break;
       case 'app-status': result = appStatus(ledger, option('--run')); break;
       case 'app-review': result = appReview(config, ledger, option('--run'), input()); break;
       case 'app-plan-improvement': result = appPlanImprovement(config, ledger, option('--run'), input()); break;
-      case 'app-worker': result = appWorker(config, ledger, option('--run'), option('--operation'), input()); break;
+      case 'app-worker': {
+        result = appWorker(config, ledger, option('--run'), option('--operation'), input());
+        if (config.rsi?.enabled && ['result', 'agency-result'].includes(option('--operation')))
+          result = { ...result, rsi: (await finishApp(config, ledger, option('--run'))).rsi };
+        break;
+      }
       case 'app-ado':
         requireThat(args.includes('--collect'), 'Live ADO reads require explicit --collect');
         result = await collectAppAdo(config, ledger, option('--run'), option('--pass')); break;
@@ -472,6 +561,8 @@ try {
   }
 } catch (error) {
   const failure = safeError(error);
+  const rsi = rsiErrorHandoff(error);
+  if (rsi) failure.rsi = rsi;
   console.error(JSON.stringify(agent ? agentOperationError(agent, failure) : failure, null, 2));
   process.exitCode = 1;
 } finally {

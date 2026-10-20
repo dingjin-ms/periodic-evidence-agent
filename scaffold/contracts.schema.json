@@ -8,6 +8,11 @@
     { "$ref": "#/$defs/investigation" },
     { "$ref": "#/$defs/areaToImprove" },
     { "$ref": "#/$defs/testCoveragePlan" },
+    { "$ref": "#/$defs/selfImprovementObservation" },
+    { "$ref": "#/$defs/selfImprovementExperiment" },
+    { "$ref": "#/$defs/rsiFlowBinding" },
+    { "$ref": "#/$defs/rsiFlowObservation" },
+    { "$ref": "#/$defs/rsiWorkItem" },
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/workerResult" },
     { "$ref": "#/$defs/filterTitleDecisions" },
@@ -22,6 +27,484 @@
     "text": { "type": "string", "minLength": 1 },
     "nullableText": { "type": ["string", "null"], "minLength": 1 },
     "texts": { "type": "array", "items": { "$ref": "#/$defs/text" }, "uniqueItems": true },
+    "rsiHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "rsiIdentifier": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$" },
+    "rsiPolicy": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["enabled"],
+          "properties": { "enabled": { "const": false } } },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["enabled", "targetRepository", "allowedWritePrefixes", "maxObservations",
+            "maxObservationBytes", "maxProposals", "allowDraftPR"],
+          "properties": {
+            "enabled": { "const": true },
+            "targetRepository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+            "allowedWritePrefixes": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^(src|test|scripts|scaffold|\\.github/skills)(/[A-Za-z0-9_.-]+)*$" } },
+            "maxObservations": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "maxObservationBytes": { "type": "integer", "minimum": 4096, "maximum": 1048576 },
+            "maxProposals": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "allowDraftPR": { "type": "boolean" },
+            "targetBaseline": { "$ref": "#/$defs/rsiTargetBaseline" },
+            "automation": { "$ref": "#/$defs/rsiAutomation" }
+          }
+        }
+      ]
+    },
+    "rsiTargetBaseline": {
+      "type": "object", "additionalProperties": false,
+      "required": ["referenceCheckout", "revision", "branch"],
+      "properties": {
+        "referenceCheckout": { "$ref": "#/$defs/text" },
+        "revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "branch": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_/-]{0,119}$" }
+      }
+    },
+    "rsiAutomation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authoringApproved", "localCommitApproved",
+        "referenceCheckout", "baselineRevision", "targetBranch", "gitAuthor", "timeoutMs",
+        "maxToolCalls", "maxFileBytes", "maxWorkspaceBytes", "evaluation"],
+      "allOf": [{
+        "if": { "required": ["executionMode"], "properties": { "executionMode": { "const": "app-hosted" } } },
+        "then": { "not": { "anyOf": [{ "required": ["authoringProvider"] }, { "required": ["maxAiCredits"] }] } },
+        "else": { "required": ["authoringProvider", "maxAiCredits"] }
+      }],
+      "properties": {
+        "executionMode": { "enum": ["native", "app-hosted"] },
+        "authoringApproved": { "const": true },
+        "localCommitApproved": { "const": true },
+        "authoringProvider": { "$ref": "#/$defs/rsiIdentifier" },
+        "referenceCheckout": { "$ref": "#/$defs/text" },
+        "baselineRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "targetBranch": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_/-]{0,119}$" },
+        "gitAuthor": {
+          "type": "object", "additionalProperties": false, "required": ["name", "email"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^[^\\r\\n<>]{1,100}$" },
+            "email": { "type": "string", "format": "email", "maxLength": 200 }
+          }
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 },
+        "maxToolCalls": { "type": "integer", "minimum": 1, "maximum": 500 },
+        "maxFileBytes": { "type": "integer", "minimum": 1024, "maximum": 1048576 },
+        "maxWorkspaceBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "maxAiCredits": { "type": "integer", "minimum": 30, "maximum": 1000 },
+        "evaluation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["timeoutMs", "cases"],
+          "allOf": [{
+            "if": { "required": ["flowPlan"] },
+            "then": { "not": { "anyOf": [
+              { "required": ["driverPath"] }, { "required": ["driverSha256"] }, { "required": ["dependencies"] }
+            ] } },
+            "else": { "required": ["driverPath", "driverSha256", "dependencies"] }
+          }],
+          "properties": {
+            "flowPlan": {
+              "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+              "properties": { "path": { "$ref": "#/$defs/text" }, "sha256": { "$ref": "#/$defs/rsiHash" } }
+            },
+            "driverPath": { "$ref": "#/$defs/text" },
+            "driverSha256": { "$ref": "#/$defs/rsiHash" },
+            "dependencies": {
+              "type": "array", "maxItems": 50,
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+                "properties": { "path": { "$ref": "#/$defs/text" }, "sha256": { "$ref": "#/$defs/rsiHash" } }
+              }
+            },
+            "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 1800000 },
+            "cases": {
+              "type": "array", "minItems": 1, "maxItems": 32,
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["id", "population", "assertions"],
+                "properties": {
+                  "id": { "$ref": "#/$defs/rsiIdentifier" },
+                  "population": { "enum": ["recovery", "healthy", "guard"] },
+                  "assertions": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+                    "items": { "$ref": "#/$defs/rsiIdentifier" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rsiSkillDecision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["outcome", "findings"],
+      "allOf": [{
+        "if": { "properties": { "outcome": { "const": "propose-change" } } },
+        "then": { "required": ["title", "description", "skillResult"] }
+      }],
+      "properties": {
+        "outcome": { "enum": ["investigated", "not-actionable", "not-reproducible", "blocked", "propose-change"] },
+        "findings": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "skillResult": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "classification", "changedFiles", "testsAddedOrUpdated",
+            "behaviorCardsAddedOrUpdated", "unknowns", "needsHumanDecision"],
+          "properties": {
+            "status": { "enum": ["succeeded", "failed", "needs-input", "blocked"] },
+            "classification": { "type": "string", "pattern": "^(fix|improvement):[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$" },
+            "changedFiles": { "$ref": "#/$defs/texts" },
+            "testsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+            "behaviorCardsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+            "unknowns": { "$ref": "#/$defs/texts" },
+            "needsHumanDecision": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "rsiHostAction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executionId", "phase", "requestSha256", "hostSessionId", "action"],
+      "properties": {
+        "executionId": { "$ref": "#/$defs/rsiIdentifier" },
+        "phase": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$" },
+        "requestSha256": { "$ref": "#/$defs/rsiHash" },
+        "hostSessionId": { "$ref": "#/$defs/rsiIdentifier" },
+        "action": { "enum": ["claim", "complete"] },
+        "result": { "type": "object" }
+      },
+      "allOf": [
+        { "if": { "properties": { "action": { "const": "claim" } } },
+          "then": { "not": { "required": ["result"] } },
+          "else": { "required": ["result"] } },
+        { "if": { "required": ["result"], "properties": { "phase": { "const": "authoring" } } },
+          "then": { "properties": { "result": { "$ref": "#/$defs/rsiSkillDecision" } } } },
+        { "if": { "required": ["result"], "properties": { "phase": { "const": "publication" } } },
+          "then": { "properties": { "result": {
+            "type": "object", "additionalProperties": false,
+            "required": ["url", "isDraft", "headRevision", "publicationKey"],
+            "properties": {
+              "url": { "type": "string", "format": "uri" },
+              "isDraft": { "const": true },
+              "headRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+              "publicationKey": { "$ref": "#/$defs/rsiIdentifier" }
+            }
+          } } } }
+      ]
+    },
+    "rsiDriverResult": {
+      "type": "object", "additionalProperties": false, "required": ["cases", "violations"],
+      "properties": {
+        "violations": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 200 } },
+        "cases": {
+          "type": "array", "maxItems": 32,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "started", "outcome", "assertions"],
+            "properties": {
+              "id": { "$ref": "#/$defs/rsiIdentifier" },
+              "started": { "type": "boolean" },
+              "outcome": { "enum": ["passed", "failed", "blocked", "unknown"] },
+              "assertions": {
+                "type": "array", "maxItems": 32,
+                "items": {
+                  "type": "object", "additionalProperties": false, "required": ["id", "state"],
+                  "properties": {
+                    "id": { "$ref": "#/$defs/rsiIdentifier" },
+                    "state": { "enum": ["passed", "failed", "not-run", "unknown"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rsiControllerIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceSha256", "skillSha256", "dependencyLockSha256", "nodeVersion"],
+      "properties": {
+        "sourceSha256": { "$ref": "#/$defs/rsiHash" },
+        "skillSha256": { "$ref": "#/$defs/rsiHash" },
+        "dependencyLockSha256": { "$ref": "#/$defs/rsiHash" },
+        "nodeVersion": { "$ref": "#/$defs/text" }
+      }
+    },
+    "rsiFlowBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "origin", "flowId", "configSha256", "controller", "upstream", "targetBaseline"],
+      "properties": {
+        "recordType": { "const": "rsiFlowBinding" }, "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/rsiIdentifier" }, "version": { "const": 1 },
+        "origin": { "enum": ["worker", "app-flow"] }, "flowId": { "$ref": "#/$defs/rsiIdentifier" },
+        "configSha256": { "$ref": "#/$defs/rsiHash" },
+        "controller": { "$ref": "#/$defs/rsiControllerIdentity" },
+        "targetBaseline": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/rsiTargetBaseline" }] },
+        "upstream": { "type": ["object", "null"] }
+      }
+    },
+    "rsiFlowObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "bindingId", "payloadSha256", "payload"],
+      "properties": {
+        "recordType": { "const": "rsiFlowObservation" }, "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/rsiIdentifier" }, "version": { "const": 1 },
+        "bindingId": { "$ref": "#/$defs/rsiIdentifier" }, "payloadSha256": { "$ref": "#/$defs/rsiHash" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "outcome", "evidenceTrust", "data"],
+          "properties": {
+            "kind": { "enum": ["worker", "app-flow"] },
+            "outcome": { "$ref": "#/$defs/text" },
+            "evidenceTrust": { "const": "captured-controller-state-not-independent-e2e-qualification" },
+            "data": { "type": "object" }
+          }
+        }
+      }
+    },
+    "rsiClaimInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observationId", "claimId", "executorId"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/rsiIdentifier" },
+        "claimId": { "$ref": "#/$defs/rsiIdentifier" },
+        "executorId": { "$ref": "#/$defs/rsiIdentifier" }
+      }
+    },
+    "rsiArtifactReference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "ref", "sha256"],
+      "properties": {
+        "role": { "enum": ["baseline", "candidate", "analysis"] },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "sha256": { "$ref": "#/$defs/rsiHash" }
+      }
+    },
+    "rsiProposalInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observationId", "claimId", "executorId", "kind", "failureFamily", "title",
+        "rationale", "workspace", "changedFiles", "baselineRevision", "candidateRevision", "artifacts"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/rsiIdentifier" },
+        "claimId": { "$ref": "#/$defs/rsiIdentifier" },
+        "executorId": { "$ref": "#/$defs/rsiIdentifier" },
+        "kind": { "enum": ["fix", "improvement"] },
+        "failureFamily": { "$ref": "#/$defs/rsiIdentifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "workspace": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "changedFiles": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$" } },
+        "baselineRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "candidateRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "artifacts": { "type": "array", "minItems": 1, "maxItems": 20,
+          "items": { "$ref": "#/$defs/rsiArtifactReference" } }
+      }
+    },
+    "rsiResultInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observationId", "claimId", "executorId", "outcome", "rationale"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/rsiIdentifier" },
+        "claimId": { "$ref": "#/$defs/rsiIdentifier" },
+        "executorId": { "$ref": "#/$defs/rsiIdentifier" },
+        "outcome": { "enum": ["no-change", "insufficient-evidence", "blocked", "draft-reported"] },
+        "rationale": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "draftPR": {
+          "type": "object", "additionalProperties": false,
+          "required": ["url", "isDraft", "headRevision", "publicationKey"],
+          "properties": {
+            "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+            "isDraft": { "const": true },
+            "headRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "publicationKey": { "$ref": "#/$defs/rsiIdentifier" }
+          }
+        }
+      }
+    },
+    "rsiWorkItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "observationId", "state",
+        "claim", "proposal", "publicationKey", "result"],
+      "properties": {
+        "recordType": { "const": "rsiWorkItem" }, "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/rsiIdentifier" }, "version": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "observationId": { "$ref": "#/$defs/rsiIdentifier" },
+        "state": { "enum": ["queued", "claimed", "proposed", "publishing", "finished"] },
+        "claim": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/rsiClaimInput" }] },
+        "proposal": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/rsiProposalInput" }] },
+        "publicationKey": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/rsiIdentifier" }] },
+        "result": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/rsiResultInput" }] }
+      }
+    },
+    "selfImprovementPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "mode", "executionApproved", "stateDirectory", "stateOwner", "retainState", "limits"],
+      "properties": {
+        "format": { "const": "self-improvement-policy-v1" },
+        "mode": { "const": "offline-qualification" },
+        "executionApproved": { "type": "boolean" },
+        "stateDirectory": { "$ref": "#/$defs/text" },
+        "stateOwner": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+        "retainState": { "const": true },
+        "limits": {
+          "type": "object", "additionalProperties": false,
+          "required": ["maxEpisodes", "caseTimeoutMs", "maxRuntimeMs", "maxOutputBytes", "maxArtifactBytes", "maxFixtureBytes", "maxCandidateVersions"],
+          "properties": {
+            "maxEpisodes": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "caseTimeoutMs": { "type": "integer", "minimum": 1, "maximum": 300000 },
+            "maxRuntimeMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "maxOutputBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+            "maxArtifactBytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+            "maxFixtureBytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+            "maxCandidateVersions": { "const": 2 }
+          }
+        }
+      }
+    },
+    "selfImprovementIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["revision", "sourceSha256", "evaluatorSha256", "driverSha256", "nativeTestSha256", "dependenciesSha256", "workloadSha256", "nodeSha256", "nodeVersion", "gitVersion", "platform", "workingTreeModified"],
+      "properties": {
+        "revision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+        "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "evaluatorSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "driverSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "nativeTestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "dependenciesSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "workloadSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "nodeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "nodeVersion": { "$ref": "#/$defs/text" },
+        "gitVersion": { "$ref": "#/$defs/text" },
+        "platform": { "enum": ["win32", "linux", "darwin"] },
+        "workingTreeModified": { "type": "boolean" }
+      }
+    },
+    "selfImprovementObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "provenance", "evidenceKind", "adapter", "family", "workloadSha256", "bundle", "createdAt"],
+      "properties": {
+        "recordType": { "const": "selfImprovementObservation" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "version": { "const": 1 },
+        "provenance": { "const": "synthetic" },
+        "evidenceKind": { "const": "scenario-definition-not-live-observation" },
+        "adapter": { "const": "validation-continuation-v1" },
+        "family": { "const": "missing-materialization" },
+        "workloadSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "bundle": {
+          "type": "object", "additionalProperties": false,
+          "required": ["format", "adapter", "provenance", "family", "failure", "trace", "coverage", "episodes"],
+          "properties": {
+            "format": { "const": "self-improvement-workload-v1" },
+            "adapter": { "const": "validation-continuation-v1" },
+            "provenance": { "const": "synthetic" },
+            "family": { "const": "missing-materialization" },
+            "failure": {
+              "type": "object", "additionalProperties": false,
+              "required": ["signature", "phase", "intendedWork", "unblock"],
+              "properties": {
+                "signature": { "const": "native-input-not-materialized" },
+                "phase": { "const": "preparation" },
+                "intendedWork": { "$ref": "#/$defs/text" },
+                "unblock": { "$ref": "#/$defs/text" }
+              }
+            },
+            "trace": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+              "items": { "type": "string", "maxLength": 80 } },
+            "coverage": {
+              "type": "object", "additionalProperties": false, "required": ["before", "required"],
+              "properties": {
+                "before": { "type": "array", "maxItems": 0 },
+                "required": {
+                  "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+                  "items": {
+                    "type": "object", "additionalProperties": false, "required": ["caseId", "assertionIds"],
+                    "properties": {
+                      "caseId": { "enum": ["native-input-content", "native-input-integrity"] },
+                      "assertionIds": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+                        "items": { "enum": ["exact-content", "exact-length", "exact-digest"] } }
+                    }
+                  }
+                }
+              }
+            },
+            "episodes": {
+              "type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["id", "population", "scenario", "followup"],
+                "properties": {
+                  "id": { "enum": ["recovery", "healthy", "guard-proof", "guard-duplicate"] },
+                  "population": { "enum": ["recovery", "healthy", "guard"] },
+                  "scenario": { "enum": ["recover", "healthy", "changed-proof", "duplicate-dispatch"] },
+                  "followup": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "createdAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "selfImprovementExperiment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recordType", "schemaVersion", "id", "version", "observationId", "observationVersion", "family", "purpose", "state", "policySha256", "identity", "metricContract", "createdAt", "updatedAt", "reservation", "result", "decision"],
+      "properties": {
+        "recordType": { "const": "selfImprovementExperiment" },
+        "schemaVersion": { "const": "1.0" },
+        "id": { "$ref": "#/$defs/text" },
+        "version": { "type": "integer", "minimum": 1 },
+        "observationId": { "$ref": "#/$defs/text" },
+        "observationVersion": { "const": 1 },
+        "family": { "const": "missing-materialization" },
+        "purpose": { "const": "current-current-qualification" },
+        "state": { "enum": ["prepared", "evaluating", "evaluated", "abandoned"] },
+        "policySha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "identity": { "$ref": "#/$defs/selfImprovementIdentity" },
+        "metricContract": { "const": "recovery-core-metrics-v1" },
+        "createdAt": { "$ref": "#/$defs/utc" },
+        "updatedAt": { "$ref": "#/$defs/utc" },
+        "reservation": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["operationId", "runId"],
+              "properties": { "operationId": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" } }
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["manifestSha256", "comparisonSha256", "judgment"],
+              "properties": {
+                "manifestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "comparisonSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "judgment": { "enum": ["no-demonstrated-benefit", "invalid", "inconclusive"] }
+              }
+            }
+          ]
+        },
+        "decision": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["action", "reason", "operatorAttested", "recordedAt"],
+              "properties": {
+                "action": { "enum": ["adopt-sealed-completion", "abandon"] },
+                "reason": { "type": "string", "minLength": 10, "maxLength": 2000 },
+                "operatorAttested": { "const": true },
+                "recordedAt": { "$ref": "#/$defs/utc" }
+              }
+            }
+          ]
+        }
+      }
+    },
     "declarativeE2ESpecBatch": {
       "type": "object", "additionalProperties": false,
       "required": ["format", "items"],

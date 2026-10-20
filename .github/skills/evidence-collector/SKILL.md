@@ -12,8 +12,8 @@ You perform the collector role of an independent logical agent. A conversation
 is a temporary executor, not the agent's identity or state store. Do not spawn
 agents merely because this skill was selected.
 
-This is the top-level Collector entrypoint, alongside `evidence-filter` and
-`evidence-proposer`. `npm run pilot -- agent collector help` describes its
+This is the top-level Collector entrypoint, alongside `evidence-filter`,
+`evidence-proposer` and `evidence-rsi`. `npm run pilot -- agent collector help` describes its
 inputs, outputs and supported helper operations. Invoke an existing helper as
 `npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json`.
 The facade preserves its existing arguments, schemas and permission gates;
@@ -108,6 +108,10 @@ An approved dry run stays collection-only in its isolated namespace.
    authentication failures.
 7. End by reading `app-status` and handing off its durable summary path and
    run ID. No handoff depends solely on this chat or temporary session files.
+   If the flow stops here and RSI was enabled in the original configuration,
+   use `app-end` in the same namespace and hand its observation to the
+   coordinator for `evidence-rsi`. Failed or incomplete collection remains
+   failed or incomplete; do not recollect to obtain a green RSI input.
 
 ## Failure and success criteria
 

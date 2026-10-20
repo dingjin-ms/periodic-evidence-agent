@@ -74,6 +74,12 @@ Preserve failed and pre-model blocked attempts. Resume only through the existing
 reconciliation path and concrete continuation authorization. Never reset the
 ledger or blindly redispatch because no model call was recorded.
 
+When RSI is enabled, return the normal controller's `rsi` handoff to the flow
+owner even if authoring or validation failed. In app-native flows, the terminal
+worker CLI action captures it; otherwise the owner calls `app-end`. The owner
+invokes `evidence-rsi` in the approved host. Do not treat a queued task as a
+completed RSI invocation or rerun product work to reconstruct its artifacts.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)

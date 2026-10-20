@@ -44,6 +44,76 @@ artifacts. Sanitized aggregate validation summaries may describe gaps, not imply
 unobserved success. Report sensitive-history findings privately; do not rewrite
 history or publish it as a recovery shortcut.
 
+## Self-improvement review evidence
+
+The first RSI deliverable is recovery-harness qualification and a source-bound
+scorecard, not a claimed improvement. Run the bounded focused regressions with:
+
+```powershell
+node --test --test-concurrency=1 test\self-improvement.test.js test\self-improvement-evaluation.test.js
+```
+
+On Windows, a short-name temporary-root alias can abort Node's file watcher with
+`!_wcsnicmp(filename, dir, dirlen)` in `src\win\fs-event.c`. Check whether
+`tmpdir()` differs from `realpathSync.native(tmpdir())`; use canonical,
+process-local `TEMP`/`TMP` for validation rather than weakening watcher/root
+guards or counting crashed test files as passed:
+
+```powershell
+$canonicalTemp = node -p "require('node:fs').realpathSync.native(require('node:os').tmpdir())"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the validation temporary root' }
+$env:TEMP = $canonicalTemp
+$env:TMP = $canonicalTemp
+npm run check -- --test-concurrency=4
+```
+
+To retain the ordinary qualification test's authoritative store for review,
+set `RSI_RETAIN_QUALIFICATION=1` before running that test and remove the
+environment variable afterward. The test prints the store/experiment identity
+and saves its exact policy in the ignored store. This is not permission for a
+standalone operational trial. The owning checkout must retain that store;
+tests clean only their separately allocated disposable fixture repositories.
+
+Every proposed RSI improvement PR needs a **Before/after loop comparison**
+section generated from verified sealed observations. `self-improvement report`
+returns that Markdown; it does not publish or edit a PR. Report the exact
+controller and loaded working-tree source identities, dependency/evaluator/
+driver/workload/policy/toolchain pins, raw counts and denominators, per-episode
+outcomes, missing data and the limits of the conclusion. A new source identity
+requires fresh evaluation or an explicit stale label. Current/current equality
+must say `no-demonstrated-benefit`; never weaken the old arm to manufacture a bug.
+
+Keep preregistered recovery, healthy and guard populations distinct:
+
+- Recovery uses every selected recovery episode; completion uses recovery plus
+  healthy episodes. Valid pre-test target failures remain unsuccessful in both
+  applicable denominators, not invalid harness executions.
+- Expected guard refusals belong only to guard correctness, not recovered work
+  or task completion. Invalid harness execution, unknown and not-run are
+  separate categories; all selected episodes remain accounted for.
+- Recurrence uses the complete fixed follow-up inventory. Zero opportunities
+  means not applicable, never 100%. Missing observations remain unresolved.
+- Execution coverage and verified assertion coverage use the original common
+  case/assertion inventory, with explicit gain/loss, skipped and unknown items.
+  Pinned nonempty bodies and real case events are required; green wrappers or
+  worker results alone are insufficient. Skip/todo starts are not execution.
+  This is not line/branch coverage.
+- Authority violations, rejected duplicate effects and unsupported success
+  claims are hard failures. A broker refusal and its rejected effect count as
+  one violation; duplicate requests and unsupported actions are separate counts.
+  Available duration/tool counts are diagnostic.
+  Tokens/credits remain not measured, not zero or a configured budget ceiling.
+
+The comparison JSON and Markdown must use the same grading functions and sealed
+inputs. Test false green, missing/skipped/failed/duplicate cases, source drift,
+pre-test failure accounting, finite bounds, immutable versions, root ownership,
+crash boundaries, read-only status and adopt/abandon behavior. Public material
+contains only generic fixture labels and safe aggregates, never raw local paths,
+workplace evidence or credential diagnostics. Metric additions and real
+failure-pattern fixes require separately reviewed evidence, not reward by
+instrumentation volume. No model, live recovery, promotion or publication grant
+is implied by passing these offline tests.
+
 ## Review boundaries
 
 Preserve draft-only/no-merge/no-source-write policy and all source/worker limits.

@@ -9,6 +9,7 @@ import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordA
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
+import { assertRsiProducerNamespace, bindRsiProducer, captureAppRsiOutcome, rsiPolicy } from './rsi-flow.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -36,6 +37,7 @@ function configured(input) {
   requireThat(input.executionMode === 'app-native', 'Select executionMode app-native explicitly');
   identifier(input.agent?.id);
   requireThat(input.statePolicy.accessApproved, 'Local evidence storage approval is required');
+  if (input.rsi?.enabled) assertRsiProducerNamespace(input);
 }
 function directory(config, runId, dry) {
   identifier(runId);
@@ -97,15 +99,18 @@ export function beginApp(config, input) {
   const ledger = new Ledger(directory(config, input.runId, input.dryRun));
   try {
     tables(ledger);
-    const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
-    if (existing) {
-      const run = JSON.parse(existing.body);
-      requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
-    } else {
-      const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
-        limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
-      ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
-    }
+    ledger.transaction(() => {
+      const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
+      if (existing) {
+        const run = JSON.parse(existing.body);
+        requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
+      } else {
+        const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
+          limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
+        ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
+      }
+      bindRsiProducer(config, ledger, 'app-flow', input.runId);
+    });
     return appStatus(ledger, input.runId);
   } finally { ledger.close(); }
 }
@@ -504,6 +509,20 @@ export function appStatus(ledger, runId) {
     summaryPath: join(ledger.directory, `${runId}-summary.json`) };
   writeFileSync(summary.summaryPath, json(summary), { mode: 0o600 });
   return summary;
+}
+export function endApp(config, ledger, runId) {
+  return ledger.transaction(() => {
+    const summary = appStatus(ledger, runId);
+    if (!rsiPolicy(config).enabled) return { ...summary, rsi: { state: 'disabled' } };
+    return { ...summary, rsi: captureAppRsiOutcome(config, ledger, runId, summary) };
+  });
+}
+export async function finishApp(config, ledger, runId, dependencies = {}) {
+  const result = endApp(config, ledger, runId);
+  if (!config.rsi?.automation) return result;
+  const { runRsiPending } = await import('./rsi-execution.js');
+  const execution = await runRsiPending(config, ledger, { runId }, dependencies);
+  return { ...result, rsi: { ...endApp(config, ledger, runId).rsi, execution } };
 }
 export function listAppRuns(config) {
   configured(config);

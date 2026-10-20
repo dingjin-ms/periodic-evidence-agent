@@ -1,6 +1,7 @@
 import { hash, json, requireThat, utc, validateRecord } from './common.js';
 import { persistReviewedInvestigation } from './coordinator.js';
 import { planImprovement } from './improvements.js';
+import { withRsiWorker } from './rsi-flow.js';
 import {
   requireCompleteExclusionReview, requireEligibleImprovementInvestigation
 } from './review-decisions.js';
@@ -184,7 +185,8 @@ export async function acceptReviewedHandoff(config, ledger, input, {
   }
   const prepared = prepareReviewedHandoff(config, ledger, receipt, { source });
   if (!execute) return { state: 'prepared', ...prepared };
-  const result = await dispatchReviewedHandoff(config, ledger, prepared.assignment.id,
-    dispatchDependencies);
-  return { state: result.outcome, ...prepared, result };
+  const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
+    () => dispatchReviewedHandoff(config, ledger, prepared.assignment.id, dispatchDependencies),
+    { kind: 'reviewed-handoff', receipt }, dispatchDependencies.rsi);
+  return { state: result.outcome, ...prepared, result, ...(rsi ? { rsi } : {}) };
 }

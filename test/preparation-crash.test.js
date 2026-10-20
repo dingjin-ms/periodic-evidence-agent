@@ -4,7 +4,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync,
   realpathSync, openSync, fsyncSync, closeSync, rmSync
 } from 'node:fs';
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative, isAbsolute, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -45,11 +45,49 @@ async function inspect(ctx, pids) {
     `$ErrorActionPreference='Stop';$records=@(foreach($id in @(${pids.join(',')})){` +
     `try{$p=[System.Diagnostics.Process]::GetProcessById($id)}` +
     `catch [System.ArgumentException]{[pscustomobject]@{pid=$id;gone=$true};continue};` +
-    `try{$unused=$p.Handle;$started=$p.StartTime.ToUniversalTime().Ticks.ToString();` +
+    `try{$unused=$p.Handle;if($p.HasExited){[pscustomobject]@{pid=$id;gone=$true};continue};` +
+    `$started=$p.StartTime.ToUniversalTime().Ticks.ToString();` +
     `$info=Get-CimInstance Win32_Process -Filter "ProcessId=$id";` +
-    `[pscustomobject]@{pid=$id;gone=$false;started=$started;parent=[int]$info.ParentProcessId}}` +
+    `if($p.HasExited){[pscustomobject]@{pid=$id;gone=$true}}` +
+    `else{[pscustomobject]@{pid=$id;gone=$false;started=$started;parent=[int]$info.ParentProcessId}}}` +
     `finally{$p.Dispose()}});ConvertTo-Json -Compress -InputObject $records`], ctx.root, 10000);
   return JSON.parse(result.stdout);
+}
+async function holdProcesses(ctx, identities) {
+  assert.ok(identities.every(value => Number.isSafeInteger(value.pid) && value.pid > 0 &&
+    /^\d+$/.test(value.started)));
+  // Keep the checkpoint generations allocated until reconciliation finishes, not just during each query.
+  const holder = spawn('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference='Stop';$held=@();try{` +
+    identities.map(value =>
+      `$p=[System.Diagnostics.Process]::GetProcessById(${value.pid});$held+=,$p;$unused=$p.Handle;` +
+      `if($p.HasExited -or $p.StartTime.ToUniversalTime().Ticks.ToString() -cne '${value.started}')` +
+      `{throw 'Checkpoint process generation changed before capture'};`).join('') +
+    `[Console]::Out.WriteLine('ready');$null=[Console]::In.ReadLine()}` +
+    `finally{foreach($p in $held){$p.Dispose()}}`],
+  { cwd: ctx.root, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, timeout: 90000 });
+  let stdout = '', stderr = '';
+  holder.stdout.setEncoding('utf8').on('data', data => { stdout += data; });
+  holder.stderr.setEncoding('utf8').on('data', data => { stderr += data; });
+  const closed = new Promise((resolve, reject) => {
+    holder.once('error', reject);
+    holder.once('close', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Checkpoint handle holder failed (${code ?? signal}): ${stderr}`));
+    });
+  });
+  let released = false;
+  ctx.releaseProcesses = async () => {
+    if (!released) {
+      released = true;
+      holder.stdin.end();
+    }
+    await closed;
+  };
+  await Promise.race([
+    waitFor(() => stdout.trim() === 'ready', 'checkpoint process handles', 10000),
+    closed.then(() => { throw new Error('Checkpoint handle holder exited before release'); })
+  ]);
 }
 async function stopCaptured(ctx, identity) {
   assert.ok(Number.isSafeInteger(identity.pid) && identity.pid > 0 && /^\d+$/.test(identity.started));
@@ -138,6 +176,25 @@ async function assertBlockedRestart(ctx, checkpoint, name) {
   assert.deepEqual(receipts(join(checkpoint.attemptRoot, 'data')), published);
   audit(ctx, name, result);
 }
+
+test('process inspection reports an exited checkpoint process as gone while its handle remains held',
+  { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
+    const ctx = { root: realpathSync.native(mkdtempSync(join(tmpdir(), 'preparation-process-handles-'))) };
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      stdio: 'ignore', windowsHide: true
+    });
+    t.after(async () => {
+      try {
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        await ctx.releaseProcesses?.();
+      } finally { rmSync(ctx.root, { recursive: true }); }
+    });
+    const [identity] = await inspect(ctx, [child.pid]);
+    assert.equal(identity.gone, false);
+    await holdProcesses(ctx, [identity]);
+    await stopCaptured(ctx, identity);
+    assert.deepEqual(await inspect(ctx, [child.pid]), [{ pid: child.pid, gone: true }]);
+  });
 
 test('forced preparation parent termination blocks restart until audited private-state discard and owner recovery',
   { skip: process.platform !== 'win32', timeout: 90000 }, async t => {
@@ -247,12 +304,16 @@ finally{process.disconnect()}
         if (existsSync(join(ctx.parent, 'controller', 'ledger.sqlite')))
           assert.equal(lock(ctx).length, 0, `Unreconciled fixture retained at ${root}`);
         if (existsSync(ctx.auditPath)) savedAudit = readFileSync(ctx.auditPath, 'utf8');
+        await ctx.releaseProcesses?.();
         rmSync(root, { recursive: true, maxRetries: 3 });
       } finally {
-        if (!reported) t.diagnostic(json({
-          kind: 'preparation-parent-crash-incomplete', retainedRoot: existsSync(root) ? root : null,
-          checkpoint, audit: existsSync(ctx.auditPath) ? readFileSync(ctx.auditPath, 'utf8') : savedAudit ?? null
-        }));
+        try { await ctx.releaseProcesses?.(); }
+        finally {
+          if (!reported) t.diagnostic(json({
+            kind: 'preparation-parent-crash-incomplete', retainedRoot: existsSync(root) ? root : null,
+            checkpoint, audit: existsSync(ctx.auditPath) ? readFileSync(ctx.auditPath, 'utf8') : savedAudit ?? null
+          }));
+        }
       }
     });
     await waitFor(() => existsSync(ready), 'active compile', 45000);
@@ -271,6 +332,7 @@ finally{process.disconnect()}
       [owner.child.pid, controller.parent, compile.processId, profileProcess.parent, workload.pid, workload.child]);
     assert.ok(processes.every(value => !value.gone));
     for (let i = 1; i < processes.length; i++) assert.equal(processes[i].parent, processes[i - 1].pid);
+    await holdProcesses(ctx, processes);
     const leases = lock(ctx);
     assert.equal(leases.length, 1);
     assert.equal(leases[0].pid, owner.child.pid);
@@ -294,10 +356,8 @@ finally{process.disconnect()}
     await assertBlockedRestart(ctx, checkpoint, 'restart-before-drain');
     const afterOwnerKill = await inspect(ctx, processes.map(value => value.pid));
     const mismatch = structuredClone(checkpoint);
-    const generationGuardProbe = afterOwnerKill[1].gone ? 'synthetic-live-auditor-mismatch' : 'surviving-supervisor';
-    mismatch.processes[1] = afterOwnerKill[1].gone
-      ? { ...mismatch.processes[1], pid: process.pid, started: '0' }
-      : { ...mismatch.processes[1], started: mismatch.processes[1].started + '1' };
+    const generationGuardProbe = 'synthetic-live-auditor-mismatch';
+    mismatch.processes[1] = { ...mismatch.processes[1], pid: process.pid, started: '0' };
     await assert.rejects(drain(ctx, mismatch), { message: 'Process generation changed; retain state' });
     assert.equal(readFileSync(ctx.auditPath, 'utf8').trim().split('\n').map(JSON.parse).at(-1).action,
       'blocked-generation-changed');

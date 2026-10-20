@@ -28,6 +28,13 @@ IDs, creation ticks and parent relationships. The auditor fsyncs this checkpoint
 The pause makes the injection deterministic; it is not controller progress or
 an added production recovery mechanism.
 
+An external fixture-only handle holder pins every captured process generation
+before owner termination and releases the handles after reconciliation. This
+prevents unrelated processes, including the inspector itself, from recycling a
+checkpoint PID between queries. Inspection explicitly checks `HasExited` so a
+terminated process retained by a handle is still reported as gone. Holding these
+handles does not keep the processes running or retain the native job handle.
+
 Two new Node processes restart the same source/attempt-parent/plan: once after
 owner termination, and once after explicit native-job drain but before lease
 recovery. Both must throw `overlap`, leave the lease and receipt inventory
@@ -60,9 +67,9 @@ general-purpose cleanup command or authority granted to a skill.
    creation ticks and the previously captured ancestry. Unknown ownership,
    inaccessible process information or PID reuse is **not permission to kill**.
    The fixture tests live-owner and mismatched-generation refusal before
-   destructive actions. If the supervisor has already exited, its negative
-   checkpoint instead deliberately references the live auditor PID with an
-   impossible creation time. The diagnostic labels this synthetic guard probe
+   destructive actions. The negative checkpoint deliberately references the
+   live auditor PID with an impossible creation time, independent of whether
+   the supervisor survives. The diagnostic labels this synthetic guard probe
    separately; it is not a real reused-PID event or orphan-drain observation.
 4. Fsync a drain intent. Hold an OS handle for the matched supervisor while
    checking creation time and using `Stop-Process -Id <exact PID> -Force`.

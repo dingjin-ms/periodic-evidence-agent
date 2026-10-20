@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync, symlinkSync
 } from 'node:fs';
 import { join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -107,7 +107,7 @@ test('ancestor and leaf metadata events coalesce into one recursive task', async
 });
 
 for (const initial of [false, true]) {
-  for (const event of ['rename', 'delete', 'watch-error', 'null-filename']) {
+  for (const event of ['rename', 'delete', 'watch-error', 'null-rename', 'null-filename-with-mutation']) {
     test(`${initial ? 'initial' : 'warm'} verification rejects ${event} during hashing`,
       async t => {
         const ctx = await fixture(t);
@@ -130,7 +130,10 @@ for (const initial of [false, true]) {
             ctx.watcher().callback('rename', 'fixture/nested/value.js');
           } else if (event === 'watch-error') {
             ctx.watcher().emit('error', new Error('injected watcher failure'));
+          } else if (event === 'null-rename') {
+            ctx.watcher().callback('rename', null);
           } else {
+            writeFileSync(ctx.file, 'changed behind an unknown event\n');
             ctx.watcher().callback('change', null);
           }
         };
@@ -139,6 +142,40 @@ for (const initial of [false, true]) {
         assert.equal(result.valid, false);
         assert.equal(ctx.watcher().closed, true);
       });
+  }
+}
+
+for (const rootPath of ['node_modules', 'dist']) {
+  for (const initial of [false, true]) {
+    test(`${initial ? 'initial' : 'warm'} unknown ${rootPath} change revalidates the complete root`,
+      async t => {
+        const ctx = await fixture(t, rootPath);
+        if (initial) {
+          onWatch = watcher => setImmediate(() => watcher.callback('change', null));
+        } else {
+          assert.equal((await ctx.initialize()).valid, true);
+          ctx.watcher().callback('change', null);
+        }
+        const result = await (initial ? ctx.initialize() : ctx.verify());
+        assert.equal(result.valid, true);
+        assert.equal(result.details.nullFilenameEventCount, 1);
+        assert.equal(result.details.fullRootRevalidationCount, 1);
+        assert.equal(result.details.hashedFileCount, 1);
+      });
+  }
+  for (const mutation of ['modify', 'delete', 'add']) {
+    test(`unknown ${rootPath} change detects nested ${mutation}`, async t => {
+      const ctx = await fixture(t, rootPath);
+      assert.equal((await ctx.initialize()).valid, true);
+      if (mutation === 'modify') writeFileSync(ctx.file, 'corrupt\n');
+      if (mutation === 'delete') rmSync(ctx.file);
+      if (mutation === 'add')
+        writeFileSync(join(ctx.nested, 'injected.js'), 'injected\n');
+      ctx.watcher().callback('change', null);
+      const result = await ctx.verify();
+      assert.equal(result.valid, false);
+      assert.match(result.reason, /content-changed/);
+    });
   }
 }
 
@@ -167,7 +204,7 @@ test('watcher loss before settlement reports current events instead of stale war
     assert.equal((await ctx.initialize()).valid, true);
     const quiet = await ctx.verify();
     assert.equal(quiet.details.observedEventCount, 0);
-    ctx.watcher().callback('change', null);
+    ctx.watcher().callback('rename', null);
     const lost = await ctx.verify();
     assert.equal(lost.valid, false);
     assert.match(lost.reason, /unknown/);
@@ -257,7 +294,7 @@ if (stage === 'compile') {
       injected = true;
     }
     if (rejection === 'registration-unknown') {
-      watcher.callback('change', null);
+      watcher.callback('rename', null);
       injected = true;
     }
     if (injected) onRejection?.();
@@ -265,7 +302,7 @@ if (stage === 'compile') {
   onWorkerResult = () => {
     if (!rejection || !targetWatcher || injected) return;
     injected = true;
-    if (rejection === 'unknown-event') targetWatcher.callback('change', null);
+    if (rejection === 'unknown-event') targetWatcher.callback('rename', null);
     if (rejection === 'watch-error')
       targetWatcher.emit('error', new Error('fixture watcher failure'));
     onRejection?.();
@@ -297,7 +334,7 @@ function assertRejectionDiagnostic(timings, snapshot, rejection) {
     assert.equal(stage.details.reason, 'content-fingerprint-mismatch');
     assert.equal(stage.details.details.observedEventCount, 0);
   } else if (['unknown-event', 'registration-unknown'].includes(rejection)) {
-    assert.match(stage.details.reason, /:change:unknown$/);
+    assert.match(stage.details.reason, /:rename:unknown$/);
     assert.equal(stage.details.details.nullFilenameEventCount, 1);
     assert.equal(stage.details.details.observedEventCount, 1);
   } else {
@@ -377,7 +414,7 @@ for (const snapshot of ['dependencies', 'compile']) {
           });
         });
         const rejection = recorded ? 'content-mismatch' : 'unknown-event';
-        const reason = recorded ? 'content-fingerprint-mismatch' : 'node_modules:change:unknown';
+        const reason = recorded ? 'content-fingerprint-mismatch' : 'node_modules:rename:unknown';
         const primaryMessage = `Gate diagnostic ${snapshot === 'dependencies'
           ? 'dependency snapshot changed while it was recorded'
           : 'prepared outputs changed while they were recorded'} (${reason})`;
@@ -453,4 +490,84 @@ test('successful native fixture keeps receipt integrity and reuse unchanged', as
     assert.equal(readFileSync(path, 'utf8'), bytes);
   for (const stage of ['dependencies', 'compile', 'policy', 'test'])
     assert.equal(ctx.stages().filter(value => value === stage).length, 1);
+});
+
+for (const unstable of [false, true]) {
+  test(`complete-root verification rejects ${unstable ? 'unsettled notifications' : 'mutation after hashing'}`,
+    async t => {
+      const ctx = await fixture(t, 'dist');
+      assert.equal((await ctx.initialize()).valid, true);
+      const originalReadFile = fs.readFileSync;
+      let injected = 0;
+      fs.readFileSync = (path, ...args) => {
+        const bytes = originalReadFile(path, ...args);
+        if (String(path) === ctx.file && (unstable || injected === 0)) {
+          injected++;
+          if (!unstable) writeFileSync(ctx.file, 'changed during complete-root hashing\n');
+          ctx.watcher().callback('change', null);
+        }
+
+        return bytes;
+      };
+      syncBuiltinESMExports();
+      try {
+        ctx.watcher().callback('change', null);
+        const result = await ctx.verify();
+        assert.equal(result.valid, false);
+        assert.match(result.reason, unstable
+          ? /content-revalidation-unstable/ : /content-changed/);
+        assert.equal(result.details.settlementPassCount, unstable ? 4 : 2);
+        assert.equal(result.details.fullRootRevalidationCount, unstable ? 4 : 2);
+        assert.ok(injected > 0);
+      } finally {
+        fs.readFileSync = originalReadFile;
+        syncBuiltinESMExports();
+      }
+    });
+}
+
+test('large ancestor dependency events use bounded subtree tasks without losing coverage', async t => {
+  const ctx = await fixture(t);
+  for (const name of ['first', 'second']) {
+    const directory = join(ctx.root, '@scope', name);
+    mkdirSync(directory, { recursive: true });
+    for (let index = 0; index < 1100; index++)
+      writeFileSync(join(directory, `${index}.js`), `export default ${index};\n`);
+  }
+  const captured = await outputFingerprint(ctx.workspace, ['node_modules'], true);
+  ctx.outputs.sha256 = captured.sha256;
+  assert.equal((await verifyPreparedOutputs(join(ctx.workspace, 'receipt.json'),
+    ctx.workspace, ctx.outputs, captured.entries)).valid, true);
+  ctx.watcher().callback('change', '@scope');
+  const unchanged = await ctx.verify();
+  assert.equal(unchanged.valid, true);
+  assert.equal(unchanged.details.coalescedPathCount, 1);
+  assert.equal(unchanged.details.workerTaskCount, 2);
+  assert.equal(unchanged.details.hashedFileCount, 2200);
+  writeFileSync(join(ctx.root, '@scope', 'second', '1099.js'), 'mutated\n');
+  ctx.watcher().callback('change', '@scope');
+  const changed = await ctx.verify();
+  assert.equal(changed.valid, false);
+  assert.match(changed.reason, /content-changed/);
+});
+
+test('complete dependency-root revalidation detects a redirected chained junction', async t => {
+  const ctx = await fixture(t);
+  const first = join(ctx.workspace, 'first');
+  const second = join(ctx.workspace, 'second');
+  const redirect = join(ctx.workspace, 'redirect');
+  mkdirSync(first);
+  mkdirSync(second);
+  symlinkSync(first, redirect, 'junction');
+  symlinkSync(redirect, join(ctx.nested, 'alias'), 'junction');
+  const captured = await outputFingerprint(ctx.workspace, ['node_modules'], true);
+  ctx.outputs.sha256 = captured.sha256;
+  assert.equal((await verifyPreparedOutputs(join(ctx.workspace, 'receipt.json'),
+    ctx.workspace, ctx.outputs, captured.entries)).valid, true);
+  rmSync(redirect);
+  symlinkSync(second, redirect, 'junction');
+  ctx.watcher().callback('change', null);
+  const result = await ctx.verify();
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /content-changed/);
 });

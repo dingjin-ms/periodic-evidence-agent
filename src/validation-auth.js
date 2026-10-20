@@ -1,7 +1,31 @@
 import { json } from './common.js';
 
 const prefix = 'PILOT_VALIDATION_AUTH_PREFLIGHT:';
-const reasons = new Set(['provider-missing', 'interactive-sign-in-required']);
+const installReasons = new Set(['provider-missing', 'provider-version-mismatch']);
+const reasons = new Set([...installReasons, 'interactive-sign-in-required',
+  'credential-validation-failed']);
+const failureReasons = new Map([
+  ['PILOT_AUTH_PROVIDER_MISSING', 'provider-missing'],
+  ['PILOT_AUTH_PROVIDER_VERSION', 'provider-version-mismatch'],
+  ['PILOT_AUTH_FEED_MISSING', 'feed-configuration-invalid'],
+  ['PILOT_AUTH_VALIDATION_FAILED', 'credential-validation-failed'],
+  ['PILOT_AUTH_INTERACTIVE_REQUIRED', 'interactive-sign-in-required']
+]);
+
+export function validationAuthFailure(error, stage) {
+  const text = [error?.message, error?.stdout, error?.stderr,
+    error?.originalMessage].filter(value => typeof value === 'string').join('\n');
+  const marker = [...failureReasons.keys()].find(key =>
+    new RegExp(`\\b${key}:`).test(text));
+  return {
+    stage,
+    reason: marker ? failureReasons.get(marker) : error?.killed
+      ? 'authentication-timeout' : stage === 'dependencies'
+        ? 'dependency-authentication-failed' : 'authentication-execution-failed',
+    exitCode: Number.isInteger(error?.code) ? error.code : null,
+    tokenRecorded: false
+  };
+}
 
 export function parseValidationAuthPreflight(output, contract) {
   const line = String(output?.stdout ?? '').split(/\r?\n/)
@@ -21,7 +45,7 @@ export function parseValidationAuthPreflight(output, contract) {
     if (value.state === 'ready') return value;
     return value.state === 'action-required-auth' &&
       reasons.has(value.reason) &&
-      value.installProvider === (value.reason === 'provider-missing') ? value : null;
+      value.installProvider === installReasons.has(value.reason) ? value : null;
   } catch {
     return null;
   }

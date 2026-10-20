@@ -127,6 +127,11 @@ not grant permission to retain sensitive data. If retention is not permitted or
 capture fails, record the reason and limitation rather than manufacture a hash.
 Do not mix title, tags, description or review evidence from different revisions.
 
+WorkIQ collection, related reads and tracked revisits represent an empty or
+absent message subject as a null evidence title. Nonempty subjects remain
+unchanged; raw messages and capture hashes retain the original subject. Invalid
+nonstring subjects still fail evidence validation.
+
 The state adapter must atomically claim runs/assignments and persist prepared
 dispatches before calling an external worker. Persist returned worker handles
 immediately. On restart, reconcile by stable assignment ID using the host's

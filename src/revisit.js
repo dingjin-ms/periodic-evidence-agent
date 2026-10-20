@@ -1,5 +1,5 @@
 import { Budget, json, now, requireThat, safeError } from './common.js';
-import { readRelatedAdo, evidenceEnvelope } from './sources.js';
+import { readRelatedAdo, evidenceEnvelope, workiqTitle } from './sources.js';
 import { withWorkiq, principalPath, verifyPrincipal, channelRoot, messageSelect } from './runtime.js';
 
 export function trackedOpenEvidence(ledger) {
@@ -43,7 +43,7 @@ export async function revisitTracked(config, ledger, readers = {}) {
             const record = evidenceEnvelope('workiq', old.source.namespace, message.id, message.etag ?? null,
               message.webUrl ?? old.url, json({ entityUrls: [path], purpose: 'tracked-open-revisit' }));
             record.scopeId = old.scopeId; record.createdAt = message.createdDateTime ?? null;
-            record.title = message.subject ?? null; record.sourceStatus = message.deletedDateTime ? 'Removed' : null;
+            record.title = workiqTitle(message.subject); record.sourceStatus = message.deletedDateTime ? 'Removed' : null;
             record.fields = { message }; update = { record, payload: { message } };
           } else {
             requireThat(false, 'Authenticated tracked IcM revisits are unavailable; obtain an updated confirmed owner export', 'blocked-source');

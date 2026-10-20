@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { hash, json, now, readJson, requireThat, windowCheck } from './common.js';
 import { validateTitleScreen } from './filter.js';
 import { bindFilterConsolidation } from './filter-batches.js';
+import { requireAdoEvidenceCohort } from './ado-cohort.js';
 
 export const coverageSkillName = 'analyze-excel-agent-test-coverage';
 const classifications = ['already covered', 'extend existing test', 'new integration/E2E scenario',
@@ -68,6 +69,7 @@ function sourceSnapshot(source, retainedIds = null) {
         retainedIds === null ? null : json(retainedIds));
     const evidenceRefs = observations.map(row => {
       const e = JSON.parse(row.body);
+      requireAdoEvidenceCohort(e);
       const capture = db.prepare('SELECT body FROM captures WHERE hash=?').get(e.capture.sha256);
       requireThat(capture && hash(capture.body) === e.capture.sha256, 'Source capture missing/corrupt', 'invalid-record');
       return { evidenceId: e.id, recordId: e.source.recordId, revision: e.source.revision,

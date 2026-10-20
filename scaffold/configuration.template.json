@@ -64,7 +64,7 @@
         "includeSubpaths": true,
         "wiqlEndpoint": "https://dev.azure.com/office/OC/_apis/wit/wiql?timePrecision=true&api-version=7.1",
         "batchEndpoint": "https://dev.azure.com/office/OC/_apis/wit/workitemsbatch?api-version=7.1",
-        "wiqlTemplate": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER 'OC\\Excel\\Intelligence\\Copilot\\Excel Agent' AND [System.State] <> 'Removed' AND [System.CreatedDate] >= '<START_UTC>' AND [System.CreatedDate] < '<END_UTC_EXCLUSIVE>' ORDER BY [System.Id]",
+        "wiqlTemplate": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER 'OC\\Excel\\Intelligence\\Copilot\\Excel Agent' AND [System.State] IN ('Resolved', 'Closed') AND [Microsoft.VSTS.Common.ResolvedReason] IN ('Fixed', 'Duplicate') AND [System.CreatedDate] >= '<START_UTC>' AND [System.CreatedDate] < '<END_UTC_EXCLUSIVE>' ORDER BY [System.Id]",
         "maxBatchIds": 200,
         "errorPolicy": "Fail",
         "snapshotPolicy": "Preserve WIQL asOf and use it for batch reads; capture id and rev. Do not equate query-time state with historical cutoff state.",

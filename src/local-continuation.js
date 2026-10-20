@@ -99,10 +99,6 @@ export async function prepareLocalPreModelContinuation(config, ledger, id, nextC
     'Continuation destination must be empty', 'blocked-reconciliation');
     const investigation = ledger.get('investigation', assignment.investigationId);
     requireCurrentAssignment(config, ledger, investigation, assignment);
-    const latestEvidence = new Set(ledger.latestEvidence().map(evidence => evidence.id));
-    requireThat(assignment.evidenceIds.every(evidenceId => latestEvidence.has(evidenceId) &&
-      !['Removed', 'Resolved', 'Closed'].includes(ledger.get('evidence', evidenceId).sourceStatus)),
-    'Continuation source evidence is superseded or no longer eligible', 'blocked-reconciliation');
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);
     verifyRepositorySkillWorkspace(nextConfig, assignment, job.workspace, job.base_revision, qualification);
@@ -254,10 +250,6 @@ export async function prepareLocalValidationContinuation(config, ledger, id, nex
     'Validation continuation destination must be empty', 'blocked-reconciliation');
     const investigation = ledger.get('investigation', assignment.investigationId);
     requireCurrentAssignment(config, ledger, investigation, assignment);
-    const latest = new Set(ledger.latestEvidence().map(evidence => evidence.id));
-    requireThat(assignment.evidenceIds.every(evidenceId => latest.has(evidenceId) &&
-      !['Removed', 'Resolved', 'Closed'].includes(ledger.get('evidence', evidenceId).sourceStatus)),
-    'Validation continuation evidence is stale or excluded', 'blocked-reconciliation');
     const files = await verifyPreservedChange(config, assignment, job, result, proposal);
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);

@@ -11,6 +11,7 @@ import {
 } from './review-decisions.js';
 import { resolveSkillBinding, skillQualificationId } from './repository-skills.js';
 import { dispatch, makePlannedImprovementAssignment } from './workers.js';
+import { requireAdoEvidenceCohort } from './ado-cohort.js';
 
 function priority(value) {
   if (value >= 90) return 'critical';
@@ -38,6 +39,7 @@ export function importCapturedEvidence(ledger, binding, corpus, sourcePrefix = '
   const records = corpus.evidence.filter(record => selected.has(record.id));
   requireThat(records.length === selected.size,
     'Selected FILTER evidence is missing from the bound source corpus', 'blocked-reconciliation');
+  records.forEach(requireAdoEvidenceCohort);
   requireThat(records.every(record => record.source.provenance !== 'synthetic'),
     'FILTER proposer handoff requires authenticated non-synthetic evidence', 'blocked-scope');
   const captures = new Map(corpus.captures.map(capture => [capture.sha256, capture]));
@@ -94,13 +96,14 @@ function investigation(ledger, candidate, evidence, reviewedAt, reviewer, intent
     confidence: candidate.definition.confidence,
     review: { method: 'agent-evidence-review', reviewer, reviewedAt },
     repoIds: [candidate.definition.repository],
-    existingFixes: [],
+    existingFixes: [...(candidate.definition.existingFixes ?? [])].sort(),
     nextAction: intent === 'defect-fix'
       ? `Inspect ${candidate.definition.harness} at ${candidate.definition.sourceRevision}, reproduce and fix the production behavior, and add or update ${candidate.definition.layer} coverage for: ${candidate.definition.missingAssertion}`
       : `Inspect ${candidate.definition.harness} at ${candidate.definition.sourceRevision} and add or update ${candidate.definition.layer} coverage for: ${candidate.definition.missingAssertion}`
   };
   const previous = ledger.get('investigation', id);
   if (!previous) return record;
+  record.existingFixes = [...new Set([...previous.existingFixes, ...record.existingFixes])].sort();
   record.version = previous.version;
   if (json(record) === json(previous)) return record;
   record.version++;
@@ -193,6 +196,9 @@ export function prepareFilterProposerHandoff(config, ledger, input, {
         coverageGaps: [candidate.definition.missingAssertion],
         unknowns: [],
         rationale: `${candidate.definition.rationale} Existing coverage: ${candidate.definition.existingCoverage.join('; ')}`,
+        ...(input.routing.existingFixesReview
+          ? { existingFixesReview: input.routing.existingFixesReview }
+          : {}),
         ...(input.routing.skillInput
           ? { skillInput: input.routing.skillInput }
           : {})

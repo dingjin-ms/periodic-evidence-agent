@@ -591,7 +591,8 @@
           "properties": {
             "capability": { "$ref": "#/$defs/text" },
             "requestedOutcome": { "$ref": "#/$defs/text" },
-            "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" }
+            "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
+            "existingFixesReview": { "$ref": "#/$defs/existingFixesReview" }
           }
         }
       }
@@ -617,6 +618,39 @@
         "capabilities": { "$ref": "#/$defs/texts" },
         "createdAt": { "$ref": "#/$defs/utc" },
         "updatedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "existingFixesReview": {
+      "type": "object", "additionalProperties": false,
+      "required": ["investigationId", "investigationVersion", "evidenceIds", "planId", "planVersion", "sourceRevision", "review", "fixes"],
+      "properties": {
+        "investigationId": { "$ref": "#/$defs/text" },
+        "investigationVersion": { "type": "integer", "minimum": 1 },
+        "evidenceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "planId": { "$ref": "#/$defs/text" },
+        "planVersion": { "type": "integer", "minimum": 1 },
+        "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+        "review": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "reviewer", "reviewedAt"],
+          "properties": {
+            "method": { "enum": ["agent-evidence-review", "human-review"] },
+            "reviewer": { "$ref": "#/$defs/text" },
+            "reviewedAt": { "$ref": "#/$defs/utc" }
+          }
+        },
+        "fixes": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["url", "disposition", "rationale"],
+            "properties": {
+              "url": { "$ref": "#/$defs/uri" },
+              "disposition": { "enum": ["product-fix-with-remaining-coverage-gap", "coverage-already-satisfied", "coverage-in-flight", "unresolved"] },
+              "rationale": { "$ref": "#/$defs/text" }
+            }
+          }
+        }
       }
     },
     "testCoveragePlan": {
@@ -649,6 +683,7 @@
         "unknowns": { "$ref": "#/$defs/texts" },
         "rationale": { "$ref": "#/$defs/text" },
         "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
+        "existingFixesReview": { "$ref": "#/$defs/existingFixesReview" },
         "createdAt": { "$ref": "#/$defs/utc" }
       },
       "allOf": [
@@ -888,6 +923,7 @@
             "layer": { "enum": ["unit", "integration", "e2e"] },
             "missingAssertion": { "$ref": "#/$defs/text" },
             "existingCoverage": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+            "existingFixes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/uri" } },
             "harness": { "$ref": "#/$defs/text" },
             "coverageStatus": { "enum": ["gap", "covered", "unknown"] },
             "blockers": { "$ref": "#/$defs/texts" },

@@ -1,6 +1,7 @@
 import { AzureCliCredential } from '@azure/identity';
 import { Budget, PilotError, hash, json, now, requireThat, readJson, utc, validateRecord, windowCheck } from './common.js';
 import { withWorkiq, validateSeed, principalPath, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage } from './runtime.js';
+import { adoCohortWiql, requireAdoCohort } from './ado-cohort.js';
 
 export const area = 'OC\\Excel\\Intelligence\\Copilot\\Excel Agent';
 export const adoFields = [
@@ -15,7 +16,7 @@ export function wiql(window, lane = 'created', asOf = null) {
   windowCheck(window);
   requireThat(['created', 'changed'].includes(lane), 'Unknown query lane');
   const field = lane === 'created' ? 'System.CreatedDate' : 'System.ChangedDate';
-  return `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND [System.State] <> 'Removed' AND [${field}] >= '${window.start}' AND [${field}] < '${window.end}' ORDER BY [System.Id]${asOf ? ` ASOF '${utc(asOf)}'` : ''}`;
+  return `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND ${adoCohortWiql} AND [${field}] >= '${window.start}' AND [${field}] < '${window.end}' ORDER BY [System.Id]${asOf ? ` ASOF '${utc(asOf)}'` : ''}`;
 }
 export function evidenceEnvelope(kind, namespace, id, revision, url, query, snapshot = null) {
   const time = now();
@@ -60,8 +61,9 @@ export async function adoTransport(config) {
 export function adoRecord(item, query, snapshot) {
   const f = item.fields;
   requireThat(f && Number.isInteger(item.rev) && f['System.WorkItemType'] === 'Bug' &&
-    f['System.State'] !== 'Removed' && (f['System.AreaPath'] === area || f['System.AreaPath']?.startsWith(`${area}\\`)),
+    (f['System.AreaPath'] === area || f['System.AreaPath']?.startsWith(`${area}\\`)),
   'ADO returned out-of-scope or unversioned record', 'blocked-scope');
+  requireAdoCohort(f);
   const record = evidenceEnvelope('ado', 'office/OC', item.id, String(item.rev),
     `https://dev.azure.com/office/OC/_workitems/edit/${item.id}`, query, snapshot);
   record.title = f['System.Title'] ?? null; record.createdAt = f['System.CreatedDate'] ?? null;
@@ -76,7 +78,7 @@ export function adoRecord(item, query, snapshot) {
 export async function readRelatedAdo(config, id, budget, request = null) {
   requireThat(config.sources.ado.scopeApproved && /^\d+$/.test(id), 'Related ADO scope is not approved', 'blocked-scope');
   request ??= await adoTransport(config);
-  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND [System.State] <> 'Removed' AND [System.Id] = ${id}`;
+  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND ${adoCohortWiql} AND [System.Id] = ${id}`;
   budget.call();
   const candidate = await request('wiql', { query });
   utc(candidate.asOf);

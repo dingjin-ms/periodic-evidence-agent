@@ -64,6 +64,8 @@ async function fixture(t, { rejectPreparation = false } = {}) {
     'fixture query', '2026-10-09T01:00:00Z');
   // Simulated authenticated provider boundary; no real evidence or remote service is used.
   envelope.source.provenance = 'authenticated-source';
+  envelope.sourceStatus = 'Resolved';
+  envelope.fields = { 'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed' };
   const evidence = ledger.evidence(envelope, { fixture: true }, 'fixture-run');
   const investigation = {
     recordType: 'investigation', schemaVersion: '1.0', id: 'fixture-investigation', version: 1,

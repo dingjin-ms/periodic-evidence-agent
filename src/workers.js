@@ -36,6 +36,7 @@ import {
 } from './validation-auth.js';
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
+import { preparationStage, withPreparationProgress } from './preparation-progress.js';
 import { requireAdoEvidenceCohort } from './ado-cohort.js';
 
 const exec = promisify(execFile);
@@ -574,6 +575,11 @@ async function executeValidation(gate, args, workspace, stage, execute,
 }
 async function runProfileStage(gate, profile, stage, workspace, execute = command,
   temporaryDirectory = null, environment = {}) {
+  return preparationStage(stage, () => executeProfileStage(
+    gate, profile, stage, workspace, execute, temporaryDirectory, environment));
+}
+async function executeProfileStage(gate, profile, stage, workspace, execute,
+  temporaryDirectory, environment) {
   const profileRoot = join(dirname(workspace), 'validation-profiles');
   mkdirSync(profileRoot, { recursive: true });
   const privateProfile = join(profileRoot,
@@ -1071,8 +1077,8 @@ export async function verifyPreparedOutputs(
   const fullVerification = { baseline: null, verification: {} };
   if (!baseline) {
     fullVerification.baseline = {};
-    const captured = await outputFingerprint(
-      workspace, outputs.paths, true, fullVerification.baseline);
+    const captured = await preparationStage('verification-baseline',
+      () => outputFingerprint(workspace, outputs.paths, true, fullVerification.baseline));
     if (!captured || captured.sha256 !== outputs.sha256)
       return {
         valid: false, method: 'content',
@@ -1090,9 +1096,10 @@ export async function verifyPreparedOutputs(
     valid: true, method: 'watch', details: guard.lastSettlement
   };
   const verify = async () => {
-    const actual = await outputFingerprint(
-      workspace, outputs.paths, false, fullVerification.verification);
-    if ((guard && !(await settlePreparedOutputGuard(guard))) ||
+    const actual = await preparationStage('verification-full',
+      () => outputFingerprint(workspace, outputs.paths, false, fullVerification.verification));
+    if ((guard && !(await preparationStage('verification-settlement',
+      () => settlePreparedOutputGuard(guard)))) ||
       actual !== outputs.sha256) {
       closePreparedOutputGuard(receiptPath);
       return {
@@ -1524,18 +1531,20 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
     const timings = [fingerprintRun.telemetry];
     try {
       const checkoutStarted = now();
-      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
-        job.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
-      try {
-        await git(workspace, ['checkout', '--detach', revision],
-          checkoutEnvironment(), gate.timeoutMs);
-      } catch {
-        await git(workspace, ['remote', 'set-url', 'origin', repo.remote]);
-        await fetchQualifiedRevision(
-          config, workspace, repo, revision, adoAccessToken, gate.timeoutMs);
-        await git(workspace, ['checkout', '--detach', revision],
-          checkoutEnvironment(), gate.timeoutMs);
-      }
+      await preparationStage('dependency-checkout', async () => {
+        await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
+          job.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
+        try {
+          await git(workspace, ['checkout', '--detach', revision],
+            checkoutEnvironment(), gate.timeoutMs);
+        } catch {
+          await git(workspace, ['remote', 'set-url', 'origin', repo.remote]);
+          await fetchQualifiedRevision(
+            config, workspace, repo, revision, adoAccessToken, gate.timeoutMs);
+          await git(workspace, ['checkout', '--detach', revision],
+            checkoutEnvironment(), gate.timeoutMs);
+        }
+      });
       timings.push(stageTelemetry('dependency-checkout', checkoutStarted, 'miss'));
       if (plan.authentication) {
         const authentication = await runProfileStage(
@@ -1562,8 +1571,8 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
         !(await git(workspace, ['status', '--porcelain'])),
       `Gate ${gate.id} dependency preparation mutated source`, 'blocked-validation');
       const outputPaths = await dependencySnapshotPaths(workspace, plan.dependencySnapshotPaths);
-      const capturedOutputs =
-        await outputFingerprint(workspace, outputPaths, true);
+      const capturedOutputs = await preparationStage('dependency-output-capture',
+        () => outputFingerprint(workspace, outputPaths, true));
       requireThat(capturedOutputs,
         `Gate ${gate.id} dependency snapshot is incomplete`,
         'blocked-validation');
@@ -1574,11 +1583,12 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
         createdAt: now(), controllerOwned: true
       };
       const receipt = { ...body, integrity: hash(json(body)) };
+      await preparationStage('dependency-output-verification',
+        () => requireRecordedOutputVerification(
+          receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
+          'dependency-output-verification',
+          `Gate ${gate.id} dependency snapshot changed while it was recorded`));
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      await requireRecordedOutputVerification(
-        receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
-        'dependency-output-verification',
-        `Gate ${gate.id} dependency snapshot changed while it was recorded`);
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
         outputsVerified: true
@@ -1655,26 +1665,31 @@ async function prepareValidationGate(config, job, repo, gate, revision,
     let lfs = null;
     try {
       const checkoutStarted = now();
-      await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
-        dependency.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
-      await git(workspace, ['fetch', '--no-tags', '--', job.workspace, revision],
-        checkoutEnvironment(), gate.timeoutMs);
-      await git(workspace, ['checkout', '--detach', revision],
-        checkoutEnvironment(), gate.timeoutMs);
+      await preparationStage('compile-checkout', async () => {
+        await git(root, ['clone', '--no-hardlinks', '--no-checkout', '--',
+          dependency.workspace, workspace], checkoutEnvironment(), gate.timeoutMs);
+        await git(workspace, ['fetch', '--no-tags', '--', job.workspace, revision],
+          checkoutEnvironment(), gate.timeoutMs);
+        await git(workspace, ['checkout', '--detach', revision],
+          checkoutEnvironment(), gate.timeoutMs);
+      });
       timings.push(stageTelemetry('checkout', checkoutStarted, 'miss'));
       if (lfsPaths.length) {
         const startedAt = now();
-        lfs = await hydrateValidationLfs(config, repo, gate, workspace, revision);
+        lfs = await preparationStage('lfs-materialization',
+          () => hydrateValidationLfs(config, repo, gate, workspace, revision));
         timings.push(stageTelemetry('lfs-materialization', startedAt, 'miss', {
           stdout: json(lfs), stderr: ''
         }));
       }
       const materializeStarted = now();
-      await materializeDependencySnapshot(dependency.workspace, workspace,
-        dependency.outputs.paths, gate.timeoutMs);
-      requireThat(await outputFingerprint(workspace, dependency.outputs.paths) ===
-        dependency.outputs.sha256,
-      `Gate ${gate.id} dependency snapshot materialization failed`, 'blocked-validation');
+      await preparationStage('dependency-materialization', async () => {
+        await materializeDependencySnapshot(dependency.workspace, workspace,
+          dependency.outputs.paths, gate.timeoutMs);
+        requireThat(await outputFingerprint(workspace, dependency.outputs.paths) ===
+          dependency.outputs.sha256,
+        `Gate ${gate.id} dependency snapshot materialization failed`, 'blocked-validation');
+      });
       timings.push(stageTelemetry('dependency-materialization', materializeStarted, 'hit'));
       const compile = await runProfileStage(gate, profile, 'compile', workspace, execute);
       timings.push(compile.telemetry);
@@ -1690,8 +1705,8 @@ async function prepareValidationGate(config, job, repo, gate, revision,
         ...await preparedSnapshotPaths(workspace, dependency.outputs.paths,
           plan.preparedOutputPaths)
       ])].sort();
-      const capturedOutputs =
-        await outputFingerprint(workspace, preparedOutputPaths, true);
+      const capturedOutputs = await preparationStage('compile-output-capture',
+        () => outputFingerprint(workspace, preparedOutputPaths, true));
       requireThat(capturedOutputs,
         `Gate ${gate.id} prepared outputs are incomplete`, 'blocked-validation');
       const body = {
@@ -1708,11 +1723,12 @@ async function prepareValidationGate(config, job, repo, gate, revision,
         createdAt: now(), controllerOwned: true
       };
       const receipt = { ...body, integrity: hash(json(body)) };
+      await preparationStage('compile-output-verification',
+        () => requireRecordedOutputVerification(
+          receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
+          'compile-output-verification',
+          `Gate ${gate.id} prepared outputs changed while they were recorded`));
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      await requireRecordedOutputVerification(
-        receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
-        'compile-output-verification',
-        `Gate ${gate.id} prepared outputs changed while they were recorded`);
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
         dependencyCache: dependency.cache, dependencyReceiptPath: dependency.receiptPath
@@ -1732,10 +1748,12 @@ async function prepareValidationGate(config, job, repo, gate, revision,
   preparationPromises.set(promiseKey, preparing);
   return preparing;
 }
-export async function prepareValidation(config, job, repo, revision, execute = command) {
+export async function prepareValidation(config, job, repo, revision, execute = command,
+  { onProgress } = {}) {
   const entries = await Promise.all(repo.validationGates.map(async gate => {
     try { return [gate.id,
-      await prepareValidationGate(config, job, repo, gate, revision, execute)]; }
+      await withPreparationProgress(gate.id, onProgress,
+        () => prepareValidationGate(config, job, repo, gate, revision, execute))]; }
     catch (error) { return [gate.id, preparationFailure(error, revision)]; }
   }));
   return Object.fromEntries(entries);

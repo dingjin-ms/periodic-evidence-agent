@@ -124,6 +124,83 @@ capture or the entire preparation. Its nested wall/CPU/task timings overlap the
 stage and must not be added to it. This change cannot recover details discarded
 by older failures and does not itself establish real product native cache reuse.
 
+## Explicit isolated preparation cancellation fixtures
+
+`src/preparation-attempt.js` exports an opt-in controller diagnostic API,
+`runPreparationAttempt`. It is not called by setup, the periodic agent, ordinary
+validation or repository skills. It currently requires Windows Job Object
+containment, one staged gate, a clean exact-revision source, a disjoint existing
+attempt parent, a whole-execution budget and an explicit budget for every
+`preparationStageNames` entry. No real product run is implicitly authorized.
+
+The runner acquires a persistent controller Ledger lease scoped to the attempt
+parent and canonical source. It creates a new attempt with a disposable source
+clone and **fresh private state**, never the caller's retained state. Only
+controller code emits the allowlisted, sequenced stage journal. Product stdout
+is not progress, and does not start, finish or extend budgets. The optional
+`prepareValidation` progress callback is supplied by controller code, not
+configuration or a skill. Async-local gate context isolates its stage identity.
+Observer failures fail closed; a notification failure while reporting a primary
+rejection adds only a fixed secondary diagnostic, preserving the rejection.
+
+Budgets cover source materialization, profile execution, dependency/compile
+checkout, LFS and dependency materialization, output capture and verification.
+Nested verification progress distinguishes baseline, second complete hash and
+settlement without accepting them as substitutes for one another. Existing
+full-hash, source/profile/toolchain binding and watcher rejection rules remain.
+New dependency and compile receipts are published **after** their mandatory
+verification succeeds; an interrupted verification does not publish its receipt.
+Receipt schemas, integrity inputs and ordinary validation APIs remain unchanged.
+
+The parent polls the controller journal at 10 ms, checks both active elapsed
+time and completed-stage durations, and enforces the native whole-execution
+timeout. A stage deadline or an explicit `AbortSignal` cancels the **entire
+attempt**, not just a Promise or one profile process. Native supervisor close
+and recorded controller PID exit are checked before rollback. Disposal of its
+private `data` subtree restores the attempt by isolation/discard, **not** by
+resetting a retained source or selectively repairing an interrupted cache.
+The original source HEAD/tracked status is rechecked. Tests additionally check
+original file bytes, profile/grandchild PID exit, lease exclusion/release and
+absence of partial receipts. Late test assertions use OS creation time to
+disambiguate reassigned PIDs; the controller's fail-closed exit checks remain
+unchanged.
+
+The append-only parent journal is fsynced at stage boundaries and every five
+seconds; final outcome uses an fsynced temporary file and rename. Deadline
+outcomes are `incomplete`, not an invented native rejection. A genuine
+controller rejection retains its classification and reason separately.
+Unconfirmed process drain or cleanup keeps the lease fail closed; never reclaim
+it merely because a timer expired. Successful attempts retain their private
+prepared state; this is **not** a native reuse or assignment-E2E claim.
+Failure to persist the final outcome rejects otherwise successful preparation
+and discards its private state when process drain is confirmed. Both synchronous
+observer failures and rejected async parent observers fail closed without
+exposing their exceptions; parent observers must be synchronous.
+
+Run the small offline interruption fixtures explicitly:
+
+```powershell
+node --test --test-reporter=spec test\preparation-attempt.test.js
+```
+
+They interrupt active dependency and compile profiles (including a grandchild
+and source mutation in the disposable snapshot), in-flight full verification,
+and stage budgets. They also check a fresh successful attempt after cancellation,
+concurrent lease refusal, controller rejection and diagnostic failure. Native
+containment cases are Windows-only; skipped cases on another OS are not proof.
+
+**Limits:** this is a diagnostic runner, not cooperative cancellation throughout
+production call chains, an OS security boundary against same-user hostile code,
+or an automatic recovery service. Parent hard-crash/power-loss recovery is not
+qualified: leases remain held for explicit reconciliation, and orphaned native
+jobs must not be presumed dead. Source inspection before launch and final
+drain/rollback/evidence work are measured outside the native execution budget;
+polling, synchronous filesystem stalls and cleanup can add wall time. No
+hard-real-time, disk-failure durability or real-large-tree cleanup cost guarantee
+is claimed. These fixtures do not authorize a real preparation, explain the old
+99-minute rejection, establish real native hits, or complete event-heavy or
+warm/full-fresh evidence.
+
 ## Explicit local benchmark
 
 ```powershell

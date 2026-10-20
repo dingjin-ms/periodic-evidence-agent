@@ -108,9 +108,9 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   return { ...ctx, repo, evidence, investigation, assignment, job, g };
 }
 async function stagedValidationFixture(t, {
-  parallelOutputs = false, authentication = false
+  parallelOutputs = false, authentication = false, provenance = 'synthetic'
 } = {}) {
-  const ctx = await fixture(t);
+  const ctx = await fixture(t, provenance);
   writeFileSync(join(ctx.repo.referenceCheckout, '.gitignore'),
     '.pilot/\nextra/node_modules/\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'package.json'), '{"packageManager":"fixture@1.0.0"}\n');
@@ -1480,6 +1480,75 @@ test('trusted dependency cache hits skip authentication checks', async t => {
   assert.equal(missingSnapshotActions[0].state, 'action-required-auth');
   assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
 });
+test('forced recovery preflight checks authentication without deleting trusted caches', async t => {
+  const ctx = await stagedValidationFixture(t, { authentication: true });
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.ok(prepared.staged.receiptPath);
+  ctx.calls.length = 0;
+  ctx.behavior.authenticationPreflight = 'credential-validation-failed';
+  const actions = await preflightValidationAuthentication(
+    ctx.config, ctx.repo, ctx.isolated.baseRevision, ctx.execute, { force: true });
+  assert.equal(actions[0].reason, 'credential-validation-failed');
+  assert.equal(actions[0].requiresInstallApproval, false);
+  assert.ok(existsSync(prepared.staged.receiptPath));
+  assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
+});
+
+test('local cache-miss authentication recovery stays prepared and never launches a model', async t => {
+  const ctx = await stagedValidationFixture(t, {
+    authentication: true, provenance: 'authenticated-source'
+  });
+  ctx.repo.flights = { proposerExecutor: 'local' };
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const investigation = { ...ctx.investigation, id: `${ctx.investigation.id}-auth-dispatch` };
+  ctx.ledger.put(investigation);
+  ctx.job = ctx.ledger.prepare(makeAssignment(ctx.config, investigation, ctx.repo.id, 'defect-fix'));
+  let checks = 0;
+  const action = await dispatch(ctx.config, ctx.ledger, ctx.job.id, {
+    preflightValidationAuthentication: async (config, repo, revision, execute, options) => {
+      if (++checks === 1) return [];
+      assert.deepEqual(options, { force: true });
+      return [{ state: 'action-required-auth', reason: 'credential-validation-failed' }];
+    },
+    prepareValidation: async () => ({
+      staged: { error: { code: 'blocked-auth', message: 'Synthetic late authentication failure' } }
+    }),
+    runModel: () => assert.fail('Late authentication recovery must not launch a model'),
+    runValidation: () => assert.fail('Late authentication recovery must not run tests')
+  });
+  assert.equal(action.state, 'action-required-auth');
+  assert.equal(checks, 2);
+  assert.equal(ctx.ledger.job(ctx.job.id).state, 'prepared');
+  assert.equal(ctx.ledger.all('workerResult').length, 0);
+  assert.equal(ctx.ledger.status().operations.length, 0);
+});
+
+test('local late authentication recovery is bounded when no remediation action is available', async t => {
+  const ctx = await stagedValidationFixture(t, {
+    authentication: true, provenance: 'authenticated-source'
+  });
+  ctx.repo.flights = { proposerExecutor: 'local' };
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const investigation = { ...ctx.investigation, id: `${ctx.investigation.id}-auth-dispatch` };
+  ctx.ledger.put(investigation);
+  ctx.job = ctx.ledger.prepare(makeAssignment(ctx.config, investigation, ctx.repo.id, 'defect-fix'));
+  let checks = 0, preparations = 0;
+  await assert.rejects(dispatch(ctx.config, ctx.ledger, ctx.job.id, {
+    preflightValidationAuthentication: async () => { checks++; return []; },
+    prepareValidation: async () => {
+      preparations++;
+      return { staged: { error: { code: 'blocked-auth', message: 'Synthetic auth failure' } } };
+    },
+    runModel: () => assert.fail('Must not launch a model')
+  }), error => error.code === 'blocked-auth');
+  assert.equal(checks, 2);
+  assert.equal(preparations, 1);
+  assert.equal(ctx.ledger.job(ctx.job.id).state, 'prepared');
+});
+
 test('authentication preflight is singleflight and malformed evidence blocks', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
   ctx.behavior.authenticationPreflight = 'provider-missing';
@@ -1509,7 +1578,11 @@ test('authentication failure blocks before dependency restore without retrying',
   assert.deepEqual(ctx.calls, ['fingerprint', 'authentication']);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 'blocked-auth');
-  assert.match(artifact.output.stderr, /Azure Artifacts credentials/);
+  assert.match(artifact.output.stderr, /Azure Artifacts authentication/);
+  assert.deepEqual(artifact.output.authenticationFailure, {
+    stage: 'authentication', reason: 'authentication-execution-failed',
+    exitCode: 1, tokenRecorded: false
+  });
   assert.doesNotMatch(artifact.output.stderr, /anonymous user/i);
   assert.equal(artifact.telemetry.preparationTimings.at(-1).id, 'authentication');
 });

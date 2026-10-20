@@ -822,8 +822,11 @@ cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
 Version 3 staged plans may bind an `azure-artifacts-npm` authentication
-contract. Before a local worker launches, a controller-owned preflight checks
-authentication only when the matching dependency receipt is absent. If the
+contract. Before a local or Remote Agency author launches, a controller-owned
+preflight checks authentication only when the matching dependency receipt is
+absent. Version-3 authentication profiles also finish exact-base preparation
+before authoring, so a subsequently rejected cache cannot strand a new authored
+commit behind an undiscovered authentication requirement. If the
 pinned provider is missing or the current user must sign in, dispatch returns
 `action-required-auth` while the assignment remains `prepared`; no workspace,
 worker session or tool budget is created. The result contains a non-secret,
@@ -831,7 +834,10 @@ structured remediation command bound to a controller-owned `.yarnrc.yml`
 snapshot extracted from the exact base revision. After the user approves any
 required pinned provider installation and completes Microsoft sign-in/MFA, the
 agent retries the original controller command once and resumes the same
-assignment.
+assignment. If preparation reports `blocked-auth` after a receipt-only preflight
+skipped the check, both providers run one forced non-interactive preflight and
+return the same remediation action. This check neither deletes a trusted receipt
+nor automatically retries preparation.
 
 The exact-revision dependency preparation still performs a final non-interactive
 authentication validation before the locked restore. It never emits a token or
@@ -840,6 +846,11 @@ Unexpected provider drift, anonymous requests, expired credentials or feed
 denials after preflight become `blocked-auth` and are not treated as
 infrastructure retries. Dependency and compile cache hits do not run either the
 authentication check or the authentication stage.
+Failure artifacts retain only the stage, a typed safe reason, a numeric process
+exit code when available and `tokenRecorded: false`; raw credential-provider
+diagnostics are not retained. Missing providers, version mismatch, invalid feed
+configuration, explicit refresh requests and credential-validation failures are
+distinct. A validation failure alone does not establish that a login expired.
 
 On a new Windows machine, the agent may prepare the approved provider and
 current user's feed authentication explicitly:
@@ -880,10 +891,20 @@ only when a fresh content hash still matches the verified process-local baseline
 additions, removals, renames and actual content changes invalidate the cache.
 Directory `change` events require recursive content verification, including when
 only an ancestor event is delivered. Overlapping paths coalesce into bounded
-worker tasks without dropping descendant coverage. Settlements serialize per
-guard and wait for queued events after hashing; unknown filenames and watcher
-errors invalidate trust even during initial verification. Artifacts record
-changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
+worker tasks without dropping descendant coverage. Incremental dependency-subtree
+checks use the same recursive partitioner
+as complete snapshots, with at most 2,048 filesystem entries per leaf task and
+the existing five-minute task deadline; parent directory manifests are rebuilt
+from every child result. Settlements serialize per
+guard and wait for queued events after hashing. A `change` notification without a
+filename requires complete-root content/link and membership revalidation against
+the baseline; it never means that changes are ignored. This handles Windows
+access-time notifications caused by reading unchanged files. Unknown `rename`
+notifications and watcher errors still invalidate trust, including during initial
+verification. Repeated events must settle within four passes or trust is rejected.
+Artifacts record changed-path, rehashed-entry, incremental worker-task,
+full-root revalidation and settlement-pass counts alongside wall time.
+Preparation failures preserve the exact verification reason and event details.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an

@@ -7,14 +7,23 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  parseValidationAuthPreflight, validationAuthAction
+  parseValidationAuthPreflight, validationAuthAction, validationAuthFailure
 } from '../src/validation-auth.js';
 
 const contract = {
   provider: 'artifacts-npm-credprovider',
   providerVersion: '1.2.1',
-  feeds: [{}, {}]
+  feeds: [
+    { scope: null, registry: 'https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/' },
+    { scope: 'office', registry: 'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/' }
+  ]
 };
+const yarnConfiguration = [
+  `npmRegistryServer: "${contract.feeds[0].registry}"`,
+  'npmScopes:',
+  '  office:',
+  `    npmRegistryServer: "${contract.feeds[1].registry}"`
+].join('\n');
 
 test('validation authentication evidence accepts only the safe schema', () => {
   const output = value => ({
@@ -59,6 +68,45 @@ test('validation authentication action never requests a token', () => {
   assert.doesNotMatch(JSON.stringify(action), /secret|credentialValue|accessToken/i);
 });
 
+test('authentication failure diagnostics retain only typed reasons and numeric exit codes', () => {
+  for (const [marker, reason] of [
+    ['PILOT_AUTH_PROVIDER_MISSING', 'provider-missing'],
+    ['PILOT_AUTH_PROVIDER_VERSION', 'provider-version-mismatch'],
+    ['PILOT_AUTH_FEED_MISSING', 'feed-configuration-invalid'],
+    ['PILOT_AUTH_VALIDATION_FAILED', 'credential-validation-failed'],
+    ['PILOT_AUTH_INTERACTIVE_REQUIRED', 'interactive-sign-in-required']
+  ]) {
+    const failure = validationAuthFailure({
+      code: 23, stderr: `${marker}: synthetic-secret`, stdout: 'synthetic-secret'
+    }, 'authentication');
+    assert.deepEqual(failure, {
+      stage: 'authentication', reason, exitCode: 23, tokenRecorded: false
+    });
+    assert.doesNotMatch(JSON.stringify(failure), /synthetic-secret/);
+  }
+  assert.equal(validationAuthFailure({ killed: true }, 'authentication').reason,
+    'authentication-timeout');
+  assert.equal(validationAuthFailure({ code: 'synthetic-secret' }, 'dependencies').exitCode, null);
+});
+
+test('preflight distinguishes provider mismatch and credential validation failure', () => {
+  for (const [reason, installProvider] of [
+    ['provider-version-mismatch', true], ['credential-validation-failed', false]
+  ]) {
+    const value = {
+      state: 'action-required-auth', reason, installProvider,
+      provider: contract.provider, providerVersion: contract.providerVersion,
+      feedCount: 2, tokenRecorded: false
+    };
+    assert.deepEqual(parseValidationAuthPreflight({
+      stdout: `PILOT_VALIDATION_AUTH_PREFLIGHT:${JSON.stringify(value)}`
+    }, contract), value);
+    assert.equal(validationAuthAction({ id: 'gate' },
+      { id: 'repo', referenceCheckout: 'fixture' }, value, 'controller')
+      .requiresInstallApproval, installProvider);
+  }
+});
+
 test('PowerShell authentication check distinguishes provider and sign-in actions', {
   skip: process.platform !== 'win32'
 }, t => {
@@ -66,22 +114,17 @@ test('PowerShell authentication check distinguishes provider and sign-in actions
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, 'workspace');
   mkdirSync(workspace);
-  writeFileSync(join(workspace, '.yarnrc.yml'), [
-    'npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/"',
-    'npmScopes:',
-    '  office:',
-    '    npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/"'
-  ].join('\n'));
+  writeFileSync(join(workspace, '.yarnrc.yml'), yarnConfiguration);
   const script = join(process.cwd(), 'scripts', 'validation',
     'prepare-office-agent-auth.ps1');
   const powershell = join(process.env.SystemRoot, 'System32',
     'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const run = path => spawnSync(powershell, [
+  const run = (path, mode = '') => spawnSync(powershell, [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
     '-Workspace', workspace, '-CheckOnly'
   ], {
     encoding: 'utf8',
-    env: { ...process.env, PATH: path }
+    env: { ...process.env, PATH: path, PILOT_TEST_AUTH_MODE: mode }
   });
   const systemPath = join(process.env.SystemRoot, 'System32');
   const missing = run(systemPath);
@@ -92,7 +135,9 @@ test('PowerShell authentication check distinguishes provider and sign-in actions
   mkdirSync(bin);
   writeFileSync(join(bin, 'artifacts-npm-credprovider.cmd'), [
     '@echo off',
+    'if "%PILOT_TEST_AUTH_MODE%"=="version" (echo synthetic-secret 1>&2& exit /b 7)',
     'if "%1"=="--version" (echo 1.2.1& exit /b 0)',
+    'if "%PILOT_TEST_AUTH_MODE%"=="validation" (echo synthetic-secret 1>&2& exit /b 23)',
     'echo need refresh',
     'exit /b 0'
   ].join('\r\n'));
@@ -101,6 +146,14 @@ test('PowerShell authentication check distinguishes provider and sign-in actions
   assert.match(signIn.stdout, /"reason":"interactive-sign-in-required"/);
   assert.doesNotMatch(signIn.stdout + signIn.stderr,
     /accessToken|credentialValue|password|synthetic-secret/i);
+  for (const [mode, reason] of [
+    ['version', 'provider-version-mismatch'], ['validation', 'credential-validation-failed']
+  ]) {
+    const failed = run(`${bin}${delimiter}${systemPath}`, mode);
+    assert.equal(failed.status, 0, failed.stderr);
+    assert.match(failed.stdout, new RegExp(`"reason":"${reason}"`));
+    assert.doesNotMatch(failed.stdout + failed.stderr, /synthetic-secret/);
+  }
 
   writeFileSync(join(bin, 'artifacts-npm-credprovider.cmd'), [
     '@echo off',
@@ -126,7 +179,9 @@ test('PowerShell authentication check distinguishes provider and sign-in actions
   assert.doesNotMatch(acquired.stdout + acquired.stderr, /need refresh/i);
 });
 
-test('validation profile authenticates only the declared Yarn configuration', {
+for (const profileName of ['office-agent-onenote-bootstrap-progress.ps1',
+  'office-agent-excel-entry-model.ps1']) {
+test(`${profileName} authenticates only the declared Yarn configuration`, {
   skip: process.platform !== 'win32'
 }, t => {
   const root = mkdtempSync(join(tmpdir(), 'validation-profile-auth-test-'));
@@ -135,12 +190,7 @@ test('validation profile authenticates only the declared Yarn configuration', {
   const bin = join(root, 'bin');
   mkdirSync(workspace);
   mkdirSync(bin);
-  writeFileSync(join(workspace, '.yarnrc.yml'), [
-    'npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/"',
-    'npmScopes:',
-    '  office:',
-    '    npmRegistryServer: "https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/"'
-  ].join('\n'));
+  writeFileSync(join(workspace, '.yarnrc.yml'), yarnConfiguration);
   writeFileSync(join(workspace, '.npmrc'),
     'registry=https://example.invalid/unrelated/npm/registry/\n');
   writeFileSync(join(bin, 'artifacts-npm-credprovider.cmd'), [
@@ -150,7 +200,7 @@ test('validation profile authenticates only the declared Yarn configuration', {
     'exit /b 0'
   ].join('\r\n'));
   const profile = join(process.cwd(), 'scripts', 'validation',
-    'office-agent-onenote-bootstrap-progress.ps1');
+    profileName);
   const powershell = join(process.env.SystemRoot, 'System32',
     'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const result = spawnSync(powershell, [
@@ -169,3 +219,48 @@ test('validation profile authenticates only the declared Yarn configuration', {
   assert.doesNotMatch(result.stdout + result.stderr,
     /accessToken|credentialValue|password|synthetic-secret/i);
 });
+
+test(`${profileName} reports safe noninteractive failure reasons`, {
+  skip: process.platform !== 'win32'
+}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'validation-profile-failure-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'workspace');
+  const bin = join(root, 'bin');
+  mkdirSync(workspace);
+  mkdirSync(bin);
+  writeFileSync(join(workspace, '.yarnrc.yml'), yarnConfiguration);
+  writeFileSync(join(bin, 'artifacts-npm-credprovider.cmd'), [
+    '@echo off',
+    'if "%PILOT_TEST_AUTH_MODE%"=="version" (echo synthetic-secret 1>&2& exit /b 7)',
+    'if "%1"=="--version" (echo 1.2.1& exit /b 0)',
+    'if not "%1"=="--validate-only" (type nul > "%~dp0acquired"& exit /b 0)',
+    'echo synthetic-secret 1>&2',
+    'if "%PILOT_TEST_AUTH_MODE%"=="validation" exit /b 23',
+    'echo need refresh',
+    'exit /b 0'
+  ].join('\r\n'));
+  const powershell = join(process.env.SystemRoot, 'System32',
+    'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  for (const [mode, reason, marker] of [
+    ['version', 'provider-version-mismatch', 'PILOT_AUTH_PROVIDER_VERSION'],
+    ['validation', 'credential-validation-failed', 'PILOT_AUTH_VALIDATION_FAILED'],
+    ['refresh', 'interactive-sign-in-required', 'PILOT_AUTH_INTERACTIVE_REQUIRED']
+  ]) for (const stage of ['authentication-check', 'authentication']) {
+    const result = spawnSync(powershell, [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      join(process.cwd(), 'scripts', 'validation', profileName)
+    ], {
+      cwd: workspace, encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`,
+        PILOT_TEST_AUTH_MODE: mode, PILOT_VALIDATION_STAGE: stage }
+    });
+    assert.equal(result.status, stage === 'authentication-check' ? 0 : 1,
+      `${mode}/${stage}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout + result.stderr, stage === 'authentication-check'
+      ? new RegExp(`"reason":"${reason}"`) : new RegExp(marker));
+    assert.doesNotMatch(result.stdout + result.stderr, /synthetic-secret/);
+    assert.equal(existsSync(join(bin, 'acquired')), false);
+  }
+});
+}

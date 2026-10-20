@@ -133,6 +133,60 @@ modes, file-size limits and exact assignment/round/base envelope bindings. Only
 approved source files are restored; the transport envelope is never copied into
 the final commit. Accepted or uncertain jobs are never automatically replaced.
 
+Each `agency-remote-authoring` ledger operation records controller-observed
+timing: submission latency, accumulated polling sleep and inspection time,
+inspection attempts, total elapsed time and at most 32 state transitions.
+Elapsed values use a monotonic clock; `startedAt` is a wall-clock timestamp.
+Progress is persisted after each successful inspection, and timing is retained
+on terminal failure or uncertain submission/inspection. Malformed responses
+after acceptance retain the recorded job ID and require reconciliation, not a
+replacement job.
+
+State transition offsets are sampled observations, not exact provider queue,
+runner initialization or model execution durations. Polling sleep overlaps
+remote execution; it is not time that can simply be removed from the total.
+`lastObservedAfterMs` continues advancing if the transition list is truncated.
+This instrumentation does not by itself change remote compute or improve speed.
+
+### Remote uncertainty and restart recovery
+
+`reconcile` includes Remote operations in `started`, `accepted` and `uncertain`
+states. After a Controller restart, use the original state directory and pinned
+provider configuration, not a new assignment:
+
+```powershell
+node src\cli.js reconcile --config pilot.local.json
+node src\cli.js reconcile-remote-authoring --assignment ID --round N --config pilot.local.json
+```
+
+The recovery command shares the assignment's dispatch lock. A crashed process
+may leave that lock behind: inspect its recorded owner and use the existing
+`recover-lock --name dispatch:ID --owner OWNER --config pilot.local.json`
+command, which checks that the original PID is gone. Never steal a live lock.
+Recovery performs exactly one `remote get` for the persisted original job ID;
+it has no create, retry, source-import, native-validation or publication path.
+The assignment remains blocked/running and cannot be redispatched. A terminal
+observation is not a completed evidence-to-PR pipeline; further source-bound
+continuation remains a separate explicitly authorized operation.
+
+Original timing evidence is retained unchanged. Separate monotonic
+`reconciliationTiming` records each query's duration, cumulative inspection
+time and attempt count; it does not invent elapsed time across a process gap.
+Raw CLI output, stderr and prompt contents are not persisted in timing evidence.
+Unrecognized provider state/classifier labels are recorded as `Unrecognized`.
+
+If accepting or updating a recovery receipt cannot be persisted, the command
+fails explicitly, reports the known job ID and forbids replacement submission.
+No durable identity guarantee is possible if the process dies after external
+acceptance but before the response/job ID is saved, or storage is unavailable.
+A reserved operation is **not** proof that no job was submitted. Its submission
+must be reconciled externally; automatic resubmission remains forbidden.
+
+This is observation and duplicate-submission protection, not a speedup or the
+preparation cancellation/native-reuse qualification tracked separately in #23.
+Historical `updatedAt` and scheduling eligibility fields do not provide a
+reliable queue/runner/model phase breakdown.
+
 ## Concurrent repository scheduling
 
 The Controller can launch several prepared assignments with `dispatch-ready`.

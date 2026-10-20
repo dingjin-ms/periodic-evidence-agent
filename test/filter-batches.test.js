@@ -194,7 +194,9 @@ function setup(t, count = 3, related = false, titles = null, canonicalCapture = 
     const e = evidenceEnvelope('ado', 'synthetic/issues', i + 1, '1',
       `https://example.invalid/issues/${i + 1}`, 'Synthetic query', '2026-10-09T01:00:00Z');
     e.source.provenance = provenance; e.title = titles ? titles[i] : i === 0 ? null : 'Functional issue';
-    e.fields = { description: `Complete original body ${i}`, missing: null };
+    e.sourceStatus = 'Resolved';
+    e.fields = { 'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
+      description: `Complete original body ${i}`, missing: null };
     if (related) e.fields.thread = { teamId: 'team', channelId: 'channel', rootId: 'root' };
     records.push(ledger.evidence(e, canonicalCapture
       ? { id: Number(e.source.recordId), rev: Number(e.source.revision), fields: e.fields, relations: e.links }
@@ -604,6 +606,36 @@ test('selected FILTER evidence prepares the real proposer assignment without a f
   assert.throws(() => prepareFilterProposerHandoff(
     s.config, ledger, input, { intent: 'defect-fix' }),
   /test-only and cannot become a defect-fix/);
+  const productFixes = ['https://example.invalid/product/pull/43', 'https://example.invalid/product/pull/42'];
+  reviewed.candidates[0].existingFixes = productFixes;
+  writeFileSync(resultPath, bytes(reviewed));
+  assert.throws(() => prepareFilterProposerHandoff(s.config, ledger, input), /Existing fix requires/);
+  input.routing.existingFixesReview = {
+    investigationId: preparedHandoff.investigation.id,
+    investigationVersion: preparedHandoff.investigation.version + 1,
+    evidenceIds: preparedHandoff.investigation.evidenceIds,
+    planId: preparedHandoff.testCoveragePlan.id, planVersion: preparedHandoff.testCoveragePlan.version + 1,
+    sourceRevision,
+    review: { method: s.config.reviewMethod, reviewer: 'synthetic-coverage-agent', reviewedAt: now() },
+    fixes: productFixes.map(url => ({ url, disposition: 'product-fix-with-remaining-coverage-gap',
+      rationale: 'The retained product fix does not include this source-bound regression assertion.' }))
+  };
+  assert.throws(() => prepareFilterProposerHandoff(s.config, ledger, input), /Prior assignment exists/);
+  const reviewedLedger = new Ledger(join(s.root, 'reconciled-target'));
+  s.cleanup.push(() => reviewedLedger.close());
+  reviewedLedger.qualify(skillQualificationId('target-repo', 'target-integration'),
+    ledger.qualification(skillQualificationId('target-repo', 'target-integration')));
+  input.routing.existingFixesReview.investigationVersion = 1;
+  input.routing.existingFixesReview.planVersion = 1;
+  const reconciled = prepareFilterProposerHandoff(s.config, reviewedLedger, input);
+  assert.deepEqual(reconciled.investigation.existingFixes, [...productFixes].sort());
+  assert.deepEqual(reconciled.testCoveragePlan.existingFixesReview, input.routing.existingFixesReview);
+  assert.equal(prepareFilterProposerHandoff(s.config, reviewedLedger, input).assignment.id, reconciled.assignment.id);
+  delete reviewed.candidates[0].existingFixes;
+  writeFileSync(resultPath, bytes(reviewed));
+  const withoutReview = structuredClone(input); delete withoutReview.routing.existingFixesReview;
+  assert.throws(() => prepareFilterProposerHandoff(s.config, reviewedLedger, withoutReview), /Existing fix requires/);
+  assert.deepEqual(reviewedLedger.get('investigation', reconciled.investigation.id).existingFixes, [...productFixes].sort());
   ledger.qualify(skillQualificationId('target-repo', 'target-integration'), {
     ...ledger.qualification(skillQualificationId('target-repo', 'target-integration')),
     baseRevision: 'c'.repeat(40)

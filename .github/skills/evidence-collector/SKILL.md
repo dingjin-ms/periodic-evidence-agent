@@ -90,6 +90,12 @@ An approved dry run stays collection-only in its isolated namespace.
    verifies delegated identity and scopes queries. A parser failure after
    receipt persistence calls for offline `app-ado-reconcile`, not another
    network collection. Do not merge changed-only counts into new-cohort counts.
+   Both lanes require state Resolved or Closed and
+   `Microsoft.VSTS.Common.ResolvedReason` Fixed or Duplicate. Missing/other
+   resolutions fail closed; `System.Reason` is not a fallback. Preserve the
+   approved area/subpaths, date windows, snapshots and limits. Retain duplicate
+   identities and canonical relations even when the linked bug is outside the
+   area, without extra source reads. Do not rewrite older receipts to match.
 6. Record unavailable IcM with `app-unavailable`; absence of an approved
    connector is unknown coverage, not zero incidents. Do not follow related
    evidence outside the approved depth/items/calls/scope. These helpers do not

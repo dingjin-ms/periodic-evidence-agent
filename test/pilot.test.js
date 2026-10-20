@@ -46,7 +46,8 @@ function setup(t) {
 function adoItem(id = 1, rev = 1) {
   return { id, rev, fields: {
     'System.Id': id, 'System.WorkItemType': 'Bug', 'System.Title': `Synthetic bug ${id}`,
-    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Active',
+    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
     'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z'
   } };
 }
@@ -562,7 +563,8 @@ test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   assert.match(wiql(window), /\[System.CreatedDate\]/);
   assert.match(wiql(window, 'changed'), /\[System.ChangedDate\]/);
   assert.ok(wiql(window).includes(`UNDER '${area}'`));
-  assert.match(wiql(window), /<> 'Removed'/);
+  assert.match(wiql(window), /\[System.State\] IN \('Resolved', 'Closed'\)/);
+  assert.match(wiql(window), /\[Microsoft.VSTS.Common.ResolvedReason\] IN \('Fixed', 'Duplicate'\)/);
   assert.doesNotMatch(wiql(window), /Bug Bash|Automation/);
   assert.throws(() => wiql({ start: '2026-10-08', end: window.end }));
 });
@@ -2402,7 +2404,7 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
 });
-test('planned OA skill path creates a source-bound validated draft result through the controller', async t => {
+test('planned OA skill path reconciles a landed product fix and creates a source-bound test-only draft result', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
@@ -2427,9 +2429,13 @@ test('planned OA skill path creates a source-bound validated draft result throug
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--quiet', '-m', 'Synthetic OA fixture']);
-  const evidence = addEvidence(ctx.ledger, 'oa-1', '1', { fixture: true }, 'authenticated-source');
+  const record = adoRecord(adoItem(1), 'Synthetic resolved coverage', now());
+  const productFix = 'https://example.invalid/product/pull/42';
+  record.links = [{ url: productFix, relation: 'ArtifactLink', evidenceId: null, access: 'not-followed-out-of-scope' }];
+  const evidence = ctx.ledger.evidence(record, { id: 1, rev: 1, fields: record.fields, relations: record.links }, 'fixture');
   const investigation = review(evidence);
   investigation.repoIds = [repo.id];
+  investigation.existingFixes = [productFix];
   investigation.observedBehavior = 'OA behavior lacks a focused integration regression test.';
   investigation.expectedBehavior = 'The established behavior is covered by a focused integration test.';
   ctx.ledger.put(investigation);
@@ -2452,13 +2458,25 @@ test('planned OA skill path creates a source-bound validated draft result throug
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  const plan = recordTestCoveragePlan(ctx.ledger, {
+  let plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
     searchStatus: 'complete', existingTests: [], coverageGaps: ['No focused regression test exists.'],
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });
+  assert.throws(() => makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id),
+    /Existing fix requires/);
+  plan = recordTestCoveragePlan(ctx.ledger, { ...plan, existingFixesReview: {
+    investigationId: investigation.id, investigationVersion: investigation.version,
+    evidenceIds: investigation.evidenceIds, planId: plan.id, planVersion: plan.version + 1,
+    sourceRevision: baseRevision,
+    review: { method: investigation.review.method, reviewer: 'synthetic-coverage-review', reviewedAt: now() },
+    fixes: [{ url: productFix, disposition: 'product-fix-with-remaining-coverage-gap',
+      rationale: 'The product implementation is fixed on this base, but the focused regression assertion is absent.' }]
+  } });
   const assignment = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id);
+  assert.deepEqual(ctx.ledger.get('investigation', investigation.id).existingFixes, [productFix]);
+  assert.equal(ctx.ledger.get('evidence', evidence.id).links[0].url, productFix);
   const rejected = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
     binding: repo.skillBindings[0],
     skillPath: repo.skillBindings[0].skillPath,

@@ -20,7 +20,7 @@ import {
   repositorySkillWriteFiles, repositorySkillWritePrefixes,
   resolveSkillBinding, skillQualificationId
 } from './repository-skills.js';
-import { requireEligibleImprovementInvestigation } from './review-decisions.js';
+import { requireEligibleImprovementInvestigation, requireExistingFixesReview } from './review-decisions.js';
 import {
   dependencyOutputFingerprint, outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
@@ -36,6 +36,7 @@ import {
 } from './validation-auth.js';
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
+import { requireAdoEvidenceCohort } from './ado-cohort.js';
 
 const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
@@ -105,12 +106,27 @@ export function repoFor(config, id) {
     Array.isArray(repo.validationGates), 'Repository write bounds and gates are required');
   return repo;
 }
+function requireTestCoverageAssignment(assignment, plan) {
+  requireThat(assignment.intent === 'improvement' && assignment.testCoveragePlanId &&
+    assignment.skillBindingId && assignment.skillQualification &&
+    ['integration-test-authoring', 'e2e-test-authoring', 'declarative-e2e-authoring'].includes(assignment.capability) &&
+    ['add-or-update-tests', 'add-declarative-e2e-tests'].includes(assignment.requestedOutcome) &&
+    assignment.allowedWritePrefixes?.length > 0,
+  'Terminal source evidence is eligible only for qualified, bounded test-coverage improvements', 'blocked-reconciliation');
+  requireThat(plan.searchStatus === 'complete' && plan.coverageGaps.length > 0 &&
+    plan.unknowns.length === 0 && ['coverage-gap', 'linked'].includes(plan.disposition),
+  'Resolved-bug coverage requires a complete source-bound coverage gap without unresolved questions',
+  'blocked-reconciliation');
+}
 export function makeAssignment(config, investigation, repoId, intent, plan = null) {
   validateRecord(investigation);
   const repo = repoFor(config, repoId);
   requireEligibleImprovementInvestigation(investigation);
-  requireThat(investigation.repoIds.includes(repoId) && investigation.existingFixes.length === 0,
-    'Ownership mismatch or existing fix requires reconciliation', 'blocked-reconciliation');
+  requireThat(investigation.repoIds.includes(repoId),
+    'Ownership mismatch requires reconciliation', 'blocked-reconciliation');
+  if (investigation.existingFixes.length)
+    requireThat(intent === 'improvement' && plan?.existingFixesReview,
+      'Existing fix requires a source-bound test-coverage reconciliation review', 'blocked-reconciliation');
   requireThat(['rca-only', 'defect-fix', 'improvement'].includes(intent), 'Invalid assignment intent');
   const edits = intent !== 'rca-only';
   if (edits) requireThat(repo.validationGates.length > 0, 'Code changes require configured validation gates');
@@ -162,6 +178,10 @@ export function makeAssignment(config, investigation, repoId, intent, plan = nul
     }
     assignment.acceptanceCriteria.push('Repository-native skill result is recorded for the exact base revision');
   }
+  if (investigation.existingFixes.length || plan?.existingFixesReview) {
+    requireTestCoverageAssignment(assignment, plan);
+    requireExistingFixesReview(investigation, plan);
+  }
   const assignmentIdentity = [
     investigation.id, investigation.version, repoId, intent,
     assignment.testCoveragePlanId ?? null, assignment.testCoveragePlanVersion ?? null,
@@ -203,6 +223,9 @@ export function makePlannedImprovementAssignment(config, ledger, investigation, 
   return makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
 }
 export function requireCurrentAssignment(config, ledger, investigation, assignment) {
+  requireThat(investigation && investigation.version === assignment.investigationVersion &&
+    ledger.get('investigation', investigation.id)?.version === investigation.version,
+  'Investigation was superseded before execution', 'blocked-reconciliation');
   if (assignment.testCoveragePlanId) {
     const latestPlan = ledger.get('testCoveragePlan', assignment.testCoveragePlanId);
     const latestImprovement = ledger.get('areaToImprove', assignment.improvementId);
@@ -216,6 +239,28 @@ export function requireCurrentAssignment(config, ledger, investigation, assignme
     : makeAssignment(config, investigation, assignment.repoId, assignment.intent);
   requireThat(json(rebuilt) === json(assignment),
     'Assignment inputs, plan or qualification changed after preparation', 'blocked-reconciliation');
+  const currentIds = new Set(ledger.latestEvidence().map(record => record.id));
+  const evidence = assignment.evidenceIds.map(id => ledger.get('evidence', id));
+  requireThat(evidence.every(record => record && currentIds.has(record.id) &&
+    ledger.trackedState(record)?.state !== 'reconciliation-required'),
+  'New source evidence or tracked eligibility requires reconciliation before execution', 'blocked-reconciliation');
+  const terminal = evidence.filter(record => ['Removed', 'Resolved', 'Closed'].includes(record.sourceStatus) ||
+    (record.source.kind === 'ado' && ['Removed', 'Resolved', 'Closed'].includes(record.fields['System.State'])));
+  const adoCoverage = assignment.testCoveragePlanId && evidence.some(record => record.source.kind === 'ado');
+  if (terminal.length || adoCoverage || investigation.existingFixes.length) {
+    const plan = assignment.testCoveragePlanId ? ledger.get('testCoveragePlan', assignment.testCoveragePlanId) : null;
+    requireTestCoverageAssignment(assignment, plan);
+    requireThat(terminal.every(record => record.source.kind === 'ado'),
+      'Terminal non-ADO evidence requires reconciliation before execution', 'blocked-reconciliation');
+    requireThat(evidence.some(record => record.source.kind === 'ado'),
+      'Existing product-fix reconciliation is limited to the ADO regression cohort', 'blocked-reconciliation');
+    evidence.forEach(requireAdoEvidenceCohort);
+    const improvement = ledger.get('areaToImprove', assignment.improvementId);
+    requireThat(improvement.category === 'missing-test-coverage' &&
+      assignment.evidenceIds.every(id => improvement.evidenceIds.includes(id)),
+    'Resolved-bug coverage requires a complete source-bound coverage gap without unresolved questions',
+    'blocked-reconciliation');
+  }
   return rebuilt;
 }
 async function fetchQualifiedRevision(config, workspace, repo, revision,
@@ -2960,10 +3005,6 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(permittedReviewedHandoff ||
     fixtureEvidence.every(e => e?.source.provenance !== 'synthetic'),
   'Synthetic evidence cannot launch a live worker');
-  requireThat(assignment.evidenceIds.every(id => {
-    const e = ledger.get('evidence', id);
-    return ledger.trackedState(e)?.state !== 'reconciliation-required' && !['Removed', 'Resolved', 'Closed'].includes(e.sourceStatus);
-  }), 'Tracked source eligibility changed or a fix is recorded; reconcile before dispatch', 'blocked-reconciliation');
   const investigation = ledger.get('investigation', assignment.investigationId);
   requireThat(investigation?.version === assignment.investigationVersion, 'Assignment evidence was superseded');
   requireCurrentAssignment(config, ledger, investigation, assignment);

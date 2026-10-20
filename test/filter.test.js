@@ -22,7 +22,9 @@ function setup(t, titles = ['Add copy-only punctuation', 'Voice Access freezes',
     const record = evidenceEnvelope('ado', 'synthetic/issues', i + 1, '1',
       `https://example.invalid/issues/${i + 1}`, 'Synthetic query', '2026-10-09T01:00:00Z');
     record.source.provenance = 'synthetic'; record.title = title;
-    record.fields = { description: `PRIVATE_DETAIL_${i}`, requiredProvenance: { original: true } };
+    record.sourceStatus = 'Resolved';
+    record.fields = { 'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
+      description: `PRIVATE_DETAIL_${i}`, requiredProvenance: { original: true } };
     return ledger.evidence(record, { description: `PRIVATE_CAPTURE_${i}`, original: true }, 'source:ado:created');
   });
   const ledgerPath = join(ledger.directory, 'ledger.sqlite'); ledger.close();

@@ -41,7 +41,57 @@ test('IcM complete diagnostic enumeration remains blocked for Source Created Tim
   assert.equal(r.identityVerified, true); assert.equal(r.enumeration, 'complete');
   assert.equal(r.state, 'blocked'); assert.equal(r.cohortCoverage, 'blocked');
   assert.equal(r.versions[0].sourceCreateTimePresent, false);
+  assert.equal(Object.hasOwn(r.versions[0], 'sourceCreateTime'), false);
   assert.equal(r.sourceCallsByHelper, 0); assert.equal(r.cursorAdvanced, false);
+});
+test('IcM incident-created mode preserves UTC fractions and inclusive/exclusive boundaries', () => {
+  for (const date of ['2026-10-08T00:00:00Z', '2026-10-08T01:00:00.6Z',
+    '2026-10-08T01:00:00.79Z', '2026-10-08T01:00:00.413Z', '2026-10-08T23:59:59.999Z']) {
+    const b = fixture(); b.mapping.timestampContract = 'incident-created';
+    const r = replayIcm(page(b, [{ ...row(), createdDate: date }]), identity);
+    assert.equal(r.state, 'complete'); assert.equal(r.versions[0].createdDate, date);
+    assert.equal(r.timestampBlocker, undefined); assert.equal(r.liveActivation, 'blocked');
+  }
+  for (const date of [undefined, null, '', 'not-a-date', '2026-10-08T01:00:00',
+    '2026-10-07T23:59:59.999Z', '2026-10-09T00:00:00Z']) {
+    const b = fixture(); b.mapping.timestampContract = 'incident-created';
+    const r = replayIcm(page(b, [{ ...row(), createdDate: date, sourceCreateTime: b.window.start }]), identity);
+    assert.equal(r.state, 'blocked'); assert.equal(r.versions.length, 0);
+    assert.equal(r.nextRequest, null);
+  }
+});
+test('IcM preserves absent, null and differing optional source timestamp without substituting it', () => {
+  const b = fixture(); b.mapping.timestampContract = 'incident-created';
+  const r = replayIcm(page(b, [row(), { ...row(43), sourceCreateTime: null },
+    { ...row(44), sourceCreateTime: '2026-01-01T00:00:00.79Z' }]), identity);
+  assert.equal(r.state, 'complete');
+  assert.equal(Object.hasOwn(r.versions[0], 'sourceCreateTime'), false);
+  assert.equal(r.versions[1].sourceCreateTimePresent, true);
+  assert.equal(r.versions[1].sourceCreateTime, null);
+  assert.equal(r.versions[2].sourceCreateTime, '2026-01-01T00:00:00.79Z');
+});
+test('IcM exact item cap stops before another page and optional count stays unknown', () => {
+  const b = page(fixture(), [row()], 'next'); b.limits.maxItems = 1;
+  b.mapping.timestampContract = 'incident-created';
+  b.calls[1].response.structuredContent['@odata.count'] = null;
+  const r = replayIcm(b, identity);
+  assert.equal(r.state, 'partial'); assert.equal(r.nextRequest, null);
+  assert.equal(r.pendingRequest.arguments.incidentAdvancedSearchRequest.nextPageToken, 'next');
+  assert.deepEqual(r.reportedTotals, [null]); assert.equal(r.remainingSourceRecords, null);
+});
+test('IcM call admission and verified team/severity reject widening or excess receipts', () => {
+  for (const mutate of [
+    b => { b.mapping.severity = [0, 1, 2, 25]; },
+    b => { b.mapping.teamVerified = false; },
+    b => { b.mapping.severityVerified = false; },
+    b => { b.mapping.owningTeamId = null; },
+    b => { b.limits.maxCalls = 1; }
+  ]) {
+    const b = page(fixture(), [row()]); mutate(b);
+    assert.throws(() => replayIcm(b, identity));
+  }
+  const b = page(fixture(), [{ ...row(), owningTeamId: 124 }]);
+  assert.equal(replayIcm(b, identity).enumeration, 'blocked');
 });
 test('IcM pages dedupe exact payloads, retain revisions, count all examined rows', () => {
   const b = page(fixture(), [row()], 'page2');

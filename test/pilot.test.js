@@ -707,6 +707,21 @@ test('IcM has an explicit unverified-query/connector blocker', async t => {
   config.sources.icm.scopeApproved = true; config.sources.icm.filtersVerified = true;
   await assert.rejects(collectIcm(config, config.window, async () => {}), /No supported authenticated/);
 });
+test('IcM incident-created selection is opt-in and cannot reuse the saved-query export adapter', async t => {
+  const { config, root } = setup(t);
+  assert.equal(config.sources.icm.timestampContract, null);
+  const file = join(root, 'icm-config.json');
+  delete config.sources.icm.timestampContract;
+  writeFileSync(file, json(config));
+  assert.equal(configAt(file).sources.icm.timestampContract, undefined);
+  config.sources.icm.timestampContract = 'incident-created';
+  writeFileSync(file, json(config));
+  assert.equal(configAt(file).sources.icm.timestampContract, 'incident-created');
+  await assert.rejects(collectIcm(config, config.window, async () => {}), /use app-append/);
+  config.sources.icm.timestampContract = 'sourceCreateTime';
+  writeFileSync(file, json(config));
+  assert.throws(() => configAt(file), /timestampContract/);
+});
 test('IcM owner export cannot masquerade as authenticated collection', async t => {
   const { config, root } = setup(t);
   const record = evidenceEnvelope('icm', 'icm/query/599514', 1, null, 'https://portal.microsofticm.com/imp/v5/incidents/details/1', '599514');

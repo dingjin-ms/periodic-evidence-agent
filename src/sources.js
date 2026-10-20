@@ -271,6 +271,8 @@ export async function collectWorkiq(config, window, emit, retrieve = null, lane 
 }
 export async function collectIcm(config, window, emit) {
   const source = config.sources.icm;
+  requireThat(source.timestampContract == null,
+    'Incident-created IcM receipts use app-append; owner exports remain saved-query only', 'blocked-source');
   requireThat(source.scopeApproved && source.filtersVerified && source.queryId === '599514',
     'IcM query 599514 filters and scope are not verified', 'blocked-source');
   requireThat(source.ownerExport, 'No supported authenticated IcM connector is configured; supply an approved owner export', 'blocked-source');

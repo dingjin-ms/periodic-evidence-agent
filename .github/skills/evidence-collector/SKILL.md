@@ -90,6 +90,12 @@ An approved dry run stays collection-only in its isolated namespace.
    verifies delegated identity and scopes queries. A parser failure after
    receipt persistence calls for offline `app-ado-reconcile`, not another
    network collection. Do not merge changed-only counts into new-cohort counts.
+   An over-cap WIQL response hydrates only the permitted ID prefix, then remains
+   partial without a completion cursor. Returned IDs are metadata, not reviewed
+   bodies: examined counts reflect retained valid records, and duplicate ID
+   references are reported separately. A pending bounded detail request is not
+   evidence until its actual response is admitted; never fetch omitted IDs
+   automatically or extend the original budget.
 6. Record unavailable IcM with `app-unavailable`; absence of an approved
    connector is unknown coverage, not zero incidents. Do not follow related
    evidence outside the approved depth/items/calls/scope. These helpers do not

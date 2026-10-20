@@ -236,11 +236,14 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   'Inherited checkpoint no longer reconstructs the recorded examination offset', 'blocked-reconciliation');
   const returned = pass.startsWith('workiq')
     ? Math.max(stats.returned, continuation?.returnedRecords ?? 0)
-    : calls.reduce((n, c) => n + (c.response?.workItems?.length ?? 0), 0);
+    : calls.reduce((n, c) => n + (Array.isArray(c.response?.workItems) ? c.response.workItems.length : 0), 0);
+  const adoReturnedIds = new Set(pass.startsWith('ado')
+    ? calls.flatMap(c => Array.isArray(c.response?.workItems) ? c.response.workItems.map(item => item?.id) : []) : []);
+  const adoRetainedIds = new Set(evidence.map(({ record }) => Number(record.source.recordId)));
   requireThat(currentCalls.length <= run.limits.maxCalls, 'Imported responses exceed approved read-call limit', 'blocked-budget');
   const examined = pass.startsWith('workiq')
-    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : Math.min(returned, run.limits.maxItems);
-  if (identityVerified && returned > local.limits.maxItems) {
+    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : evidence.length;
+  if (pass.startsWith('workiq') && identityVerified && returned > local.limits.maxItems) {
     state = 'partial'; cursor = null; nextRequest = null;
     budgetStop = true;
     error = { code: 'partial', message: 'Response exceeds remaining examined-item budget; extra returned records are unexamined' };
@@ -249,7 +252,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   return { evidence, contexts, result: { pass, state, error, cursor, nextRequest: error?.code === 'awaiting-receipt' ? nextRequest : null,
     readCalls: currentCalls.length, examinedRecords: examined - inheritedExamined, evidenceCount: evidence.length,
     returnedRecords: returned - (continuation?.returnedRecords ?? 0),
-    ...(!pass.startsWith('workiq') ? { returnedRecords: returned } : {
+    ...(!pass.startsWith('workiq') ? { returnedRecords: returned,
+      duplicateReturnedIds: returned - adoReturnedIds.size, examinationBasis: 'hydrated-valid-records' } : {
       cumulativeReturnedRecords: returned, cumulativeExaminedRecords: examined,
       inheritedReadCalls: inherited.length, inheritedExaminedRecords: inheritedExamined,
       inheritedBufferedRecords: continuation ? continuation.returnedRecords - inheritedExamined : 0,
@@ -263,7 +267,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
       limitations: ['No historical snapshot or complete edit history', 'No delta/watermark optimization established',
         'Coverage requires all roots and replies, including older roots', 'Absence is not a deletion signal']
     }),
-    unexaminedReturnedRecords: returned - examined,
+    unexaminedReturnedRecords: pass.startsWith('workiq') ? returned - examined
+      : [...adoReturnedIds].filter(id => !adoRetainedIds.has(id)).length,
     provenance: run.provenance === 'synthetic' ? 'synthetic' : directWorkiqVerified ? 'workiq-cli-verified' : directAdoVerified ? 'authenticated-source' : 'app-tool-reported',
     execution: directWorkiqVerified ? 'local-workiq-cli-stdio' : directAdoVerified ? 'delegated-source-adapter' : 'external-app-tool',
     identityVerification: directWorkiqVerified ? 'cli-fetch-verified-object-id-and-UPN' : directAdoVerified ? 'adapter-verified-tenant-and-object-id; UPN is configured binding' : 'validated-app-reported-principal',

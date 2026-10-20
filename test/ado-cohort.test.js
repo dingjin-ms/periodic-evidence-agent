@@ -84,7 +84,7 @@ test('both ADO lanes accept exactly all four state/resolution combinations and p
     assert.doesNotMatch(query, /System.Reason/);
     assert.deepEqual(records.map(record => [record.sourceStatus, record.fields[adoResolutionField]]), accepted);
   }
-  const template = JSON.parse(readFileSync('scaffold\\configuration.template.json', 'utf8'));
+  const template = JSON.parse(readFileSync('scaffold/configuration.template.json', 'utf8'));
   assert.ok(json(template).includes(json(wiql(config.window)
     .replace(config.window.start, '<START_UTC>').replace(config.window.end, '<END_UTC_EXCLUSIVE>'))));
 });

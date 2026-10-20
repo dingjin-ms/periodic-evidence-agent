@@ -49,6 +49,30 @@ disable TLS verification or copy another user's npm credentials.
 
 ## Devbox repository setup
 
+An isolated validation-preparation preflight can inspect an already authored,
+sealed blocked declarative assignment without collection, authoring, browser
+execution, publication or ledger mutation:
+
+```powershell
+node scripts\validation\preflight.mjs --config pilot.local.json --assignment <existing-id> --output <fresh-receipt.json> --workspace <fresh-absolute-path>
+```
+
+The receipt persists each preparation phase, exact source/profile/controller
+hashes, dependency byte verification and native loading, typecheck and case
+selection. Optional repeated `--sparse-path <directory>` arguments evaluate a
+bounded checkout closure; they do not change the formal live configuration.
+Preflight retains its detached worktree and evidence for inspection, and cannot
+count toward the five native product passes or authorize publication. Git objects
+are shared, while the validation worktree has its own HEAD/index and independently
+copied, link-rebased dependency outputs. Windows preparation commands use the
+owned Job Object boundary and confirm process-tree exit before cleanup; failures
+retain the primary preparation phase separately from cleanup failures.
+To reverify a completed preflight without recopying outputs, supply its receipt
+with `--prepared-receipt <previous-receipt.json>`, the same `--workspace` and a
+fresh `--output`. This rereads source and isolated dependency bytes, checks the
+unchanged sealed assignment, and reruns native preparation checks; no previous
+pass or byte hash is trusted without revalidation.
+
 This optional full product-development setup is not a prerequisite for the
 local controller's existing-Agency FILTER path. Account-free pilot checks above
 need no product checkout. Configure product repositories only for authorized
@@ -762,6 +786,22 @@ later test-only repair uses the existing bounds and a fresh external owner revie
 Large ordinary dependency trees are partitioned into bounded fingerprint tasks
 while reconstructing the identical canonical content digest; no hash checks or
 per-task timeout are removed.
+
+The same entrypoint also accepts `kind: "native-preparation-verified"` after
+standalone real preparation acceptance. This is stage-based admission, not a
+new error-message-specific exception: the sealed immediate predecessor must
+have no model, native output or publication activity. The pinned preflight
+must cover that exact assignment/result/ledger, approved source and profile,
+current Controller bytes, clean detached workspace, dependency byte equality,
+typed native loading, exact case selection and typecheck. Authorization retains
+the original grant and pins the new Controller/configuration. Both ledgers
+reserve an attempt-specific claim and recursively retain earlier reservations.
+Only state placement may change. Dispatch rechecks the accepted workspace and
+both dependency byte fingerprints before using the unchanged five-pass runner;
+it disables missing-dependency installation for this verified seed. The accepted
+workspace is never an authoring checkout. Native failure cannot use this
+preparation-only admission. Windows dependency copying batches at most fifty
+roots per contained command without extending the thirty-minute deadline.
 
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,

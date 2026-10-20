@@ -1397,6 +1397,46 @@ test('post-run inspection failures preserve runner diagnostics in blocked eviden
   assert.equal(artifact.output.stderr, 'runner stderr');
   assert.match(artifact.output.inspectionError, /Operation failed/);
 });
+test('validation retains its primary timeout when cleanup also fails', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'timeout-cleanup', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => { throw Object.assign(new Error('synthetic timeout'),
+      { killed: true, ownedProcessesExited: true, stdout: '', stderr: '' }); },
+    () => { throw new Error('synthetic cleanup failure'); });
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.notEqual(result[0].blockedReason, 'validation-cleanup-failed');
+  assert.equal(artifact.output.primaryBlockedReason, result[0].blockedReason);
+  assert.equal(artifact.output.timeout, true);
+  assert.ok(artifact.output.cleanupError);
+});
+test('unconfirmed native process exit retains the workspace without inspection or cleanup', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'containment', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  let cleanupCalls = 0, retained;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (_executable, _args, cwd) => {
+      retained = cwd;
+      rmSync(join(cwd, '.git'), { recursive: true, force: true });
+      throw Object.assign(new Error('synthetic containment failure'),
+        { killed: true, containmentFailure: true, stdout: '', stderr: '' });
+    }, () => { cleanupCalls++; });
+  assert.equal(result[0].blockedReason, 'process-tree-exit-unconfirmed');
+  assert.equal(cleanupCalls, 0);
+  assert(existsSync(retained));
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.deepEqual(artifact.output.residualPaths, [retained]);
+});
 test('test-only repair reuses dependency and compile receipts with phase telemetry', async t => {
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,

@@ -5,7 +5,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  readFileSync, writeFileSync, mkdirSync, existsSync, statSync, lstatSync,
+  readFileSync, writeFileSync, mkdirSync, existsSync, statSync, lstatSync, realpathSync,
   readdirSync, readlinkSync, symlinkSync, copyFileSync, rmSync, renameSync, watch
 } from 'node:fs';
 import { rm as removeAsync } from 'node:fs/promises';
@@ -36,6 +36,9 @@ import {
   parseValidationAuthPreflight, validationAuthAction
 } from './validation-auth.js';
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
+import { prepareValidationWorkspace, removeValidationWorktree,
+  preparationFailure as workspacePreparationFailure, preparationStage,
+  preparationGit, requireCleanRevision } from './validation-workspace.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
 import {
   declarativeGate, declarativeProfile, declarativeRegistrationFiles, declarativeRequest,
@@ -657,7 +660,9 @@ async function executeValidation(gate, args, workspace, stage, execute,
     throw Object.assign(safe, {
       code: typeof error.code === 'string' ? redact(error.code) : error.code,
       killed: Boolean(error.killed),
-      stdout: redact(error.stdout), stderr: redact(error.stderr)
+      stdout: redact(error.stdout), stderr: redact(error.stderr),
+      containmentFailure: error.containmentFailure === true,
+      ownedProcessesExited: error.ownedProcessesExited === true
     });
   } finally {
     delete env.YARN_NPM_AUTH_TOKEN;
@@ -1304,6 +1309,7 @@ function materializeSnapshotPath(sourceRoot, targetRoot, path) {
     materializeSnapshotPath(sourceRoot, targetRoot, join(path, name));
 }
 async function materializeDependencySnapshot(snapshot, workspace, paths, timeoutMs, deadline = null) {
+  const directories = [];
   for (const path of paths) {
     const remaining = deadline === null ? timeoutMs : Math.min(timeoutMs, deadline - Date.now());
     requireThat(remaining > 0, 'Dependency snapshot copy exceeded its bounded deadline',
@@ -1316,13 +1322,36 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
       materializeSnapshotPath(snapshot, workspace, path);
       continue;
     }
-    mkdirSync(target, { recursive: true });
+    directories.push(path);
+  }
+  for (let index = 0; index < directories.length; index += 50) {
+    const batch = directories.slice(index, index + 50);
+    const remaining = deadline === null ? timeoutMs : Math.min(timeoutMs, deadline - Date.now());
+    requireThat(remaining > 0, 'Dependency snapshot copy exceeded its bounded deadline',
+      'blocked-validation');
     try {
-      await command('robocopy', [source, target, '/MIR', '/SL', '/SJ', '/MT:32',
-        '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], workspace, remaining);
+      const output = await nativeCommand(process.execPath,
+        [fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url))],
+        workspace, remaining, {
+          ...minimalEnvironment(),
+          PILOT_DEPENDENCY_COPY: json({ snapshot, workspace, paths: batch,
+            deadline: deadline ?? Date.now() + remaining })
+        });
+      requireThat(output.stdout.trim() ===
+        `PILOT_DEPENDENCY_COPY:${json({ completedPaths: batch.length })}`,
+      'Dependency snapshot copy did not confirm its complete batch', 'blocked-validation');
     } catch (error) {
-      requireThat(Number.isInteger(error.code) && error.code >= 0 && error.code < 8,
-        `Dependency snapshot copy failed for ${path}`, 'blocked-validation');
+      const lines = String(error.stdout ?? '').split(/\r?\n/).filter(line =>
+        line.startsWith('PILOT_DEPENDENCY_COPY_FAILURE:'));
+      const failure = lines.length === 1
+        ? JSON.parse(lines[0].slice('PILOT_DEPENDENCY_COPY_FAILURE:'.length)) : null;
+      throw Object.assign(new PilotError('blocked-validation',
+        'Dependency snapshot directory batch failed'), {
+        nativeExitCode: failure?.nativeExitCode ?? error.code,
+        killed: error.killed === true || failure?.timeout === true,
+        containmentFailure: error.containmentFailure,
+        ownedProcessesExited: error.ownedProcessesExited
+      });
     }
   }
   for (const path of paths) {
@@ -1353,22 +1382,26 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
     rewriteLinks(source, path);
   }
 }
-export async function seedDeclarativeDependencies(source, workspace, revision, timeoutMs) {
-  const paths = (await git(source,
+export async function seedDeclarativeDependencies(source, workspace, revision, timeoutMs,
+  { expectedSeed = null, timings = [], persist = () => {} } = {}) {
+  const stage = (id, operation) => preparationStage(timings, id, operation, persist);
+  const seedGit = (cwd, args) => preparationGit(cwd, args, Math.min(timeoutMs, defaultGitTimeoutMs));
+  const paths = (await seedGit(source,
     ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
     .split(/\r?\n/).filter(Boolean).map(path => path.replace(/\/$/, ''))
     .filter(path => path.startsWith('ooui/') && (path === 'ooui/.store' ||
       /(^|\/)node_modules$/.test(path) || /(^|\/)(lib|dist|out)(\/|$)/.test(path))).sort();
   if (!paths.length) return null;
-  requireThat(paths.length <= 2048 && paths.every(path => !existsSync(join(workspace, path))),
+  requireThat(paths.length <= 2048 && (expectedSeed ||
+    paths.every(path => !existsSync(join(workspace, path)))),
     'Declarative dependency seed overlaps clone files or exceeds its path bound', 'blocked-validation');
   requireThat(
-    await git(source, ['rev-parse', 'HEAD']) === revision &&
-    !await git(source, ['status', '--porcelain']),
+    await seedGit(source, ['rev-parse', 'HEAD']) === revision &&
+    !await seedGit(source, ['status', '--porcelain']),
   'Declarative dependency seed source must be clean at the exact final revision', 'blocked-validation');
   requireThat(
-    await git(workspace, ['rev-parse', 'HEAD']) === revision &&
-    !await git(workspace, ['status', '--porcelain']),
+    await seedGit(workspace, ['rev-parse', 'HEAD']) === revision &&
+    !await seedGit(workspace, ['status', '--porcelain']),
   'Declarative dependency seed clone must be clean at the exact final revision',
   'blocked-validation');
   const fingerprintPaths = paths.flatMap(path => path === 'ooui/.store'
@@ -1376,19 +1409,29 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
     : [path]);
   requireThat(fingerprintPaths.length <= 20000, 'Declarative dependency seed is too large',
     'blocked-validation');
-  const sha256 = await outputFingerprint(source, fingerprintPaths);
+  const sha256 = await stage('dependency-source-fingerprint',
+    () => outputFingerprint(source, fingerprintPaths));
   requireThat(sha256, 'Declarative dependency seed has missing or unsafe outputs',
     'blocked-validation');
-  await materializeDependencySnapshot(source, workspace, paths, timeoutMs,
-    Date.now() + Math.min(timeoutMs, 30 * 60 * 1000));
-  const [retained, copied] = await Promise.all([
+  if (expectedSeed) {
+    requireThat(expectedSeed.format === 'declarative-dependency-seed-v1' &&
+      expectedSeed.sourceRevision === revision && expectedSeed.sha256 === sha256 &&
+      json(expectedSeed.paths) === json(paths),
+    'Prepared dependency receipt does not match the current exact source bytes',
+    'blocked-validation');
+  } else {
+    await stage('dependency-copy', () =>
+      materializeDependencySnapshot(source, workspace, paths, timeoutMs,
+        Date.now() + Math.min(timeoutMs, 30 * 60 * 1000)));
+  }
+  const [retained, copied] = await stage('dependency-byte-verification', () => Promise.all([
     outputFingerprint(source, fingerprintPaths), outputFingerprint(workspace, fingerprintPaths)
-  ]);
+  ]));
   requireThat(retained === sha256 && copied === sha256 &&
-    await git(source, ['rev-parse', 'HEAD']) === revision &&
-    !await git(source, ['status', '--porcelain']) &&
-    await git(workspace, ['rev-parse', 'HEAD']) === revision &&
-    !await git(workspace, ['status', '--porcelain']),
+    await seedGit(source, ['rev-parse', 'HEAD']) === revision &&
+    !await seedGit(source, ['status', '--porcelain']) &&
+    await seedGit(workspace, ['rev-parse', 'HEAD']) === revision &&
+    !await seedGit(workspace, ['status', '--porcelain']),
   'Declarative dependency seed changed source, tracked files or copied output bytes',
   'blocked-validation');
   return { format: 'declarative-dependency-seed-v1', sourceRevision: revision, paths, sha256 };
@@ -2402,7 +2445,27 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const id = `${job.id}:validation:${gate.id}:${revision}:attempt:${attempt}`;
       const validationRoot = join(config.stateDirectory, 'validation-workspaces');
-      const validationWorkspace = join(validationRoot, hash(id));
+      const preflightRef = declarative ? prepared?.[gate.id]?.preflight : null;
+      let preflight = null;
+      if (preflightRef) {
+        const bytes = readFileSync(preflightRef.path);
+        requireThat(hash(bytes) === preflightRef.sha256,
+          'Prepared validation evidence changed', 'blocked-reconciliation');
+        const proof = JSON.parse(bytes);
+        if (proof.sourceRevision === revision) {
+          requireThat(proof.format === 'validation-preflight-v1' && proof.status === 'passed' &&
+            proof.profileSha256 === gate.profileSha256 &&
+            proof.preparation?.strategy === 'detached-worktree' &&
+            proof.preparation.workspace === proof.workspace &&
+            proof.preparation.dependencySeed?.sourceRevision === revision &&
+            isAbsolute(proof.workspace) &&
+            realpathSync(proof.workspace) !== realpathSync(job.workspace),
+          'Prepared validation requires its exact isolated acceptance workspace',
+          'blocked-reconciliation');
+          preflight = proof;
+        }
+      }
+      const validationWorkspace = preflight?.workspace ?? join(validationRoot, hash(id));
       const privateProfile = profile
         ? join(config.stateDirectory, 'validation-profiles',
           `${hash(id)}${extname(profile.path)}`)
@@ -2414,7 +2477,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       const request = declarative ? declarativeRequest(gate,
         ledger.get('assignment', job.id), job, revision, skillExecution,
         join(config.stateDirectory, 'native-validation', hash(id))) : null;
-      requireThat(!existsSync(validationWorkspace),
+      requireThat(preflight || !existsSync(validationWorkspace),
         `Validation attempt workspace already exists for ${gate.id}`, 'blocked-reconciliation');
       mkdirSync(validationRoot, { recursive: true });
       commandOrRunUrl = json([gate.executable, ...args]);
@@ -2426,19 +2489,39 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       let output = {};
       blockedReason = null;
       let cleanupError = null;
+      let unsafeCleanup = false;
+      const preparationTimings = [];
       const residualPaths = [];
       try {
         const timeout = repo.provisionTimeoutMs ?? defaultGitTimeoutMs;
-        await git(validationRoot,
-          ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, validationWorkspace],
-          process.env, timeout);
-        await configureSparseCheckout(validationWorkspace, repo, timeout);
-        await git(validationWorkspace, ['checkout', '--detach', revision],
-          checkoutEnvironment(), timeout);
-        await hydrateValidationLfs(config, repo, gate, validationWorkspace, revision);
-        const dependencySeed = declarative
-          ? await seedDeclarativeDependencies(job.workspace, validationWorkspace, revision, gate.timeoutMs)
-          : null;
+        let dependencySeed = null;
+        if (preflight) {
+          await preparationStage(preparationTimings, 'prepared-head-clean',
+            () => requireCleanRevision(validationWorkspace, revision, timeout));
+          dependencySeed = await seedDeclarativeDependencies(job.workspace, validationWorkspace,
+            revision, gate.timeoutMs, {
+              expectedSeed: preflight.preparation.dependencySeed, timings: preparationTimings
+            });
+        } else if (declarative) {
+          const preparation = await prepareValidationWorkspace({
+            source: job.workspace, workspace: validationWorkspace, revision, timeoutMs: timeout,
+            sparseCheckoutPaths: repo.sparseCheckoutPaths ?? [], timings: preparationTimings,
+            hydrate: () => hydrateValidationLfs(config, repo, gate, validationWorkspace, revision),
+            seed: (source, workspace) =>
+              seedDeclarativeDependencies(source, workspace, revision, gate.timeoutMs,
+                { timings: preparationTimings })
+          });
+          dependencySeed = preparation.dependencySeed;
+        } else {
+          await preparationStage(preparationTimings, 'clone', () => git(validationRoot,
+            ['clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, validationWorkspace],
+            process.env, timeout));
+          await configureSparseCheckout(validationWorkspace, repo, timeout);
+          await git(validationWorkspace, ['checkout', '--detach', revision],
+            checkoutEnvironment(), timeout);
+          await hydrateValidationLfs(config, repo, gate, validationWorkspace, revision);
+        }
+        if (request && dependencySeed) request.options.installDependencies = false;
         if (privateProfile) {
           mkdirSync(dirname(privateProfile), { recursive: true });
           writeFileSync(privateProfile, profile.bytes, { mode: 0o600 });
@@ -2472,12 +2555,24 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           status = failure.status;
           blockedReason = failure.blockedReason;
           output = failure.output;
+          if (error.containmentFailure) {
+            unsafeCleanup = true;
+            status = 'blocked';
+            blockedReason = 'process-tree-exit-unconfirmed';
+          }
         } finally {
           if (diagnostics) output.unitDiagnostics = diagnostics.finish();
         }
+        if (unsafeCleanup)
+          throw Object.assign(new PilotError('blocked-validation',
+            'Runner process-tree exit was not confirmed; workspace retained without inspection'),
+          { containmentFailure: true });
         const actualHead = await git(validationWorkspace, ['rev-parse', 'HEAD']);
         const dirty = await git(validationWorkspace, ['status', '--porcelain']);
-        if (actualHead !== revision || dirty) {
+        const sourceChanged = declarative &&
+          (await git(job.workspace, ['rev-parse', 'HEAD']) !== revision ||
+            Boolean(await git(job.workspace, ['status', '--porcelain'])));
+        if (actualHead !== revision || dirty || sourceChanged) {
           status = 'blocked';
           blockedReason = 'runner-mutated-source';
           output.sourceChanged = true;
@@ -2491,16 +2586,28 @@ export async function runValidation(config, ledger, job, repo, revision, execute
         }
       } catch (error) {
         status = 'blocked';
-        blockedReason = 'validation-workspace-unavailable';
+        blockedReason = error.containmentFailure
+          ? 'process-tree-exit-unconfirmed' : 'validation-workspace-unavailable';
+        unsafeCleanup ||= error.containmentFailure === true;
         output = Object.keys(output).length > 0
           ? { ...output, inspectionError: safeError(error).message }
           : {
             stdout: '', stderr: safeError(error).message,
             exitCode: null, timeout: false
           };
+        output.preparationFailure = {
+          stage: error.preparationStage ?? 'inspection',
+          ...workspacePreparationFailure(error)
+        };
       } finally {
         for (const target of [validationWorkspace, privateProfile].filter(Boolean)) {
-          try { cleanup(target, { recursive: true, force: true }); }
+          if (unsafeCleanup) { residualPaths.push(target); continue; }
+          try {
+            if (declarative && target === validationWorkspace && existsSync(target))
+              await removeValidationWorktree(job.workspace, target,
+                repo.provisionTimeoutMs ?? defaultGitTimeoutMs);
+            else cleanup(target, { recursive: true, force: true });
+          }
           catch (error) {
             cleanupError ??= safeError(error).message;
             residualPaths.push(target);
@@ -2509,14 +2616,16 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       }
       if (cleanupError) {
         status = 'blocked';
-        blockedReason = 'validation-cleanup-failed';
+        output.primaryBlockedReason = blockedReason;
+        blockedReason ??= 'validation-cleanup-failed';
         output.cleanupError = cleanupError;
         output.residualPaths = residualPaths;
       }
+      if (unsafeCleanup) output.residualPaths = residualPaths;
       artifact = persistRunArtifact(config, job.id, join('validation', `${hash(id)}.json`), json({
         gateId: gate.id, revision, attempt, status, blockedReason,
         executable: gate.executable, args, profileSha256: profile?.sha256 ?? null,
-        output, observedAt: now()
+        preparationTimings, output, observedAt: now()
       })).path;
       artifactRefs.push(artifact);
       ledger.finishOperation(id, status, {
@@ -3010,6 +3119,14 @@ export async function verifyPreservedChange(config, assignment, job, result, pro
   return files.map(path => ({ path, sha256: hash(readFileSync(boundedPath(job.workspace, path))) }));
 }
 export function verifyContinuationPredecessor(continuation, operationId, nextAttemptId) {
+  if (continuation.preparationRecovery) {
+    const recovery = continuation.preparationRecovery;
+    verifyContinuationPredecessor(recovery, operationId, nextAttemptId);
+    const previous = recovery.operations.find(row => row.kind === 'continued-from-validation-failure');
+    verifyContinuationPredecessor(recovery.originalContinuation, previous.id,
+      recovery.priorJob.session_id);
+    return;
+  }
   if (continuation.nativePreparationDispatchFailure) {
     const recovery = continuation.nativePreparationDispatchFailure;
     verifyContinuationPredecessor(recovery, operationId, nextAttemptId);
@@ -3386,6 +3503,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           await workspaceChanges(current.workspace, current.base_revision),
           proposal.skillExecution);
       preparedValidation ??= await preparationPromise;
+      if (continuation?.preparationRecovery)
+        preparedValidation = { ...preparedValidation,
+          [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } };
       finalValidation = await (dependencies.runValidation ?? runValidation)(
         config, ledger, current, repo, revision, command, removeValidationPath,
         preparedValidation, proposal.skillExecution ?? null);

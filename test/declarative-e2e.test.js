@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync,
   realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +16,7 @@ import {
   command, finalizeDeclarativeSkill, rebindDeclarativeRegistration, runValidation,
   seedDeclarativeDependencies
 } from '../src/workers.js';
+import { prepareValidationWorkspace } from '../src/validation-workspace.js';
 
 const require = createRequire(import.meta.url);
 const native = require('../scripts/validation/1js-declarative-e2e.cjs');
@@ -44,6 +46,58 @@ function documents() {
   return [catalog, structuredClone(catalog), { schemaVersion: 1, cases: [] }, { scripts: {} }];
 }
 const policy = { approved: true, priority: 'P1' };
+
+for (const failure of [false, true]) {
+  test(`standalone native preflight ${failure ? 'stops with sanitized typecheck evidence' :
+    'loads and selects before existing checks without executing cases'}`, () => {
+    const calls = [], lines = [];
+    const request = { options: { installDependencies: false, yarnEntryPoint: 'synthetic-yarn.cjs' } };
+    const runtime = {
+      execPath: process.execPath, cwd: () => process.cwd(),
+      env: { PILOT_DECLARATIVE_REQUEST: json(request), EXCELAGENT_CDP_ENDPOINT: 'synthetic-browser' }
+    };
+    const profile = {
+      APP: native.APP,
+      validateRequest: value => value,
+      nativeApi: () => {
+        calls.push('load');
+        assert.equal(runtime.env.EXCELAGENT_CDP_ENDPOINT, undefined);
+        return { loader: { loadExcelAgentExecutionSelection:
+          () => ({ enabledCaseKeys: [CASE] }) } };
+      },
+      selectCases: () => { calls.push('select'); return selected; }
+    };
+    runInNewContext(readFileSync(new URL('../scripts/validation/native-preflight.cjs',
+      import.meta.url), 'utf8'), {
+      require: name => name === './1js-declarative-e2e.cjs' ? profile :
+        name === 'node:child_process' ? {
+          execFileSync: (_executable, args) => {
+            calls.push(args.at(-1));
+            if (failure) throw Object.assign(new Error('SECRET_MUST_NOT_PERSIST'), {
+              status: 2, stdout: 'SECRET_MUST_NOT_PERSIST error TS2307'
+            });
+          }
+        } : require(name),
+      process: runtime, console: { log: line => lines.push(line) }
+    });
+    assert.deepEqual(calls, failure
+      ? ['load', 'select', 'typecheck']
+      : ['load', 'select', 'typecheck', 'declarative:validate-repair']);
+    assert(!lines.join('\n').includes('SECRET_MUST_NOT_PERSIST'));
+    if (failure) {
+      const diagnostic = JSON.parse(lines.find(line =>
+        line.startsWith('PILOT_PREFLIGHT_FAILURE:')).split('PILOT_PREFLIGHT_FAILURE:')[1]);
+      assert.equal(diagnostic.stage, 'typecheck');
+      assert.equal(diagnostic.exitCode, 2);
+      assert.deepEqual(diagnostic.typeErrors, ['TS2307']);
+      assert.equal(runtime.exitCode, 1);
+      assert(!lines.includes('PILOT_PREFLIGHT_NATIVE:passed'));
+    } else {
+      assert(lines.includes('PILOT_PREFLIGHT_NATIVE:passed'));
+      assert.equal(runtime.exitCode, undefined);
+    }
+  });
+}
 
 function nativeSummary() {
   const execution = {
@@ -427,6 +481,55 @@ test('an exit-zero runner without native five-pass proof is blocked without auto
   assert.equal(results[0].status, 'blocked');
 });
 
+for (const condition of ['valid', 'tampered', 'proof-drift']) {
+  test(`validation reuses accepted detached dependencies ${condition}`, async t => {
+    const ctx = await fixture(t);
+    const execution = await finalize(ctx);
+    writeFileSync(join(ctx.workspace, '.gitignore'), 'node_modules/\n');
+    await ctx.g(['add', '.']);
+    await ctx.g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-m', 'Synthetic final revision']);
+    const revision = await ctx.g(['rev-parse', 'HEAD']);
+    const output = 'ooui/node_modules/synthetic/index.js';
+    mkdirSync(dirname(join(ctx.workspace, output)), { recursive: true });
+    writeFileSync(join(ctx.workspace, output), 'Synthetic dependency\n');
+    const workspace = join(ctx.root, 'accepted');
+    const preparation = await prepareValidationWorkspace({
+      source: ctx.workspace, workspace, revision, timeoutMs: 30000,
+      seed: (source, target) => seedDeclarativeDependencies(source, target, revision, 30000)
+    });
+    const proof = { format: 'validation-preflight-v1', status: 'passed',
+      sourceRevision: revision, profileSha256: ctx.gate.profileSha256, workspace, preparation };
+    const proofPath = join(ctx.root, 'preflight.json');
+    writeFileSync(proofPath, json(proof));
+    const preflight = { path: proofPath, sha256: hash(readFileSync(proofPath)) };
+    if (condition === 'tampered') writeFileSync(join(workspace, output), 'Changed dependency');
+    if (condition === 'proof-drift') writeFileSync(proofPath, '{}');
+    let calls = 0;
+    const run = () => runValidation(ctx.config, ctx.ledger, ctx.job, ctx.repo, revision,
+      async (_exe, _args, cwd, _timeout, env) => {
+        calls++;
+        assert.equal(cwd, workspace);
+        const request = JSON.parse(env.PILOT_DECLARATIVE_REQUEST);
+        assert.equal(request.options.installDependencies, false);
+        const receipt = { format: declarativeProfile, assignmentId: ctx.job.id,
+          sourceRevision: revision, baseRevision: ctx.base, status: 'passed',
+          repeats: 5, retries: 0, workers: 1, browserCleanup: 'verified',
+          caseIds: [CASE], evidenceIds: request.evidenceIds, inputItemIds: request.inputItemIds };
+        mkdirSync(request.outputRoot, { recursive: true });
+        writeFileSync(join(request.outputRoot, 'receipt.json'), json(receipt));
+        return { stdout: `PILOT_DECLARATIVE_RECEIPT:${json(receipt)}`, stderr: '' };
+      }, undefined, { [ctx.gate.id]: { preflight } }, execution);
+    if (condition === 'proof-drift') await assert.rejects(run(), /evidence changed/);
+    else {
+      const result = await run();
+      assert.equal(result[0].status, condition === 'valid' ? 'passed' : 'blocked');
+    }
+    assert.equal(calls, condition === 'valid' ? 1 : 0);
+    assert.equal(await ctx.g(['status', '--porcelain']), '');
+  });
+}
+
 for (const condition of ['valid', 'source-dirty', 'different-revision', 'existing-output', 'external-link']) {
   test(`declarative final-SHA dependency seed ${condition}`, async t => {
     const ctx = await fixture(t);
@@ -444,6 +547,12 @@ for (const condition of ['valid', 'source-dirty', 'different-revision', 'existin
       writeFileSync(join(ctx.workspace, path), 'Synthetic built output\n');
     }
     writeFileSync(join(ctx.workspace, '.npmrc'), 'SYNTHETIC-EXCLUDED-FILE\n');
+    if (condition === 'valid')
+      for (let index = 0; index < 51; index++) {
+        const output = join(ctx.workspace, 'ooui', 'packages', `extra-${index}`, 'lib');
+        mkdirSync(output, { recursive: true });
+        writeFileSync(join(output, 'index.js'), `Built package ${index}\n`);
+      }
     const target = join(ctx.root, 'validation');
     await command('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
       'clone', '--quiet', '--no-hardlinks', '--', ctx.workspace, target], ctx.root);
@@ -469,7 +578,20 @@ for (const condition of ['valid', 'source-dirty', 'different-revision', 'existin
       assert.equal(realpathSync(join(target, 'ooui', 'node_modules', 'workspace-synthetic')),
         realpathSync(join(target, 'ooui', 'packages', 'synthetic')));
       assert.equal(existsSync(join(target, '.npmrc')), false);
+      assert.equal(readFileSync(join(target, 'ooui', 'packages', 'extra-50', 'lib', 'index.js'), 'utf8'),
+        'Built package 50\n');
       assert.equal(await ctx.g(['status', '--porcelain']), '');
+      const verified = await seedDeclarativeDependencies(ctx.workspace, target, revision, 30000,
+        { expectedSeed: seeded });
+      assert.deepEqual(verified, seeded);
+      writeFileSync(join(target, 'ooui', 'packages', 'synthetic', 'lib', 'index.js'),
+        'Changed isolated bytes\n');
+      await assert.rejects(seedDeclarativeDependencies(ctx.workspace, target, revision, 30000,
+        { expectedSeed: seeded }), /copied output bytes/);
+      assert.equal(readFileSync(join(target, 'ooui', 'packages', 'synthetic', 'lib', 'index.js'), 'utf8'),
+        'Changed isolated bytes\n', 'Verification must not overwrite damaged output');
+      await assert.rejects(seedDeclarativeDependencies(ctx.workspace, target, revision, 30000,
+        { expectedSeed: { ...seeded, sourceRevision: '0'.repeat(40) } }), /receipt/);
     } else await assert.rejects(seedDeclarativeDependencies(ctx.workspace, target, revision, 30000));
   });
 }

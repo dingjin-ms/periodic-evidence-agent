@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir, availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { hash, json } from '../src/common.js';
@@ -8,7 +8,30 @@ import { outputFingerprint, verifyContinuationPredecessor } from '../src/workers
 import { outputPathFingerprintWithEntries } from '../src/output-fingerprint.js';
 import { Ledger } from '../src/ledger.js';
 import { nativePreparationWorkspace, verifyNativePreparationFailure,
-  verifyNativePreparationContinuation } from '../src/native-preparation-continuation.js';
+  verifyNativePreparationContinuation, verifyPreparationPreflight } from '../src/native-preparation-continuation.js';
+
+function preparationProof(job, result, assignment, operations, profileSha256, workspace) {
+  const files = ['src/workers.js', 'src/validation-workspace.js', 'src/native-command.js',
+    'src/native-command.ps1', 'src/dependency-snapshot-copy.cjs',
+    'src/output-fingerprint.js', 'src/output-fingerprint-worker.js',
+    'scripts/validation/preflight.mjs', 'scripts/validation/native-preflight.cjs',
+    'src/native-preparation-continuation.js'];
+  return { format: 'validation-preflight-v1', status: 'passed',
+    completedAt: new Date().toISOString(), assignmentId: job.id,
+    priorAttemptId: job.session_id, priorResultId: result.id,
+    sourceRevision: result.sourceRevision, baseRevision: job.base_revision, profileSha256,
+    workspace, originalLedgerSha256: hash(json({ job, result, assignment, operations })),
+    nativeCaseInvocations: 0, modelInvocations: 0, publicationInvocations: 0,
+    acceptanceEvidence: false, publicationEligible: false,
+    preparation: { strategy: 'detached-worktree', workspace, sourceRevision: result.sourceRevision,
+      dependencySeed: { format: 'declarative-dependency-seed-v1',
+        sourceRevision: result.sourceRevision, sha256: 'd'.repeat(64), paths: ['ooui/node_modules'] } },
+    native: { caseIds: result.skillExecution.registration?.caseIds, nativeCaseInvocations: 0 },
+    timings: ['native-load-typecheck-selection', 'post-native-clean']
+      .map(id => ({ id, status: 'passed' })),
+    controllerFiles: Object.fromEntries(files.map(file =>
+      [file, hash(readFileSync(new URL(`../${file}`, import.meta.url)))])) };
+}
 
 function fixture() {
   const revision = 'b'.repeat(40);
@@ -61,7 +84,8 @@ for (const condition of ['valid', 'published', 'native-output', 'model', 'native
 for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift', 'approval-drift',
   'native-directory', 'file-drift', 'result-drift', 'operation-drift', 'description-drift', 'config-drift',
   'commit-source', 'commit-extra-field', 'base-authority', 'dispatch-recovery',
-  'dispatch-native', 'dispatch-model', 'dispatch-nested', 'dispatch-operation', 'dispatch-source']) {
+  'dispatch-native', 'dispatch-model', 'dispatch-nested', 'dispatch-operation', 'dispatch-source',
+  'verified-valid', 'verified-proof', 'verified-native', 'verified-grant', 'verified-source']) {
   test(`native preparation recovery bindings ${condition}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'native-preparation-proof-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -110,6 +134,44 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
       files: [{ path: 'test/synthetic.yaml', sha256: 'f'.repeat(64) }],
       nativePreparationCorrection: { originalGrant: grant, operations,
         profileSha256: failure.profileSha256, ownerReviewDirectory: grant.ownerReviewRecovery.ownerReviewDirectory } };
+    if (condition.startsWith('verified-')) {
+      detail.authorizationSha256 = hash(json(auth));
+      const original = structuredClone(detail);
+      const immediateJob = { ...job, session_id: 'synthetic-immediate-attempt' };
+      const immediateResult = { ...structuredClone(result), id: 'synthetic-immediate-result',
+        attemptId: immediateJob.session_id };
+      immediateResult.skillExecution.registration = { caseIds: ['synthetic-case'] };
+      const immediateArtifact = { ...failure, output: {
+        stdout: '', stderr: 'Sanitized preparation failure', exitCode: null, timeout: false } };
+      const immediateFailure = pin('immediate-failure.json', immediateArtifact);
+      immediateResult.validation[0].artifactRefs = [immediateFailure.path];
+      const immediateOperations = [
+        { id: 'synthetic-continued', kind: 'continued-from-validation-failure',
+          state: 'prepared', detail: json(original) },
+        { id: 'synthetic-immediate-validation', kind: 'validation', state: 'blocked' }
+      ];
+      const previousConfig = structuredClone(config);
+      const recovery = { previousConfig, priorStateDirectory: config.stateDirectory,
+        priorJob: immediateJob, priorAssignment: {}, priorResult: immediateResult,
+        operations: immediateOperations, originalContinuation: original };
+      config.stateDirectory = join(directory, 'verified-next');
+      Object.assign(auth, { kind: 'native-preparation-verified',
+        previousAssignmentId: immediateJob.id, previousAttemptId: immediateJob.session_id,
+        priorAuthorizationSha256: original.authorizationSha256,
+        nextConfigSha256: hash(json(config)), failure: immediateFailure });
+      if (condition === 'verified-native')
+        mkdirSync(join(recovery.priorStateDirectory, 'native-validation',
+          hash('synthetic-immediate-validation')), { recursive: true });
+      if (condition === 'verified-grant') auth.priorAuthorizationSha256 = 'e'.repeat(64);
+      if (condition === 'verified-source') immediateResult.sourceRevision = 'e'.repeat(40);
+      const proof = preparationProof(immediateJob, immediateResult, {},
+        immediateOperations, failure.profileSha256, join(directory, 'accepted-workspace'));
+      if (condition === 'verified-proof') proof.controllerFiles['src/workers.js'] = 'e'.repeat(64);
+      auth.preflight = pin('accepted-preflight.json', proof);
+      recovery.priorResultSha256 = hash(json(immediateResult));
+      recovery.priorOperationsSha256 = hash(json(immediateOperations));
+      detail.preparationRecovery = recovery;
+    }
     if (condition.startsWith('dispatch-')) {
       detail.nextAttemptId = 'synthetic-dispatch-attempt'; detail.nextAssignmentId = job.id;
       detail.authorizationSha256 = hash(json(auth));
@@ -166,10 +228,35 @@ for (const condition of ['valid', 'grant-time', 'unlinked-grant', 'request-drift
     detail.authorizationSha256 = hash(json(auth));
     detail.priorOperationsSha256 = hash(json(operations));
     const verify = () => verifyNativePreparationContinuation(config, detail);
-    if (['valid', 'dispatch-recovery'].includes(condition)) assert.doesNotThrow(verify);
+    if (['valid', 'dispatch-recovery', 'verified-valid'].includes(condition)) assert.doesNotThrow(verify);
     else assert.throws(verify, error => ['blocked-reconciliation', 'blocked-authorization'].includes(error.code));
   });
 }
+
+test('real preflight acceptance rejects incomplete stages, changed bytes and invocation claims', () => {
+  const { job, result, operations, failure } = fixture();
+  job.base_revision = 'a'.repeat(40);
+  result.skillExecution.registration = { caseIds: ['synthetic-case'] };
+  const proof = preparationProof(job, result, {}, operations, failure.profileSha256,
+    join(tmpdir(), 'synthetic-accepted-workspace'));
+  const verify = value => verifyPreparationPreflight(value, job, result, {},
+    operations, failure.profileSha256);
+  assert.doesNotThrow(() => verify(proof));
+  for (const change of [
+    value => { value.timings[0].status = 'blocked'; },
+    value => { value.timings.pop(); },
+    value => { value.modelInvocations = 1; },
+    value => { value.nativeCaseInvocations = 1; },
+    value => { value.native.caseIds = ['different-case']; },
+    value => { value.originalLedgerSha256 = 'e'.repeat(64); },
+    value => { value.preparation.dependencySeed.sourceRevision = 'e'.repeat(40); },
+    value => { value.controllerFiles['src/native-command.ps1'] = 'e'.repeat(64); }
+  ]) {
+    const changed = structuredClone(proof);
+    change(changed);
+    assert.throws(() => verify(changed), error => error.code === 'blocked-reconciliation');
+  }
+});
 
 test('native preparation workspace maps its original base into the actual ledger contract', t => {
   const directory = mkdtempSync(join(tmpdir(), 'native-preparation-ledger-'));
@@ -225,6 +312,8 @@ test('dispatch correction preserves both reservations using distinct operation i
     dispatchLedger.finishOperation(nextId, 'prepared', { nextAttemptId: 'attempt-2' });
     const detail = { nativePreparationDispatchFailure: recovery };
     assert.doesNotThrow(() => verifyContinuationPredecessor(detail, nextId, 'attempt-2'));
+    assert.doesNotThrow(() => verifyContinuationPredecessor(
+      { preparationRecovery: recovery }, nextId, 'attempt-2'));
     assert.throws(() => verifyContinuationPredecessor(detail, originalId, 'attempt-2'));
     originalLedger.finishOperation(originalId, 'prepared', { nextAttemptId: 'other-attempt' });
     assert.throws(() => verifyContinuationPredecessor(detail, nextId, 'attempt-2'));

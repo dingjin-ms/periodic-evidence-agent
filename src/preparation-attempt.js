@@ -56,8 +56,8 @@ export async function runPreparationAttempt({
     'blocked-preparation-plan');
   requireThat(typeof onProgress === 'function',
     'Progress observer must be a controller function', 'blocked-preparation-plan');
-  const source = realpathSync(job.workspace);
-  const parent = realpathSync(attemptParent);
+  const source = realpathSync.native(job.workspace);
+  const parent = realpathSync.native(attemptParent);
   requireThat(source !== parent && !within(source, parent) && !within(parent, source),
     'Attempt parent must be disjoint from the source checkout', 'blocked-preparation-plan');
   const before = await sourceState(source);

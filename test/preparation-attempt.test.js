@@ -26,11 +26,14 @@ test('controller progress failure preserves an already raised primary rejection'
   });
 });
 
-test('a dot-prefixed nested attempt parent is rejected before reading source or creating state',
+for (const [name, parentPath] of [
+  ['dot-prefixed nested', source => join(source, '..attempts')],
+  ['case-aliased identical', source => source.toLowerCase()]
+]) test(`a ${name} attempt parent is rejected before reading source or creating state`,
   { skip: process.platform !== 'win32' }, async t => {
     const root = mkdtempSync(join(tmpdir(), 'preparation-overlap-fixture-'));
     const source = join(root, 'source');
-    const parent = join(source, '..attempts');
+    const parent = parentPath(source);
     mkdirSync(parent, { recursive: true });
     t.after(() => rmSync(root, { recursive: true, force: true }));
     await assert.rejects(runPreparationAttempt({
@@ -259,7 +262,7 @@ test('a stage budget cancels the attempt and a fresh attempt can acquire the rel
     assertSource(ctx);
   });
 
-test('a concurrent runner cannot steal the active controller lease',
+test('a case-aliased concurrent runner cannot steal the active controller lease',
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
     ctx.gate.args[1] = 'dependencies';
@@ -270,7 +273,10 @@ test('a concurrent runner cannot steal the active controller lease',
       if (conflict || !existsSync(ctx.readyPath)) return;
       conflict = 'checking';
       check = (async () => { try {
-        await assert.rejects(runPreparationAttempt(ctx.options), error => error.code === 'overlap');
+        await assert.rejects(runPreparationAttempt({
+          ...ctx.options,
+          job: { ...ctx.options.job, workspace: ctx.source.toLowerCase() }
+        }), error => error.code === 'overlap');
         conflict = 'rejected';
       } catch (error) { conflictError = error; }
       finally { controller.abort(); } })();

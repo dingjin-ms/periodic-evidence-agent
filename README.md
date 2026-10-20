@@ -47,6 +47,13 @@ networks that block the public registry, configure your organization's approved
 npm mirror (for example with `npm_config_registry`) before `npm ci`; do not
 disable TLS verification or copy another user's npm credentials.
 
+The explicitly invoked `npm run benchmark:fingerprint -- --output <absolute-new-file>`
+measures local synthetic controller/fingerprint workloads, including event-heavy
+warm verification and independent full-fresh equivalence. It is not part of
+setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
+See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
+and the `local-fingerprint-benchmark` skill before running it.
+
 ## Devbox repository setup
 
 This optional full product-development setup is not a prerequisite for the
@@ -121,6 +128,72 @@ cursor completeness and absence of dispatch. Each invocation creates only its
 own disposable `.state\demo-*\` directory inside the checkout and returns that
 exact directory and summary path. To clean up, remove only the specific demo
 directory printed by that invocation, never the whole `.state` tree.
+
+## Explicit Teams notifications
+
+Use the **`send-teams-notification`** project skill for an explicitly authorized
+channel message from any task or agent, not only an evidence workflow. It wraps
+the sender below, accepts approved text/links and an optional user mention, and
+uses stable shared receipt paths to prevent blind repeat sends. For example:
+"Use send-teams-notification to post this task's result to the configured
+channel and mention me." See
+[the skill](.github/skills/send-teams-notification/SKILL.md) for inputs,
+reconciliation and use from another project. Skill availability does not grant
+the caller Azure permissions or enable automatic notifications.
+
+`scaffold/teams-notification.workflow.json` defines a dedicated Consumption
+Logic App that posts Adaptive Cards as Flow bot to one configured standard
+channel. Deploy it separately with an approved Teams API connection, explicit
+`teamId`/`channelId` parameters, narrow Entra OAuth trigger policies and SAS
+authentication disabled. Do not replace an existing Sherlock workflow or its
+notification routes. The caller needs an authorized Azure CLI identity and
+permission to read the workflow and its callback URL.
+
+Keep deployment identifiers in a gitignored `teams.local.json`:
+
+```json
+{
+  "enabled": true,
+  "workflowResourceId": "/subscriptions/SUBSCRIPTION/resourceGroups/GROUP/providers/Microsoft.Logic/workflows/WORKFLOW",
+  "identity": { "tenantId": "TENANT_GUID", "objectId": "USER_GUID" },
+  "teamId": "TEAM_GUID",
+  "channelId": "19:CHANNEL@thread.tacv2"
+}
+```
+
+This is repository-local configuration, not a Copilot session artifact. The
+repository command defaults to `teams.local.json` next to `package.json`, even
+when its script is invoked from another working directory. Receipts default to
+`.state\teams-notifications\<notification-id>.receipt.json` relative to that
+configuration. If multiple worktrees share one live deployment, explicitly set
+`stateDirectory` in each private configuration to the same approved absolute
+directory so all callers consult the same receipts. Never reset that directory
+when starting a new agent session or preparing a new task checkout.
+
+An explicitly authorized notification is a JSON file with a stable `id`,
+`text`, optional `test: true`, and optional `mention: { "id": "USER_GUID",
+"name": "Display name" }`. Send it once with:
+
+```powershell
+npm run notify:teams -- --message .state\notification.json
+```
+
+Use `--config <approved-path>.local.json` to select another deployment.
+The lower-level `--receipt` override remains available for an existing recorded
+integration, but ordinary skill callers must use the canonical shared default;
+changing paths does not make an uncertain send safe to repeat.
+
+The sender checks the designated identity and deployed destination, authenticates
+with an ARM bearer token and never writes tokens or callback URLs to receipts.
+Connector retries are disabled. A receipt is reserved before the single
+outbound POST; an existing receipt blocks another attempt. Missing message IDs,
+timeouts and failed responses are **unconfirmed**, not successful delivery.
+Reconcile the workflow run and channel before considering another send, and
+reuse each notification ID with the same receipt path. This command does not
+enable scheduling or automatically publish evidence, PR or validation events.
+The skill, command and generic workflow template are versioned together in this
+repository. A fresh checkout discovers the skill from `.github\skills` after
+loading this project; no path to a previous Copilot session is needed.
 
 ## Independent agents and contracts
 
@@ -273,8 +346,16 @@ proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
 
 **Intentional product-specific selectors:** the current ADO adapter is fixed to
-`office/OC`, non-Removed Bugs under
-`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
+`office/OC`, Bugs with state **Resolved or Closed** and
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**, under
+`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. Both created
+and changed lanes retain their half-open UTC windows, snapshots and budgets.
+Missing or other resolutions are ineligible; `System.Reason` is not a fallback.
+This is regression-coverage input, not a request to fix unresolved product bugs.
+Duplicate records keep their exact identities and canonical links even when the
+linked bug is outside the area; no extra source reads or canonical merging are
+implied. Genuine scanner exclusions remain independent of resolution.
+IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
 These selectors, the 1JS/Office repo URLs and the field names in
@@ -316,6 +397,43 @@ network, commit, push or PR authority. Each binding also declares a narrower
 write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
+
+Resolved/Closed ADO sources may execute only as otherwise eligible,
+source-bound test-coverage improvements in the Fixed/Duplicate cohort.
+They require a current complete coverage plan with a remaining gap and no
+unknowns, a qualified test-authoring binding and its pinned test-only write
+bounds. Generic RCA/product-fix assignments retain terminal-source protection.
+Unchanged terminal-cohort revisits do not themselves invalidate a review;
+changed source captures, superseded plans/qualifications and existing
+reconciliation blockers still block execution across standalone, native and
+continuation paths.
+
+Known product fixes remain in `investigation.existingFixes` and original source
+links. They are not permission to dispatch, nor must they be deleted to propose
+regression coverage. `testCoveragePlan.existingFixesReview` optionally records
+the existing review policy's source-bound reconciliation:
+
+| Field | Required binding |
+|---|---|
+| `investigationId`, `investigationVersion`, `evidenceIds` | Exact current investigation/version and complete evidence set |
+| `planId`, `planVersion`, `sourceRevision` | Exact coverage-plan version and inspected repository revision |
+| `review` | Existing review method, nonblank reviewer and UTC review time at/after the investigation review |
+| `fixes` | Every original fix URL exactly once, each with `url`, `disposition`, `rationale` |
+
+Only all-`product-fix-with-remaining-coverage-gap` entries can pass the qualified
+test-only gate. `coverage-already-satisfied`, `coverage-in-flight` and
+`unresolved` remain durable blocking outcomes. Missing, duplicate, stale or
+mismatched bindings fail closed. This is an agent-evidence review under the
+existing policy, not a new per-finding human approval gate.
+
+Use the existing `plan-improvement` / `app-plan-improvement` input's
+`testCoverage.existingFixesReview` to persist the record. When adding it to an
+existing plan, bind its next version; unchanged replay remains idempotent.
+Changing the plan/source or investigation requires a new bound review. FILTER
+candidates may carry `existingFixes`; handoffs preserve these and previously
+recorded fix URLs and accept the review as `routing.existingFixesReview`.
+Neither fix reconciliation nor retained duplicate relations authorize extra
+source reads or prove canonical duplicate-work merging.
 
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
@@ -665,6 +783,19 @@ an enabled `draftBuild` queues exactly one Pipeline 36540 build for the pushed
 Draft branch and exact revision, records the returned build URL in the Draft PR
 description, and returns immediately without polling the build.
 
+For 1JS, that build validates **new cases only**, not the existing catalog.
+The controller derives newly added, discoverable scenario paths from the exact
+assignment-base-to-authored-commit diff and supplies `newCaseSelection` and
+`newCaseGroups` to the qualified pipeline revision. These parameters are
+controller-owned; do not put them in `draftBuild.templateParameters`. Empty
+selections block before push rather than falling back to the full suite.
+The build receipt and Draft description preserve the paths and both revisions.
+The 1JS pipeline must support this contract: it verifies the Git additions,
+narrows its snapshot execution policy and manifest, applies an exact-title
+filter, and skips unaffected suites. Its ordinary scheduled full regression
+remains unchanged. An older pipeline that rejects these parameters must be
+updated, not retried without the scope.
+
 This mirrors the OfficeAgent authoring contract: deterministic local validation
 blocks publication; longer remote validation is transparent asynchronous review
 evidence. A queued build does not make the Draft remotely qualified, and a later
@@ -747,6 +878,12 @@ content/link fingerprint, then controller-owned recursive output-root watchers
 fail closed on changes between and during runs. File `change` events are accepted
 only when a fresh content hash still matches the verified process-local baseline;
 additions, removals, renames and actual content changes invalidate the cache.
+Directory `change` events require recursive content verification, including when
+only an ancestor event is delivered. Overlapping paths coalesce into bounded
+worker tasks without dropping descendant coverage. Settlements serialize per
+guard and wait for queued events after hashing; unknown filenames and watcher
+errors invalidate trust even during initial verification. Artifacts record
+changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an
@@ -924,6 +1061,70 @@ push and Draft PR effects:
 npm run submit:reviewed-handoff -- --file .\test\fixtures\reviewed-handoff\onenote-bootstrap-progress.reviewed-handoff.json --config .\pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
+#### Authoring provider modes
+
+The default remains `copilot-sdk`. A repository skill binding may explicitly
+select `agency-local` or `agency-remote`; there is no repository-wide switch and
+no automatic fallback between providers.
+
+| Mode | Authoring compute | Source transport | Validation, final push and Draft PR |
+| --- | --- | --- | --- |
+| `copilot-sdk` | Local Controller process | Controller-owned workspace | Controller-owned |
+| `agency-local` | Local Agency process with the five authenticated `pilot_*` tools | Controller-owned workspace | Controller-owned |
+| `agency-remote` | Agency remote job on a qualified exact-base branch | One bounded result commit on a separate `pilot-agency-result/...` branch | Controller fetches, audits and imports allowed files, then owns all remaining steps |
+
+`agency-remote` requires an Azure DevOps repository and an explicit provider:
+
+```json
+{
+  "authoringProviders": {
+    "agency-oa": {
+      "type": "agency-remote",
+      "executable": "C:\\absolute\\path\\to\\agency.exe",
+      "profile": "periodic-evidence-isolated",
+      "model": "gpt-5.6-sol",
+      "pollSeconds": 30
+    }
+  }
+}
+```
+
+The remote worker may commit and push only the deterministic result ref. It may
+not create the final PR or merge. The Controller requires terminal Agency
+success, exact-base ancestry, a bounded commit range, approved regular-file
+paths, file-size limits and a matching
+`.periodic-evidence-agent/result.json` envelope before importing anything.
+Remote logs are diagnostic only; source state is the transport authority.
+See [Authoring providers](AGENCY-LOCAL-AUTHORING.md) for the complete comparison
+and operational limitations.
+
+#### Bounded multi-repository scheduling
+
+`limits.maxWorkers` is the shared Controller-wide admission cap.
+`limits.maxWorkersPerRepository` defaults to `1` and must not exceed the global
+cap. Different repositories can therefore author and validate concurrently
+while a repository uses one heavy validation lane by default. Admission is
+committed in the SQLite ledger before authoring starts; each assignment owns an
+independent `dispatch:<assignment-id>` lock, so a long remote job does not hold a
+global dispatch lock.
+
+Prepared assignments can be previewed and then launched concurrently:
+
+```powershell
+npm run pilot -- dispatch-ready --config .\pilot.local.json
+npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
+  --authorize-commit --authorize-push --authorize-draft-pr
+```
+
+The scheduler selects jobs deterministically, rotates across configured
+repositories, respects active hosted and local workers, and launches only jobs
+that are still `prepared`. Each selected assignment is atomically admitted
+again by normal `dispatch`; an overlapping scheduler can therefore observe an
+`overlap` result but cannot submit a duplicate remote job. Scheduler batches
+and per-assignment outcomes are durable ledger operations. This supports
+concurrent repositories on one Controller machine; the SQLite ledger is not a
+multi-machine lease service.
+
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
 explicitly authorized synthetic receipt. A repository worker may follow a
@@ -1019,6 +1220,23 @@ evidence, delivery receipts, the ledger, primary checkouts and prepared
 dependency/compile caches are preserved. This repository does not restore
 delivered workspaces, review PRs or merge them.
 
+Remote Agency input and result branches have a separate fail-closed cleanup:
+
+```powershell
+npm run pilot -- transport-gc --config .\pilot.local.json
+npm run pilot -- transport-gc --config .\pilot.local.json --execute
+```
+
+Preview is the default. Cleanup requires a completed Draft PR delivery after
+the configured retention interval, no unfinished task operation, a retained
+per-round result receipt, exact remote tips for every deterministic
+`pilot-agency-base/...` and `pilot-agency-result/...` ref, and a final
+`pilot/<assignment-id>` branch that still matches the delivered revision. Only
+the exact transport refs are deleted. The final branch, Draft PR, validation
+artifacts, delivery records and repository checkout are never deleted. Missing
+or mismatched refs are retained for reconciliation, and successful cleanup is
+idempotently recorded in the ledger.
+
 ### FILTER-to-proposer handoff
 
 `submit-filter-handoff` is the production bridge from the complete-record
@@ -1039,8 +1257,9 @@ and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
 
-The input contains only the immutable FILTER binding and the repository
-capability used for routing:
+The input contains the immutable FILTER binding and the repository capability
+used for routing, plus optional structured skill input and a source-bound
+`routing.existingFixesReview` when known product fixes require reconciliation:
 
 ```json
 {
@@ -1084,7 +1303,9 @@ Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
 `pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
 the initial authoring and every repair round. Search and ranged reads are
 repository-local, read-only and bounded; they do not grant shell or network
-access. Each worker result records the limit, total/remaining calls, per-tool
+access. `pilot_list` accepts an optional repository-relative directory and
+requires a narrower scope when the root file inventory exceeds the file-size
+limit. Each worker result records the limit, total/remaining calls, per-tool
 counts and per-round usage so operators can replace bootstrap limits with an
 observed percentile plus explicit headroom.
 
@@ -1096,6 +1317,26 @@ Before push or draft creation, every required gate must pass at the exact clean
 current revision. Exhausted repair rounds, missing or stale gate results, and
 post-validation source changes remain blocked locally; failed drafts are not
 published.
+
+Repository-skill bindings use the existing Copilot SDK authoring transport by
+default. A binding may explicitly select the opt-in
+[Local Agency authoring provider](AGENCY-LOCAL-AUTHORING.md), which exposes the
+same five controller-owned tools through an authenticated stdio MCP bridge and
+resumes the exact Agency session for repair rounds. The assignment remains
+local: provisioning, commits, exact-revision validation, push, Draft PR
+creation, reconciliation and the no-merge invariant are unchanged. This is
+separate from the hosted [Agency executor](AGENCY-EXECUTOR.md).
+
+| Authoring option | Selection | Additional runtime | Recommended use |
+|---|---|---|---|
+| Copilot SDK | Default | Existing SDK session | Lowest-complexity production baseline |
+| Local Agency | Explicit binding opt-in | Agency CLI, private profile and authenticated MCP bridge | Qualifying Agency orchestration without transferring controller authority |
+
+These are two transports for the same controller workflow, not two different
+permission models. Both receive the same bounded tools and repository skill;
+neither can commit, validate, push, create a Draft PR or merge independently.
+See the provider document for the
+[full comparison](AGENCY-LOCAL-AUTHORING.md#copilot-sdk-comparison).
 
 ### Sanitized E2E proof bundles
 

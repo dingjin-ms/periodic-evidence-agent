@@ -17,7 +17,7 @@ import { followRelated } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, newCaseBuildSelection, newCaseBuildGroups, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges, verifyPreparedOutputs } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -46,7 +46,8 @@ function setup(t) {
 function adoItem(id = 1, rev = 1) {
   return { id, rev, fields: {
     'System.Id': id, 'System.WorkItemType': 'Bug', 'System.Title': `Synthetic bug ${id}`,
-    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Active',
+    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
     'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z'
   } };
 }
@@ -370,6 +371,23 @@ test('worker-result audit fields and validation attempt metadata are mandatory',
     assert.throws(() => validateRecord(invalid, 'workerResult'), /workerResult/);
   }
 });
+test('worker-result validation permits an authentication blocker', () => {
+  const examples = JSON.parse(readFileSync('scaffold/example-flows.json'));
+  const result = structuredClone(
+    examples.records.find(record => record.recordType === 'workerResult'));
+  result.outcome = 'blocked';
+  result.validation[0].status = 'blocked';
+  result.validation[0].blockedReason = 'blocked-auth';
+  result.validation[0].nextCheckAt = null;
+  result.validationAttempts[0].validation = structuredClone(result.validation);
+  result.draftPR = null;
+  result.blocker = {
+    owner: 'synthetic-worker',
+    reason: 'Authentication is required',
+    unblockCondition: 'Refresh approved validation authentication'
+  };
+  validateRecord(result, 'workerResult');
+});
 test('portable example uses a fixed UTC fixture window and leaves live permissions unapproved', () => {
   const config = configAt('pilot.example.json');
   assert.deepEqual(config.window, { start: '2026-10-08T00:00:00Z', end: '2026-10-09T00:00:00Z' });
@@ -417,11 +435,16 @@ test('Draft build configuration is explicit, ADO-only and bounded to one definit
     { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
       templateParameters: { 'bad key': 'value' } },
     { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
-      templateParameters: { account: { secret: true } } }
+      templateParameters: { account: { secret: true } } },
+    { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
+      templateParameters: { newCaseSelection: '{}' } },
+    { enabled: true, provider: 'ado', id: 'build', definitionId: 1,
+      templateParameters: { newCaseGroups: 'excelAgentDeclarative' } }
   ]) {
     repo.draftBuild = invalid;
     writeFileSync(configPath, JSON.stringify(config));
-    assert.throws(() => configAt(configPath), /invalid Draft build configuration/);
+    assert.throws(() => configAt(configPath),
+      /invalid Draft build configuration|new-case build parameters are controller-owned/);
   }
 });
 test('OfficeAgent Excel validation profile converts selectors to package-relative paths', () => {
@@ -540,7 +563,8 @@ test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   assert.match(wiql(window), /\[System.CreatedDate\]/);
   assert.match(wiql(window, 'changed'), /\[System.ChangedDate\]/);
   assert.ok(wiql(window).includes(`UNDER '${area}'`));
-  assert.match(wiql(window), /<> 'Removed'/);
+  assert.match(wiql(window), /\[System.State\] IN \('Resolved', 'Closed'\)/);
+  assert.match(wiql(window), /\[Microsoft.VSTS.Common.ResolvedReason\] IN \('Fixed', 'Duplicate'\)/);
   assert.doesNotMatch(wiql(window), /Bug Bash|Automation/);
   assert.throws(() => wiql({ start: '2026-10-08', end: window.end }));
 });
@@ -750,10 +774,31 @@ test('provisioning uses separate clone without hardlinked objects or primary cha
   const before = (await g(['rev-parse', 'HEAD'])).stdout;
   const result = await provision(config, job, repo);
   assert.notEqual(result.workspace, repo.referenceCheckout);
+  assert.equal(existsSync(`${result.workspace}.provisioning`), false);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, before);
   assert.equal(readFileSync(join(result.workspace, 'src', 'value.js'), 'utf8').replaceAll('\r\n', '\n'), 'export const value = 1;\n');
   await assert.rejects(provision(config, job, repo), /already exists/);
+});
+test('provisioning retains and identifies an incomplete staged workspace without publishing it', async t => {
+  const { config, job, repo, g } = await fixture(t);
+  const workspace = join(config.stateDirectory, 'workspaces', job.session_id);
+  const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  await assert.rejects(provision(config, job, repo, {
+    baseRevision,
+    qualificationSource: 'trusted-remote'
+  }, {
+    fetchQualifiedRevision: async () => { throw new Error('synthetic fetch failure'); }
+  }), error => {
+    assert.equal(error.code, 'blocked-provision');
+    assert.match(error.message, /qualified-revision-fetch/);
+    assert.match(error.message, /\.provisioning/);
+    assert.doesNotMatch(error.message, /synthetic fetch failure/);
+    return true;
+  });
+  assert.equal(existsSync(workspace), false);
+  assert.equal(existsSync(`${workspace}.provisioning`), true);
+  await assert.rejects(provision(config, job, repo), /Incomplete workspace provisioning exists/);
 });
 test('Windows provisioned authoring checkout supports native Git long paths without changing the reference', {
   skip: process.platform !== 'win32'
@@ -799,12 +844,14 @@ test('trusted qualification fetches its exact revision before isolated checkout'
     baseRevision: revision,
     qualificationSource: 'trusted-remote'
   }, {
-    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision) => {
-      fetched = { workspace, repo: currentRepo.id, exactRevision };
+    fetchQualifiedRevision: async (currentConfig, workspace, currentRepo, exactRevision,
+      getToken, timeout) => {
+      fetched = { workspace, repo: currentRepo.id, exactRevision, timeout };
     }
   });
   assert.equal(fetched.repo, repo.id);
   assert.equal(fetched.exactRevision, revision);
+  assert.equal(fetched.timeout, 120000);
   assert.equal((await command('git', ['rev-parse', 'HEAD'], result.workspace)).stdout.trim(), revision);
 });
 test('provisioning skips unrelated Git LFS smudges without mutating the controller environment', () => {
@@ -827,6 +874,17 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.ok(existsSync(join(workspace, 'src', 'new.js')));
   assert.ok(!existsSync(join(repo.referenceCheckout, 'src', 'new.js')));
   assert.match(tools.read('src\\value.js', 1, 1), /value = 1/);
+  assert.ok((await tools.search('value = 1', 'src')).some(match =>
+    match.includes('src/value.js')));
+  assert.deepEqual(await tools.list('src'), ['src/value.js']);
+  mkdirSync(join(workspace, 'docs'));
+  writeFileSync(join(workspace, 'docs', 'value.js'), 'export const documented = true;\r\n');
+  await command('git', ['add', 'docs/value.js'], workspace);
+  const boundedConfig = structuredClone(config);
+  boundedConfig.limits.maxFileBytes = 12;
+  const boundedTools = new WorkerTools(boundedConfig, editable, workspace);
+  await assert.rejects(boundedTools.list(), /narrow pilot_list/);
+  assert.deepEqual(await boundedTools.list('src'), ['src/value.js']);
   tools.replaceLines('src\\value.js', 1, 1,
     'export const value = 1;', 'export const value = 3;');
   assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 3;');
@@ -1383,12 +1441,20 @@ test('authentication preflight returns a safe action before a cold dispatch', as
     'run', 'setup:validation-auth', '--', '-Workspace'
   ]);
   assert.match(actions[0].remediation.args[4],
-    new RegExp(`pv[\\\\/]a[\\\\/].+[\\\\/]w$`));
+    new RegExp(`pv[\\\\/]d[\\\\/].+[\\\\/]w$`));
   const exactConfig = readFileSync(
     join(actions[0].remediation.args[4], '.yarnrc.yml'), 'utf8');
   assert.match(exactConfig, /AugmentationLoop/);
   assert.doesNotMatch(exactConfig, /wrong-revision/);
-  assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
+  const remediationWorkspace = actions[0].remediation.args[4];
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(remediationWorkspace,
+    join(dirname(prepared.staged.dependencyReceiptPath), 'w'));
+  assert.deepEqual(ctx.calls, [
+    'fingerprint', 'authentication-check',
+    'fingerprint', 'authentication', 'dependencies', 'compile'
+  ]);
 });
 test('trusted dependency cache hits skip authentication checks', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
@@ -1660,6 +1726,22 @@ test('parallel prepared-output fingerprint detects cache mutation', async t => {
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
+test('concurrent prepared-output settlements cannot race past cache mutation',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, ctx.execute);
+    writeFileSync(join(prepared.staged.workspace, 'extra', 'node_modules',
+      'fixture', 'package.json'), '{"version":"concurrently-corrupt"}\n');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const results = await Promise.all([
+      verifyPreparedOutputs(prepared.staged.receiptPath,
+        prepared.staged.workspace, prepared.staged.outputs),
+      verifyPreparedOutputs(prepared.staged.receiptPath,
+        prepared.staged.workspace, prepared.staged.outputs)
+    ]);
+    assert.deepEqual(results.map(result => result.valid), [false, false]);
+  });
 test('dependency file mutations invalidate a warm compile receipt', async t => {
   for (const mutation of ['modify', 'delete', 'add']) {
     const ctx = await stagedValidationFixture(t);
@@ -1778,8 +1860,54 @@ test('metadata-only ordinary file changes preserve an identical prepared cache',
   assert.equal(result[0].status, 'passed');
   assert.equal(existsSync(prepared.staged.workspace), true);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
-  assert.equal(artifact.telemetry.validationTimings.find(stage =>
-    stage.id === 'cleanup').cache, 'preserved');
+  const cleanup = artifact.telemetry.validationTimings.find(stage =>
+    stage.id === 'cleanup');
+  assert.equal(cleanup.cache, 'preserved');
+  const verification = cleanup.subphases.find(stage =>
+    stage.id === 'verify-prepared-outputs');
+  assert.ok(verification.details.observedEventCount > 0);
+  assert.ok(verification.details.rehashedEntryCount > 0);
+  assert.ok(verification.details.hashedFileCount > 0);
+  assert.ok(verification.details.durationMs >= 100);
+});
+test('metadata event batches preserve cache with incremental verification telemetry',
+  async t => {
+    const ctx = await stagedValidationFixture(t);
+    const execute = async (...args) => {
+      const result = await ctx.execute(...args);
+      const [, , cwd, , env] = args;
+      const bulk = join(cwd, 'extra', 'node_modules', 'fixture', 'bulk');
+      if (env.PILOT_VALIDATION_STAGE === 'dependencies') {
+        mkdirSync(bulk, { recursive: true });
+        for (let index = 0; index < 32; index++)
+          writeFileSync(join(bulk, `${index}.js`), `export default ${index};\n`);
+      }
+      if (env.PILOT_VALIDATION_STAGE === 'test') {
+        for (let index = 0; index < 32; index++) {
+          const path = join(bulk, `${index}.js`);
+          writeFileSync(path, readFileSync(path));
+        }
+      }
+      return result;
+    };
+    const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, execute);
+    const revision = await ctx.commit('test/behavior.test.js', 'repair\n',
+      'Exercise batched metadata tolerance');
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      revision, execute, rmSync, prepared);
+    assert.equal(result[0].status, 'passed');
+    assert.equal(existsSync(prepared.staged.workspace), true);
+    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+    const cleanup = artifact.telemetry.validationTimings.find(stage =>
+      stage.id === 'cleanup');
+    assert.equal(cleanup.cache, 'preserved');
+    const details = cleanup.subphases.find(stage =>
+      stage.id === 'verify-prepared-outputs').details;
+    assert.ok(details.observedEventCount > 0);
+    assert.ok(details.changedEntryCount > 0);
+    assert.ok(details.rehashedEntryCount > 0);
+    assert.ok(details.hashedFileCount > 0);
 });
 test('same-revision infrastructure retry reuses expensive prepared stages', async t => {
   const ctx = await stagedValidationFixture(t);
@@ -2032,6 +2160,119 @@ test('ADO Draft build queues the exact pushed revision once without polling', as
   assert.equal(ledger.status().operations.find(operation =>
     operation.id === `${job.id}:draft-build:1js-pipeline-36540`).state, 'queued');
 });
+test('ADO Draft build URLs accept only configured or response-bound project paths', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.pr = {
+    provider: 'ado', organization: 'office', project: 'Office',
+    sourceBranchPrefix: 'user/tester/periodic-evidence-agent'
+  };
+  repo.draftBuild = {
+    enabled: true, provider: 'ado', id: 'build', definitionId: 36540
+  };
+  const projectId = '11111111-2222-3333-4444-555555555555';
+  const cases = [
+    [true, 'Office', projectId, `https://office.visualstudio.com/${projectId}/_build/results?buildId=42`],
+    [true, 'Office', projectId, `https://dev.azure.com/office/${projectId}/_build/results?buildId=42`],
+    [false, 'Other', projectId, `https://office.visualstudio.com/${projectId}/_build/results?buildId=42`],
+    [false, 'Office', 'other', 'https://office.visualstudio.com/other/_build/results?buildId=42'],
+    [false, 'Office', projectId, `https://office.visualstudio.com.attacker.invalid/${projectId}/_build/results?buildId=42`],
+    [false, 'Office', projectId, `https://office.visualstudio.com/99999999-2222-3333-4444-555555555555/_build/results?buildId=42`]
+  ];
+  for (const [index, [accepted, name, id, href]] of cases.entries()) {
+    const queued = queueAdoDraftBuild(config, ledger, { ...job, id: `${job.id}-${index}` },
+      repo, 'd'.repeat(40), async () => ({
+        id: 42, project: { name, id }, _links: { web: { href } }
+      }));
+    if (accepted) assert.equal((await queued).url, href);
+    else await assert.rejects(queued, /approved build URL/);
+  }
+});
+test('1JS Draft builds select only added scenarios at the final authored SHA', async t => {
+  const { config, ledger, job, repo, g } = await fixture(t);
+  const excelRoot = 'ooui/apps/excel-agent-declarative-e2e/declarative/scenarios';
+  const crossRoot = 'ooui/apps/cross-office-client-e2e/scenarios/new-case';
+  mkdirSync(join(repo.referenceCheckout, excelRoot), { recursive: true });
+  writeFileSync(join(repo.referenceCheckout, excelRoot, 'existing.yaml'), 'id: existing\n');
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Existing scenario']);
+  const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  mkdirSync(join(repo.referenceCheckout, crossRoot), { recursive: true });
+  writeFileSync(join(repo.referenceCheckout, excelRoot, 'existing.yaml'), 'id: existing\nname: Updated\n');
+  writeFileSync(join(repo.referenceCheckout, excelRoot, 'new-grid.yaml'), 'id: new-grid\n');
+  writeFileSync(join(repo.referenceCheckout, crossRoot, 'scenario.yaml'), 'id: new-cross\n');
+  writeFileSync(join(repo.referenceCheckout, 'registry.yaml'), 'not a scenario\n');
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Authored cases and registry']);
+  const revision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  const current = { ...job, workspace: repo.referenceCheckout, base_revision: baseRevision };
+  const selection = await newCaseBuildSelection(current, revision);
+  assert.deepEqual(selection, {
+    format: '1js-new-case-selection-v1',
+    baseRevision,
+    sourceRevision: revision,
+    scenarioPaths: [`${crossRoot}/scenario.yaml`, `${excelRoot}/new-grid.yaml`]
+  });
+  assert.equal(newCaseBuildGroups(selection), 'excelAgentDeclarative crossOfficeCowork');
+  repo.id = '1js';
+  repo.pr = { provider: 'ado', organization: 'office', project: 'Office' };
+  repo.draftBuild = {
+    enabled: true, provider: 'ado', id: 'new-cases', definitionId: 36540,
+    templateParameters: { excelAgentExperience: 'omni' }
+  };
+  let requests = 0;
+  const request = async body => {
+    requests++;
+    assert.equal(body.sourceVersion, revision);
+    assert.equal(body.templateParameters.excelAgentExperience, 'omni');
+    assert.equal(body.templateParameters.newCaseGroups, 'excelAgentDeclarative crossOfficeCowork');
+    assert.deepEqual(JSON.parse(body.templateParameters.newCaseSelection), selection);
+    return { id: 42 };
+  };
+  const receipt = await queueAdoDraftBuild(config, ledger, current, repo, revision, request);
+  assert.deepEqual(receipt.caseSelection, selection);
+  await assert.rejects(queueAdoDraftBuild(config, ledger, current, repo, revision, request),
+    /already started/);
+  assert.equal(requests, 1);
+  await assert.rejects(newCaseBuildSelection(current, baseRevision), /current authored revision/);
+  repo.draftBuild.templateParameters.newCaseSelection = '{}';
+  await assert.rejects(queueAdoDraftBuild(config, ledger, current, repo, revision, request),
+    /controller-owned/);
+  assert.equal(requests, 1);
+});
+test('new-case builds reject empty, existing-only, non-regular and excessive selections', async t => {
+  const { repo, job, g } = await fixture(t);
+  const baseRevision = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  const current = { ...job, workspace: repo.referenceCheckout, base_revision: baseRevision };
+  await assert.rejects(newCaseBuildSelection(current, baseRevision), /no full-suite fallback/);
+  writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 2;\n');
+  await g(['add', '.']);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Update existing source']);
+  const updated = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  await assert.rejects(newCaseBuildSelection(current, updated), /no full-suite fallback/);
+  const oid = (await g(['hash-object', '-w', 'src/value.js'])).stdout.trim();
+  await g(['update-index', '--add', '--cacheinfo',
+    `120000,${oid},ooui/apps/excel-agent-declarative-e2e/declarative/scenarios/link.yaml`]);
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Non-regular scenario']);
+  const linked = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  await assert.rejects(newCaseBuildSelection(current, linked), /regular scenario files/);
+  await g(['update-index', '--force-remove',
+    'ooui/apps/excel-agent-declarative-e2e/declarative/scenarios/link.yaml']);
+  for (let batch = 0; batch < 2; batch++) {
+    const entries = Array.from({ length: 50 }, (_, index) => [
+      '--cacheinfo',
+      `100644,${oid},ooui/apps/excel-agent-declarative-e2e/declarative/scenarios/${batch}-${index}-${'x'.repeat(300)}.yaml`
+    ]).flat();
+    await g(['update-index', '--add', ...entries]);
+  }
+  await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Excessive selection parameter']);
+  const excessive = (await g(['rev-parse', 'HEAD'])).stdout.trim();
+  await assert.rejects(newCaseBuildSelection(current, excessive), /pipeline parameter limit/);
+});
 test('ADO draft provider uses a configured user source branch namespace', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.remote = 'https://dev.azure.com/test/project/_git/fixture';
@@ -2163,7 +2404,7 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
 });
-test('planned OA skill path creates a source-bound validated draft result through the controller', async t => {
+test('planned OA skill path reconciles a landed product fix and creates a source-bound test-only draft result', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
@@ -2188,9 +2429,13 @@ test('planned OA skill path creates a source-bound validated draft result throug
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--quiet', '-m', 'Synthetic OA fixture']);
-  const evidence = addEvidence(ctx.ledger, 'oa-1', '1', { fixture: true }, 'authenticated-source');
+  const record = adoRecord(adoItem(1), 'Synthetic resolved coverage', now());
+  const productFix = 'https://example.invalid/product/pull/42';
+  record.links = [{ url: productFix, relation: 'ArtifactLink', evidenceId: null, access: 'not-followed-out-of-scope' }];
+  const evidence = ctx.ledger.evidence(record, { id: 1, rev: 1, fields: record.fields, relations: record.links }, 'fixture');
   const investigation = review(evidence);
   investigation.repoIds = [repo.id];
+  investigation.existingFixes = [productFix];
   investigation.observedBehavior = 'OA behavior lacks a focused integration regression test.';
   investigation.expectedBehavior = 'The established behavior is covered by a focused integration test.';
   ctx.ledger.put(investigation);
@@ -2213,13 +2458,25 @@ test('planned OA skill path creates a source-bound validated draft result throug
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  const plan = recordTestCoveragePlan(ctx.ledger, {
+  let plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
     searchStatus: 'complete', existingTests: [], coverageGaps: ['No focused regression test exists.'],
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });
+  assert.throws(() => makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id),
+    /Existing fix requires/);
+  plan = recordTestCoveragePlan(ctx.ledger, { ...plan, existingFixesReview: {
+    investigationId: investigation.id, investigationVersion: investigation.version,
+    evidenceIds: investigation.evidenceIds, planId: plan.id, planVersion: plan.version + 1,
+    sourceRevision: baseRevision,
+    review: { method: investigation.review.method, reviewer: 'synthetic-coverage-review', reviewedAt: now() },
+    fixes: [{ url: productFix, disposition: 'product-fix-with-remaining-coverage-gap',
+      rationale: 'The product implementation is fixed on this base, but the focused regression assertion is absent.' }]
+  } });
   const assignment = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id);
+  assert.deepEqual(ctx.ledger.get('investigation', investigation.id).existingFixes, [productFix]);
+  assert.equal(ctx.ledger.get('evidence', evidence.id).links[0].url, productFix);
   const rejected = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
     binding: repo.skillBindings[0],
     skillPath: repo.skillBindings[0].skillPath,

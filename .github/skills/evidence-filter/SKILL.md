@@ -29,6 +29,19 @@ Selecting this role does not launch a model or grant execution permission. Quali
 hosted FILTER execution still requires the existing private transport and its
 explicit authorization; it is not a public CLI capability.
 
+ADO inputs must be Resolved or Closed with
+`Microsoft.VSTS.Common.ResolvedReason` Fixed or Duplicate. Missing/other
+resolutions block the input; `System.Reason` is not a fallback. A resolved
+duplicate is not categorically excluded because its canonical bug is outside
+the area. Preserve exact identities and relation references without fetching
+the target or claiming cross-record canonical reconciliation. Apply genuine
+scanner exclusions independently. Older noncohort ledgers remain immutable;
+do not relabel them as an accepted regression cohort.
+Retain known product-fix URLs in candidate `existingFixes` rather than omitting
+them to pass dispatch. The test-only handoff can carry the exact-source
+`routing.existingFixesReview`; see the coverage-reconciliation contract in
+README.md. Remaining coverage must be established independently of the fix.
+
 ## Procedure
 
 For an already-reviewed, selected saved source, `agent filter replay-review`

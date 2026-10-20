@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-const scenario = JSON.parse(readFileSync(
-  'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8'));
+const scenarioPath = process.argv[2];
+assert.equal(typeof scenarioPath, 'string');
+const scenario = JSON.parse(readFileSync(scenarioPath, 'utf8'));
 const scratchRoot = mkdtempSync(join(tmpdir(), 'synthetic-1js-repair-'));
 const unownedResource = join(scratchRoot, 'unowned-session.json');
 writeFileSync(unownedResource, 'preserve-this-session');

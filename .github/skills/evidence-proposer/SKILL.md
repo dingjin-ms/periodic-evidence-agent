@@ -46,6 +46,14 @@ These are internal implementations of Proposer, not additional top-level roles.
 Follow the selected procedure and source-pinned native skill in the isolated
 workspace. Never execute in the reference checkout.
 
+Resolved/Closed ADO evidence is regression input only when its captured
+`Microsoft.VSTS.Common.ResolvedReason` is Fixed or Duplicate and the controller
+admits a current, qualified, bounded test-only coverage assignment. A terminal
+status or product-fix link alone is not authority to execute. Preserve
+`existingFixes` and its source-bound coverage reconciliation; satisfied,
+in-flight, unknown or changed work stays blocked. Do not fetch an out-of-area
+canonical duplicate or infer that its work has been reconciled.
+
 Keep the existing backend in charge. The restricted SDK model submits through
 `pilot_finish`; the controller owns validation and publication. App-native work
 uses its existing host permissions and claim/bind/result protocol. Do not create

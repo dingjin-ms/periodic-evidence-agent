@@ -1,11 +1,22 @@
 # Agency executor integration
 
+> This document describes hosted Agency task reservation and reconciliation.
+> The opt-in [local and remote Agency authoring providers](AGENCY-LOCAL-AUTHORING.md)
+> are separate transports that keep final validation and publication on the
+> Controller path. Neither model is a merge authority.
+
 The local runtime and SQLite ledger remain the scheduler and state owner.
 `collector`, `filter`, and `proposer` are the only selectable roles. Agency is
 an explicitly qualified task executor, not a replacement main controller or a
 replacement model callback. Local execution, including qualified local E2E
 harnesses, remains the example default. Both proposer implementations are
 available through the per-repository executor flight below.
+
+The `agency-remote` authoring provider is not this hosted executor. It delegates
+only source investigation and authoring, transports one audited result commit
+back to the Controller, and leaves validation, repair policy, final push and
+Draft PR creation local. Hosted execution instead reserves and reconciles a
+qualified externally owned task/result lifecycle.
 
 This module does not contain endpoints, authentication, private repository
 identifiers, a provider client, or automatic polling/submission. Resolve these

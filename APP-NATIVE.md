@@ -37,6 +37,16 @@ discovered newly added project skills. No global installation was performed.
 Product project sessions do not automatically inherit this project's skill
 files; supply the selected procedure and durable assignment when handing off.
 
+`send-teams-notification` is a separate reusable utility for explicitly
+authorized channel messages from any task/session. It uses the configured Flow
+bot sender, optional verified user mentions and shared durable delivery
+receipts. It is not a fourth role, a scheduler, or a new `agent ROLE` operation.
+See [its procedure](.github/skills/send-teams-notification/SKILL.md) and
+[sender setup](README.md#explicit-teams-notifications). Another project can
+load the utility by adding this notification checkout as an allowed directory;
+the executing identity still needs its own approved configuration and Azure
+permissions. No role-specific publication restriction is overridden.
+
 Skills separate procedures, not operating-system permissions or running agents.
 They neither launch sessions nor authorize scans just by being installed.
 The collector and reviewer currently share the configured durable coordinator
@@ -381,8 +391,15 @@ npm run pilot -- app-ado --run RUN_ID --pass ado:created --collect
 npm run pilot -- app-ado --run RUN_ID --pass ado:changed --collect
 ```
 
-Both preserve the approved area, Bug/non-Removed filters and explicit UTC
-window. Changed observations do not inflate new-cohort counts.
+Both preserve the approved area, Bug type and explicit half-open UTC window.
+The regression cohort requires state **Resolved or Closed** and the captured
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**. Query selection,
+post-fetch guards and receipt replay enforce the same predicate. Missing,
+unrecognized or other resolutions block acceptance; `System.Reason` never
+substitutes for the resolution field. Changed observations do not inflate
+new-cohort counts. Duplicate resolution does not exclude an in-area bug whose
+canonical target is elsewhere. Exact source identities and relation references
+are retained without fetching the target or asserting canonical deduplication.
 Each pass establishes an asOf snapshot, then queries and batches by it.
 Native identity validation precedes service reads. Auth failure in one pass
 blocks the other; operations are journaled before reads to prevent duplicate
@@ -407,6 +424,9 @@ deterministic scoped collector. The batch also requires
 Imported principal receipts are app-reported, not independent local auth.
 Complete passes alone advance `app:<pass>` cursors; failures retain prior
 committed cursors. Revisions and captures deduplicate across created/changed.
+Older noncohort receipts do not satisfy the new query/input contract. They remain
+immutable historical evidence; do not rewrite them or claim they establish the
+new cohort.
 
 ### Importing an external app receipt bundle
 
@@ -669,10 +689,15 @@ npm run pilot -- filter-title-index --file .\private\sources.json --output .\pri
 
 The immutable `filter-title-index-v1` artifact contains all deduplicated evidence
 IDs, titles, source kind/namespace/record ID/revision/version basis, provenance,
-capture hashes/references, source snapshot fingerprints and the 14-exclusion
+capture hashes/references, ADO state/resolution selectors, source snapshot fingerprints and the 14-exclusion
 policy. It does not include descriptions, RCA, full bodies or capture content.
 Titles and identity are projected from read-only SQLite; original records and
 cursors are untouched. Missing or whitespace-only titles remain explicit.
+ADO cohort eligibility is checked before title screening, full-batch loading,
+captured-evidence import and held Stage2 handoffs, including unscreened inputs.
+An ineligible or missing-resolution record blocks the input rather than silently
+dropping a member or rewriting a frozen ledger. Fixed/Duplicate eligibility does
+not waive genuine exclusions, source-bound coverage review or dispatch gates.
 
 An agent or human then writes `filter-title-decisions-v1`; the schema is
 `scaffold/contracts.schema.json#/$defs/filterTitleDecisions`. Required envelope:

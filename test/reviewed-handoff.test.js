@@ -9,7 +9,9 @@ import { Ledger } from '../src/ledger.js';
 import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
-import { dispatch, command, provision, runValidation } from '../src/workers.js';
+import {
+  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation
+} from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import {
   normalizeSkillInput, repositoryValidationContract, skillQualificationId
@@ -66,7 +68,8 @@ async function setup(t, { inputFormat = null } = {}) {
   config.limits = {
     ...config.limits,
     maxItems: 100,
-    workerMaxToolCalls: 20
+    workerMaxToolCalls: 20,
+    workerMinutes: 1
   };
   config.limits.maxItems = 10;
   config.limits.workerMaxToolCalls = 20;
@@ -136,6 +139,7 @@ async function addOneJsRepository(ctx, {
   const remote = join(ctx.root, '1js-remote.git');
   const skillPath = '.github/skills/author-declarative-e2e-test/SKILL.md';
   const scenarioPrefix = 'ooui/apps/cross-office-client-e2e/scenarios';
+  const scenarioPath = `${scenarioPrefix}/bizchat-create-canary-excel${enableDraftBuild ? '/scenario' : ''}.yaml`;
   mkdirSync(join(reference, '.github', 'skills', 'author-declarative-e2e-test'), { recursive: true });
   mkdirSync(join(reference, scenarioPrefix), { recursive: true });
   mkdirSync(join(reference, 'scripts'), { recursive: true });
@@ -144,7 +148,7 @@ async function addOneJsRepository(ctx, {
   writeFileSync(join(reference, scenarioPrefix, 'existing.yaml'), 'name: existing\n');
   writeFileSync(join(reference, 'scripts', 'validate-generated.mjs'),
     validationScript ?? ("import { readFileSync } from 'node:fs';\n" +
-    "const text = readFileSync('ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8');\n" +
+    `const text = readFileSync('${scenarioPath}', 'utf8');\n` +
     "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n"));
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
@@ -170,7 +174,7 @@ async function addOneJsRepository(ctx, {
       approved: true,
       isolationVerified: true,
       executable: process.execPath,
-      args: ['scripts/validate-generated.mjs'],
+      args: ['scripts/validate-generated.mjs', scenarioPath],
       timeoutMs: 10000
     }],
     skillBindings: [{
@@ -220,7 +224,7 @@ async function addOneJsRepository(ctx, {
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: true, push: true, createDraftPR: true }
   });
-  return { repo, reference, remote, baseRevision };
+  return { repo, reference, remote, baseRevision, scenarioPath };
 }
 
 async function blockedPreModelFixture(t, mutateResult = () => {}) {
@@ -339,6 +343,16 @@ test('reviewed handoff fixture prepares real planning and assignment records', a
   assert.equal(prepared.investigation.handoffEligibility, 'eligible');
   assert.equal(prepared.testCoveragePlan.sourceRevision, baseRevision);
   assert.equal(prepared.assignment.skillBindingId, 'oa-integration-test-core');
+  assert.equal(prepared.assignment.authoringProvider, undefined);
+  assert.equal(prepared.assignment.id, `assignment-${hash(JSON.stringify([
+    prepared.investigation.id, prepared.investigation.version, 'office-agent', 'improvement',
+    prepared.assignment.testCoveragePlanId, prepared.assignment.testCoveragePlanVersion,
+    prepared.assignment.requestedOutcome, prepared.assignment.skillBindingId,
+    prepared.assignment.skillInput,
+    prepared.assignment.allowedWritePrefixes,
+    prepared.assignment.allowedWriteFiles,
+    prepared.assignment.skillQualification
+  ]))}`);
   assert.match(prepared.assignment.questions[0],
     /contracts\/apps\/onenote\/omni-onenote-bootstrap-progress\.contract\.test\.ts/);
   assert.equal(prepared.job.state, 'prepared');
@@ -589,7 +603,7 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
         assert.equal(assignment.skillInput.items[0].inputItemId, 'bizchat-create-canary-excel');
         assert.match(skill.instructions, /Fixture declarative E2E skill/);
         toolkit.write(
-          'ooui\\apps\\cross-office-client-e2e\\scenarios\\bizchat-create-canary-excel.yaml',
+          oneJs.scenarioPath.replaceAll('/', '\\'),
           'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
         );
         toolkit.finish({
@@ -600,9 +614,7 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',
-            changedFiles: [
-              'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml'
-            ],
+            changedFiles: [oneJs.scenarioPath],
             testsAddedOrUpdated: ['bizchat-create-canary-excel'],
             behaviorCardsAddedOrUpdated: [],
             unknowns: [],
@@ -611,19 +623,20 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
         });
       },
       queueDraftBuild: async (currentConfig, currentLedger, current, repo, revision) => {
-        buildQueueCalls++;
-        return {
-          id: repo.draftBuild.id,
-          provider: 'ado',
-          definitionId: repo.draftBuild.definitionId,
-          buildId: 57329999,
-          url: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999',
-          status: 'queued',
-          sourceRevision: revision,
-          sourceRef: `refs/heads/user/fixture/periodic-evidence-agent/${current.id}`,
-          queuedAt: now(),
-          blocking: false
-        };
+        return queueAdoDraftBuild(currentConfig, currentLedger, current, repo, revision, async body => {
+          buildQueueCalls++;
+          assert.deepEqual(JSON.parse(body.templateParameters.newCaseSelection), {
+            format: '1js-new-case-selection-v1',
+            baseRevision: oneJs.baseRevision,
+            sourceRevision: revision,
+            scenarioPaths: [oneJs.scenarioPath]
+          });
+          assert.equal(body.templateParameters.newCaseGroups, 'crossOfficeCowork');
+          return {
+            id: 57329999,
+            _links: { web: { href: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999' } }
+          };
+        });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision, proposal) => {
         draftDescription = proposal.description;
@@ -641,9 +654,67 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
   assert.equal(executed.result.remoteValidation[0].status, 'queued');
   assert.equal(executed.result.remoteValidation[0].blocking, false);
   assert.equal(executed.result.remoteValidation[0].sourceRevision, executed.result.sourceRevision);
+  assert.deepEqual(executed.result.remoteValidation[0].caseSelection.scenarioPaths, [oneJs.scenarioPath]);
   assert.match(draftDescription, /Remote validation/);
   assert.match(draftDescription, /buildId=57329999/);
   assert.match(draftDescription, /does not wait for completion/);
+  assert.match(draftDescription, /new cases only/);
+  assert.ok(draftDescription.includes(oneJs.scenarioPath));
+});
+
+test('1JS publication blocks before push when the authored diff has no added cases', async t => {
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx, { enableDraftBuild: true });
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  let pushed = false;
+  let queued = false;
+  let drafted = false;
+  await assert.rejects(acceptReviewedHandoff(ctx.config, ctx.ledger, oneJsFixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runModel: async (currentConfig, currentLedger, current, assignment, investigation, toolkit) => {
+        const path = 'ooui/apps/cross-office-client-e2e/scenarios/existing.yaml';
+        toolkit.write(path, 'name: Existing scenario updated\n');
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: 'Updated existing coverage only.',
+          title: 'Update existing coverage',
+          description: 'No new scenario.',
+          skillResult: {
+            status: 'succeeded',
+            classification: 'missing-test-coverage',
+            changedFiles: [path],
+            testsAddedOrUpdated: ['existing'],
+            behaviorCardsAddedOrUpdated: [],
+            unknowns: [],
+            needsHumanDecision: false
+          }
+        });
+      },
+      runValidation: async (currentConfig, currentLedger, current, repo, revision) => [{
+        gateId: 'fixture-1js-local-five',
+        sourceRevision: revision,
+        commandOrRunUrl: 'fixture-local-validation',
+        status: 'passed',
+        artifactRefs: ['fixture-validation.json'],
+        owner: repo.owner,
+        nextCheckAt: null,
+        attemptCount: 1,
+        blockedReason: null
+      }],
+      pushBranch: async () => { pushed = true; },
+      queueDraftBuild: async () => { queued = true; },
+      createDraft: async () => { drafted = true; }
+    }
+  }), /no full-suite fallback/);
+  assert.equal(pushed, false);
+  assert.equal(queued, false);
+  assert.equal(drafted, false);
 });
 
 test('OA and 1JS bundle executes as two isolated assignments in one controller ledger', async t => {
@@ -889,8 +960,7 @@ test(`1JS edited-commit repair budget ${repairBudget} preserves failures and val
   ctx.config.limits.maxValidationRepairRounds = repairBudget;
   ctx.config.limits.maxValidationInfrastructureRetries = 0;
   await command('git', ['init', '--bare', '--quiet', oneJs.remote], ctx.root);
-  const scenarioPath =
-    'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml';
+  const scenarioPath = oneJs.scenarioPath;
   const referenceSkill = readFileSync(join(oneJs.reference, oneJs.repo.skillBindings[0].skillPath));
   const publicationCalls = [];
   const reports = [];
@@ -958,19 +1028,24 @@ test(`1JS edited-commit repair budget ${repairBudget} preserves failures and val
           }
         });
       },
-      queueDraftBuild: async (_config, currentLedger, current, repo, revision) => {
+      queueDraftBuild: async (currentConfig, currentLedger, current, repo, revision) => {
         assert.equal(repairBudget, 2);
         assertPriorValidationCleaned(currentLedger, current.id);
         assert.equal(revision, revisions.at(-1));
-        publicationCalls.push({ kind: 'build', revision });
-        return {
-          id: repo.draftBuild.id, provider: 'ado', definitionId: 36540,
-          buildId: 57329999,
-          url: 'https://example.invalid/1js/build/57329999',
-          status: 'queued', sourceRevision: revision,
-          sourceRef: `refs/heads/user/fixture/periodic-evidence-agent/${current.id}`,
-          queuedAt: now(), blocking: false
-        };
+        return queueAdoDraftBuild(currentConfig, currentLedger, current, repo, revision, async body => {
+          assert.deepEqual(JSON.parse(body.templateParameters.newCaseSelection), {
+            format: '1js-new-case-selection-v1',
+            baseRevision: oneJs.baseRevision,
+            sourceRevision: revision,
+            scenarioPaths: [scenarioPath]
+          });
+          assert.equal(body.templateParameters.newCaseGroups, 'crossOfficeCowork');
+          publicationCalls.push({ kind: 'build', revision });
+          return {
+            id: 57329999,
+            _links: { web: { href: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999' } }
+          };
+        });
       },
       createDraft: async (_config, _ledger, _current, _repo, revision, proposal) => {
         assert.equal(repairBudget, 2);
@@ -1039,6 +1114,184 @@ test(`1JS edited-commit repair budget ${repairBudget} preserves failures and val
     assert.deepEqual(reports[2].runs.map(run => run.status), Array(5).fill('passed'));
     assert.equal(executed.result.remoteValidation[0].sourceRevision, revisions[2]);
   }
+});
+
+test('Agency authoring provider uses the same local repair loop and exact session', async t => {
+  const { root, remote, config, ledger } = await setup(t);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.limits.maxValidationRepairRounds = 2;
+  config.authoringProviders = {
+    'agency-oa': {
+      type: 'agency-local',
+      executable: process.execPath,
+      profile: 'periodic-evidence-isolated'
+    }
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-oa';
+  await command('git', ['init', '--bare', '--quiet', remote], root);
+  const sessions = [];
+  const prompts = [];
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runAgencyLocal: async (currentConfig, current, toolkit, prompt, provider, authoring) => {
+        sessions.push(current.session_id);
+        prompts.push(prompt);
+        assert.equal(provider, config.authoringProviders['agency-oa']);
+        const round = repairDrill.rounds[authoring.round];
+        assert.ok(round);
+        for (const [path, content] of Object.entries(round.writes))
+          toolkit.write(path.replaceAll('/', '\\'), content);
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: round.findings,
+          title: round.title,
+          description: 'Authorized synthetic reviewed-handoff draft.',
+          skillResult: repairDrill.skillResult
+        });
+      },
+      createDraft: async (currentConfig, currentLedger, current, repo, revision) => ({
+        url: 'https://example.invalid/reviewed-handoff/draft/agency-repair',
+        isDraft: true,
+        headRevision: revision
+      })
+    }
+  });
+  assert.equal(executed.result.outcome, 'draft-pr-validated');
+  assert.equal(new Set(sessions).size, 1);
+  assert.equal(sessions.length, 2);
+  assert.match(prompts[0], /"round":0/);
+  assert.match(prompts[1], /"round":1/);
+  assert.match(prompts[1], /"status":"failed"/);
+  assert.deepEqual(executed.result.validationAttempts.map(attempt =>
+    attempt.validation[0].status), repairDrill.expectedValidationStatuses);
+  assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
+  assert.equal(executed.result.toolUsage.used, 5);
+});
+
+test('Agency remote authoring imports only the remote diff into the local repair loop', async t => {
+  const { root, remote, config, ledger } = await setup(t);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.limits.maxValidationRepairRounds = 2;
+  config.authoringProviders = {
+    'agency-remote-oa': {
+      type: 'agency-remote',
+      executable: process.execPath,
+      profile: 'qualified-remote',
+      pollSeconds: 1
+    }
+  };
+  config.repositories[0].pr = {
+    provider: 'ado',
+    organization: 'fixture',
+    project: 'fixture',
+    repositoryId: 'fixture',
+    targetRef: 'refs/heads/main'
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-remote-oa';
+  await command('git', ['init', '--bare', '--quiet', remote], root);
+  const prompts = [];
+  let validationPrepared = false;
+  const executed = await acceptReviewedHandoff(config, ledger, fixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      prepareValidation: async () => {
+        validationPrepared = true;
+        return {};
+      },
+      agencyRemote: {
+        getToken: async () => 'synthetic-token',
+        executeRemoteJob: async (currentConfig, currentLedger, current, repo,
+          provider, input) => {
+          assert.equal(validationPrepared, true);
+          prompts.push(input.prompt);
+          const round = repairDrill.rounds[input.round];
+          assert.ok(round);
+          const workspace = join(root, `agency-round-${input.round}`);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'clone', '--quiet', remote, workspace], root);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'checkout', '--quiet', '-b',
+            `agency-result-${input.round}`, `origin/${input.branch}`], workspace);
+          for (const [path, content] of Object.entries(round.writes)) {
+            mkdirSync(join(workspace, path, '..'), { recursive: true });
+            writeFileSync(join(workspace, path), content);
+          }
+          const resultPath = join(workspace,
+            '.periodic-evidence-agent', 'result.json');
+          mkdirSync(join(resultPath, '..'), { recursive: true });
+          writeFileSync(resultPath, JSON.stringify({
+            schemaVersion: '1.0',
+            assignmentId: current.id,
+            round: input.round,
+            baseRevision: input.baseRevision,
+            proposal: {
+              outcome: 'propose-change',
+              findings: round.findings,
+              title: round.title,
+              description: 'Authorized synthetic Agency remote draft.',
+              skillResult: repairDrill.skillResult
+            }
+          }));
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', 'add', '--all'], workspace);
+          await command('git', ['-c', 'core.autocrlf=false',
+            '-c', 'core.safecrlf=false', '-c', 'user.name=Agency Fixture',
+            '-c', 'user.email=agency@example.invalid', 'commit', '--quiet',
+            '-m', `Agency fixture round ${input.round}`], workspace);
+          const sourceBranch = `agency/result-${input.round}`;
+          await command('git', ['push', '--quiet', 'origin',
+            `HEAD:refs/heads/${sourceBranch}`], workspace);
+          return { sourceBranch: `refs/heads/${sourceBranch}` };
+        }
+      },
+      createDraft: async (currentConfig, currentLedger, current, repo,
+        revision) => ({
+        url: 'https://example.invalid/reviewed-handoff/draft/agency-remote-repair',
+        isDraft: true,
+        headRevision: revision
+      })
+    }
+  });
+  assert.equal(executed.result.outcome, 'draft-pr-validated');
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0], /Agency remote checkout/);
+  assert.match(prompts[0], /\.periodic-evidence-agent\/result\.json/);
+  assert.match(prompts[1], /"status":"failed"/);
+  assert.deepEqual(executed.result.validationAttempts.map(attempt =>
+    attempt.validation[0].status), repairDrill.expectedValidationStatuses);
+  assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used),
+    [3, 2]);
+  assert.equal(executed.result.skillExecution.status, 'succeeded');
+});
+
+test('prepared Agency assignments reject provider configuration drift', async t => {
+  const { config, ledger } = await setup(t);
+  config.authoringProviders = {
+    'agency-oa': {
+      type: 'agency-local',
+      executable: process.execPath,
+      profile: 'periodic-evidence-isolated'
+    }
+  };
+  config.repositories[0].skillBindings[0].authoringProvider = 'agency-oa';
+  const prepared = prepareReviewedHandoff(config, ledger, fixture);
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.authoringProviders['agency-oa'].profile = 'changed-after-preparation';
+  await assert.rejects(dispatchReviewedHandoff(config, ledger, prepared.assignment.id),
+    /changed after assignment preparation|Assignment inputs/);
+  assert.equal(ledger.job(prepared.assignment.id).state, 'prepared');
 });
 
 for (const repairBudget of [0, 1])

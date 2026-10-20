@@ -1064,6 +1064,26 @@ export async function verifyPreparedOutputs(
   };
   return guard ? withActivePreparedOutputGuard(guard, verify) : verify();
 }
+async function requireRecordedOutputVerification(
+  receiptPath, workspace, outputs, capturedEntries, stageId, message) {
+  const startedAt = now();
+  const verification = await verifyPreparedOutputs(
+    receiptPath, workspace, outputs, capturedEntries);
+  if (verification.valid) return;
+  const error = new PilotError('blocked-validation',
+    message + (verification.reason ? ` (${verification.reason})` : ''));
+  try {
+    error.stageTelemetry = stageTelemetry(
+      stageId, startedAt, 'invalidated', null, verification);
+  } catch {
+    error.secondaryError = {
+      code: 'verification-telemetry-failed',
+      message: 'Prepared-output verification telemetry could not be constructed.',
+      stage: stageId
+    };
+  }
+  throw error;
+}
 async function preparedOutputsRemainValid(receipt) {
   return verifyPreparedOutputs(
     receipt.receiptPath, receipt.workspace, receipt.outputs);
@@ -1510,13 +1530,10 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      const verification =
-        await verifyPreparedOutputs(
-          receiptPath, workspace, receipt.outputs, capturedOutputs.entries);
-      requireThat(verification.valid,
-        `Gate ${gate.id} dependency snapshot changed while it was recorded` +
-        `${verification.reason ? ` (${verification.reason})` : ''}`,
-        'blocked-validation');
+      await requireRecordedOutputVerification(
+        receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
+        'dependency-output-verification',
+        `Gate ${gate.id} dependency snapshot changed while it was recorded`);
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
         outputsVerified: true
@@ -1647,10 +1664,10 @@ async function prepareValidationGate(config, job, repo, gate, revision,
       };
       const receipt = { ...body, integrity: hash(json(body)) };
       writeFileSync(receiptPath, json(receipt), { mode: 0o600 });
-      requireThat((await verifyPreparedOutputs(
-        receiptPath, workspace, receipt.outputs, capturedOutputs.entries)).valid,
-      `Gate ${gate.id} prepared outputs changed while they were recorded`,
-      'blocked-validation');
+      await requireRecordedOutputVerification(
+        receiptPath, workspace, receipt.outputs, capturedOutputs.entries,
+        'compile-output-verification',
+        `Gate ${gate.id} prepared outputs changed while they were recorded`);
       return {
         ...receipt, receiptPath, workspace, profile, plan, cache: 'miss',
         dependencyCache: dependency.cache, dependencyReceiptPath: dependency.receiptPath
@@ -1808,6 +1825,7 @@ function validationError(error, legacyRunner = false) {
     return { status: 'blocked', blockedReason: error.code, output: {
       stdout: error.stdout ?? '', stderr: error.stderr || safeError(error).message,
       exitCode: error.code, timeout: Boolean(error.killed),
+      ...(error.secondaryError ? { secondaryError: error.secondaryError } : {}),
       ...(error.nativeGitExitCode !== undefined ? { nativeGitExitCode: error.nativeGitExitCode } : {})
     } };
   const unavailable = typeof error.code === 'string';

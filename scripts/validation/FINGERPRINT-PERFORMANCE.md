@@ -89,6 +89,41 @@ entries. Queue sums overlap across workers and cannot be added to wall time.
 **Physical I/O wait, device throughput and antivirus attribution remain
 unmeasured.** No size/mtime fast path replaces complete content hashes.
 
+### Preparation rejection diagnostics
+
+If a newly recorded dependency or compile snapshot fails its output
+verification, preparation remains blocked. Its `preparationTimings` gains a
+failure-only `dependency-output-verification` or
+`compile-output-verification` stage with `cache: "invalidated"`.
+The stage's `details` retains the verifier's original `valid`, `method`,
+`reason`, watcher/settlement `details` and, when returned, `fullVerification`.
+The error message also includes the rejection reason. A content fingerprint
+mismatch is distinguishable from an unknown filename event or a watcher error;
+`method: "content"` alone does not rule out watcher uncertainty.
+
+These diagnostics propagate through `prepareValidation` and the persisted
+`runValidation` failure artifact, including when validation consumes an already
+failed preparation without retrying it. They do not alter successful receipt
+bytes, integrity, cache keys or hash coverage. A written receipt is not evidence
+of accepted preparation. Missing telemetry is not an invented zero: an early
+watch rejection can omit `fullVerification`, and a supplied captured baseline
+leaves `fullVerification.baseline` null.
+
+If constructing that telemetry fails, the original `blocked-validation`
+rejection, reason and classification remain primary. A fixed
+`output.secondaryError` with code `verification-telemetry-failed` identifies
+the affected verification stage. It propagates through the preparation's
+`failure.output` and the persisted validation artifact. No raw diagnostic
+exception message, name, code, stack or attached payload is retained, including
+for a controller error; no substitute timing measurements are invented.
+This protects diagnostic construction, not arbitrary clock or storage failure
+elsewhere in validation.
+
+The failure stage measures only that verification call, not the earlier output
+capture or the entire preparation. Its nested wall/CPU/task timings overlap the
+stage and must not be added to it. This change cannot recover details discarded
+by older failures and does not itself establish real product native cache reuse.
+
 ## Explicit local benchmark
 
 ```powershell

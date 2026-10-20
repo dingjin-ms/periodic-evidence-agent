@@ -15,9 +15,13 @@ export function nativeTemporaryDirectory(stateDirectory, key) {
   return path;
 }
 
-export function nativeCommand(executable, args, cwd, timeout, env, { signal } = {}) {
+export async function nativeCommand(executable, args, cwd, timeout, env, { signal } = {}) {
   const options = { cwd, env, signal, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' };
   if (process.platform !== 'win32') return exec(executable, args, options);
+  const pathExt = Object.entries(env ?? {}).find(([key]) => key.toUpperCase() === 'PATHEXT')?.[1];
+  requireThat(typeof pathExt === 'string' && pathExt.split(';').some(value => value.toUpperCase() === '.EXE'),
+    'Native validation requires PATHEXT including .EXE; restore the host environment before retrying',
+    'blocked-native-environment');
   const host = /^pwsh(?:\.exe)?$/i.test(basename(executable)) ? executable : 'pwsh.exe';
   return exec(host,
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', supervisor], {

@@ -83,6 +83,51 @@ test('app external auth failure overrides continuation and preserves earlier rea
   assert.equal(pass.evidenceCount, 1); assert.equal(pass.nextRequest, null); assert.equal(pass.cursor, null);
   await assert.rejects(appendApp(config, ledger, 'test-run', event([identityCall(config)])), /terminal/);
 });
+test('app empty-subject replies commit under the existing item cap without changing raw captures', async t => {
+  const { config, ledger } = setup(t, { configure: config => { config.dryRun.limits.maxItems = 3; } });
+  const root = { ...message(), subject: 'Root title' };
+  let status = await appendApp(config, ledger, 'test-run',
+    event([identityCall(config), call('page', rootPath(config), { value: [root] })]));
+  let pass = status.collection.find(p => p.pass === 'workiq:created');
+  const originalRoot = ledger.get('evidence', pass.evidenceIds[0]);
+  const replies = ['', null, 'unexamined'].map((subject, index) => ({
+    ...message(`reply-${index}`), replyToId: root.id, subject
+  }));
+  const receipt = event([call('replies', pass.nextRequest.entityUrls[0], { value: replies })]);
+  status = await appendApp(config, ledger, 'test-run', receipt);
+  pass = status.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'partial');
+  assert.equal(pass.readCalls, 3);
+  assert.equal(pass.evidenceCount, 3);
+  assert.equal(pass.examinedRecords, 3);
+  assert.equal(pass.returnedRecords, 4);
+  assert.equal(pass.unexaminedReturnedRecords, 1);
+  assert.equal(pass.cumulativeTraversal.threadsExhausted, 0);
+  assert.equal(pass.nextRequest, null);
+  assert.equal(pass.cursor, null);
+  assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.deepEqual(ledger.get('evidence', originalRoot.id), originalRoot);
+  const captured = pass.evidenceIds.map(id => ledger.get('evidence', id));
+  for (const record of captured.filter(record => record.fields.thread.isReply)) {
+    assert.equal(record.title, null);
+    const raw = replies.find(reply => reply.id === record.source.recordId);
+    assert.deepEqual(record.fields.message, raw);
+    assert.equal(record.capture.sha256, hash(json({ message: raw, parentContext: root })));
+  }
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE run_id=?').get('test-run').n, 2);
+});
+test('app malformed nonstring subjects still reject atomically instead of being dropped or normalized', async t => {
+  const { config, ledger } = setup(t);
+  const status = await appendApp(config, ledger, 'test-run',
+    event([identityCall(config), call('page', rootPath(config), { value: [message()] })]));
+  const prior = status.collection.find(p => p.pass === 'workiq:created');
+  await assert.rejects(appendApp(config, ledger, 'test-run', event([
+    call('bad-reply', prior.nextRequest.entityUrls[0], { value: [{ ...message('reply'), subject: false }] })
+  ])), error => error.code === 'invalid-record' && /data\/title/.test(error.message));
+  assert.deepEqual(appStatus(ledger, 'test-run').collection.find(p => p.pass === 'workiq:created'), prior);
+  assert.equal(ledger.all('evidence').length, 1);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE run_id=?').get('test-run').n, 1);
+});
 test('app records failed native me without inventing identity or clean empty collection', async t => {
   const { config, ledger } = setup(t);
   const failed = identityCall(config); delete failed.response; failed.failure = { code: 'blocked-auth', statusCode: 500 };

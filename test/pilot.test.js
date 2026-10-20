@@ -8,12 +8,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CopilotClient } from '@github/copilot-sdk';
 import { probeWorkiq } from '../scripts/Workiq-Auth-Repro.mjs';
 import { Ledger } from '../src/ledger.js';
-import { configAt, hash, json, now, exclusions, PilotError, boundedPath, validateRecord, workspaceCleanupPolicy, proposerExecutorFlight, validationLfsPaths } from '../src/common.js';
-import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, area, wiql, adoRecord } from '../src/sources.js';
+import { configAt, hash, json, now, exclusions, PilotError, Budget, boundedPath, validateRecord, workspaceCleanupPolicy, proposerExecutorFlight, validationLfsPaths } from '../src/common.js';
+import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, workiqTitle, area, wiql, adoRecord } from '../src/sources.js';
 import { dryRun } from '../src/dry-run.js';
-import { followRelated } from '../src/followup.js';
+import { followRelated, readRelatedWorkiq } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
@@ -3227,6 +3228,110 @@ test('WorkIQ exhausts root and reply pages, including new reply to old root', as
   assert.equal(captured[0].fields.parentContext.id, 'old');
   assert.equal(cursor.coverage[0].messagesExamined, 3);
   assert.equal(reads.length, 5);
+});
+
+test('WorkIQ titles normalize only empty or absent subjects and retain malformed values for validation', () => {
+  for (const subject of ['', null, undefined, '  Subject  ', ' ', 0, false, [], {}]) {
+    const record = evidenceEnvelope('workiq', 'workiq/test', 'test', null, 'https://example.invalid/message', 'test');
+    record.title = workiqTitle(subject);
+    assert.equal(record.title, subject === '' || subject == null ? null : subject);
+    if (subject == null || typeof subject === 'string') validateRecord(record);
+    else assert.throws(() => validateRecord(record), error => error.code === 'invalid-record');
+  }
+});
+
+test('WorkIQ collection normalizes root and reply titles without changing captured subjects in either lane', async t => {
+  const { config, ledger } = setup(t), seed = channelConfig(config), root = channelRoot(seed);
+  const parent = { ...message('parent'), subject: '' };
+  const replies = [
+    { ...message('empty'), subject: '' }, { ...message('null'), subject: null },
+    message('absent'), { ...message('named'), subject: '  Reply title  ' },
+    { ...message('space'), subject: ' ' }
+  ].map(reply => ({ ...reply, replyToId: parent.id }));
+  const original = structuredClone({ parent, replies });
+  for (const lane of ['created', 'changed']) {
+    const captured = [];
+    const cursor = await collectWorkiq(config, config.window, async (record, payload) => {
+      captured.push(ledger.evidence(record, payload, `title-${lane}`));
+    }, async path => {
+      if (path === principalPath) return principal(config);
+      const pathname = new URL(path, 'https://scope.invalid').pathname;
+      if (pathname === root) return { value: [parent] };
+      assert.equal(pathname, `${root}/parent/replies`);
+      return { value: replies };
+    }, lane);
+    assert.deepEqual(captured.map(record => record.title), [null, null, null, null, '  Reply title  ', ' ']);
+    assert.equal(cursor.coverage[0].messagesExamined, 6);
+    for (const record of captured) {
+      const raw = record.fields.message;
+      const payload = { message: raw, parentContext: raw.id === parent.id ? null : parent };
+      assert.equal(record.capture.sha256, hash(json(payload)));
+      assert.deepEqual(raw, raw.id === parent.id ? original.parent : original.replies.find(reply => reply.id === raw.id));
+    }
+  }
+  assert.deepEqual({ parent, replies }, original);
+});
+
+test('WorkIQ related reads normalize titles without changing source payloads', async t => {
+  const { config, root } = setup(t), seed = channelConfig(config);
+  config.runtime.cliPath = process.execPath;
+  config.runtime.workiqPluginDirectory = root;
+  const { session } = workiqLifecycle();
+  let current, reads, disconnects = 0;
+  session.disconnect = async () => { disconnects++; };
+  session.rpc.tools.execute = async ({ name, arguments: args }) => {
+    assert.equal(name, 'workiq-fetch');
+    const path = args.entityUrls[0]; reads.push(path);
+    const data = path === principalPath ? principal(config) : current;
+    return { resultType: 'success', textResultForLlm: json({ results: [{ statusCode: 200, data }] }) };
+  };
+  t.mock.method(CopilotClient.prototype, 'start', async () => {});
+  t.mock.method(CopilotClient.prototype, 'stop', async () => {});
+  t.mock.method(CopilotClient.prototype, 'createSession', async () => session);
+  const subjects = ['', null, undefined, '  Related title  ', ' '];
+  for (const subject of subjects) {
+    current = { ...message('related'), ...(subject === undefined ? {} : { subject }) };
+    reads = [];
+    const path = `${channelRoot(seed)}/parent/replies/related?$select=${messageSelect}`;
+    const { record, payload } = await readRelatedWorkiq(config,
+      { id: current.id, seed, parent: 'parent', path }, new Budget(config.limits));
+    validateRecord(record);
+    assert.equal(record.title, subject === '' || subject == null ? null : subject);
+    assert.deepEqual(payload, { message: current });
+    assert.deepEqual(record.fields.message, current);
+    assert.deepEqual(reads, [principalPath, path]);
+  }
+  assert.equal(disconnects, subjects.length);
+});
+
+test('WorkIQ tracked revisits normalize titles while preserving source subjects and revision hashes', async t => {
+  const { config, ledger } = setup(t), seed = channelConfig(config);
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  const subjects = ['', null, undefined, '  Updated title  ', ' '];
+  const updates = subjects.map((subject, index) => ({
+    ...message(`tracked-${index}`), etag: '2', ...(subject === undefined ? {} : { subject })
+  }));
+  for (const update of updates) {
+    const record = evidenceEnvelope('workiq', `workiq/${seed.teamId}/${seed.channelId}`,
+      update.id, '1', seed.url, 'generic unit fixture');
+    record.scopeId = `workiq:${seed.id}`; record.title = 'Previous title';
+    const evidence = ledger.evidence(record, { message: { ...update, etag: '1', subject: record.title } }, 'initial');
+    ledger.put(review(evidence));
+  }
+  const result = await revisitTracked(config, ledger, { workiq: async path => {
+    if (path === principalPath) return principal(config);
+    const id = new URL(path, 'https://scope.invalid').pathname.split('/').at(-1);
+    return structuredClone(updates.find(update => update.id === id));
+  } });
+  assert.equal(result[0].state, 'complete');
+  assert.equal(result[0].itemsRevisited, subjects.length);
+  for (const record of ledger.latestEvidence()) {
+    const update = updates.find(message => message.id === record.source.recordId);
+    assert.equal(record.title, update.subject === '' || update.subject == null ? null : update.subject);
+    assert.deepEqual(record.fields.message, update);
+    assert.equal(record.capture.sha256, hash(json({ message: update })));
+    assert.equal(ledger.trackedState(record).state, 'current');
+  }
 });
 
 test('WorkIQ paging rejects scope escape and cycles; item exhaustion preserves partial evidence and cursor', async t => {

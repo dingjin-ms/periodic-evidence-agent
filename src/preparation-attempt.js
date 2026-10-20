@@ -147,10 +147,24 @@ export async function runPreparationAttempt({
             requireThat(false, 'Parent progress observers must be synchronous',
               'blocked-preparation-progress');
           }
+        } else if (update.kind === 'materialization-step') {
+          requireThat(active.get(0)?.stage === 'source-materialization' &&
+            ['clone', 'checkout'].includes(update.step) &&
+            ['start', 'finish'].includes(update.phase),
+          'Unknown controller materialization progress', 'blocked-preparation-progress');
+          event('controller-materialization', { update });
         } else {
           requireThat(['start', 'complete', 'infrastructure-failed'].includes(update.kind),
             'Unknown controller progress record', 'blocked-preparation-progress');
           if (update.kind === 'complete') ended = true;
+          if (update.kind === 'infrastructure-failed') {
+            requireThat(['controller-start', 'source-clone', 'source-checkout',
+              'validation-preparation', 'result-publication'].includes(update.operation),
+            'Unknown controller failure operation', 'blocked-preparation-progress');
+            outcome.infrastructureFailure = {
+              operation: update.operation, diagnostic: update.diagnostic
+            };
+          }
           event('controller-lifecycle', { update });
         }
       }

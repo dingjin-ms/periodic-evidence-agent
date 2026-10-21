@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -63,7 +63,9 @@ test('SDX example binds a real profile and explicit test-only skill policy while
   const repo = JSON.parse(readFileSync('scaffold/1js-sdx.repository.example.json', 'utf8'));
   const profile = resolve('scripts/validation/1js-sdx-excel-integration.ps1');
   assert.equal(hash(readFileSync(profile)), repo.validationGates[0].profileSha256);
-  repo.validationGates[0].profilePath = relative(root, profile);
+  const fixtureProfile = join(root, 'sdx-validation.ps1');
+  copyFileSync(profile, fixtureProfile);
+  repo.validationGates[0].profilePath = relative(root, fixtureProfile);
   config.repositories = [repo];
   const path = join(root, 'pilot.local.json');
   writeFileSync(path, json(config));
@@ -348,6 +350,14 @@ test(`SDX dependency and compile clones preserve sparse closure and generated to
   assert.equal(existsSync(join(receipt.workspace, 'mono/generated/compiler.js')), true);
   assert.equal(existsSync(join(receipt.workspace, 'mono/packages/unrelated/src.js')), false);
   const dependency = JSON.parse(readFileSync(receipt.dependencyReceipt.path, 'utf8'));
+  const materialization = receipt.timings.find(stage => stage.id === 'dependency-materialization');
+  assert.equal(materialization.details.roots, dependency.outputs.paths.length);
+  for (const value of [materialization.details.copyDurationMs,
+    materialization.details.linkRebaseDurationMs,
+    materialization.details.fingerprint.durationMs,
+    materialization.details.fingerprint.processCpuMs])
+    assert.ok(Number.isFinite(value) && value >= 0, JSON.stringify(materialization));
+  assert.ok(materialization.durationMs >= materialization.details.fingerprint.durationMs - 1);
   assert.equal(dependency.inputs.dependencySnapshotVersion, 2);
   assert.ok(dependency.outputs.paths.includes('mono/node_modules'));
   assert.ok(dependency.outputs.paths.includes('mono/generated'));

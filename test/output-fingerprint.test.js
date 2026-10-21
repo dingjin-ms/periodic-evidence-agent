@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
+import { channel } from 'node:diagnostics_channel';
 import {
   outputPathFingerprint, outputPathFingerprintWithEntries,
   dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries
@@ -127,10 +128,96 @@ test('large native stores split into bounded tasks without changing generic tree
   assert.equal(await outputFingerprint(root, [path]), expectedHash);
   if (telemetry.taskCount != null) {
     assert.ok(telemetry.taskCount > 1);
+    assert.ok(telemetry.taskCount <= 4, JSON.stringify(telemetry));
     assert.equal(telemetry.hashedFileCount, 2100);
   }
   writeFileSync(join(packageRoot, '2099.js'), 'changed\n');
   assert.notEqual(await outputFingerprint(root, [path]), expectedHash);
+});
+
+test('generic tree batches stay bounded across the split threshold and multiple output roots', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-tree-batches-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const paths = ['midgard/.store', 'dist/empty', 'dist/value.js'];
+  mkdirSync(join(root, paths[0]), { recursive: true });
+  mkdirSync(join(root, paths[1]), { recursive: true });
+  writeFileSync(join(root, paths[2]), 'compiled\n');
+  let files = 0;
+  for (const count of [2047, 2048, 8192]) {
+    for (; files < count; files++)
+      writeFileSync(join(root, paths[0], `${files}.js`), `${files}\n`);
+    const expected = paths.map(path => outputPathFingerprintWithEntries(root, path));
+    const expectedHash = hash(JSON.stringify(expected.map(result => result.value)));
+    const telemetry = {};
+    const actual = await outputFingerprint(root, paths, true, telemetry);
+    assert.equal(actual.sha256, expectedHash);
+    assert.deepEqual(actual.entries, new Map(expected.flatMap(result => result.entries)));
+    assert.equal(await outputFingerprint(root, paths), expectedHash);
+    if (telemetry.taskCount != null) {
+      assert.ok(telemetry.taskCount <= Math.ceil(count / 2048) + 1, JSON.stringify(telemetry));
+      assert.equal(telemetry.hashedFileCount, count + 1);
+    }
+  }
+  writeFileSync(join(root, paths[0], '8191.js'), 'changed\n');
+  const expected = paths.map(path => outputPathFingerprint(root, path));
+  assert.equal(await outputFingerprint(root, paths), hash(JSON.stringify(expected)));
+});
+
+test('generic tree worker batches reject a missing member without returning partial captures', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-tree-missing-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'present.js'), 'present\n');
+  const worker = new Worker(new URL('../src/output-fingerprint-worker.js', import.meta.url));
+  try {
+    for (const captureEntries of [false, true]) {
+      const reply = once(worker, 'message');
+      worker.postMessage({
+        workspace: root, index: 0, mode: 'tree-paths',
+        paths: ['present.js', 'missing.js'], captureEntries
+      });
+      const [result] = await reply;
+      assert.deepEqual(result, {
+        index: 0, valid: false, serialized: 'null',
+        ...(captureEntries ? { entries: null } : {})
+      });
+    }
+  } finally {
+    await worker.terminate();
+  }
+});
+
+test('generic tree batches propagate cancellation while the worker pool is active', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-tree-abort-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = 'midgard/.store';
+  mkdirSync(join(root, path), { recursive: true });
+  for (let index = 0; index < 2100; index++)
+    writeFileSync(join(root, path, `${index}.js`), 'content\n');
+  const controller = new AbortController();
+  const reason = new Error('Cancel active tree batches');
+  const progress = channel('periodic-evidence-agent.validation-preparation');
+  let dispatched = false;
+  const cancel = event => {
+    if (event.workspace === root && event.event === 'output-fingerprint-tasks' &&
+      event.completed === 0) {
+      dispatched = true;
+      setImmediate(() => controller.abort(reason));
+    }
+  };
+  progress.subscribe(cancel);
+  try {
+    if (availableParallelism() > 1) {
+      await assert.rejects(outputFingerprint(root, [path], true, null, controller.signal),
+        error => error === reason);
+      assert.equal(dispatched, true);
+    } else {
+      controller.abort(reason);
+      await assert.rejects(outputFingerprint(root, [path], true, null, controller.signal),
+        error => error === reason);
+    }
+  } finally {
+    progress.unsubscribe(cancel);
+  }
 });
 
 test('empty dependency roots retain the serial fingerprint schema', async t => {

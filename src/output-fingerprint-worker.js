@@ -6,7 +6,7 @@ import {
 } from './output-fingerprint.js';
 
 parentPort.on('message', ({
-  workspace, index, mode, path, dependencyPath, entryPath, entryPaths, captureEntries,
+  workspace, index, mode, path, paths, dependencyPath, entryPath, entryPaths, captureEntries,
   measure = false
 }) => {
   try {
@@ -28,7 +28,18 @@ parentPort.on('message', ({
           : outputPathFingerprint(workspace, path)
       };
     };
-    const result = mode === 'dependency-entries'
+    const treePaths = () => {
+      const entries = captureEntries ? [] : null;
+      const values = [];
+      for (const path of paths) {
+        const value = pathFingerprint(workspace, path, entries);
+        if (!value) return null;
+        values.push(value);
+      }
+      return { value: values, entries };
+    };
+    const result = mode === 'tree-paths' ? treePaths()
+      : mode === 'dependency-entries'
       ? dependencyEntriesFingerprint(workspace, dependencyPath, entryPaths, captureEntries)
       : fingerprint(mode, entryPath);
     const valid = result?.value != null;

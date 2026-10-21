@@ -1791,15 +1791,22 @@ async function parallelOutputFingerprint(
   workspace, paths, captureEntries = false, telemetry = null, signal = null) {
   const planningStarted = performance.now();
   const tasks = [];
-  const task = value => {
-    tasks.push(value);
-    return tasks.length - 1;
-  };
   const dependencyEntryPlan = dependencyEntryPlanner(workspace, tasks);
   const capturedEntries = [];
+  let treeBatch = null;
   const treePlan = (path, info) => {
-    if (outputFingerprintTaskEntryCount(join(workspace, path), info) <= maxOutputFingerprintTaskEntries)
-      return { task: task({ mode: 'tree-path', path }) };
+    const count = outputFingerprintTaskEntryCount(join(workspace, path), info);
+    if (count <= maxOutputFingerprintTaskEntries) {
+      if (!treeBatch || treeBatch.count + count > maxOutputFingerprintTaskEntries) {
+        const value = { mode: 'tree-paths', paths: [] };
+        tasks.push(value);
+        treeBatch = { paths: value.paths, task: tasks.length - 1, count: 0 };
+      }
+      const item = treeBatch.paths.length;
+      treeBatch.paths.push(path);
+      treeBatch.count += count;
+      return { task: treeBatch.task, item };
+    }
     return {
       path,
       children: readdirSync(join(workspace, path), { withFileTypes: true })
@@ -1808,7 +1815,7 @@ async function parallelOutputFingerprint(
     };
   };
   const treeValue = (plan, values) => {
-    if (Number.isInteger(plan.task)) return values[plan.task];
+    if (Number.isInteger(plan.task)) return values[plan.task][plan.item];
     const entries = plan.children.map(child => treeValue(child, values));
     if (captureEntries)
       capturedEntries.push([plan.path.replaceAll('\\', '/'),
@@ -1891,7 +1898,7 @@ function materializeSnapshotPath(sourceRoot, targetRoot, path) {
     materializeSnapshotPath(sourceRoot, targetRoot, join(path, name));
 }
 export async function materializeDependencySnapshot(snapshot, workspace, paths, timeoutMs) {
-  const started = Date.now();
+  const started = performance.now();
   preparationProgress.publish({ phase: 'copy', state: 'started', workspace,
     roots: paths.length });
   for (const path of paths) {
@@ -1911,9 +1918,10 @@ export async function materializeDependencySnapshot(snapshot, workspace, paths, 
         `Dependency snapshot copy failed for ${path}`, 'blocked-validation');
     }
   }
+  const copyDurationMs = performance.now() - started;
   preparationProgress.publish({ phase: 'copy', state: 'finished', workspace,
-    elapsedMs: Date.now() - started });
-  const rebaseStarted = Date.now();
+    elapsedMs: copyDurationMs });
+  const rebaseStarted = performance.now();
   preparationProgress.publish({ phase: 'link-rebase', state: 'started', workspace });
   for (const path of paths) {
     const source = join(snapshot, path);
@@ -1940,8 +1948,10 @@ export async function materializeDependencySnapshot(snapshot, workspace, paths, 
     };
     rewriteLinks(source, path);
   }
+  const linkRebaseDurationMs = performance.now() - rebaseStarted;
   preparationProgress.publish({ phase: 'link-rebase', state: 'finished', workspace,
-    elapsedMs: Date.now() - rebaseStarted });
+    elapsedMs: linkRebaseDurationMs });
+  return { roots: paths.length, copyDurationMs, linkRebaseDurationMs };
 }
 async function dependencySnapshotPaths(workspace, configuredPaths) {
   const ignored = (await git(workspace,
@@ -2383,14 +2393,17 @@ async function prepareValidationGate(config, job, repo, gate, revision,
         }));
       }
       const materializeStarted = now();
-      await preparationStage('dependency-materialization', async () => {
-        await materializeDependencySnapshot(dependency.workspace, workspace,
+      const materialization = await preparationStage('dependency-materialization', async () => {
+        const copied = await materializeDependencySnapshot(dependency.workspace, workspace,
           dependency.outputs.paths, gate.timeoutMs);
-        requireThat(await outputFingerprint(workspace, dependency.outputs.paths) ===
+        const fingerprint = {};
+        requireThat(await outputFingerprint(workspace, dependency.outputs.paths, false, fingerprint) ===
           dependency.outputs.sha256,
         `Gate ${gate.id} dependency snapshot materialization failed`, 'blocked-validation');
+        return { ...copied, fingerprint };
       });
-      timings.push(stageTelemetry('dependency-materialization', materializeStarted, 'hit'));
+      timings.push(stageTelemetry('dependency-materialization', materializeStarted, 'hit',
+        null, materialization));
       const compile = await runProfileStage(gate, profile, 'compile', workspace, execute);
       timings.push(compile.telemetry);
       requireThat(existsSync(profile.path) &&
@@ -2468,6 +2481,10 @@ export async function prepareValidation(config, job, repo, revision, execute = c
 }
 export function verifyTestOnlyProfileChange(previousGate, nextGate) {
   const previous = profileForGate(previousGate), next = profileForGate(nextGate);
+  requireThat(previous && next &&
+    hash(previous.bytes) === previous.sha256 && hash(next.bytes) === next.sha256,
+  'Profile continuation requires unchanged content-bound profiles',
+  'blocked-reconciliation');
   const surroundingStages = profile => {
     const text = profile.bytes.toString('utf8').replaceAll('\r\n', '\n');
     const marker = "    if ($stage -in @('all', 'test')) {\n";
@@ -2479,7 +2496,7 @@ export function verifyTestOnlyProfileChange(previousGate, nextGate) {
     'blocked-reconciliation');
     return text.slice(0, start + marker.length) + text.slice(end);
   };
-  requireThat(previous && next && previous.sha256 !== next.sha256 &&
+  requireThat(previous.sha256 !== next.sha256 &&
     surroundingStages(previous) === surroundingStages(next) &&
     json(validationPlan(previous)) === json(validationPlan(next)),
   'Profile continuation may change only the final test runner, not preparation or policy',
@@ -2500,6 +2517,10 @@ export async function rebindPreparedTestProfile(prepared, previousGate, nextGate
     (await verifyPreparedOutputs(prepared.receiptPath, prepared.workspace, prepared.outputs)).valid,
   'Original compiled source or outputs changed before profile continuation',
   'prepared-cache-corrupt');
+  requireThat(hash(readFileSync(previous.path)) === previous.sha256 &&
+    hash(readFileSync(next.path)) === next.sha256,
+  'Profile continuation profiles changed during output verification',
+  'blocked-reconciliation');
   const { integrity: _integrity, ...originalBody } = original;
   const inputs = { ...original.inputs, profileSha256: next.sha256 };
   const body = {

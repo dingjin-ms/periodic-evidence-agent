@@ -1931,6 +1931,29 @@ test('existing-only compile recovery preserves invalid outputs without rebuildin
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
 });
+test('test-only profile continuation rejects content drift in either profile', t => {
+  const root = mkdtempSync(join(tmpdir(), 'profile-binding-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const original = readFileSync('scripts/validation/1js-sdx-excel-integration.ps1', 'utf8');
+  const preparationChange = original.replace(
+    "Invoke-Checked $yarn workspace '@1js/jest-config' build",
+    "Invoke-Checked $yarn workspace '@1js/jest-config' different-build");
+  assert.notEqual(preparationChange, original);
+  const corrected = preparationChange.replace(
+    '--runInBand --passWithNoTests=false',
+    '--runInBand --passWithNoTests=false --no-cache');
+  assert.notEqual(corrected, preparationChange);
+  const previous = { profilePath: join(root, 'previous.ps1'), profileSha256: hash(original) };
+  const next = { profilePath: join(root, 'next.ps1'), profileSha256: hash(corrected) };
+  writeFileSync(previous.profilePath, original);
+  writeFileSync(next.profilePath, corrected);
+  assert.throws(() => verifyTestOnlyProfileChange(previous, next), /only the final test runner/);
+  writeFileSync(previous.profilePath, preparationChange);
+  assert.throws(() => verifyTestOnlyProfileChange(previous, next), /unchanged content-bound profiles/);
+  previous.profileSha256 = hash(preparationChange);
+  writeFileSync(next.profilePath, `${corrected}\n`);
+  assert.throws(() => verifyTestOnlyProfileChange(previous, next), /unchanged content-bound profiles/);
+});
 test('test-only profile continuation verifies outputs and preserves the original receipt', async t => {
   const ctx = await stagedValidationFixture(t);
   const oldGate = ctx.repo.validationGates[0];
@@ -1945,6 +1968,19 @@ test('test-only profile continuation verifies outputs and preserves the original
   writeFileSync(profilePath, original.replace('old runner', 'new runner'));
   const nextGate = { ...oldGate, profilePath, profileSha256: hash(readFileSync(profilePath)) };
   const receiptPath = join(ctx.config.stateDirectory, 'profile-continuation', 'r.json');
+  for (const [label, gate] of [['previous', oldGate], ['next', nextGate]]) {
+    const before = readFileSync(gate.profilePath);
+    const rejectedPath = join(ctx.config.stateDirectory, `profile-drift-${label}.json`);
+    const rebinding = rebindPreparedTestProfile(prepared.staged, oldGate, nextGate, rejectedPath);
+    writeFileSync(gate.profilePath, `${before}\n`);
+    try {
+      await assert.rejects(rebinding, /profiles changed during output verification/);
+      assert.equal(existsSync(rejectedPath), false);
+      assert.equal(readFileSync(prepared.staged.receiptPath, 'utf8'), oldReceipt);
+    } finally {
+      writeFileSync(gate.profilePath, before);
+    }
+  }
   const rebound = await rebindPreparedTestProfile(prepared.staged, oldGate, nextGate, receiptPath);
   assert.equal(readFileSync(prepared.staged.receiptPath, 'utf8'), oldReceipt);
   assert.equal(rebound.outputs.sha256, prepared.staged.outputs.sha256);

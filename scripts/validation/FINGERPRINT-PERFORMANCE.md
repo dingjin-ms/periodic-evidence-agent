@@ -6,9 +6,10 @@ This change optimizes controller fingerprint planning and worker granularity.
 It does not change the receipt schema, exact-revision/source-cleanliness checks,
 profile/toolchain binding, ordinary-file SHA-256 coverage, source-mutation
 detection or controller-only authority. The five-minute dispatched-task timeout
-is unchanged. Initial baseline capture and the second complete verification
-after watcher installation are both retained. Unknown filenames, rename,
-watcher failure and unstable settlement still fail closed.
+is unchanged. Current preparation starts observation before baseline capture
+and reuses it only while the observer remains healthy; unavailable observation
+requires complete content verification. Unknown filenames, rename, watcher
+failure and unstable settlement still fail closed.
 
 The preceding real OfficeAgent log reported 1,904.645 seconds for initial
 verification of 200 output roots. The first task monitor appeared about
@@ -68,9 +69,9 @@ Captured entries and public fingerprint schemas are unchanged. Capture failure
 does not retry the same recursive scan through a non-capturing fallback.
 
 Planning is still synchronous and may repeat bounded directory enumeration at
-split ancestors. Large ordinary output roots remain recursive path tasks, and
-a single large/slow file can still dominate a task. This is not a solution to
-every filesystem or serialization bottleneck.
+split ancestors. Generic tree batches now use the same entry budget described
+below, but a single large/slow file can still dominate a task. This is not a
+solution to every filesystem or serialization bottleneck.
 
 `outputFingerprint` accepts an optional telemetry object. Initial
 `verifyPreparedOutputs` returns separate baseline and verification telemetry;
@@ -88,6 +89,42 @@ structured clone. Worker JSON timing excludes the structured clone of captured
 entries. Queue sums overlap across workers and cannot be added to wall time.
 **Physical I/O wait, device throughput and antivirus attribution remain
 unmeasured.** No size/mtime fast path replaces complete content hashes.
+
+## Generic-tree batching (October 21, 2026)
+
+Generic roots such as SDX's `.store` previously crossed a scheduling cliff:
+2,047 direct files fit one recursive task, but 2,048 files became 2,048
+single-file tasks. Small generic subtrees now share batches estimated at no
+more than 2,048 entries, including across output roots. Oversized trees still
+split, and parent directories are reconstructed in their original sorted
+order. Missing members reject the entire batch; cancellation, the eight-worker
+cap and the five-minute task timeout remain unchanged.
+
+A same-fixture ABBA comparison used PR #43 head
+`ae64c25d0dab345a73d6eea3123e8ad0ade6f5af` as A and the revised implementation
+as B, with 16,384 direct files in one `.store`. Serial capture preceded each
+measured parallel pass on the shared Windows host.
+
+| Measurement | Before (A, A) | After (B, B) |
+|---|---|---|
+| Tasks per captured pass | 16,384 / 16,384 | 8 / 8 |
+| Full pass wall time | 2,153 / 2,124 ms | 1,909 / 1,895 ms |
+| Process CPU, including workers | 13,437 / 13,609 ms | 11,094 / 11,016 ms |
+| Captured entries | 16,385 / 16,385 | 16,385 / 16,385 |
+
+All four passes matched the complete serial entry map and SHA-256
+`268cb67eee7adb3c063f2a5ca29a05b50b6925b95ead9dca4d29713e3d05a7c6`.
+This demonstrates reduced task overhead for this synthetic fixture, not a
+measured improvement to the historical real-product E2E. Small trees may
+use fewer workers; batching is not a universal wall-clock speedup.
+
+Dependency materialization retains its destination content check and the
+post-compile capture. Its existing timing stage now persists separate
+`details.copyDurationMs`, `details.linkRebaseDurationMs` and
+`details.fingerprint` wall/CPU/task telemetry. These nested measurements
+overlap the materialization stage and must not be added to it. They do not
+attribute physical I/O or establish that either full scan can safely be
+removed; cross-root capture reuse remains a separate change.
 
 ### Preparation rejection diagnostics
 

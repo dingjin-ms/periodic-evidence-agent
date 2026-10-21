@@ -247,6 +247,7 @@ export async function withWorkiq(config, fn) {
   requireThat(config.runtime.workiqPluginDirectory && existsSync(config.runtime.workiqPluginDirectory),
     'Configure the already-installed WorkIQ plugin directory; SDK config discovery is off by default', 'blocked-runtime');
   return withClient(config, config.stateDirectory, async client => {
+    const { ToolSet } = loadSdk();
     let allowed = null;
     const session = await client.createSession({
       pluginDirectories: [config.runtime.workiqPluginDirectory],

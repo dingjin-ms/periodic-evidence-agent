@@ -7,6 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { performance } from 'node:perf_hooks';
 import { command } from '../src/workers.js';
 import { Ledger } from '../src/ledger.js';
 import { hash, json, PilotError } from '../src/common.js';
@@ -199,16 +200,11 @@ for (const stage of ['dependencies', 'compile']) {
     });
 }
 
-test('compile content-capture cancellation never publishes its unverified receipt',
-  { skip: process.platform !== 'win32' }, async t => {
-    const ctx = await fixture(t);
-    // The controller canonicalizes aliases, including hosted Windows short temp paths.
-    ctx.parent = ctx.parent.toUpperCase();
-    ctx.options.attemptParent = ctx.parent;
-    const attemptParent = realpathSync.native(ctx.parent);
-    const preload = join(ctx.root, 'hold-verification.mjs');
-    // Hold the actual single-pass content read, not just its asynchronously observed start event.
-    writeFileSync(preload, `
+function compileReadBarrier(ctx) {
+  const attemptParent = realpathSync.native(ctx.parent);
+  const preload = join(ctx.root, 'hold-verification.mjs');
+  // Hold the actual single-pass content read, not just its asynchronously observed start event.
+  writeFileSync(preload, `
 import fs from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
@@ -234,6 +230,48 @@ if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThre
   syncBuiltinESMExports();
 }
 `);
+  return preload;
+}
+
+async function expireReadyStage(t, ctx, stage, budget) {
+  let elapsed = 0, ready = null, started = null;
+  const clock = t.mock.method(performance, 'now', () => elapsed);
+  // Advance only the parent test clock; native containment timers remain real.
+  const timer = setInterval(() => {
+    if (ready || !started || !existsSync(ctx.readyPath)) return;
+    ready = JSON.parse(readFileSync(ctx.readyPath));
+    elapsed = budget;
+  }, 10);
+  let outcome;
+  try {
+    outcome = await runPreparationAttempt({
+      ...ctx.options,
+      stageTimeoutMs: { ...ctx.options.stageTimeoutMs, [stage]: budget },
+      onProgress: event => {
+        if (event.stage === stage && event.phase === 'start') started = event;
+      }
+    });
+  } finally {
+    clearInterval(timer);
+    clock.mock.restore();
+  }
+  const progress = join(outcome.attemptRoot, 'progress.jsonl');
+  const events = existsSync(progress)
+    ? readFileSync(progress, 'utf8').split('\n').slice(0, -1).map(JSON.parse) : null;
+  assert.ok(ready, `Budget must wait for active ${stage}: ${json({ outcome, events })}`);
+  assert.equal(events.some(event => event.kind === 'stage' &&
+    event.id === started.id && event.phase !== 'start'), false,
+  'Budget must interrupt an in-flight phase, not reject a completed phase');
+  return { outcome, ready, started };
+}
+
+test('compile content-capture cancellation never publishes its unverified receipt',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    // The controller canonicalizes aliases, including hosted Windows short temp paths.
+    ctx.parent = ctx.parent.toUpperCase();
+    ctx.options.attemptParent = ctx.parent;
+    const preload = compileReadBarrier(ctx);
     const controller = new AbortController();
     let interruptedId = null, publishedBeforeCancel = null;
     let observedRead = null, outcome;
@@ -277,12 +315,9 @@ test('a stage budget cancels the attempt and a fresh attempt can acquire the rel
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
     ctx.gate.args[1] = 'dependencies';
-    const budgets = { ...ctx.options.stageTimeoutMs, dependencies: 5000 };
-    const failed = await runPreparationAttempt({ ...ctx.options, stageTimeoutMs: budgets });
+    const { outcome: failed, ready } = await expireReadyStage(t, ctx, 'dependencies', 5000);
     assert.equal(failed.reason, 'stage-budget', json(failed));
     assert.equal(failed.stage, 'dependencies');
-    assert.ok(existsSync(ctx.readyPath), 'Budget must interrupt an active native stage');
-    const ready = JSON.parse(readFileSync(ctx.readyPath));
     for (const pid of [ready.pid, ready.child])
       await assertExited(pid, failed.processExitCheckStartedMs, ctx.root);
     await assertRollback(failed, ctx);
@@ -343,17 +378,26 @@ for (const stage of ['compile', 'compile-output-capture']) {
     { skip: process.platform !== 'win32' }, async t => {
       const ctx = await fixture(t);
       if (stage === 'compile') ctx.gate.args[1] = stage;
-      const outcome = await runPreparationAttempt({
-        ...ctx.options,
-        stageTimeoutMs: { ...ctx.options.stageTimeoutMs, [stage]: stage === 'compile' ? 5000 : 1 }
-      });
+      const previousOptions = process.env.NODE_OPTIONS;
+      if (stage === 'compile-output-capture') process.env.NODE_OPTIONS = [
+        previousOptions, `--import=${json(pathToFileURL(compileReadBarrier(ctx)).href)}`
+      ].filter(Boolean).join(' ');
+      let result;
+      try { result = await expireReadyStage(t, ctx, stage, stage === 'compile' ? 5000 : 1); }
+      finally {
+        if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = previousOptions;
+      }
+      const { outcome, ready, started } = result;
       assert.equal(outcome.reason, 'stage-budget', json(outcome));
       assert.equal(outcome.stage, stage);
       await assertRollback(outcome, ctx);
       if (stage === 'compile') {
-        const ready = JSON.parse(readFileSync(ctx.readyPath));
         for (const pid of [ready.pid, ready.child])
           await assertExited(pid, outcome.processExitCheckStartedMs, ctx.root);
+      } else {
+        assert.equal(ready.id, started.id);
+        assert.equal(ready.processId, outcome.controllerPid);
       }
     });
 }

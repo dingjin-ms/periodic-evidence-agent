@@ -8,7 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  offline:
+  tests:
+    name: tests (${{ matrix.group }})
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pilot, remaining, demo]
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -20,21 +25,41 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --ignore-scripts
-      - run: npm run check:package
-      # Keep the real native demo out of contention with the expensive evaluator
-      # fixtures. Run every test file, retaining the demo command deadlines.
-      - name: Offline controller checks
+      - if: matrix.group == 'remaining'
+        run: npm run check:package
+      - run: node --check src/cli.js
+      - name: Run grouped tests
+        run: node scripts\ci-tests.mjs ${{ matrix.group }} "$env:RUNNER_TEMP\ci-tests-${{ matrix.group }}"
+      - if: matrix.group == 'demo'
+        run: npm run demo
+      - name: Record process resource snapshot
+        if: always()
         shell: pwsh
         run: |
-          node --check src/cli.js
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $demoTest = (Resolve-Path test/demo.test.js).Path
-          $controllerTests = @(Get-ChildItem -LiteralPath test -Recurse -File |
-            Where-Object { $_.Extension -in '.js', '.mjs', '.cjs' -and $_.FullName -ne $demoTest } |
-            Sort-Object FullName | ForEach-Object { $_.FullName })
-          if ($controllerTests.Count -eq 0) { throw 'No controller tests discovered' }
-          node --test --test-concurrency=4 --test-reporter=tap @controllerTests
-          exit $LASTEXITCODE
-      - name: Isolated native demo regression
-        run: node --test --test-reporter=tap test/demo.test.js
-      - run: npm run demo
+          $directory = "$env:RUNNER_TEMP\ci-tests-${{ matrix.group }}"
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64 |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $directory 'processes.json') -Encoding utf8
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: offline-${{ matrix.group }}
+          path: ${{ runner.temp }}\ci-tests-${{ matrix.group }}
+          if-no-files-found: error
+          retention-days: 7
+  offline:
+    if: always()
+    needs: [tests]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TEST_RESULT: ${{ needs.tests.result }}
+    steps:
+      - name: Require complete offline checks
+        shell: pwsh
+        run: |
+          if ($env:TEST_RESULT -ne 'success') {
+            throw "Offline test groups did not all succeed: $env:TEST_RESULT"
+          }

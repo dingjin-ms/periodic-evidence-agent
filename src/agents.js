@@ -22,10 +22,11 @@ const definitions = {
     procedures: ['evidence-coordinator', 'evidence-improvement-planner'],
     inputs: ['Exact source-ledger/capture inventory and versions', 'Configured exclusions, review method and coverage skill pins'],
     outputs: ['Source-bound review and analysis results', 'Explicit batch/cohort acceptance, held proposals and blockers'],
-    authority: 'Review and planning only; no new source collection, worker execution or publication.',
+    authority: 'Review and planning only; explicitly selected read-only FILTER execution is allowed, but no new source collection, proposer execution or publication.',
     operations: [
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
+      'filter-local-preflight', 'filter-local-run',
       'stage2-handoff', 'stage2-proposal-check', 'app-review', 'app-plan-improvement',
       'review', 'review-pending', 'plan-improvement', 'report', 'replay-review', 'app-end',
       'one-shot-filter-prepare', 'one-shot-filter-reserve'

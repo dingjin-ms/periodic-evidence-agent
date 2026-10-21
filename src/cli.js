@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { dirname, resolve } from 'node:path';
-import { readFileSync, lstatSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,6 +19,7 @@ import { prepareStage2, checkStage2Files } from './stage2.js';
 import { prepareTitleIndex, materializeTitleScreen } from './filter.js';
 import { prepareFilterBatches, sizeFilterGroups, checkFilterBatchFiles, consolidateFilterBatches } from './filter-batches.js';
 import { reconcileFilterExecutionCohort } from './filter-execution.js';
+import { localFilterPreflight, executeLocalFilterBatch } from './local-filter.js';
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
@@ -141,6 +142,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js filter-batch-check --file batch-result.json --manifest private-batches.json
   node src\\cli.js filter-consolidate --file result-paths.json --manifest private-batches.json --output consolidation.json
   node src\\cli.js filter-execution-check --file result-paths.json --manifest private-batches.json --ledger execution.sqlite
+  node src\\cli.js filter-local-preflight --config local-filter.local.json
+  node src\\cli.js filter-local-run --manifest private-batches.json --batch ID --output private-result.json --execution-mode standalone-sdk
   node src\\cli.js e2e-proof-export --file private-proof-request.json --output e2e-evidence\\RUN_ID
   node src\\cli.js e2e-proof-check --file private-proof-request.json --bundle e2e-evidence\\RUN_ID
   node src\\cli.js stage2-proposal-check --file private-proposal.json --handoff private-handoff.json
@@ -293,13 +296,13 @@ try {
     const appAction = action.startsWith('app-');
     if (config.executionMode === 'app-native' && !appAction &&
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
-        'continue-local-authoring', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
+        'continue-local-authoring', 'review-pending', 'tick', 'serve', 'runtime-smoke', 'filter-local-run'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
     if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
-      'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
+      'filter-batch-check', 'filter-consolidate', 'filter-execution-check', 'filter-local-preflight',
       'e2e-proof-export', 'e2e-proof-check',
       'one-shot-filter-prepare', 'one-shot-filter-reserve'].includes(action))
       ledger = new Ledger(config.stateDirectory);
@@ -361,6 +364,17 @@ try {
           { runId: action === 'app-rsi-work' ? option('--run') : null });
         break;
       }
+      case 'filter-local-preflight':
+        result = localFilterPreflight(config); break;
+      case 'filter-local-run':
+        requireThat(option('--manifest') && option('--batch') && option('--output'),
+          'Local FILTER requires --manifest, --batch and --output');
+        requireThat(!existsSync(resolve(option('--output'))),
+          'Local FILTER output already exists; reconcile the original attempt');
+        result = await executeLocalFilterBatch(config, ledger, readJson(option('--manifest')), option('--batch'));
+        if (result.state === 'complete-held') writeFileSync(resolve(option('--output')),
+          `${JSON.stringify(result.result, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        break;
       case 'replay-evidence': result = await replayRecordedEvidence(config, ledger, input()); break;
       case 'replay-review': result = await replayRecordedReview(config, ledger, input()); break;
       case 'continue-local-validation':

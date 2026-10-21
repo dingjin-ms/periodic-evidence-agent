@@ -1,0 +1,85 @@
+{
+  "format": "reviewed-handoff-v1",
+  "id": "sdx-supported-file-types-existing-coverage",
+  "version": 1,
+  "reviewedAt": "2026-10-12T06:30:00.000Z",
+  "source": {
+    "kind": "fixture",
+    "provenance": "synthetic",
+    "namespace": "reviewed-handoff/fixture",
+    "recordId": "sdx-supported-file-types-existing-coverage",
+    "revision": "1"
+  },
+  "evidence": {
+    "title": "Verify reported SDX supported-file filtering coverage gap",
+    "summary": "Synthetic reviewed evidence for confirming that the SDX workflow closes an already-covered candidate without changing source or creating a draft PR.",
+    "fields": {
+      "reportedExperience": "The supported-file filter was reported as lacking focused producer-to-consumer integration coverage.",
+      "establishedBehavior": "The filter projects configured MIME types and extensions for the file-acceptance consumer.",
+      "requestedEvidence": "Inspect the qualified source revision and identify existing consumer-observable assertions before proposing any new test."
+    }
+  },
+  "review": {
+    "method": "agent-evidence-review",
+    "reviewer": "synthetic-reviewed-handoff-fixture",
+    "observedBehavior": "A candidate SDX integration-coverage gap was reported for supported-file filtering.",
+    "expectedBehavior": "The repository-native skill detects existing focused coverage and returns an explicit no-change result rather than duplicating tests.",
+    "hypotheses": [
+      "The real filter producer and file-acceptance consumer may already be wired together by an L2 contract.",
+      "A stale behavior-card statement may be the source of the reported gap."
+    ],
+    "counterEvidence": [
+      "Nearby unit tests alone would not prove the producer-to-consumer seam.",
+      "UI gating tests may exercise unrelated chat-input behavior."
+    ],
+    "classification": "functional",
+    "defectConfirmation": "unconfirmed",
+    "reportEligibility": "included",
+    "handoffEligibility": "eligible",
+    "exclusionsChecked": [
+      "task",
+      "feature_enhancement",
+      "tracking",
+      "security_governance_only",
+      "accessibility_only",
+      "telemetry_only",
+      "performance_measurement_only",
+      "test_infrastructure",
+      "cosmetic_ui_only",
+      "copy_text_only",
+      "localization_only",
+      "by_design",
+      "confirmed_non_bug",
+      "service_reliability_only"
+    ],
+    "exclusionReasons": [],
+    "rationale": "The candidate is eligible for bounded repository-native investigation, including a source-bound existing-coverage conclusion.",
+    "confidence": 0.9,
+    "repoIds": ["1js"],
+    "existingFixes": [],
+    "nextAction": "Use the configured SDX Excel integration-test skill to inspect supportedFileTypes.ts, its behavior card and its focused contract. If the exact producer-to-consumer seam is already protected, return classification existing-coverage with no changed files, tests or behavior cards."
+  },
+  "planning": {
+    "improvement": {
+      "category": "missing-test-coverage",
+      "theme": "SDX supported-file filtering integration coverage",
+      "rationale": "Resolve the reviewed candidate using source-bound repository evidence without manufacturing duplicate work.",
+      "priority": "medium",
+      "repoIds": ["1js"],
+      "capabilities": ["integration-test-authoring"]
+    },
+    "testCoverage": {
+      "repoId": "1js",
+      "capability": "integration-test-authoring",
+      "sourceRevision": "qualified-base",
+      "searchStatus": "complete",
+      "existingTests": [],
+      "coverageGaps": [
+        "The reviewed handoff has not yet reconciled the reported gap against the focused supportedFileTypes integration contract."
+      ],
+      "unknowns": [],
+      "rationale": "The repository-native skill must inspect the qualified source revision and may close the candidate as existing coverage."
+    },
+    "requestedOutcome": "investigate-failure"
+  }
+}

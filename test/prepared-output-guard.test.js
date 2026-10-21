@@ -18,6 +18,7 @@ let onWorkerResult = null;
 let onWatch = null;
 fs.watch = (path, options, callback) => {
   const watcher = new EventEmitter();
+  watcher.options = options;
   watcher.callback = callback;
   watcher.closed = false;
   watcher.close = () => { watcher.closed = true; };
@@ -35,10 +36,21 @@ threads.Worker = class extends OriginalWorker {
   }
 };
 syncBuiltinESMExports();
-const { command, outputFingerprint, prepareValidation, runValidation, verifyPreparedOutputs } =
+const { command, prepareValidation: prepare, runValidation: validate, capturePreparedOutputs: captureOutputs,
+  outputFingerprint, verifyPreparedOutputs: verifyOutputs } =
   await import('../src/workers.js');
 const { Ledger } = await import('../src/ledger.js');
 const { hash, json, PilotError } = await import('../src/common.js');
+const { withPreparedOutputObserver } = await import('../src/prepared-output-observer.js');
+const observerFactory = async () => ({ watch: fs.watch, ready: async () => {}, close() {} });
+const prepareValidation = (...args) =>
+  withPreparedOutputObserver(observerFactory, () => prepare(...args));
+const runValidation = (...args) =>
+  withPreparedOutputObserver(observerFactory, () => validate(...args));
+const capturePreparedOutputs = (receipt, workspace, paths, expected = null, telemetry = null) =>
+  captureOutputs(receipt, workspace, paths, expected, telemetry, observerFactory);
+const verifyPreparedOutputs = (receipt, workspace, outputs, baseline = null) =>
+  verifyOutputs(receipt, workspace, outputs, baseline, observerFactory);
 after(() => {
   fs.watch = originalWatch;
   threads.Worker = OriginalWorker;
@@ -72,7 +84,188 @@ async function fixture(t, rootPath = 'node_modules') {
   const initialize = () => verifyPreparedOutputs(
     receipt, workspace, outputs, captured.entries);
   const watcher = () => watchers.get(root);
-  return { workspace, root, nested, file, outputs, verify, initialize, watcher };
+  return { workspace, root, nested, file, outputs, receipt, verify, initialize, watcher };
+}
+
+test('cold receipt verification observes one complete scan and warm reuse reads no contents', async t => {
+  const ctx = await fixture(t);
+  let tasks = 0;
+  onWorkerResult = () => { tasks++; };
+  const result = await ctx.verify();
+  assert.equal(result.valid, true);
+  assert.equal(result.method, 'content+watch');
+  assert.equal(result.fullVerification.baseline.observation.verified, true);
+  assert.deepEqual(result.fullVerification.verification, {});
+  assert.equal(tasks, 1);
+  assert.equal((await ctx.verify()).valid, true);
+  assert.equal(tasks, 1);
+});
+
+test('new receipt capture keeps observation through receipt verification without a second scan', async t => {
+  const ctx = await fixture(t);
+  let tasks = 0;
+  onWorkerResult = () => { tasks++; };
+  const captured = await capturePreparedOutputs(ctx.receipt, ctx.workspace, ctx.outputs.paths);
+  assert.equal(captured.sha256, ctx.outputs.sha256);
+  const result = await verifyPreparedOutputs(
+    ctx.receipt, ctx.workspace, ctx.outputs, captured.entries);
+  assert.equal(result.valid, true);
+  assert.equal(result.method, 'watch');
+  assert.equal(tasks, 1);
+});
+
+test('content capture waits for asynchronous observer readiness before reading', async t => {
+  const ctx = await fixture(t);
+  let ready = false, tasks = 0;
+  onWorkerResult = () => {
+    assert.equal(ready, true);
+    tasks++;
+  };
+  const factory = async () => ({
+    watch: fs.watch,
+    ready: async () => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      ready = true;
+    },
+    close() {}
+  });
+  const captured = await captureOutputs(
+    ctx.receipt, ctx.workspace, ctx.outputs.paths, null, null, factory);
+  assert.equal(captured.sha256, ctx.outputs.sha256);
+  assert.equal(tasks, 1);
+  assert.equal(ready, true);
+});
+
+for (const evicted of [false, true]) {
+  test(`replacement waits for ${evicted ? 'evicted' : 'active'} observer shutdown`,
+    { timeout: 15000 }, async t => {
+      const ctx = await fixture(t);
+      const closing = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      let installations = 0;
+      const factory = async () => {
+        installations++;
+        return {
+          watch: fs.watch, ready: async () => {},
+          close() {
+            closing.resolve();
+            return release.promise;
+          }
+        };
+      };
+      try {
+        await captureOutputs(
+          ctx.receipt, ctx.workspace, ctx.outputs.paths, null, null, factory);
+        if (evicted) {
+          for (let index = 0; index < 2; index++) {
+            const other = await fixture(t);
+            await capturePreparedOutputs(other.receipt, other.workspace, other.outputs.paths);
+          }
+        }
+        const replacement = captureOutputs(
+          ctx.receipt, ctx.workspace, ctx.outputs.paths, null, null, factory);
+        await closing.promise;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(installations, 1, 'Old native handles must be released before replacement');
+        release.resolve();
+        assert.equal((await replacement).sha256, ctx.outputs.sha256);
+        assert.equal(installations, 2);
+      } finally {
+        release.resolve();
+      }
+    });
+}
+
+test('cold receipt verification retains the full comparison when observation is unavailable', async t => {
+  const ctx = await fixture(t);
+  let tasks = 0;
+  onWorkerResult = () => { tasks++; };
+  onWatch = () => { throw new Error('recursive observation unavailable'); };
+  const result = await ctx.verify();
+  assert.equal(result.valid, true);
+  assert.equal(result.method, 'content');
+  assert.equal(result.fullVerification.baseline.observation.available, false);
+  assert.equal(tasks, 2);
+});
+
+test('metadata-only changes during cold capture rehash the touched file without another full scan', async t => {
+  const ctx = await fixture(t);
+  let tasks = 0;
+  onWorkerResult = () => {
+    if (++tasks !== 1) return;
+    writeFileSync(ctx.file, readFileSync(ctx.file));
+    ctx.watcher().callback('change', 'fixture/nested/value.js');
+  };
+  const result = await ctx.verify();
+  assert.equal(result.valid, true);
+  assert.equal(result.details.hashedFileCount, 1);
+  assert.equal(tasks, 2);
+});
+
+for (const mutation of ['child-change', 'parent-rename', 'unknown-child']) {
+  test(`partitioned native-store observation rejects ${mutation}`, async t => {
+    const ctx = await fixture(t, 'midgard/.store');
+    for (let bucket = 0; bucket < 18; bucket++) {
+      const directory = join(ctx.nested, `bucket-${bucket}`);
+      mkdirSync(directory);
+      for (let file = 0; file < 120; file++)
+        writeFileSync(join(directory, `${file}.js`), `${file}\n`);
+    }
+    ctx.outputs.sha256 = await outputFingerprint(ctx.workspace, ctx.outputs.paths);
+    assert.equal((await ctx.verify()).valid, true);
+    assert.equal(ctx.watcher().options.recursive, false);
+    assert.equal(watchers.get(ctx.nested).options.recursive, false);
+    const child = join(ctx.nested, 'bucket-0');
+    const childWatcher = watchers.get(child);
+    assert.equal(childWatcher.options.recursive, true);
+    if (mutation === 'child-change') {
+      writeFileSync(join(child, '0.js'), 'changed\n');
+      childWatcher.callback('change', '0.js');
+    } else if (mutation === 'parent-rename') {
+      renameSync(child, join(ctx.nested, 'renamed'));
+      watchers.get(ctx.nested).callback('rename', 'bucket-0');
+    } else {
+      childWatcher.callback('rename', null);
+    }
+    const result = await ctx.verify();
+    assert.equal(result.valid, false);
+    assert.equal(ctx.watcher().closed, true);
+    assert.equal(childWatcher.closed, true);
+  });
+}
+
+for (const event of ['change', 'ancestor-change', 'delete', 'add', 'rename', 'watch-error', 'null-filename']) {
+  test(`cold capture rejects ${event} delivered after a file was hashed`, async t => {
+    const ctx = await fixture(t);
+    let injected = false;
+    onWorkerResult = () => {
+      if (injected) return;
+      injected = true;
+      if (event === 'change' || event === 'ancestor-change') {
+        writeFileSync(ctx.file, 'changed after hashing\n');
+        ctx.watcher().callback('change',
+          event === 'change' ? 'fixture/nested/value.js' : 'fixture');
+      } else if (event === 'delete') {
+        rmSync(ctx.file);
+        ctx.watcher().callback('rename', 'fixture/nested/value.js');
+      } else if (event === 'add') {
+        writeFileSync(join(ctx.nested, 'injected.js'), 'injected\n');
+        ctx.watcher().callback('rename', 'fixture/nested/injected.js');
+      } else if (event === 'rename') {
+        renameSync(ctx.file, join(ctx.nested, 'renamed.js'));
+        ctx.watcher().callback('rename', 'fixture/nested/value.js');
+      } else if (event === 'watch-error') {
+        ctx.watcher().emit('error', new Error('injected watcher failure'));
+      } else {
+        writeFileSync(ctx.file, 'changed with an anonymous notification\n');
+        ctx.watcher().callback('change', null);
+      }
+    };
+    const result = await ctx.verify();
+    assert.equal(injected, true);
+    assert.equal(result.valid, false);
+    assert.equal(ctx.watcher().closed, true);
+  });
 }
 
 for (const rootPath of ['node_modules', 'dist']) {
@@ -282,6 +475,7 @@ if (stage === 'compile') {
   const job = { id: 'preparation-diagnostic', workspace };
   ledger = new Ledger(stateDirectory);
   let targetWatcher = null;
+  let targetPath = null;
   let injected = false;
   onWatch = (watcher, path) => {
     const type = snapshot === 'dependencies' ? 'd' : 'c';
@@ -289,19 +483,22 @@ if (stage === 'compile') {
       !path.includes(`${sep}pv${sep}${type}${sep}`) ||
       !path.endsWith(`${sep}node_modules`)) return;
     targetWatcher = watcher;
-    if (rejection === 'content-mismatch') {
-      writeFileSync(join(path, 'fixture', 'index.js'), 'changed after capture\n');
-      injected = true;
-    }
+    targetPath = path;
     if (rejection === 'registration-unknown') {
       watcher.callback('rename', null);
       injected = true;
     }
     if (injected) onRejection?.();
   };
-  onWorkerResult = () => {
+  onWorkerResult = result => {
     if (!rejection || !targetWatcher || injected) return;
+    if (rejection === 'content-mismatch' && !(result.entries ?? []).some(([path]) =>
+      path.replaceAll('\\', '/') === 'node_modules/fixture/index.js')) return;
     injected = true;
+    if (rejection === 'content-mismatch') {
+      writeFileSync(join(targetPath, 'fixture', 'index.js'), 'changed after capture\n');
+      targetWatcher.callback('change', 'fixture/index.js');
+    }
     if (rejection === 'unknown-event') targetWatcher.callback('rename', null);
     if (rejection === 'watch-error')
       targetWatcher.emit('error', new Error('fixture watcher failure'));
@@ -321,18 +518,14 @@ function assertRejectionDiagnostic(timings, snapshot, rejection) {
   assert.equal(stage.cache, 'invalidated');
   assert.ok(stage.durationMs >= 0);
   assert.equal(stage.details.valid, false);
+  assert.equal(stage.details.method, 'watch');
+  assert.equal(stage.details.fullVerification, undefined);
   if (rejection === 'registration-unknown') {
-    assert.equal(stage.details.method, 'watch');
-    assert.equal(stage.details.fullVerification, undefined);
     assert.equal(stage.details.details.durationMs, 0);
-  } else {
-    assert.equal(stage.details.method, 'content');
-    assert.equal(stage.details.fullVerification.baseline, null);
-    assert.ok(stage.details.fullVerification.verification.taskCount > 0);
   }
   if (rejection === 'content-mismatch') {
-    assert.equal(stage.details.reason, 'content-fingerprint-mismatch');
-    assert.equal(stage.details.details.observedEventCount, 0);
+    assert.match(stage.details.reason, /^content-changed:node_modules\/fixture\/index.js$/);
+    assert.equal(stage.details.details.observedEventCount, 1);
   } else if (['unknown-event', 'registration-unknown'].includes(rejection)) {
     assert.match(stage.details.reason, /:rename:unknown$/);
     assert.equal(stage.details.details.nullFilenameEventCount, 1);
@@ -414,7 +607,7 @@ for (const snapshot of ['dependencies', 'compile']) {
           });
         });
         const rejection = recorded ? 'content-mismatch' : 'unknown-event';
-        const reason = recorded ? 'content-fingerprint-mismatch' : 'node_modules:rename:unknown';
+        const reason = recorded ? 'content-changed:node_modules/fixture/index.js' : 'node_modules:rename:unknown';
         const primaryMessage = `Gate diagnostic ${snapshot === 'dependencies'
           ? 'dependency snapshot changed while it was recorded'
           : 'prepared outputs changed while they were recorded'} (${reason})`;

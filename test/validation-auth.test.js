@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  parseValidationAuthPreflight, validationAuthAction, validationAuthFailure
+  parseValidationAuthEvidence, parseValidationAuthPreflight,
+  validationAuthAction, validationAuthFailure
 } from '../src/validation-auth.js';
 
 const contract = {
@@ -24,6 +25,33 @@ const yarnConfiguration = [
   '  office:',
   `    npmRegistryServer: "${contract.feeds[1].registry}"`
 ].join('\n');
+const repositoryBroker = {
+  provider: '1js-node-azure-auth',
+  providerVersion: '0.0.1',
+  feeds: [{}]
+};
+
+test('validation authentication stage accepts both declared providers without token data', () => {
+  const output = value => ({
+    stdout: `PILOT_VALIDATION_AUTH:${JSON.stringify(value)}\n`
+  });
+  for (const declared of [contract, repositoryBroker]) {
+    const evidence = {
+      provider: declared.provider,
+      providerVersion: declared.providerVersion,
+      feedCount: declared.feeds.length,
+      tokenRecorded: false
+    };
+    assert.deepEqual(parseValidationAuthEvidence(output(evidence), declared),
+      evidence);
+    assert.equal(parseValidationAuthEvidence(output({
+      ...evidence, token: 'synthetic-secret'
+    }), declared), null);
+    assert.equal(parseValidationAuthEvidence(output({
+      ...evidence, provider: 'unexpected-provider'
+    }), declared), null);
+  }
+});
 
 test('validation authentication evidence accepts only the safe schema', () => {
   const output = value => ({
@@ -105,6 +133,35 @@ test('preflight distinguishes provider mismatch and credential validation failur
       { id: 'repo', referenceCheckout: 'fixture' }, value, 'controller')
       .requiresInstallApproval, installProvider);
   }
+});
+
+test('1JS broker authentication is check-only with explicit user remediation', () => {
+  const preflight = {
+    state: 'action-required-auth',
+    reason: 'interactive-sign-in-required',
+    installProvider: false,
+    provider: repositoryBroker.provider,
+    providerVersion: repositoryBroker.providerVersion,
+    feedCount: 1,
+    tokenRecorded: false
+  };
+  assert.deepEqual(parseValidationAuthPreflight({
+    stdout: `PILOT_VALIDATION_AUTH_PREFLIGHT:${JSON.stringify(preflight)}\n`
+  }, repositoryBroker), preflight);
+  const action = validationAuthAction(
+    { id: 'sdx-excel-focused-integration' },
+    { id: '1js', referenceCheckout: 'C:\\src\\1JS' },
+    preflight,
+    'C:\\controller');
+  assert.equal(action.requiresInstallApproval, false);
+  assert.equal(action.tokenRequested, false);
+  assert.deepEqual(action.remediation, {
+    cwd: 'C:\\src\\1JS\\midgard',
+    command: 'yarn.cmd',
+    args: ['auth']
+  });
+  assert.doesNotMatch(JSON.stringify(action),
+    /--skip-auth|secret|credentialValue|accessToken/i);
 });
 
 test('PowerShell authentication check distinguishes provider and sign-in actions', {

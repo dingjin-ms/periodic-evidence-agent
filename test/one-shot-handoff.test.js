@@ -33,21 +33,26 @@ async function setup(t, { candidate = false, terminal = true, workiq = false, gi
     dryRun: true, passes: [workiq ? 'workiq:created' : 'ado:created'],
     authorization: { approvedBy: 'test', approvedAt: now(), approvalRef: 'synthetic-only',
       deadlineAt: new Date(Date.now() + 60000).toISOString(), maxItems: 10, maxCalls: 10 } };
-  beginOneShotCollection(config, collector, collectionInput);
-  const collected = await advanceOneShotCollection(config, collector, 'fresh', {
-    adoTransport: async () => async (endpoint, body) => endpoint === 'wiql'
-      ? { asOf: '2026-10-09T00:00:00Z', workItems: empty || body.query.includes('[System.Id] = 0') ? [] : [{ id: 1 }] }
-      : { value: [{ id: 1, rev: 1, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area,
-        'System.Title': 'Synthetic functional behavior', 'System.State': 'Resolved',
-        'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
-        'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } }] },
-    workiqFactory: async () => ({ read: async path => ({ structuredContent: { results: [{ statusCode: 200,
-      data: path.startsWith('/me?') ? { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }
-        : { value: empty || path.includes('/replies') ? [] : [{ id: 'root', createdDateTime: '2026-10-08T01:00:00Z',
-          lastModifiedDateTime: '2026-10-08T01:00:00Z', subject: 'Synthetic functional behavior',
-          body: { contentType: 'text', content: 'Synthetic body' }, webUrl: 'https://example.invalid/root' }] } }] } }),
-      close: async () => {} })
-  });
+  // Bootstrap synthetic collection without spending its authorization on host I/O delays.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  let collected;
+  try {
+    beginOneShotCollection(config, collector, collectionInput);
+    collected = await advanceOneShotCollection(config, collector, 'fresh', {
+      adoTransport: async () => async (endpoint, body) => endpoint === 'wiql'
+        ? { asOf: '2026-10-09T00:00:00Z', workItems: empty || body.query.includes('[System.Id] = 0') ? [] : [{ id: 1 }] }
+        : { value: [{ id: 1, rev: 1, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area,
+          'System.Title': 'Synthetic functional behavior', 'System.State': 'Resolved',
+          'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
+          'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } }] },
+      workiqFactory: async () => ({ read: async path => ({ structuredContent: { results: [{ statusCode: 200,
+        data: path.startsWith('/me?') ? { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }
+          : { value: empty || path.includes('/replies') ? [] : [{ id: 'root', createdDateTime: '2026-10-08T01:00:00Z',
+            lastModifiedDateTime: '2026-10-08T01:00:00Z', subject: 'Synthetic functional behavior',
+            body: { contentType: 'text', content: 'Synthetic body' }, webUrl: 'https://example.invalid/root' }] } }] } }),
+        close: async () => {} })
+    });
+  } finally { t.mock.timers.reset(); }
   assert.equal(collected.state, 'held-awaiting-filter', json(collected.blocker));
   const collectionReceipt = readOneShotCollectionReceipt(config, collector, 'fresh');
   const collectionConfig = structuredClone(config);

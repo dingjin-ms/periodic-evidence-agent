@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync,
@@ -54,11 +55,6 @@ function files(root) {
 function prepare(store) {
   const observation = recordSelfImprovementObservation(store, selfImprovementWorkload());
   return prepareSelfImprovementExperiment(store, { observationId: observation.id, observationVersion: 1 });
-}
-
-function cliError(stderr) {
-  const sqliteWarning = /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?/gm;
-  return JSON.parse(stderr.replace(sqliteWarning, '').trim());
 }
 
 test('RSI CLI error parser accepts known SQLite warnings around structured errors', () => {

@@ -1,5 +1,5 @@
 import { Budget, json, requireThat, safeError, utc } from './common.js';
-import { readRelatedAdo, evidenceEnvelope } from './sources.js';
+import { readRelatedAdo, evidenceEnvelope, workiqTitle } from './sources.js';
 import { withWorkiq, principalPath, verifyPrincipal, channelRoot, messageSelect } from './runtime.js';
 
 export function explicitLinks(record) {
@@ -48,7 +48,7 @@ export async function readRelatedWorkiq(config, target, budget) {
       `workiq/${target.seed.teamId}/${target.seed.channelId}${target.parent ? `/thread/${target.parent}` : ''}`,
       message.id, message.etag ?? null, message.webUrl ?? target.seed.url, json({ entityUrls: [target.path] }));
     record.scopeId = `workiq:${target.seed.id}`; record.createdAt = message.createdDateTime;
-    record.fields = { message }; record.title = message.subject ?? null;
+    record.fields = { message }; record.title = workiqTitle(message.subject);
     return { record, payload: { message } };
   });
 }

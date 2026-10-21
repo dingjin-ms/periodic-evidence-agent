@@ -4,12 +4,24 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { nativeCommand } from '../src/native-command.js';
-import { minimalEnvironment } from '../src/workers.js';
+import { minimalEnvironment, command } from '../src/workers.js';
+
+function waitForProcessExit(pid, timeout = 5000) {
+  return command('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+    fileURLToPath(new URL('./fixtures/wait-for-process-exit.ps1', import.meta.url)),
+    '-ProcessId', String(pid), '-TimeoutMilliseconds', String(timeout)], process.cwd(), 15000, minimalEnvironment());
+}
 
 for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher traces ${mode} without changing native behavior`, async t => {
   const root = mkdtempSync(join(tmpdir(), 'launcher-trace-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let launcherPid;
+  t.after(async () => {
+    if (process.platform === 'win32' && launcherPid !== undefined) await waitForProcessExit(launcherPid);
+    rmSync(root, { recursive: true, force: true });
+  });
   const script = join(root, '.yarn', 'releases', 'synthetic.cjs');
   mkdirSync(join(root, '.yarn', 'releases'), { recursive: true });
   writeFileSync(script, mode === 'blocked-filesystem'
@@ -29,6 +41,7 @@ for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher trac
   if (mode === 'blocked-filesystem') await assert.rejects(execution, error => error.killed === true);
   else assert.deepEqual(JSON.parse((await execution).stdout), { marker: '1' });
   const trace = readFileSync(join(root, 'launcher-trace.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  launcherPid = trace[0].pid;
   assert.equal(trace[0].authHookSuppressed, true);
   assert.equal(trace[0].suppressionIsAuthenticationProof, false);
   assert.equal(trace[0].environmentNames.includes('NODE_OPTIONS'), false);
@@ -43,3 +56,21 @@ for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher trac
   } else assert.ok(trace.some(row => row.point === 'command-returned' && row.childPid > 0));
   assert.throws(() => process.kill(trace[0].pid, 0), error => error.code === 'ESRCH');
 });
+
+test('launcher cleanup rejects an active process and accepts its completed exit',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'launcher-exit-'));
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
+      { cwd: root, stdio: 'ignore', windowsHide: true });
+    const closed = once(child, 'close');
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      rmSync(root, { recursive: true, force: true });
+    });
+    await assert.rejects(waitForProcessExit(child.pid, 0), error => /did not signal exit/.test(error.stderr));
+    child.kill();
+    await closed;
+    await waitForProcessExit(child.pid);
+    rmSync(root, { recursive: true, force: true });
+  });

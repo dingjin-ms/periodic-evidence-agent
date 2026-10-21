@@ -308,7 +308,7 @@ for (const condition of ['missing-authorization', 'wrong-attempt', 'config-drift
     if (condition === 'dirty-workspace')
       writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
     if (condition === 'source-drift')
-      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+      await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'user.name=Fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
         '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
     if (condition === 'superseded-evidence') {

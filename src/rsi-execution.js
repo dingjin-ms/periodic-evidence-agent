@@ -6,7 +6,7 @@ import { WorkerTools, command, minimalEnvironment } from './workers.js';
 import { runAgencyLocal, launchAgency } from './agency-local-authoring.js';
 import { nativeCommand } from './native-command.js';
 import { describeAgent } from './agents.js';
-import { pinRsiController, readRsiArtifact, rsiAutomationPolicy, rsiWork } from './rsi-flow.js';
+import { pinRsiController, readRsiArtifact, readRsiEvent, rsiAutomationPolicy, rsiWork } from './rsi-flow.js';
 import { compareRsiFlows, pinRsiEvaluation, renderRsiFlowComparison } from './rsi-evaluation.js';
 import { runAppRoleFlow } from './rsi-app-flow.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
@@ -128,7 +128,8 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     current.find(item => ['claimed', 'proposed', 'publishing'].includes(item.state)) ?? current[0];
   if (!pending) {
     requireThat(!hostAction, 'No pending RSI execution can accept this host action', 'blocked-reconciliation');
-    return { state: status.unresolvedProducers.length ? 'blocked' : 'idle',
+    return { state: status.pending.length || status.undelivered.length || status.unresolvedProducers.length
+      ? 'blocked' : 'idle', pending: status.pending, undelivered: status.undelivered,
       unresolvedProducers: status.unresolvedProducers, modelExecuted: false };
   }
   const context = rsiWork(config, ledger, 'inspect', { observationId: pending.observationId }, scope);
@@ -155,6 +156,12 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
   }
   if (hostAction) {
     const path = join(directory, `${hostAction.phase}-host-request.json`);
+    if (hostAction.phase !== 'authoring') {
+      const originalOwner = join(directory, 'authoring-host-owner.json');
+      requireThat(existsSync(originalOwner) &&
+        JSON.parse(readFileSync(originalOwner, 'utf8')).hostSessionId === hostAction.hostSessionId,
+      'Host continuation requires the original authoring app session', 'blocked-reconciliation');
+    }
     requireThat(prior && hostAction.executionId === id && existsSync(path) &&
       hash(readFileSync(path)) === hostAction.requestSha256,
     'Host action requires its exact existing execution request', 'blocked-reconciliation');
@@ -394,6 +401,14 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
         check(); use(name);
       };
       tools.read = (path, startLine, endLine) => {
+        const event = /^rsi-events\/([0-9]+)\/([0-9]+)$/.exec(path);
+        if (event) {
+          tools.use('pilot_read');
+          const text = json(readRsiEvent(config, ledger, context.observation, Number(event[1]), Number(event[2])));
+          requireThat(Buffer.byteLength(text) <= automation.maxFileBytes,
+            'RSI event page exceeds the read budget', 'blocked-budget');
+          return text;
+        }
         const match = /^rsi-artifacts\/([0-9]+)$/.exec(path);
         if (!match) return read(path, startLine, endLine);
         tools.use('pilot_read');

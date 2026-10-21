@@ -422,7 +422,7 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
   const skillText = '# Synthetic OA integration skill\n';
   mkdirSync(join(workspace, 'docs', 'skills', 'Integration-test-core'), { recursive: true });
   writeFileSync(join(workspace, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'), skillText);
-  const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', ...args], { cwd: workspace, windowsHide: true, encoding: 'utf8' }).trim();
   git(['init', '--quiet']);
   git(['add', '.']);

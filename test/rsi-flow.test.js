@@ -8,7 +8,7 @@ import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { configAt, hash, json } from '../src/common.js';
 import { beginApp, openApp, endApp, appendApp } from '../src/app-native.js';
-import { bindRsiProducer, rsiWork, rsiPolicy } from '../src/rsi-flow.js';
+import { bindRsiProducer, rsiWork, rsiPolicy, readRsiEvent } from '../src/rsi-flow.js';
 import { principalPath } from '../src/runtime.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -411,14 +411,44 @@ test('status retains historical skill pins and never schedules a stale-controlle
 });
 
 for (const maxObservationBytes of [4096, 1048576]) test(
-  `oversized flow capture at ${maxObservationBytes} bytes is refused atomically without dropping producer state`, t => {
+  `oversized event metadata at ${maxObservationBytes} bytes is refused atomically without dropping producer state`, t => {
   const ctx = fixture(t, config => { config.rsi.maxObservationBytes = maxObservationBytes; });
-  ctx.ledger.db.prepare('INSERT INTO app_events VALUES(?,?,?,?)').run('large-source-event',
+  ctx.ledger.db.prepare('INSERT INTO app_events VALUES(?,?,?,?)').run('x'.repeat(maxObservationBytes),
     'flow', 'workiq:created', json({ fixturePayload: 'x'.repeat(maxObservationBytes) }));
   assert.throws(() => ctx.capture(), /byte bound/);
   assert.equal(ctx.ledger.all('rsiFlowObservation').length, 0);
   assert.equal(ctx.ledger.all('rsiWorkItem').length, 0);
   assert.equal(ctx.ledger.db.prepare('SELECT COUNT(*) n FROM app_events').get().n, 1);
+});
+
+test('oversized app receipts remain losslessly readable through bounded expiring event references', t => {
+  const ctx = fixture(t, config => { config.rsi.maxObservationBytes = 1048576; });
+  const original = json({ fixturePayload: 'é'.repeat(565000) });
+  ctx.ledger.db.prepare('INSERT INTO app_events VALUES(?,?,?,?)').run('large-source-event',
+    'flow', 'workiq:created', original);
+  const captured = ctx.capture();
+  const observation = ctx.ledger.get('rsiFlowObservation', captured.observationId);
+  assert.ok(Buffer.byteLength(json(observation)) <= 1048576);
+  assert.equal(ctx.ledger.all('rsiWorkItem').length, 1);
+  const parts = [];
+  let page = 0;
+  do {
+    const result = rsiWork(ctx.config, ctx.ledger, 'read-event',
+      { observationId: observation.id, index: 0, page }, { runId: 'flow' });
+    assert.ok(Buffer.byteLength(json(result)) < 65536);
+    parts.push(Buffer.from(result.contentBase64, 'base64'));
+    page = result.nextPage;
+  } while (page !== null);
+  assert.equal(Buffer.concat(parts).toString('utf8'), original);
+  assert.equal(ctx.capture().observationId, observation.id);
+  assert.throws(() => readRsiEvent(ctx.config, ctx.ledger, observation, 0, 0,
+    Date.parse(observation.payload.data.eventReferences.expiresAt)), /expired/);
+  assert.throws(() => ctx.ledger.db.prepare('UPDATE app_events SET body=? WHERE id=?')
+    .run('{}', 'large-source-event'), /immutable/);
+  const changed = structuredClone(observation);
+  changed.payload.data.events[0].sha256 = '0'.repeat(64);
+  changed.payloadSha256 = hash(json(changed.payload));
+  assert.throws(() => readRsiEvent(ctx.config, ctx.ledger, changed, 0, 0), /changed/);
 });
 
 test('app-scoped RSI operations cannot inspect or claim another run in a shared ledger', t => {

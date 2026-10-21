@@ -276,11 +276,12 @@ with no duplicate PR creation authorized after an uncertain response. See the
 [end-of-flow RSI contract](APP-NATIVE.md#end-of-flow-rsi-skill).
 The existing offline current/current evaluator is a separate qualification
 building block, not evidence that a proposed change improves the complete flow.
-Aggregated transport observations can exceed the configured 1 MiB RSI capture
-bound and block the post-flow handoff while retaining producer evidence. A prior
-collector candidate was rolled back for future runs after this integration
-failure. The bound and fail-closed behavior remain unchanged; local ingestion
-gains do not establish full-loop productivity, product coverage or cost savings.
+Large app transport receipts use hash-bound references to the original producer
+events when an inline observation would exceed its bound. Receipts are available
+through bounded, expiring pages without copying or truncating the original data.
+The observation cap remains 1 MiB; metadata that exceeds it still blocks handoff.
+This repairs the oversized-event handoff mechanism, not historical runs or live
+qualification. Local ingestion gains do not establish full-loop productivity.
 
 For an already-authored candidate, the roles can consume genuine saved evidence
 and decisions before a separately authorized validation-only continuation:

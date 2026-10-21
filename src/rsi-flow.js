@@ -330,7 +330,7 @@ export function captureWorkerRsiOutcome(config, ledger, workerResultId) {
 }
 
 export function captureAppRsiOutcome(config, ledger, runId, summary) {
-  checked(config, ledger);
+  const policy = checked(config, ledger);
   const binding = requireBinding(config, ledger, 'app-flow', runId);
   requireThat(summary.runId === runId, 'RSI app summary belongs to a different run', 'blocked-reconciliation');
   const row = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(runId);
@@ -347,7 +347,7 @@ export function captureAppRsiOutcome(config, ledger, runId, summary) {
       scope: 'selected-app-run-evidence-only'
     }
   };
-  return capture(config, ledger, binding, {
+  const payload = {
     kind: 'app-flow', outcome: summary.state, evidenceTrust: trust,
     data: {
       run: JSON.parse(row.body), summary: scopedSummary,
@@ -355,7 +355,44 @@ export function captureAppRsiOutcome(config, ledger, runId, summary) {
         .all(runId).map(event => ({ ...event, body: JSON.parse(event.body) })),
       upstreamExecution: 'app-tool-receipts-not-cryptographic-execution-attestation'
     }
-  });
+  };
+  // Keep large receipts in their original producer ledger. The bounded observation
+  // pins every byte; callers read finite pages without renewing raw retention.
+  if (Buffer.byteLength(json(payload)) + 1024 > policy.maxObservationBytes) {
+    const run = payload.data.run;
+    const expiresAt = new Date(Date.parse(utc(run.startedAt)) +
+      config.statePolicy.rawEvidenceDays * 86400000).toISOString();
+    payload.data.events = payload.data.events.map(event => {
+      const original = ledger.db.prepare('SELECT body FROM app_events WHERE id=? AND run_id=?').get(event.id, runId).body;
+      return { id: event.id, pass: event.pass, sha256: hash(original), bytes: Buffer.byteLength(original) };
+    });
+    payload.data.eventReferences = { format: 'producer-event-pages-v1', runId, expiresAt,
+      pageBytes: Math.min(16384, Math.floor(policy.maxObservationBytes / 4)),
+      encoding: 'base64', readPath: 'rsi-events/INDEX/PAGE' };
+  }
+  return capture(config, ledger, binding, payload);
+}
+
+export function readRsiEvent(config, ledger, observation, index, page, nowMs = Date.now()) {
+  const references = observation.payload.data.eventReferences;
+  const entry = observation.payload.data.events?.[index];
+  requireThat(hash(json(observation.payload)) === observation.payloadSha256 &&
+    references?.format === 'producer-event-pages-v1' && entry &&
+    Number.isSafeInteger(index) && index >= 0 && Number.isSafeInteger(page) && page >= 0 &&
+    Number.isFinite(nowMs) && nowMs < Date.parse(utc(references.expiresAt)),
+  'RSI event reference is expired or invalid', 'unavailable');
+  requireThat(Number.isSafeInteger(references.pageBytes) && references.pageBytes > 0 &&
+    references.pageBytes <= Math.min(16384, Math.floor(config.rsi.maxObservationBytes / 4)),
+  'RSI event page exceeds its bound', 'blocked-budget');
+  const row = ledger.db.prepare('SELECT body FROM app_events WHERE id=? AND run_id=? AND pass=?')
+    .get(entry.id, references.runId, entry.pass);
+  requireThat(row && hash(row.body) === entry.sha256 && Buffer.byteLength(row.body) === entry.bytes,
+    'Original RSI event is unavailable or changed', 'unavailable');
+  const bytes = Buffer.from(row.body), offset = page * references.pageBytes;
+  requireThat(Number.isSafeInteger(offset) && offset < bytes.length, 'Invalid RSI event page', 'invalid-record');
+  return { sha256: entry.sha256, bytes: bytes.length, offset,
+    contentBase64: bytes.subarray(offset, offset + references.pageBytes).toString('base64'),
+    nextPage: offset + references.pageBytes < bytes.length ? page + 1 : null };
 }
 
 export async function withRsiWorker(config, ledger, assignmentId, execute, upstream = null, dependencies = {}) {
@@ -503,6 +540,12 @@ export function rsiWork(config, ledger, operation, input = {}, { runId = null, a
       'RSI inspect requires only observationId', 'invalid-record');
     const context = taskContext(config, ledger, input, runId);
     return { ...context, rawArtifacts: inspectRsiArtifacts(config, context.observation), qualification: 'not-inferred' };
+  }
+  if (operation === 'read-event') {
+    requireThat(Object.keys(input).length === 3 && typeof input.observationId === 'string',
+      'Event reads require observationId, index and page', 'invalid-record');
+    const context = taskContext(config, ledger, input, runId);
+    return readRsiEvent(config, ledger, context.observation, input.index, input.page);
   }
   if (operation === 'capture') {
     requireThat(runId === null, 'App-native capture uses its own app-end boundary', 'blocked-scope');

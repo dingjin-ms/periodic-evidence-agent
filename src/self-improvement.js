@@ -1,5 +1,5 @@
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync
+  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, writeFileSync
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -220,8 +220,15 @@ export function selfImprovementIdentity() {
   const files = [];
   function add(path, label) {
     const info = lstatSync(path);
-    requireThat(!info.isSymbolicLink(), 'Source/dependency links require separate qualification',
-      'blocked-reconciliation');
+    if (info.isSymbolicLink()) {
+      const dependencyRoot = realpathSync(join(selfImprovementRoot, 'node_modules'));
+      const target = realpathSync(path), rel = relative(dependencyRoot, target);
+      requireThat(/(?:^|\/)node_modules\/\.bin\/[^/]+$/.test(label) &&
+        rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) && lstatSync(target).isFile(),
+      'Only internal npm executable launchers may be dependency links', 'blocked-reconciliation');
+      files.push({ path: label, link: readlinkSync(path), sha256: hash(readFileSync(target)) });
+      return;
+    }
     if (info.isDirectory()) {
       for (const name of readdirSync(path).sort()) add(join(path, name), `${label}/${name}`);
     } else {

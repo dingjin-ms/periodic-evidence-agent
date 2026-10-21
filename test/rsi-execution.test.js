@@ -73,13 +73,15 @@ function fixture(t, configure = () => {}, retainProof = false, fullFlow = false)
     assert.ok(isAbsolute(retained));
     mkdirSync(retained);
   }
-  const temp = fullFlow ? fileURLToPath(new URL('../.state/', import.meta.url)) : tmpdir();
-  if (fullFlow) mkdirSync(temp, { recursive: true });
+  // Keep nested native fixtures within Windows path bounds even in deep checkouts.
+  const temp = tmpdir();
   const root = realpathSync.native(retained ?? mkdtempSync(join(temp, 'rsi-execution-')));
+  if (fullFlow) cpSync(fileURLToPath(new URL('../node_modules', import.meta.url)),
+    join(root, 'node_modules'), { recursive: true });
   const reference = join(root, 'reference');
   mkdirSync(join(reference, 'src'), { recursive: true });
   writeFileSync(join(reference, 'src', 'flow.mjs'), broken);
-  if (fullFlow) for (const path of ['src', 'scaffold', '.github\\skills', 'APP-NATIVE.md',
+  if (fullFlow) for (const path of ['src', 'scaffold', '.github/skills', 'APP-NATIVE.md',
     'package.json', 'package-lock.json', '.gitignore', 'pilot.example.json'])
     cpSync(fileURLToPath(new URL(`../${path.replaceAll('\\', '/')}`, import.meta.url)), join(reference, path),
       { recursive: true });
@@ -247,6 +249,8 @@ test('app-hosted publication grants creation only on the first claim acknowledgm
   assert.equal(publication.invocation.publication.createAllowed, false);
   assert.equal(ctx.ledger.latest('rsiWorkItem')[0].state, 'proposed');
   action = { ...action, phase: 'publication', requestSha256: publication.invocation.sha256 };
+  await assert.rejects(invoke({ ...action, hostSessionId: 'foreign-session' }), /original authoring app session/);
+  assert.equal(ctx.ledger.latest('rsiWorkItem')[0].state, 'proposed');
   const fresh = await invoke(action);
   assert.equal(fresh.invocation.publication.createAllowed, true);
   ctx.reopen();
@@ -281,7 +285,7 @@ function appFlowProfile(config, { hostFilter = false } = {}) {
     const guard = selected.population === 'guard';
     const identity = { id: guard ? 'wrong-identity' : flowConfig.identity.objectId,
       userPrincipalName: flowConfig.identity.designatedUser };
-    const ledger = query => ({ path: 'state\\app-native\\dry-runs\\trial\\ledger.sqlite', query });
+    const ledger = query => ({ path: join('state', 'app-native', 'dry-runs', 'trial', 'ledger.sqlite'), query });
     const expectedState = guard ? 'blocked-auth' : 'complete';
     return {
       id: selected.id, config: flowConfig, runId: 'trial', production: false,
@@ -458,6 +462,20 @@ test('no-change completes automatically without candidate commit, evaluation or 
   });
   assert.equal(result.rsi.execution.result.result.outcome, 'no-change', JSON.stringify(result.rsi.execution));
   assert.equal(ctx.ledger.status().operations.filter(row => row.kind === 'rsi-commit').length, 0);
+  const original = ctx.ledger.all('rsiFlowObservation')[0];
+  const originalBinding = ctx.ledger.get('rsiFlowBinding', original.bindingId);
+  const binding = ctx.ledger.put({ ...originalBinding,
+    id: `rsi-flow-${hash(json(['app-flow', 'historical']))}`, flowId: 'historical',
+    controller: { ...originalBinding.controller, sourceSha256: 'e'.repeat(64) } });
+  const observation = ctx.ledger.put({ ...original, bindingId: binding.id,
+    id: `rsi-observation-${hash(json([binding.id, original.payloadSha256]))}` });
+  ctx.ledger.put({ ...ctx.ledger.latest('rsiWorkItem')[0],
+    id: `rsi-task-${hash(observation.id)}`, version: 1, observationId: observation.id,
+    state: 'queued', claim: null, proposal: null, publicationKey: null, result: null });
+  const blocked = await runRsiPending(ctx.config, ctx.ledger);
+  assert.equal(blocked.state, 'blocked');
+  assert.equal(blocked.modelExecuted, false);
+  assert.equal(blocked.pending[0].bindingState, 'stale-controller');
 });
 
 test('process exit after durable skill completion resumes without repeating authoring', async t => {

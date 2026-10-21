@@ -85,12 +85,20 @@ availability disposition; expiry/pruning leaves metadata and explicit unknowns,
 not a permanent base64 copy. Existing source-capture retention is unchanged.
 On CLI exceptions, an `rsi` field reports the separate delivery disposition.
 
-**Known integration limitation:** a larger aggregated transport observation can
-exceed the configured 1 MiB (`1048576` byte) RSI capture bound. The producer
-evidence remains retained, but RSI capture and the post-flow handoff are blocked.
-A prior collector-candidate adoption was rolled back for future runs after this
-failure. This framework publication does not raise the cap, truncate evidence,
-weaken evaluation or approval rules, or repair separate maintenance candidates.
+**Bounded app event handoff:** when inline transport receipts would exceed the
+observation bound, the observation instead pins each original event by run, ID,
+pass, byte length and SHA-256. No event is discarded or copied. Native RSI reads
+`rsi-events/INDEX/PAGE` through `pilot_read`; app hosts use `app-rsi-work
+--operation read-event` with a JSON file containing `observationId`, `index`
+and `page`. Pages contain base64 bytes, the full event hash, offset and next page.
+Decode and concatenate pages before parsing JSON. Each page is at most 16 KiB
+before base64 encoding and remains subject to the existing tool/read budgets.
+Reads fail on changed, deleted or expired producer evidence. Expiry is measured
+from the original run start using `rawEvidenceDays`; reads never renew it.
+The configured 1 MiB observation cap remains unchanged. Oversized metadata,
+worker captures and unavailable evidence still fail closed. A prior collector
+adoption was rolled back after an oversized inline capture; this change does not
+rewrite that history or by itself establish live qualification.
 Local ingestion benefits do not demonstrate full-loop productivity, improved
 product coverage, reduced costs or held-out generalization. Offline/synthetic
 checks are not live end-to-end or universal unattended qualification.

@@ -2,8 +2,8 @@
 
 ## Project skills
 
-There are exactly three top-level role entrypoints: `evidence-collector`,
-`evidence-filter` and `evidence-proposer`. The procedures below implement these
+There are four top-level role entrypoints: `evidence-collector`,
+`evidence-filter`, `evidence-proposer` and `evidence-rsi`. The procedures below implement these
 roles; they are not additional workers to launch.
 
 `npm run pilot -- agents` returns their versioned descriptors and pinned skill
@@ -24,6 +24,7 @@ Role procedures live in `.github\skills` and can be shared with this repository:
 | Skill | Role |
 |---|---|
 | `evidence-collector` | Scoped source reads, receipt import, paging and coverage |
+| `evidence-rsi` | Inspect flow outcomes and propose agent-system fixes/improvements under a separate opt-in policy |
 | `evidence-coordinator` | Exclusion review, ownership, atomic assignment and reconciliation |
 | `evidence-improvement-planner` | Area aggregation, test discovery/linking and qualified capability selection |
 | `evidence-1js-owner` | Claimed 1JS RCA/fix/validation work |
@@ -54,6 +55,447 @@ identity; the two repo owners retain their distinct logical IDs. This change
 does not create separate daemons, enable automation, change approved scopes or
 remove activation gates. The shared repo-owner reference avoids diverging
 validation and draft-only policies.
+
+## End-of-flow RSI skill
+
+`evidence-rsi` is the post-flow reasoning procedure. It consumes durable
+observations from successful, failed, partial and blocked flows, chooses a
+supported agent-system change, and returns a fix/improvement proposal or an
+explicit no-change, insufficient-evidence or blocked outcome. It does not route
+product bugs, collect more workplace evidence or approve its own improvement.
+
+RSI is disabled when `rsi` is absent or `{ "enabled": false }`. To configure a
+new flow, explicitly approve a policy based on `scaffold/rsi-flow.example.json`
+as the `rsi` property of the selected pilot configuration. Set the actual
+GitHub `owner/repository`, allowed write prefixes and finite observation,
+per-observation byte and proposal bounds. `allowDraftPR` defaults to false in
+the example. This is not authorization to execute a model, edit a product,
+publish or merge; the selected host's existing permissions remain required.
+Never change the policy of an existing app run to activate RSI retroactively.
+
+The reviewed/FILTER proposer controllers bind controller/skill/configuration
+inputs before execution and automatically capture terminal worker results,
+including failed native validation and repair history. The binding retains the
+exact upstream handoff. Captured source receipts and available registered trace
+artifact hashes/metadata enter a bounded immutable observation; excess or changed
+artifacts block delivery without changing the original worker result.
+Raw registered artifacts are not copied into immutable records. Their original
+`statePolicy.rawEvidenceDays` lease still applies. Inspection returns a current
+availability disposition; expiry/pruning leaves metadata and explicit unknowns,
+not a permanent base64 copy. Existing source-capture retention is unchanged.
+On CLI exceptions, an `rsi` field reports the separate delivery disposition.
+
+**Bounded app event handoff:** when inline transport receipts would exceed the
+observation bound, the observation instead pins each original event by run, ID,
+pass, byte length and SHA-256. No event is discarded or copied. Native RSI reads
+`rsi-events/INDEX/PAGE` through `pilot_read`; app hosts use `app-rsi-work
+--operation read-event` with a JSON file containing `observationId`, `index`
+and `page`. Pages contain base64 bytes, the full event hash, offset and next page.
+Decode and concatenate pages before parsing JSON. Each page is at most 16 KiB
+before base64 encoding and remains subject to the existing tool/read budgets.
+Reads fail on changed, deleted or expired producer evidence. Expiry is measured
+from the original run start using `rawEvidenceDays`; reads never renew it.
+The configured 1 MiB observation cap remains unchanged. Oversized metadata,
+worker captures and unavailable evidence still fail closed. A prior collector
+adoption was rolled back after an oversized inline capture; this change does not
+rewrite that history or by itself establish live qualification.
+Local ingestion benefits do not demonstrate full-loop productivity, improved
+product coverage, reduced costs or held-out generalization. Offline/synthetic
+checks are not live end-to-end or universal unattended qualification.
+
+App-native hosts call `app-end --run RUN_ID [--production] --config CONFIG`
+after the flow, including no-candidate and partial/blocked outcomes. The
+`app-block` and terminal `app-worker` CLI paths also capture their RSI handoff
+when enabled. This snapshots the selected run, not unrelated runs in a shared
+live ledger. A summary's `complete` state still means collection completeness,
+not complete FILTER, authoring, validation or E2E success.
+
+Without `rsi.automation`, the flow owner must invoke `evidence-rsi` for the returned `nextRole: rsi`
+handoff within the approved host. Capture-only helpers return
+`invocation: host-must-invoke-skill`, never a claim that a skill/model executed.
+With the separate automation policy below, completion returns `rsi.execution`.
+Native mode awaits the restricted native host; app-hosted mode returns durable
+semantic continuations to the current app agent. Do not launch a second host.
+Neither path creates a second scheduler or switches from app-native to SDK mode.
+RSI's own bookkeeping cannot invoke `app-end` through the RSI role facade.
+
+```powershell
+npm run pilot -- agent rsi help
+npm run pilot -- agent collector app-end --run RUN_ID --config pilot.local.json
+npm run pilot -- agent rsi app-rsi-work --run RUN_ID --operation status --config pilot.local.json
+npm run pilot -- agent rsi app-rsi-work --run RUN_ID --operation inspect --file observation.local.json --config pilot.local.json
+npm run pilot -- agent rsi app-rsi-work --run RUN_ID --operation claim --file claim.local.json --config pilot.local.json
+```
+
+Use `--production` only for the existing production app ledger. Standalone
+controller records use `agent rsi rsi-work` without `--run`. Its `capture`
+operation takes exactly `{ "workerResultId": "ID" }` for interrupted delivery.
+`inspect` takes `{ "observationId": "ID" }`; `claim` takes that observation ID,
+stable `claimId` and actual `executorId`. `propose` and `result` use the
+`rsiProposalInput` and `rsiResultInput` schemas. Candidate proposals must name a
+clean isolated checkout, exact baseline/candidate commits, the actual changed
+files, and artifact references. The helper verifies the repository, clean HEAD
+and complete diff against the independently pinned target baseline, forbids protected judge/authority paths, and does not regard
+submitted artifact references as independently verified evaluation.
+For manual authoring, set `rsi.targetBaseline` before the flow starts to
+`{ "referenceCheckout": "ABSOLUTE_REFERENCE", "revision": "40_HEX_SHA", "branch": "TARGET_BRANCH" }`.
+The reference must be clean at that branch/revision and match `targetRepository`.
+Automation supplies the equivalent baseline through its required fields.
+Both proposal and every draft admission reject caller substitution or target
+advancement. A capture-only policy without a target pin cannot propose a change.
+
+**Resumption:** app run creation and its pre-execution RSI binding commit
+atomically; failed admission cannot leave an executable unbound run.
+Observations and queued work also commit in one transaction. A
+repeated capture after interruption returns the same observation and task.
+`rsi-work --operation status` discovers terminal worker results whose delivery
+was interrupted in `undelivered`, with their exact `capture` request. No
+producer response or manually reconstructed artifact path is needed after
+restart. Missing terminal results remain `unresolvedProducers`, not a request
+to execute the worker again.
+Existing captured worker outcomes do not need their original artifact files
+recopied. Metadata replay does not restore an expired raw artifact.
+A changed source/configuration binding is rejected rather than
+relabelled. Status preserves the originally pinned skill/source and marks
+`stale-controller` handoffs blocked, rather than requesting today's skill for
+an old task. Run RSI helpers in the original controller checkout, not the
+candidate tree. Claims are idempotent only for the same executor; there is one active
+RSI task per ledger. Unknown prior execution must be reconciled, not relaunched.
+There is at most one proposal per bound flow and failure family, with a finite
+total proposal budget. Immutable RSI metadata is not automatically pruned and
+budgets are not refunded; raw artifacts retain their original availability and
+retention limits.
+
+**Publication:** `reserve-publication` takes the exact claim, requires the
+separate draft permission and rechecks the candidate before persisting a
+publication key. Only its first response has `createAllowed: true`. After an
+uncertain response, reuse the key to find the existing PR; a repeated reservation
+never authorizes another create. `draft-reported` must match the configured
+GitHub repository, key and candidate HEAD. It is a host-reported receipt, not
+independent PR verification, improvement qualification or merge authority.
+Qualified benefit still requires independently judged, comparable E2E runs.
+No-change and insufficient-evidence are valid outcomes; never force a PR.
+
+The offline connected tests use synthetic source/model/publication boundaries,
+including real disposable native validation and authenticated native-host RPC.
+They establish automatic execution, paired source-bound judgments and restart
+behavior, not a live model's ability to discover useful improvements.
+
+### Opt-in native RSI execution
+
+Approve `rsi.automation` only for a new flow configuration. Its required fields
+are defined by `rsiAutomation` in `scaffold/contracts.schema.json`:
+
+| Field | Contract |
+|---|---|
+| `executionMode` | `native` (also the omitted-field compatibility default), or `app-hosted` as described below. |
+| `authoringApproved`, `localCommitApproved` | Both explicitly `true`; neither follows from `rsi.enabled`. |
+| `authoringProvider` | Existing restricted `agency-local` provider, absolute executable and named profile. No SDK fallback. |
+| `referenceCheckout`, `baselineRevision`, `targetBranch` | Dedicated full, clean reference clone, exact SHA and explicit local publication branch. |
+| `gitAuthor` | Explicit approved name/email for disposable candidate commits; no inferred account. |
+| `timeoutMs`, `maxToolCalls`, `maxAiCredits` | Finite total deadline, tool budget and existing native-host credit cap. |
+| `maxFileBytes`, `maxWorkspaceBytes` | Per-read/edit bound and aggregate execution-tree admission checks. The reference must fit within one third of the tree bound. |
+| `evaluation` | Independently pinned driver/dependencies, timeout and common selected cases. |
+
+The driver must live outside both reference and candidate checkouts. Pin its
+`driverPath`/`driverSha256` and each declared dependency `{path, sha256}` before
+authoring. `cases` must include distinct recovery, healthy and guard populations,
+each with unique case/assertion IDs. The driver exports
+`async runFlow({workspace, revision, observation, cases, directory})`; it executes
+the actual intended flow in that checkout and returns `rsiDriverResult`:
+`{cases: [{id, started, outcome, assertions: [{id, state}]}], violations: []}`.
+Outcomes are `passed|failed|blocked|unknown`; assertion states are
+`passed|failed|not-run|unknown`. The driver, not candidate text or a wrapper exit
+code, owns these assertions. It must not silently change sources, skip cases,
+call unapproved providers or expand permissions. Its declared dependency closure
+is operator-reviewed, not automatically discovered.
+
+Both arms receive the same immutable observation, driver and case inventory.
+The fixed parent validates source/input/profile bindings, keeps every selected
+case, counts target failures before work as unsuccessful (not invalid attempts),
+and keeps guards separate. Missing/mismatched evidence stays unknown. A candidate
+qualifies only with verified recovery/completion gain, preserved passing cases,
+healthy/guard success, no violations/unknowns and no lost assertion coverage.
+Equal correct outcomes mean `no-demonstrated-benefit`, never a forced PR.
+Generated JSON/Markdown comparisons retain exact revisions and hashes.
+
+```powershell
+npm run pilot -- agent rsi rsi-run --config pilot.local.json
+npm run pilot -- agent rsi app-rsi-run --run RUN_ID --config pilot.local.json
+```
+
+The same runner is automatically awaited by reviewed/FILTER proposer completion
+and app `app-end`, `app-block` and terminal `app-worker` paths. Restart commands
+discover durable delivery/work themselves; they do not require copying artifacts
+or replaying the producer. A stable execution/claim, lock, deadline and phase
+receipts persist in the original ledger and `rsi-executions` directory.
+Successful `pilot_finish` is persisted before the host response. Completed phases
+resume without a second authoring turn, commit or evaluation. Modified receipts,
+unknown in-flight effects, stale pins and exhausted budgets block explicitly.
+The persisted deadline also gates each target/candidate verification Git command,
+proposal/publication state admission and new execution artifact. Expired restarts
+cannot launch verification children; diagnostic failure recording and lock release
+do not renew the execution allowance.
+Partial writes are not silently repaired or retried. There is no new daemon.
+
+With `allowDraftPR: false`, qualified candidates remain local proposals. The
+native publisher additionally requires a private target repository, checks the
+live target branch SHA and records an irreversible reservation before push/create.
+Public publishing still needs separate content review; no push is performed.
+An uncertain external response permits exact-identity reconciliation only, not
+another create. No path merges, deploys, grants permission, or edits the evaluator.
+
+These are trusted-code and process/API boundaries, not a hostile-code sandbox
+or hard OS disk quota. Storage is checked before/after phases and before writes;
+an approved driver's unexpected excess is reported and retained, not silently
+deleted. Native host logging/credential policy remains the approved host's
+responsibility. Unknown effects stop rather than fabricating unattended success.
+No live/provider behavior or post-deployment benefit is established by synthetic
+fixtures, and the older sealed current/current packets remain historical evidence.
+
+### App-hosted RSI continuations
+
+Set `rsi.automation.executionMode: "app-hosted"` before beginning a new run.
+This path uses the current Copilot App model: omit `authoringProvider` and
+`maxAiCredits` (both are rejected in this mode). Keep the explicit authoring/local
+commit approvals, target baseline, Git author, file/storage bounds and total
+deadline. `maxToolCalls` is a host instruction, not an enforced count of app
+tool calls; model credit and in-flight tool enforcement remain the app's
+responsibility. The helper does not submit another model request or use
+`coordinator.runOnce`/the standalone SDK runtime.
+
+An `awaiting-host` result is a **resumable agent yield**, not a request for a
+human to advance a role. The existing coordinator consumes it in the same
+conversation, without a fresh user prompt when the work is already authorized:
+
+1. Read `invocation.ref`, verify its `sha256`, and load the exact
+   `request.skill.path`/hash. Keep the original controller, config, ledger,
+   namespace, execution ID and deadline. Use `request.workspace` for this
+   phase; evaluation roles may run in the baseline rather than the candidate.
+2. Before semantic work or edits, submit the `rsiHostAction` claim below with
+   the actual existing app session handle. A different host cannot take over
+   a claim. Do not invent a handle, launch another session or renew the budget.
+3. Perform only `request.task` under that role's existing authority.
+   Authoring returns `rsiSkillDecision`; `propose-change` requires the complete
+   `skillResult`, title and description. Evaluation yields return the existing
+   role command's input object, **not grades**, and do not permit publication.
+   The controller executes the command and checks its durable result.
+4. Submit `action: "complete"` with the same IDs/hash/session and `result`.
+   Follow the next `awaiting-host` response in this same host until terminal
+   or genuinely blocked. Do not replay the producer or manually rerun a
+   completed role command. A repeated completion must be byte-equivalent JSON.
+
+```json
+{
+  "executionId": "EXACT_EXECUTION_ID",
+  "phase": "EXACT_PHASE",
+  "requestSha256": "EXACT_REQUEST_SHA256",
+  "hostSessionId": "ACTUAL_APP_SESSION_HANDLE",
+  "action": "claim"
+}
+```
+
+```powershell
+npm run pilot -- agent rsi app-rsi-run --run RUN_ID --file host-action.local.json --config pilot.local.json
+```
+
+Include `--production` only for the original production namespace. Standalone
+ledgers use `rsi-run` instead. On restart, invoke the runner without `--file`
+to recover its pending request, then resume its bound host. Do not ask the user
+to manually advance every role. If the existing host cannot continue, report
+that concrete blocker. Requested, claimed and simulated continuations are not
+evidence of unattended semantic execution. `modelExecutedByHelper: false`
+and `hostExecution: app-host-reported` deliberately distinguish host reports
+from helper-launched model execution.
+
+For publication, first verify that the app's PR tool can address the exact
+candidate checkout under an existing grant. If it cannot, leave the proposal
+blocked before claiming publication; do not create another session, push with
+a fallback tool or claim PR support that the host lacks. The first publication
+claim reserves the existing publication key before returning a one-time
+`invocation.publication.createAllowed` admission. Later claim/status responses
+are reconcile-only, including a lost first acknowledgment. Only an exact draft
+receipt can complete a reserved publication; uncertain effects cannot be closed
+as no-change or retried. Public content review remains separately required.
+
+### Evaluation through the existing app roles
+
+For app-hosted evaluation, replace `evaluation.driverPath`, `driverSha256` and
+`dependencies` with `flowPlan: { "path": "ABSOLUTE_PRIVATE_PLAN", "sha256": "SHA256" }`.
+Keep `timeoutMs` and the ordered recovery/healthy/guard `cases` and assertion
+IDs. The plan is a trusted, reviewed input outside both source checkouts,
+pinned before authoring. It composes existing `agent ROLE COMMAND` entrypoints
+and their normal eligibility/cohort/assignment checks, not a second flow
+implementation. Baseline and candidate use the same plan and separate state.
+The source checkouts need the already-approved dependencies resolvable by Node;
+the runner never installs packages or authenticates on their behalf.
+
+The plan's exact structure is:
+
+```text
+{ format: "rsi-app-role-flow-plan-v1", cases: [{
+  id, config, runId, production,
+  steps: [{ id, role, operation, options?, input?, hostInput?: { instructions } }],
+  workStarted: { step, pointer, equals, ledger?: { path, query } },
+  assertions: [{ id, step, pointer, equals, ledger?: { path, query } }]
+}] }
+```
+
+`config` is the complete selected app-native configuration with
+`stateDirectory: "${state}"` and RSI disabled. Cases/steps are bounded and
+uniquely identified. Steps must begin with `app-begin`, visit Collector,
+FILTER, Proposer in order, and finish with `app-end`. `agentInvocation` still
+checks role/command compatibility. The begin input must match the pinned run
+and dry/production namespace. `options` cannot override the runner's
+config, run, production namespace or input file. String placeholders are
+`${state}`, `${directory}` (the isolated case directory), `${workspace}` and
+`${runId}`. Use Windows paths on Windows. Keep the state root short enough for
+the existing native SQLite implementation; case stores use compact paths
+under `stateDirectory\af` and count toward the execution storage bound.
+
+Collector inputs are pinned captured receipts, not independently recollected
+per arm; Collector `hostInput` is forbidden. Preserve their true provenance.
+Do not place private raw receipts in published plans or retain a private plan
+beyond its approved raw-evidence lease. FILTER can use the applicable existing
+review or batch/consolidation steps; Proposer uses the existing authorized
+worker/handoff path. Their semantic inputs may use `hostInput` to yield to the
+same app agent with the evaluated checkout's pinned skill and prior artifact
+references. A dry/synthetic case must still hit the real dispatch refusal.
+Do not weaken guards or relabel fixtures to obtain an executable product run.
+
+Each predicate binds a declared step. A JSON pointer selects a value from its
+role result, or from a read-only SQLite query's row array; compare exactly with
+`equals`. Ledger paths are relative to the isolated case directory. Queries
+are single bounded `SELECT` statements, executed by the fixed controller in
+finite child processes, not by the candidate or semantic host. Non-guard cases
+require a ledger-backed intended-work marker and ledger assertions for every
+role. Choose meaningful terminal validation/assignment assertions: a prepared
+record, empty cohort, process exit or successful envelope cannot establish
+product execution or E2E coverage. Structured role errors fail normal cases;
+guard cases can deliberately assert a refusal. Missing evidence/query failures
+remain unknown and all selected cases stay in the denominator.
+
+Role requests, source/profile bindings, phase deadlines and command receipts
+survive restart. Each arm has one persisted wall-clock deadline including host
+yields; returning to the host never renews it. Completed steps are reread, not
+rerun; unknown child effects block. Command stdout/stderr and semantic input
+payloads use the existing bounded raw-run retention store, while immutable
+receipts retain only hashes/references. Expired or missing payloads cannot be
+recreated from immutable metadata. Unstructured terminal output is retained
+and blocks instead of being treated as success or retried. Original role
+ledgers retain their existing source-capture policy.
+CLI result envelopes use stdout, typed error envelopes use stderr, and
+structured partial results can exit with code 2. The adapter preserves both
+streams; a success envelope with another failure exit cannot hide that failure.
+Interrupted commands retain bounded partial output when admission still permits
+it. Otherwise their operation records the storage/deadline refusal explicitly.
+Neither diagnostic recording nor missing output authorizes a retry or renews
+the execution budget.
+
+Offline checks exercise real local role commands with synthetic source receipts,
+simulated semantic responses and independent ledger assertions. They do not
+qualify the actual app host's continuation behavior, real semantic judgments,
+product execution, useful improvement or PR creation. Those require a separately
+authorized operational run; a working helper protocol is not that run.
+
+## Offline self-improvement qualification
+
+`self-improvement` remains a separate opt-in qualification command, not the
+`evidence-rsi` skill or its flow inbox. It never loads `pilot.local.json`, invokes ordinary state pruning,
+collects sources, dispatches product work or installs a skill. The CLI starts
+the fixed judge in its own process, separate from the normal CLI's worker
+imports. Only child fixture drivers import the selected recovery/worker code.
+Both arms currently use the same reviewed source; arbitrary candidate trees,
+private evidence, models, promotion and operational recovery are not supported.
+
+Copy `scaffold/self-improvement.example.json` to an ignored `rsi.local.json`,
+choose the retained owner and named `.state/rsi/NAME` root, and approve the
+bounded offline execution **before initialization** when that work is authorized.
+The policy hash is immutable for a store; editing limits/ownership does not
+silently grant a running experiment new authority.
+
+```powershell
+npm run pilot -- self-improvement init --policy rsi.local.json
+npm run pilot -- self-improvement observe --policy rsi.local.json
+npm run pilot -- self-improvement prepare --policy rsi.local.json --file preparation.local.json
+npm run pilot -- self-improvement evaluate --policy rsi.local.json --file evaluation.local.json
+npm run pilot -- self-improvement status --policy rsi.local.json
+npm run pilot -- self-improvement report --policy rsi.local.json --file report.local.json
+```
+
+`observe` admits only the bundled synthetic scenario definition, explicitly not
+a live failure observation. `prepare` accepts exactly
+`{observationId, observationVersion: 1}`. Evaluation and report requests contain
+exactly `{experimentId, expectedVersion}` from the latest returned immutable
+record. There is one active experiment per store, at most two distinct source
+admissions for the fixed family, and one execution reservation per experiment.
+Identical observations/preparations are idempotent; execution is never retried
+or automatically refunded.
+
+The workload freezes recovery, healthy-follow-up and guard populations before
+execution. A missing synthetic input creates an actual authored, unpublished,
+pre-test failure. A verified synthetic object and source/config/proposal-bound
+fixture authorization permit only the normal LFS continuation. The driver
+reuses the original commit without invoking authoring again. Native work runs
+in a separate local validation clone: the parent verifies test/source bytes,
+observes both case bodies, and refuses duplicate or setup-only publication.
+The original blocked result stays immutable. A healthy follow-up exercises
+the corrected materialization contract; changed-proof and repeated-dispatch
+controls must refuse without additional effects.
+
+Episode and runtime limits govern child execution/admission; fingerprinting,
+sealing and bounded termination have additional overhead. Output capture and
+artifact writes have byte limits. Fixture storage is checked at broker boundaries
+and after each episode, not by an OS disk quota; an observed breach stops further
+episodes. These limits apply to reviewed fixtures, not hostile-code containment.
+
+The fixture's simulated provider envelope is confined to disposable synthetic
+controller stores, as in the existing continuation tests. It is not authenticated
+workplace evidence and is never imported into the RSI ledger. Production
+synthetic-dispatch restrictions remain unchanged. The parent pins loaded source
+bytes (including uncommitted changes), controller HEAD, evaluator, driver,
+native tests, workload, dependencies, policy, Node executable and Git version.
+The comparison becomes stale when those bindings change.
+
+**Ownership and crashes.** Initialization creates an exclusive root marker and
+bootstrap identity before admission. Linked/aliased paths, markerless populated
+stores, mixed product namespaces, unsupported schemas and foreign/interrupted
+WAL stores are rejected before a writable open; there is no implicit migration.
+Marker-only interrupted initialization can resume with `init --resume --store-id ID`.
+Other incomplete/foreign schemas require separate inspection, not a repair loop.
+Status is read-only. Authoritative RSI stores use rollback journals so read-only
+inspection does not create SQLite WAL sidecars.
+
+Evaluation reserves its attempt before launching a child, records owned process
+identities, writes unique artifacts, seals the existing run manifest, rereads its
+complete inventory/hashes, independently rederives metrics, then commits the
+final record. Crashes between filesystem and SQLite steps remain uncertain.
+No unsealed or orphaned artifact can become a completed result.
+
+Explicit disposition uses `self-improvement decision --policy rsi.local.json
+--file decision.local.json` with
+`{action, experimentId, expectedVersion, storeId, operatorConfirmedStopped: true, reason}`.
+Only `adopt-sealed-completion` and `abandon` are accepted. Adoption revalidates
+already complete sealed evidence without rerunning a child. Abandonment releases
+the active slot but preserves consumed budget and history. Neither operation may
+steal a still-present evaluator/child; uncertain process fate requires operator
+reconciliation. A timeout has a bounded termination grace and remains unknown,
+not a successful refusal or an implicit retry.
+
+The owning checkout **must remain available through review, follow-up and
+rollback discussion**. No authoritative state is automatically deleted, pruned,
+archived or transferred. A future durable handoff needs a separately approved,
+verified protocol. Disposable test Git/controller stores are distinct from
+authoritative experiments and scorecards; tests may remove their own known
+fixture allocations only after every registered child is observed stopped,
+never the retained RSI state. Test adoption simulates an operator disposition,
+not a human candidate-approval decision. There is no actual candidate
+deployment to roll back in this milestone.
+
+This is reviewed-code process/API separation, **not a hostile-code sandbox**.
+Public fixtures are not secret held-out evaluation. Current/current equality
+qualifies the harness only; a real improvement needs a supported deficit and
+separate candidate admission, review, evaluation and deployment authority.
 
 ## Recorded-source role handoff
 
@@ -249,6 +691,14 @@ production assignment budget or schedule anything. Source writes are absent.
 Future automation belongs to the independent agents and remains **disabled**:
 same-session automation is neither implemented nor the target architecture.
 
+The optional [one-shot controls](ONE-SHOT.md) add bounded sequential collection
+and accepted-cohort release operations callable by that existing coordinator;
+they do not enable recurring automation or replace host orchestration.
+Collection-only storage remains separate from proposer state. Real
+`workiq-cli-verified` captures are not synthetic merely because their source run
+uses `dryRun:true`; the separate authorized FILTER handoff preserves provenance
+without enabling in-run review or dispatch.
+
 ## Entry points
 
 Run from the cloned project root. Commands accept `--config <path>`; otherwise
@@ -383,6 +833,87 @@ receipts; reauthentication and a separately authorized new run are needed.
 IcM unavailable input:
 `{"pass":"icm:created","reason":"no-approved-connector"}`.
 Unstarted/unavailable counts are null, not clean zero.
+
+### Explicit incident-created IcM receipts
+
+An approved incident-created cohort does not require Source Created Time
+equivalence. Select it explicitly in a **new** configuration/run; never edit a
+frozen run or relabel its unavailable pass. The default missing/null
+`timestampContract` retains the legacy saved-query/owner-export requirements.
+No helper launches an IcM connector.
+
+The following settings are illustrative (team `123` is synthetic). Set
+`owningTeamId` to the independently confirmed, approved team. `scopeApproved`
+confirms that team and the exact API severity values `[1,2,25]` (S1/S2/S2.5,
+excluding S0), not saved-query parity:
+
+```json
+{
+  "enabled": true,
+  "scopeApproved": true,
+  "timestampContract": "incident-created",
+  "owningTeamId": 123,
+  "severity": [1, 2, 25],
+  "top": 5
+}
+```
+
+These are `sources.icm` fields. Legacy `queryId`, `filtersVerified` and
+`ownerExport` are not used by this alternate path and must not be relabeled as
+verified. `collectIcm`/owner-export collection does not implement this mode;
+use the existing app-native collector entrypoint:
+
+```powershell
+npm run pilot -- agent collector app-append --run RUN_ID --file .\private\icm-app-receipts.json --config .\pilot.local.json
+```
+
+Input remains `{eventId,pass:"icm:created",calls:[...]}`. Each call has `id`,
+`tool`, `request`, `requestedAt`, `observedAt`, and `response` or `failure`.
+`response` is the original MCP result object (`structuredContent` or one JSON
+text-content block), not the surrounding JSON-RPC envelope. Preserve the
+original wire envelope and hash separately. First supply
+`tool:"get_my_icm_context",request:{}` with the actual active configured
+alias/email response. Subsequent `tool:"search_incidents"` calls use:
+
+```json
+{
+  "incidentAdvancedSearchRequest": {
+    "owningTeamId": 123,
+    "severity": [1, 2, 25],
+    "dateRange": {
+      "createdAfter": "2026-10-08T00:00:00Z",
+      "createdBefore": "2026-10-09T00:00:00Z"
+    },
+    "top": 5,
+    "sortBy": [{ "field": "CreatedDate", "direction": "Descending" }]
+  }
+}
+```
+
+Bounds must exactly match the run window: inclusive `createdAfter`, exclusive
+`createdBefore`, explicit UTC. Required `createdDate` is validated without
+falling back to `sourceCreateTime`; original fractional digits are retained.
+Optional source timestamps, including omitted versus explicit null values,
+remain unchanged in captured payloads and evidence fields. Evidence uses an
+incident-created team namespace, never `icm/query/599514`. Because the search
+contract supplies no incident URL, the evidence link is the portal root and
+`directLink` is marked missing rather than inventing an incident route.
+
+Imported real receipts are `app-tool-reported`, synthetic runs stay
+`synthetic`; neither becomes locally authenticated merely by replay. Call and
+row captures are retained in the app ledger. `readCalls` counts identity/search
+receipts, not initialization/discovery calls in the separate connector
+qualification budget. Offline replay makes no additional source calls.
+
+A returned continuation means partial coverage, even if all supplied rows were
+ingested. A count is reported metadata, not evidence of exhaustive coverage.
+Only the exact returned token may be appended after a **separately authorized**
+read; this helper never executes a next request. Read/item caps, buffered
+unexamined rows, duplicate versions, failed identity/scope checks and terminal
+passes remain distinct. No same-run restart follows a budget/error stop.
+Only successful exhaustion advances an incident-created-labeled cursor.
+Current contents are not historical bodies; FILTER exclusions, review and
+product-worker permissions are unchanged.
 
 ### ADO collection and offline recovery
 
@@ -654,7 +1185,7 @@ and `sortBy:[{field:"CreatedDate",direction:"Descending"}]`. Only a returned MCP
 `nextPageToken` may be added on the next page; no partner OData token, offset,
 expanded dates, implicit query ID, retry or head restart is substituted.
 Successful pages contain `success:true`, `value`, optional nonnegative
-`@odata.count` and optional `nextPageToken`. Identity/read and examination limits,
+`@odata.count` (explicit null remains unknown) and optional `nextPageToken`. Identity/read and examination limits,
 request equality, returned team/severity/date bounds and token cycles are checked.
 Every row costs an examination, including duplicate versions; changed payloads
 for the same ID remain distinct hashed versions.
@@ -663,16 +1194,20 @@ for the same ID remain distinct hashed versions.
 request only**. `state` remains blocked when `timestampContract:null`, even if
 that diagnostic enumeration exhausted pages. `cohortCoverage` and
 `liveActivation` remain blocked in this offline adapter. An explicit
-`timestampContract:"incident-created"` labels diagnostics, not saved-query
-equivalence or live authorization. Source Created Time has no verified input
-mapping and is rejected as a substituted contract. Returned `sourceCreateTime`
+`timestampContract:"incident-created"` labels the recorded incident-created
+enumeration, not saved-query equivalence or live authorization. This standalone
+replay remains audit-only; the explicitly configured `app-append` path above
+can ingest those receipts into a new app evidence run. Source Created Time has
+no verified input mapping and is rejected as a substituted contract. Returned `sourceCreateTime`
 presence is recorded separately; omitted values are not asserted to be null at
 source. `remainingSourceRecords` is unknown until observed exhaustion; a reported
 total is not a stable snapshot. Counts describe the replayed prefix;
 `suppliedReadReceipts` / `unprocessedReadReceipts` identify retained trailing
 receipts after a stop. No automatic continuation is implemented for this adapter.
-Actual saved-query scope, timestamp agreement and separately authorized live
-execution remain prerequisites, not facts established by synthetic tests.
+For saved-query use, actual scope and timestamp agreement remain prerequisites,
+not facts established by synthetic tests. The explicitly selected
+incident-created cohort does not require that agreement. Neither mode grants
+authorization for new live execution.
 
 ## Title-first FILTER screening
 

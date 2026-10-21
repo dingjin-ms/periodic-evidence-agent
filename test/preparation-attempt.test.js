@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync,
+  realpathSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { command } from '../src/workers.js';
 import { Ledger } from '../src/ledger.js';
 import { hash, json, PilotError } from '../src/common.js';
@@ -200,22 +202,71 @@ for (const stage of ['dependencies', 'compile']) {
 test('compile full-verification cancellation never publishes its unverified receipt',
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
+    // The controller canonicalizes aliases, including hosted Windows short temp paths.
+    ctx.parent = ctx.parent.toUpperCase();
+    ctx.options.attemptParent = ctx.parent;
+    const attemptParent = realpathSync.native(ctx.parent);
+    const preload = join(ctx.root, 'hold-verification.mjs');
+    // Hold a real controller read inside verification, not just its asynchronously observed start event.
+    writeFileSync(preload, `
+import fs from 'node:fs';
+import { basename, join, relative, sep } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+import { isMainThread } from 'node:worker_threads';
+if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThread){
+  const read=fs.readFileSync;
+  fs.readFileSync=(path,...args)=>{
+    const result=read(path,...args);
+    if(typeof path==='string'&&path.startsWith(${json(attemptParent + sep)})&&
+      path.endsWith(join('dist','value.js'))){
+      const root=join(${json(attemptParent)},relative(${json(attemptParent)},path).split(sep)[0]);
+      const events=read(join(root,'progress.jsonl'),'utf8').trim().split('\\n').map(JSON.parse);
+      const active=events.at(-1);
+      if(active.stage==='verification-full'&&active.phase==='start'&&
+        events.some(event=>event.stage==='compile-output-verification'&&event.phase==='start')){
+        fs.writeFileSync(${json(ctx.readyPath + '.tmp')},JSON.stringify(active));
+        fs.renameSync(${json(ctx.readyPath + '.tmp')},${json(ctx.readyPath)});
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);
+        throw new Error('Verification read was not interrupted');
+      }
+    }
+    return result;
+  };
+  syncBuiltinESMExports();
+}
+`);
     const controller = new AbortController();
     let inCompileVerification = false, interruptedId = null, publishedBeforeCancel = null;
-    const outcome = await runPreparationAttempt({
-      ...ctx.options, signal: controller.signal,
-      onProgress: event => {
-        if (event.stage === 'compile-output-verification' && event.phase === 'start')
-          inCompileVerification = true;
-        if (inCompileVerification && event.stage === 'verification-full' && event.phase === 'start') {
-          interruptedId = event.id;
-          publishedBeforeCancel = receipts(ctx.parent).map(path => JSON.parse(readFileSync(path)).type);
-          controller.abort();
+    let observedRead = null, outcome;
+    const previousOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = [previousOptions,
+      `--import=${json(pathToFileURL(preload).href)}`].filter(Boolean).join(' ');
+    const timer = setInterval(() => {
+      if (observedRead || !interruptedId || !existsSync(ctx.readyPath)) return;
+      observedRead = JSON.parse(readFileSync(ctx.readyPath));
+      publishedBeforeCancel = receipts(ctx.parent).map(path => JSON.parse(readFileSync(path)).type);
+      controller.abort();
+    }, 10);
+    try {
+      outcome = await runPreparationAttempt({
+        ...ctx.options, signal: controller.signal,
+        onProgress: event => {
+          if (event.stage === 'compile-output-verification' && event.phase === 'start')
+            inCompileVerification = true;
+          if (inCompileVerification && event.stage === 'verification-full' && event.phase === 'start')
+            interruptedId = event.id;
         }
-      }
-    });
+      });
+    } finally {
+      clearInterval(timer);
+      if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousOptions;
+    }
     assert.equal(outcome.reason, 'cancelled', json(outcome));
     assert.ok(interruptedId);
+    assert.ok(observedRead, 'Cancellation must wait for an active compile verification read');
+    assert.equal(observedRead.id, interruptedId);
+    assert.equal(observedRead.processId, outcome.controllerPid);
     assert.deepEqual(publishedBeforeCancel, ['dependencies']);
     await assertRollback(outcome, ctx);
     const events = readFileSync(join(outcome.attemptRoot, 'progress.jsonl'), 'utf8')

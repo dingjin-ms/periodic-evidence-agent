@@ -12,8 +12,8 @@ You perform the collector role of an independent logical agent. A conversation
 is a temporary executor, not the agent's identity or state store. Do not spawn
 agents merely because this skill was selected.
 
-This is the top-level Collector entrypoint, alongside `evidence-filter` and
-`evidence-proposer`. `npm run pilot -- agent collector help` describes its
+This is the top-level Collector entrypoint, alongside `evidence-filter`,
+`evidence-proposer` and `evidence-rsi`. `npm run pilot -- agent collector help` describes its
 inputs, outputs and supported helper operations. Invoke an existing helper as
 `npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json`.
 The facade preserves its existing arguments, schemas and permission gates;
@@ -24,6 +24,14 @@ imports pinned original records/captures into a held audit ledger with collectio
 and dispatch disabled. Label it saved-evidence import, not a fresh source read.
 Follow the [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff);
 the receipt preserves original provenance and never establishes full coverage.
+
+For an explicitly authorized fresh bounded cohort, use the
+[one-shot controls](../../../ONE-SHOT.md): `one-shot-begin`, `one-shot-collect`,
+`one-shot-status` and `one-shot-stop`. These call the existing collectors with
+aggregate full-pass reservations. Resume uncertain work through durable offline
+reconciliation, never another read. A cooperative stop may resume only pending
+passes within the original approval. The host still drives subsequent stages;
+complete collection ends held, not dispatched.
 
 ## Inputs and durable state
 
@@ -90,6 +98,12 @@ An approved dry run stays collection-only in its isolated namespace.
    verifies delegated identity and scopes queries. A parser failure after
    receipt persistence calls for offline `app-ado-reconcile`, not another
    network collection. Do not merge changed-only counts into new-cohort counts.
+   An over-cap WIQL response hydrates only the permitted ID prefix, then remains
+   partial without a completion cursor. Returned IDs are metadata, not reviewed
+   bodies: examined counts reflect retained valid records, and duplicate ID
+   references are reported separately. A pending bounded detail request is not
+   evidence until its actual response is admitted; never fetch omitted IDs
+   automatically or extend the original budget.
    Both lanes require state Resolved or Closed and
    `Microsoft.VSTS.Common.ResolvedReason` Fixed or Duplicate. Missing/other
    resolutions fail closed; `System.Reason` is not a fallback. Preserve the
@@ -97,8 +111,18 @@ An approved dry run stays collection-only in its isolated namespace.
    identities and canonical relations even when the linked bug is outside the
    area, without extra source reads. Do not rewrite older receipts to match.
 6. Record unavailable IcM with `app-unavailable`; absence of an approved
-   connector is unknown coverage, not zero incidents. Do not follow related
-   evidence outside the approved depth/items/calls/scope. These helpers do not
+   connector is unknown coverage, not zero incidents.
+   An explicitly approved incident-created cohort instead selects
+   `sources.icm.timestampContract:"incident-created"` in a new run/config,
+   with enabled/scopeApproved, the confirmed owningTeamId, severity `[1,2,25]`
+   and bounded top. Use `app-append` for captured `get_my_icm_context` then
+   exact `search_incidents` receipts under the incident-created contract in
+   APP-NATIVE.md. Bounds are inclusive createdAfter/exclusive createdBefore
+   UTC. Missing sourceCreateTime is not a blocker for this selected mode and
+   must remain absent, never inferred from createdDate. Preserve partial
+   counts, continuation and cap stops; ingestion does not authorize more reads.
+   Do not follow related evidence outside the approved depth/items/calls/scope.
+   These helpers do not
    automatically perform related-evidence collection. Connector identity success
    and team/severity mapping do not establish saved-query timestamp equivalence.
    `icm-replay` accepts already captured connector receipts **offline**, in a
@@ -108,6 +132,10 @@ An approved dry run stays collection-only in its isolated namespace.
    authentication failures.
 7. End by reading `app-status` and handing off its durable summary path and
    run ID. No handoff depends solely on this chat or temporary session files.
+   If the flow stops here and RSI was enabled in the original configuration,
+   use `app-end` in the same namespace and hand its observation to the
+   coordinator for `evidence-rsi`. Failed or incomplete collection remains
+   failed or incomplete; do not recollect to obtain a green RSI input.
 
 ## Failure and success criteria
 

@@ -168,6 +168,9 @@ export async function runPreparationAttempt({
     };
     pending = nativeCommand(process.execPath, [childPath, root], root, wholeTimeoutMs,
       process.env, { signal: controller.signal });
+    // Pre-launch environment refusal has no child handle; observe its rejection
+    // before entering the process-drain path. Successful native promises retain .child.
+    if (!pending.child) await pending;
     supervisorPid = pending.child.pid ?? null;
     closed = new Promise(resolve => pending.child.once('close', () => resolve()));
     poll = setInterval(check, 10);

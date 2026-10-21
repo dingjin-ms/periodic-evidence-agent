@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { connect } from 'node:net';
 import { configAt, hash, json, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
@@ -12,6 +13,10 @@ import {
 import { dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
+import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
+import { pruneState } from '../src/state-retention.js';
+
+const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
@@ -303,7 +308,7 @@ for (const condition of ['missing-authorization', 'wrong-attempt', 'config-drift
     if (condition === 'dirty-workspace')
       writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
     if (condition === 'source-drift')
-      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+      await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'user.name=Fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
         '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
     if (condition === 'superseded-evidence') {
@@ -515,10 +520,38 @@ test('production reviewed-handoff controller is repository and scenario neutral'
   assert.doesNotMatch(source, /office-agent|oa-integration|onenote/i);
 });
 
-test('authorized reviewed handoff reuses real dispatch with external boundaries injected', async t => {
+for (const automaticRsi of [false, true]) test(
+  `authorized reviewed handoff reuses real dispatch with external boundaries injected${automaticRsi ? ' and automatic RSI' : ''}`, async t => {
   const { root, remote, config, ledger } = await setup(t);
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
+  config.rsi = structuredClone(rsiPolicy);
+  let rsiLaunches = 0;
+  if (automaticRsi) {
+    const reference = join(root, 'rsi-reference');
+    mkdirSync(reference);
+    writeFileSync(join(reference, 'README.txt'), 'Separate synthetic agent-system reference.\n');
+    const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], reference);
+    await git(['init', '-b', 'main', '--quiet']);
+    await git(['remote', 'add', 'origin', `https://github.com/${config.rsi.targetRepository}.git`]);
+    await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Synthetic RSI reference']);
+    const driverPath = join(root, 'rsi-driver.mjs');
+    const driver = "export function runFlow() { throw new Error('No-change must not evaluate'); }\n";
+    writeFileSync(driverPath, driver);
+    config.authoringProviders ??= {};
+    config.authoringProviders['rsi-fixture'] = { type: 'agency-local', executable: process.execPath, profile: 'fixture' };
+    config.rsi.automation = {
+      authoringApproved: true, localCommitApproved: true, authoringProvider: 'rsi-fixture',
+      referenceCheckout: reference, baselineRevision: (await git(['rev-parse', 'HEAD'])).stdout.trim(),
+      targetBranch: 'main', gitAuthor: { name: 'Fixture', email: 'fixture@example.invalid' },
+      timeoutMs: 60000, maxToolCalls: 4, maxFileBytes: 65536, maxWorkspaceBytes: 8388608, maxAiCredits: 30,
+      evaluation: { driverPath, driverSha256: hash(driver), dependencies: [], timeoutMs: 2000,
+        cases: ['recovery', 'healthy', 'guard'].map(population => ({
+          id: population, population, assertions: ['intended-work']
+        })) }
+    };
+  }
   await command('git', ['init', '--bare', '--quiet', remote], root);
   const executed = await acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
@@ -527,6 +560,38 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
     authorizePush: true,
     authorizeDraftPR: true,
     dispatchDependencies: {
+      rsi: automaticRsi ? {
+        launch: async (_executable, _args, options) => {
+          rsiLaunches++;
+          assert.match(options.prompt, /draft-pr-validated/);
+          const call = (tool, args) => new Promise((resolve, reject) => {
+            const socket = connect(options.env.PILOT_MCP_ENDPOINT);
+            let output = '';
+            socket.setEncoding('utf8');
+            socket.on('connect', () => socket.write(JSON.stringify({
+              id: 'native-rsi-fixture', token: options.env.PILOT_MCP_TOKEN, tool, args
+            }) + '\n'));
+            socket.on('data', chunk => { output += chunk; });
+            socket.on('error', reject);
+            socket.on('close', () => {
+              try {
+                const result = JSON.parse(output);
+                assert.equal(result.ok, true, output);
+                resolve(result.result);
+              } catch (error) { reject(error); }
+            });
+          });
+          const trace = await call('pilot_read', { path: 'rsi-artifacts/0' });
+          assert.equal(typeof trace, 'string');
+          assert.equal(await call('pilot_read', { path: 'rsi-artifacts/0', startLine: 1, endLine: 1 }),
+            trace.split(/\r?\n/)[0]);
+          await call('pilot_finish', {
+            outcome: 'not-actionable',
+            findings: 'The captured native synthetic flow completed; no agent-system deficit is demonstrated.'
+          });
+          return { stdout: '', stderr: '' };
+        }
+      } : undefined,
       runModel: async (currentConfig, currentLedger, current, assignment, investigation, toolkit, skill) => {
         assert.equal(investigation.review.reviewer, 'synthetic-reviewed-handoff-fixture');
         assert.equal(assignment.skillBindingId, 'oa-integration-test-core');
@@ -564,6 +629,46 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
   assert.equal(executed.result.toolUsage.used, 3);
   assert.equal(executed.result.toolUsage.byTool.pilot_write, 2);
   assert.equal(executed.result.toolUsage.byTool.pilot_finish, 1);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  const delivery = executed.rsi.handoffs[0];
+  const inspected = rsiWork(config, ledger, 'inspect', { observationId: delivery.observationId });
+  assert.deepEqual(inspected.observation.payload.data.workerResult, ledger.get('workerResult', executed.result.id));
+  assert.equal(inspected.binding.upstream.kind, 'reviewed-handoff');
+  assert.equal(inspected.observation.payload.data.artifacts.state, 'referenced');
+  assert.ok(inspected.observation.payload.data.artifacts.files.length > 0);
+  assert.ok(inspected.observation.payload.data.artifacts.files.every(entry => !Object.hasOwn(entry, 'contentBase64')));
+  assert.equal(inspected.rawArtifacts.state, 'available');
+  assert.equal(hash(readRsiArtifact(config, inspected.observation, 0)),
+    inspected.observation.payload.data.artifacts.files[0].sha256);
+  assert.equal(inspected.observation.payload.data.workerResult.validation[0].status, 'passed');
+  assert.equal(inspected.observation.payload.data.evidence[0].source.provenance, 'synthetic');
+  assert.deepEqual(captureWorkerRsiOutcome(config, ledger, executed.result.id), delivery);
+  const claim = { observationId: delivery.observationId, claimId: 'native-outcome-review', executorId: 'fixture-host' };
+  let finished;
+  if (automaticRsi) {
+    assert.equal(rsiLaunches, 1);
+    assert.equal(executed.rsi.execution.state, 'finished', JSON.stringify(executed.rsi));
+    assert.equal(delivery.nextRole, null);
+    finished = ledger.latest('rsiWorkItem')[0];
+  } else {
+    rsiWork(config, ledger, 'claim', claim);
+    finished = rsiWork(config, ledger, 'result', {
+      ...claim, outcome: 'no-change', rationale: 'This synthetic flow completed; it does not demonstrate an agent-system defect.'
+    });
+  }
+  assert.equal(finished.state, 'finished');
+  assert.equal(ledger.all('rsiFlowObservation').length, 1);
+  assert.equal(ledger.latest('rsiWorkItem').length, 1);
+  const original = json(inspected.observation);
+  const afterRetention = Date.parse(inspected.observation.payload.data.artifacts.expiresAt) + 1000;
+  assert.equal(inspectRsiArtifacts(config, inspected.observation, afterRetention).state, 'expired');
+  pruneState(config, { nowMs: afterRetention });
+  assert.equal(rsiWork(config, ledger, 'inspect', { observationId: delivery.observationId }).rawArtifacts.state, 'unavailable');
+  assert.throws(() => readRsiArtifact(config, inspected.observation, 0), /unavailable/);
+  assert.deepEqual(captureWorkerRsiOutcome(config, ledger, executed.result.id), {
+    ...delivery, state: 'finished', taskVersion: finished.version, nextRole: null
+  });
+  assert.equal(json(ledger.get('rsiFlowObservation', delivery.observationId)), original);
 });
 
 test('authorized 1JS handoff runs the controller end to end and links one non-blocking build', async t => {
@@ -793,6 +898,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   config.limits.maxValidationRepairRounds = 2;
+  config.rsi = structuredClone(rsiPolicy);
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
   const executed = await acceptReviewedHandoff(config, ledger, fixture, {
@@ -841,6 +947,12 @@ test('controller validation failures feed a bounded repository-skill repair loop
     executed.result.validation[0].sourceRevision);
   assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
   assert.equal(executed.result.toolUsage.used, 5);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  const inspected = rsiWork(config, ledger, 'inspect', {
+    observationId: executed.rsi.handoffs[0].observationId
+  });
+  assert.deepEqual(inspected.observation.payload.data.workerResult.validationAttempts
+    .map(attempt => attempt.validation[0].status), ['failed', 'passed']);
 });
 
 test('Agency authoring provider uses the same local repair loop and exact session', async t => {
@@ -1027,6 +1139,7 @@ test(`exhausted test-only repair budget ${repairBudget} blocks without push or D
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   config.limits.maxValidationRepairRounds = repairBudget;
+  config.rsi = structuredClone(rsiPolicy);
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
   let draftCreated = false;
@@ -1074,6 +1187,9 @@ test(`exhausted test-only repair budget ${repairBudget} blocks without push or D
   assert.match(executed.result.blocker.reason, /production-code repair is prohibited/);
   assert.deepEqual(executed.result.validation.map(item => item.status), ['failed']);
   assert.equal(executed.result.validationAttempts.length, repairBudget + 1);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  assert.equal(ledger.all('rsiFlowObservation')[0].payload.outcome, 'blocked');
+  assert.equal(ledger.all('rsiFlowObservation')[0].payload.data.workerResult.validation[0].status, 'failed');
   assert.equal((await command('git', ['--git-dir', remote, 'for-each-ref', '--format=%(refname)'], root))
     .stdout.trim(), '');
 });

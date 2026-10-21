@@ -121,9 +121,13 @@ test('date, snapshot, item and call limits still fail closed for eligible resolv
     'created', async (_endpoint, body) => ({ asOf: body.query.includes('[System.Id] = 0')
       ? snapshot : '2026-10-09T02:00:00Z', workItems: [] })), /snapshot changed/);
   for (const limits of [{ maxItems: 1, maxCalls: 20 }, { maxItems: 20, maxCalls: 2 }]) {
+    const emitted = [], calls = [];
     await assert.rejects(collectAdo({ ...config, limits }, config.window,
-      () => assert.fail('Exhausted budget'), 'created', transport([item(), item('Closed', 'Duplicate', 2)], [])),
+      record => emitted.push(record), 'created', transport([item(), item('Closed', 'Duplicate', 2)], calls)),
     error => error.code === 'partial');
+    assert.deepEqual(emitted.map(record => record.source.recordId), limits.maxItems === 1 ? ['1'] : []);
+    assert.equal(calls.length, limits.maxItems === 1 ? 3 : 2);
+    if (limits.maxItems === 1) assert.deepEqual(calls[2].body.ids, [1]);
   }
 });
 

@@ -1,7 +1,8 @@
 import { existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { Ledger } from './ledger.js';
-import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
+import { collectAdo, collectWorkiq, adoTransport, evidenceEnvelope } from './sources.js';
+import { configuredIcmMapping, replayIcm, decodeIcmResponse } from './icm-replay.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
 import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment, reconcileHostedAssignment } from './workers.js';
@@ -9,6 +10,7 @@ import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordA
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
+import { assertRsiProducerNamespace, bindRsiProducer, captureAppRsiOutcome, rsiPolicy } from './rsi-flow.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -36,6 +38,7 @@ function configured(input) {
   requireThat(input.executionMode === 'app-native', 'Select executionMode app-native explicitly');
   identifier(input.agent?.id);
   requireThat(input.statePolicy.accessApproved, 'Local evidence storage approval is required');
+  if (input.rsi?.enabled) assertRsiProducerNamespace(input);
 }
 function directory(config, runId, dry) {
   identifier(runId);
@@ -97,15 +100,18 @@ export function beginApp(config, input) {
   const ledger = new Ledger(directory(config, input.runId, input.dryRun));
   try {
     tables(ledger);
-    const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
-    if (existing) {
-      const run = JSON.parse(existing.body);
-      requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
-    } else {
-      const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
-        limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
-      ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
-    }
+    ledger.transaction(() => {
+      const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
+      if (existing) {
+        const run = JSON.parse(existing.body);
+        requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
+      } else {
+        const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
+          limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
+        ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
+      }
+      bindRsiProducer(config, ledger, 'app-flow', input.runId);
+    });
     return appStatus(ledger, input.runId);
   } finally { ledger.close(); }
 }
@@ -116,7 +122,8 @@ function receipt(call, pass) {
   if (call.actorSessionId) identifier(call.actorSessionId);
   if (call.completionEventId) identifier(call.completionEventId);
   requireThat(Boolean(call.response) !== Boolean(call.failure), 'Receipt needs exactly one response or failure');
-  requireThat(call.tool === (pass.startsWith('workiq') ? 'workiq-fetch' : 'ado-delegated-read'),
+  requireThat(pass === 'icm:created' ? ['get_my_icm_context', 'search_incidents'].includes(call.tool) &&
+    typeof call.requestedAt === 'string' : call.tool === (pass.startsWith('workiq') ? 'workiq-fetch' : 'ado-delegated-read'),
     'Receipt tool does not match source');
   if (call.failure) {
     object(call.failure, ['code', 'statusCode', 'requestId', 'errorCode', 'recoveryAction'], ['code']);
@@ -236,11 +243,14 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   'Inherited checkpoint no longer reconstructs the recorded examination offset', 'blocked-reconciliation');
   const returned = pass.startsWith('workiq')
     ? Math.max(stats.returned, continuation?.returnedRecords ?? 0)
-    : calls.reduce((n, c) => n + (c.response?.workItems?.length ?? 0), 0);
+    : calls.reduce((n, c) => n + (Array.isArray(c.response?.workItems) ? c.response.workItems.length : 0), 0);
+  const adoReturnedIds = new Set(pass.startsWith('ado')
+    ? calls.flatMap(c => Array.isArray(c.response?.workItems) ? c.response.workItems.map(item => item?.id) : []) : []);
+  const adoRetainedIds = new Set(evidence.map(({ record }) => Number(record.source.recordId)));
   requireThat(currentCalls.length <= run.limits.maxCalls, 'Imported responses exceed approved read-call limit', 'blocked-budget');
   const examined = pass.startsWith('workiq')
-    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : Math.min(returned, run.limits.maxItems);
-  if (identityVerified && returned > local.limits.maxItems) {
+    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : evidence.length;
+  if (pass.startsWith('workiq') && identityVerified && returned > local.limits.maxItems) {
     state = 'partial'; cursor = null; nextRequest = null;
     budgetStop = true;
     error = { code: 'partial', message: 'Response exceeds remaining examined-item budget; extra returned records are unexamined' };
@@ -249,7 +259,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   return { evidence, contexts, result: { pass, state, error, cursor, nextRequest: error?.code === 'awaiting-receipt' ? nextRequest : null,
     readCalls: currentCalls.length, examinedRecords: examined - inheritedExamined, evidenceCount: evidence.length,
     returnedRecords: returned - (continuation?.returnedRecords ?? 0),
-    ...(!pass.startsWith('workiq') ? { returnedRecords: returned } : {
+    ...(!pass.startsWith('workiq') ? { returnedRecords: returned,
+      duplicateReturnedIds: returned - adoReturnedIds.size, examinationBasis: 'hydrated-valid-records' } : {
       cumulativeReturnedRecords: returned, cumulativeExaminedRecords: examined,
       inheritedReadCalls: inherited.length, inheritedExaminedRecords: inheritedExamined,
       inheritedBufferedRecords: continuation ? continuation.returnedRecords - inheritedExamined : 0,
@@ -263,7 +274,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
       limitations: ['No historical snapshot or complete edit history', 'No delta/watermark optimization established',
         'Coverage requires all roots and replies, including older roots', 'Absence is not a deletion signal']
     }),
-    unexaminedReturnedRecords: returned - examined,
+    unexaminedReturnedRecords: pass.startsWith('workiq') ? returned - examined
+      : [...adoReturnedIds].filter(id => !adoRetainedIds.has(id)).length,
     provenance: run.provenance === 'synthetic' ? 'synthetic' : directWorkiqVerified ? 'workiq-cli-verified' : directAdoVerified ? 'authenticated-source' : 'app-tool-reported',
     execution: directWorkiqVerified ? 'local-workiq-cli-stdio' : directAdoVerified ? 'delegated-source-adapter' : 'external-app-tool',
     identityVerification: directWorkiqVerified ? 'cli-fetch-verified-object-id-and-UPN' : directAdoVerified ? 'adapter-verified-tenant-and-object-id; UPN is configured binding' : 'validated-app-reported-principal',
@@ -271,10 +283,56 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
     coverage: 'Current source enumeration, not a historical reconstruction',
     classification: 'not-performed', evidenceIds: [] } };
 }
+function replayAppIcm(config, run, calls) {
+  const mapping = configuredIcmMapping(config.sources.icm);
+  const bundle = { format: 'icm-receipts-v1', id: run.runId,
+    provenance: run.provenance === 'synthetic' ? 'synthetic' : 'app-tool-reported',
+    window: run.window, limits: run.limits, mapping,
+    calls: calls.map(call => ({ ...call, arguments: call.request })) };
+  const replayed = replayIcm(bundle, config.identity);
+  const evidence = replayed.versions.map(version => {
+    const call = calls.find(call => call.id === version.callId);
+    const row = decodeIcmResponse(call.response).value[version.offset];
+    const record = evidenceEnvelope('icm', `icm/team/${mapping.owningTeamId}/incident-created`,
+      row.id, null, 'https://portal.microsofticm.com/', json(call.request));
+    record.title = row.title === '' ? null : row.title ?? null;
+    record.sourceStatus = row.state === '' ? null : row.state ?? null;
+    record.createdAt = row.createdDate;
+    record.queriedAt = call.observedAt; record.observedAt = call.observedAt;
+    record.source.provenance = bundle.provenance;
+    record.fields = structuredClone(row);
+    record.missingFields = ['title', 'state', 'description', 'sourceCreateTime']
+      .filter(field => !Object.hasOwn(row, field));
+    record.missingFields.push('sourceRevision', 'directLink');
+    record.discoveryReason = 'Explicit incident-created team/severity cohort; not saved-query coverage';
+    return { record, payload: row };
+  });
+  const { versions, ...coverage } = replayed;
+  return { evidence, contexts: [], result: { ...coverage, pass: 'icm:created',
+    error: replayed.error ?? null,
+    cohortCoverage: replayed.state, timestampContract: mapping.timestampContract,
+    evidenceCount: evidence.length, evidenceIds: [],
+    provenance: bundle.provenance, execution: 'external-app-tool',
+    identityVerification: 'validated-app-reported-active-alias-and-email',
+    liveActivation: 'not-performed-by-helper',
+    limitations: [...replayed.limitations.slice(0, -1),
+      'No connector calls or changed lane; the incident-created cursor advances only after exhausted receipt traversal.'],
+    coverage: 'Incident-created [start,end) receipt enumeration; not saved-query or historical snapshot coverage',
+    cursor: replayed.state === 'complete' ? { end: run.window.end,
+      timestampContract: mapping.timestampContract, owningTeamId: mapping.owningTeamId,
+      severity: mapping.severity, coverage: 'incident-created-receipts-only' } : null,
+    ingestedIntoSourceLedger: true, cursorAdvanced: replayed.state === 'complete',
+    classification: 'not-performed' } };
+}
 export async function appendApp(config, ledger, runId, input, { directAdoVerified = false, directWorkiqVerified = false } = {}) {
   object(input, ['eventId', 'pass', 'calls', 'principal'], ['eventId', 'pass', 'calls']);
   identifier(input.eventId);
-  requireThat(passes.includes(input.pass) && input.pass !== 'icm:created', 'Unsupported collection pass');
+  requireThat(passes.includes(input.pass), 'Unsupported collection pass');
+  if (input.pass === 'icm:created') {
+    configuredIcmMapping(config.sources.icm);
+    requireThat(!input.principal && !directAdoVerified && !directWorkiqVerified,
+      'IcM requires its own captured identity; other adapter verification cannot be substituted');
+  }
   requireThat(Array.isArray(input.calls) && input.calls.length > 0, 'Append at least one actual call receipt');
   const run = getRun(ledger, runId);
   requireThat(run.configHash === hash(json(config)), 'Run configuration changed');
@@ -307,11 +365,18 @@ export async function appendApp(config, ledger, runId, input, { directAdoVerifie
     requireThat(hash(json(continuation.calls)) === continuation.callsHash, 'Continuation receipts changed', 'invalid-record');
     requireThat(!calls.some(c => continuation.calls.some(old => old.id === c.id)), 'Receipt identity reused across continuation');
   }
-  const replayed = await replay(config, run, input.pass, calls, principal, directAdoVerified, directWorkiqVerified, continuation);
+  const replayed = input.pass === 'icm:created' ? replayAppIcm(config, run, calls)
+    : await replay(config, run, input.pass, calls, principal, directAdoVerified, directWorkiqVerified, continuation);
   ledger.transaction(() => {
     const count = ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE run_id=? AND pass=?').get(runId, input.pass).n;
     requireThat(count === oldEvents.length, 'Concurrent receipt append; refresh before retrying', 'overlap');
     ledger.db.prepare('INSERT INTO app_events VALUES(?,?,?,?)').run(input.eventId, runId, input.pass, json(input));
+    if (input.pass === 'icm:created') for (const call of input.calls) {
+      const bytes = Buffer.from(json(call)), digest = hash(bytes);
+      ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(digest, bytes);
+      ledger.db.prepare('INSERT OR IGNORE INTO app_artifacts VALUES(?,?,?)')
+        .run(runId, `sqlite:capture:${digest}`, 'icm-app-receipt');
+    }
     const sourceRun = `${runId}:${input.pass}`;
     ledger.db.prepare('INSERT OR IGNORE INTO runs(id,source,state,started_at,window) VALUES(?,?,?,?,?)')
       .run(sourceRun, input.pass, 'collecting', run.startedAt, json(run.window));
@@ -504,6 +569,20 @@ export function appStatus(ledger, runId) {
     summaryPath: join(ledger.directory, `${runId}-summary.json`) };
   writeFileSync(summary.summaryPath, json(summary), { mode: 0o600 });
   return summary;
+}
+export function endApp(config, ledger, runId) {
+  return ledger.transaction(() => {
+    const summary = appStatus(ledger, runId);
+    if (!rsiPolicy(config).enabled) return { ...summary, rsi: { state: 'disabled' } };
+    return { ...summary, rsi: captureAppRsiOutcome(config, ledger, runId, summary) };
+  });
+}
+export async function finishApp(config, ledger, runId, dependencies = {}) {
+  const result = endApp(config, ledger, runId);
+  if (!config.rsi?.automation) return result;
+  const { runRsiPending } = await import('./rsi-execution.js');
+  const execution = await runRsiPending(config, ledger, { runId }, dependencies);
+  return { ...result, rsi: { ...endApp(config, ledger, runId).rsi, execution } };
 }
 export function listAppRuns(config) {
   configured(config);

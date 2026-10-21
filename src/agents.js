@@ -42,7 +42,7 @@ const definitions = {
       'app-worker', 'qualify-skill', 'submit-filter-handoff', 'submit-reviewed-handoff',
       'dispatch', 'reconcile', 'continue-local-validation', 'diagnose-local-validation',
       'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
-      'continue-native-preparation'
+      'continue-native-preparation', 'continue-native-source'
     ]
   }
 };

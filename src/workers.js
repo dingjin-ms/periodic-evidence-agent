@@ -49,6 +49,7 @@ const exec = promisify(execFile);
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
+const nativeSourceContinuationPermit = Symbol('native-source-continuation-controller');
 const authoringSuccessorPermit = Symbol('authoring-successor-controller');
 const runtimeContinuationPermit = Symbol('runtime-continuation-controller');
 const authoringToolContinuationPermit = Symbol('authoring-tool-continuation-controller');
@@ -3156,6 +3157,7 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
 export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true ||
     dependencies[authoringToolContinuationPermit] === true ||
+    dependencies[nativeSourceContinuationPermit] === true ||
     dependencies[validationContinuationPermit] === true,
     'Worker dispatch is disabled');
   const job = ledger.job(id);
@@ -3181,7 +3183,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const continuationOperation = ledger.status().operations.find(operation =>
     operation.job_id === id && operation.kind === 'continued-from-validation-failure');
   const continuation = continuationOperation ? JSON.parse(continuationOperation.detail) : null;
-  requireThat(Boolean(continuation) === (dependencies[validationContinuationPermit] === true),
+  requireThat(Boolean(continuation) === (dependencies[validationContinuationPermit] === true ||
+    dependencies[nativeSourceContinuationPermit] === true) &&
+    Boolean(continuation?.nativeSourceCorrection) ===
+      (dependencies[nativeSourceContinuationPermit] === true),
     'A validation continuation requires its explicit recorded dispatch entrypoint',
     'blocked-reconciliation');
   if (continuation) {
@@ -3211,9 +3216,14 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         origin.detail.priorAssignment, origin.detail.priorJob,
         origin.detail.priorResult, continuation.proposal);
     }
-    await verifyPreservedChange({ ...config, stateDirectory: continuation.priorStateDirectory },
-      continuation.priorAssignment, continuation.priorJob,
-      continuation.priorResult, continuation.proposal);
+    if (continuation.nativeSourceCorrection) {
+      await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+        config, continuation, continuationOperation.id, job.session_id);
+    } else {
+      await verifyPreservedChange({ ...config, stateDirectory: continuation.priorStateDirectory },
+        continuation.priorAssignment, continuation.priorJob,
+        continuation.priorResult, continuation.proposal);
+    }
   }
   requireCurrentSourceEligibility(ledger, assignment);
   const fixtureEvidence = assignment.evidenceIds.map(e => ledger.get('evidence', e));
@@ -3324,12 +3334,14 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         receipt.submissionState === 'rejected' ? 'blocked' : 'uncertain');
       return receipt;
     }
-    if (continuation?.nativePreparationCorrection) {
+    if (continuation?.nativePreparationCorrection || continuation?.nativeSourceCorrection) {
       requireThat((await git(continuation.priorJob.workspace, ['remote', 'get-url', 'origin']))
         .replace(/\/$/, '').toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
       'Preparation recovery workspace origin changed', 'blocked-reconciliation');
     }
-    const isolated = continuation?.nativePreparationCorrection
+    const isolated = continuation?.nativeSourceCorrection
+      ? { workspace: continuation.priorJob.workspace, baseRevision: continuation.priorJob.base_revision }
+      : continuation?.nativePreparationCorrection
       ? (await import('./native-preparation-continuation.js')).nativePreparationWorkspace(continuation)
       : runtimeContinuation
       ? await (await import('./runtime-continuation.js')).claimRuntimeWorkspace(config, ledger, id)
@@ -3347,23 +3359,28 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       ? loadRepositorySkill(config, assignment, current.workspace, current.base_revision, qualification)
       : null;
     if (continuation) {
+      const restoredRevision = continuation.nativeSourceCorrection
+        ? continuation.authorization.repairedRevision : continuation.priorResult.sourceRevision;
+      const restoredFiles = continuation.nativeSourceCorrection
+        ? continuation.files.map(file => file.path).sort()
+        : skillChangePopulation(continuation.priorResult.skillExecution);
       const operationId = `${id}:reuse-authored-revision`;
       ledger.operation(operationId, id, 'reuse-authored-revision', {
-        priorAttemptId: continuation.priorJob.session_id, revision: continuation.priorResult.sourceRevision
+        priorAttemptId: continuation.priorJob.session_id, revision: restoredRevision
       });
-      if (!continuation.nativePreparationCorrection) {
+      if (!continuation.nativePreparationCorrection && !continuation.nativeSourceCorrection) {
         await git(current.workspace, ['fetch', '--no-tags', '--',
           continuation.priorJob.workspace, continuation.priorResult.sourceRevision]);
         await git(current.workspace, ['checkout', '--detach', continuation.priorResult.sourceRevision],
           checkoutEnvironment());
       }
       requireThat(!await git(current.workspace, ['status', '--porcelain']) &&
-        await git(current.workspace, ['rev-parse', 'HEAD']) === continuation.priorResult.sourceRevision &&
+        await git(current.workspace, ['rev-parse', 'HEAD']) === restoredRevision &&
         json(await workspaceChanges(current.workspace, current.base_revision)) ===
-          json(skillChangePopulation(continuation.priorResult.skillExecution)),
+          json(restoredFiles),
       'Restored authored revision differs from the preserved model output', 'blocked-reconciliation');
       ledger.finishOperation(operationId, 'completed', {
-        priorAttemptId: continuation.priorJob.session_id, revision: continuation.priorResult.sourceRevision
+        priorAttemptId: continuation.priorJob.session_id, revision: restoredRevision
       });
     }
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
@@ -3498,9 +3515,14 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         revision = await git(current.workspace, ['rev-parse', 'HEAD']);
         ledger.finishOperation(commitOperation, 'completed', { revision, round: authoring.round });
       }
+      if (continuation?.nativeSourceCorrection)
+        await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+          config, continuation, continuationOperation.id, current.session_id);
       if (loadedSkill)
         requireFinalizedSkillChanges(config, repo, assignment, current.workspace,
-          await workspaceChanges(current.workspace, current.base_revision),
+          (await workspaceChanges(current.workspace, current.base_revision))
+            .filter(file => !continuation?.nativeSourceCorrection ||
+              file !== continuation.authorization.unitFile),
           proposal.skillExecution);
       preparedValidation ??= await preparationPromise;
       if (continuation?.preparationRecovery)
@@ -3531,8 +3553,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     }
     if (outcome === 'propose-change') {
       if (loadedSkill) {
+        if (continuation?.nativeSourceCorrection)
+          await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+            config, continuation, continuationOperation.id, current.session_id);
         requireFinalizedSkillChanges(config, repo, assignment, current.workspace,
-          await workspaceChanges(current.workspace, current.base_revision),
+          (await workspaceChanges(current.workspace, current.base_revision))
+            .filter(file => !continuation?.nativeSourceCorrection ||
+              file !== continuation.authorization.unitFile),
           proposal.skillExecution);
         if (!finalValidation.every(g => g.status === 'passed')) {
           outcome = 'blocked';
@@ -3660,6 +3687,9 @@ export async function dispatchReviewedHandoff(config, ledger, id, dependencies =
 }
 export async function dispatchLocalValidationContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [validationContinuationPermit]: true });
+}
+export async function dispatchNativeSourceContinuation(config, ledger, id, dependencies = {}) {
+  return dispatch(config, ledger, id, { ...dependencies, [nativeSourceContinuationPermit]: true });
 }
 export async function dispatchRuntimeContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [runtimeContinuationPermit]: true });

@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { hash, json } from '../src/common.js';
 import { verifyNativeUnitFailure, verifySourceRepairApproval,
   verifyNativeSourceSnapshot, verifyNativeSourceAuthority, verifyNativeSourcePreparationFailure,
-  nativeSourceValidationRepository } from '../src/native-source-continuation.js';
+  nativeSourceValidationRepository, verifyNativeSourceCopyFailure } from '../src/native-source-continuation.js';
 import { dispatch, dispatchLocalValidationContinuation,
   dispatchNativeSourceContinuation } from '../src/workers.js';
 
@@ -245,6 +245,126 @@ test('source preparation recovery rejects native invocation, incomplete cleanup 
     mutate(failure);
     assert.throws(() => verifyNativeSourcePreparationFailure(f.job, f.result,
       f.operations, failure, f.failure.profileSha256));
+  }
+});
+
+function preparedSourceFixture(t) {
+  const f = preparationRecoveryFixture(t), previous = f.detail;
+  previous.nextStateDirectory = f.config.stateDirectory;
+  previous.nextAssignmentId = f.job.id;
+  previous.nextAttemptId = 'sparse-copy-attempt';
+  const job = { ...f.job, session_id: previous.nextAttemptId };
+  const result = structuredClone(f.result);
+  result.id = 'copy-timeout-result';
+  result.attemptId = job.session_id;
+  result.skillExecution.registration = { caseIds: ['preserved-case'] };
+  const operations = [
+    { kind: 'continued-from-validation-failure', state: 'prepared', detail: json(previous) },
+    { kind: 'reuse-authored-revision', state: 'completed' },
+    { kind: 'declarative-registration-continuation', state: 'completed' },
+    { id: 'copy-validation', kind: 'validation', state: 'blocked' }
+  ];
+  const failure = structuredClone(f.failure);
+  failure.preparationTimings = [
+    ['source-check', 'passed'], ['worktree-create', 'passed'], ['sparse-checkout', 'passed'],
+    ['checkout', 'passed'], ['head-clean-check', 'passed'], ['lfs', 'passed'],
+    ['dependencies', 'blocked'], ['dependency-source-fingerprint', 'passed'],
+    ['dependency-copy', 'blocked']
+  ].map(([id, status]) => ({ id, status }));
+  failure.output.preparationFailure.stage = 'dependency-copy';
+  failure.output.cleanupError = 'Residual cleanup failed';
+  failure.output.residualPaths = [join(f.config.stateDirectory, 'validation-workspaces',
+    hash(operations.at(-1).id))];
+  const failureRef = f.pin('copy-failure.json', failure);
+  result.validation[0].artifactRefs = [failureRef.path];
+  const config = { ...f.config, stateDirectory: join(f.directory, 'prepared-run') };
+  const workspace = join(f.directory, 'qualified-workspace');
+  const files = ['src/workers.js', 'src/validation-workspace.js', 'src/native-command.js',
+    'src/native-command.ps1', 'src/dependency-snapshot-copy.cjs', 'src/output-fingerprint.js',
+    'src/output-fingerprint-worker.js', 'scripts/validation/preflight.mjs',
+    'scripts/validation/native-preflight.cjs', 'src/native-preparation-continuation.js',
+    'src/native-source-continuation.js', 'src/retained-dependency-copy.js'];
+  const proof = {
+    format: 'validation-preflight-v1', status: 'passed', completedAt: '2026-01-04T00:00:00Z',
+    assignmentId: job.id, priorAttemptId: job.session_id, priorResultId: result.id,
+    sourceRevision: result.sourceRevision, baseRevision: job.base_revision,
+    profileSha256: failure.profileSha256,
+    originalLedgerSha256: hash(json({ job, result, assignment: previous.priorAssignment, operations })),
+    workspace, nativeCaseInvocations: 0, modelInvocations: 0, publicationInvocations: 0,
+    acceptanceEvidence: false, publicationEligible: false,
+    preparation: { strategy: 'detached-worktree', workspace,
+      sourceRevision: result.sourceRevision, sparseCheckoutPaths: f.proof.preparation.sparseCheckoutPaths,
+      dependencySeed: { format: 'declarative-dependency-seed-v1', sourceRevision: result.sourceRevision,
+        sha256: 'e'.repeat(64), paths: ['ooui/.store'] } },
+    native: { caseIds: result.skillExecution.registration.caseIds, nativeCaseInvocations: 0 },
+    timings: ['native-load-typecheck-selection', 'post-native-clean']
+      .map(id => ({ id, status: 'passed' })),
+    controllerFiles: Object.fromEntries(files.map(file =>
+      [file, hash(readFileSync(new URL(`../${file}`, import.meta.url)))]))
+  };
+  const authorization = { ...previous.authorization, kind: 'native-source-prepared-continuation',
+    previousAttemptId: job.session_id, priorAuthorizationSha256: previous.authorizationSha256,
+    failure: failureRef, preflight: f.pin('qualified-preflight.json', proof),
+    nextConfigSha256: hash(json(config)) };
+  const detail = { ...structuredClone(previous), previousConfig: f.config,
+    priorStateDirectory: f.config.stateDirectory, priorJob: job, priorResult: result,
+    priorResultSha256: hash(json(result)), operations, priorOperationsSha256: hash(json(operations)),
+    authorization, authorizationSha256: hash(json(authorization)),
+    sourcePreparedContinuation: { originalContinuation: previous } };
+  delete detail.sourcePreparationRecovery;
+  return { ...f, config, detail, previous, failure, proof };
+}
+
+test('prepared source continuation accepts only a new qualified workspace for the exact zero-native copy failure', t => {
+  const f = preparedSourceFixture(t);
+  assert.doesNotThrow(() => verifyNativeSourceAuthority(f.config, f.detail));
+  assert.equal(verifyNativeSourceCopyFailure(f.detail, f.failure, f.failure.profileSha256),
+    f.failure.output.residualPaths[0]);
+  assert.deepEqual(nativeSourceValidationRepository(f.config.repositories[0], f.detail)
+    .sparseCheckoutPaths, f.proof.preparation.sparseCheckoutPaths);
+  assert.throws(() => verifyNativeSourcePreparationFailure(f.detail.priorJob, f.detail.priorResult,
+    f.detail.operations, f.failure, f.failure.profileSha256), /completed cleanup/);
+  for (const mutate of [
+    d => { d.sourcePreparedContinuation.originalContinuation.sourcePreparedContinuation = {}; },
+    d => { d.authorization.maxInitialModelAttempts = 1; },
+    d => { d.authorization.repairedRevision = 'e'.repeat(40); },
+    d => { d.files.pop(); },
+    d => { d.proposal.description = 'Changed candidate'; },
+    d => { d.previousConfig.limits.maxValidationInfrastructureRetries = 1; }
+  ]) {
+    const detail = structuredClone(f.detail);
+    mutate(detail);
+    detail.authorizationSha256 = hash(json(detail.authorization));
+    assert.throws(() => verifyNativeSourceAuthority(f.config, detail));
+  }
+});
+
+test('prepared source continuation rejects incomplete qualification, residual reuse and native invocation', t => {
+  const f = preparedSourceFixture(t);
+  for (const mutate of [
+    p => { p.status = 'running'; },
+    p => { p.nativeCaseInvocations = 1; },
+    p => { p.preparation.dependencySeed.sourceRevision = 'f'.repeat(40); },
+    p => { p.preparation.sparseCheckoutPaths = ['ooui/apps']; },
+    p => { p.controllerFiles['src/retained-dependency-copy.js'] = '0'.repeat(64); },
+    p => { p.workspace = join(f.failure.output.residualPaths[0], 'nested');
+      p.preparation.workspace = p.workspace; }
+  ]) {
+    const detail = structuredClone(f.detail), proof = structuredClone(f.proof);
+    mutate(proof);
+    detail.authorization.preflight = f.pin('invalid-preflight.json', proof);
+    detail.authorizationSha256 = hash(json(detail.authorization));
+    assert.throws(() => verifyNativeSourceAuthority(f.config, detail));
+  }
+  for (const mutate of [
+    a => { a.output.unitDiagnostics = {}; },
+    a => { a.output.nativeReceipt = {}; },
+    a => { a.output.preparationFailure.ownedProcessesExited = false; },
+    a => { a.output.preparationFailure.stage = 'checkout'; }
+  ]) {
+    const failure = structuredClone(f.failure);
+    mutate(failure);
+    assert.throws(() => verifyNativeSourceCopyFailure(f.detail, failure, failure.profileSha256));
   }
 });
 test('real Git snapshot requires a clean single child commit containing only the approved unit repair', async t => {

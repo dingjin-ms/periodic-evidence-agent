@@ -1,11 +1,12 @@
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { boundedPath, hash, json, now, requireThat, utc } from './common.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
 import { skillChangePopulation } from './declarative-e2e.js';
+import { verifyPreparationPreflight, verifyUninvokedPreparation } from './native-preparation-continuation.js';
 import { command, makePlannedImprovementAssignment, requireCurrentAssignment,
   verifyContinuationPredecessor } from './workers.js';
 
@@ -83,6 +84,8 @@ export function verifySourceRepairApproval(detail) {
   'blocked-owner');
 }
 export async function verifyNativeSourceSnapshot(detail) {
+  if (detail.sourcePreparedContinuation)
+    return verifyNativeSourceSnapshot(detail.sourcePreparedContinuation.originalContinuation);
   if (detail.sourcePreparationRecovery)
     return verifyNativeSourceSnapshot(detail.sourcePreparationRecovery.originalContinuation);
   verifySourceRepairApproval(detail);
@@ -108,6 +111,10 @@ export async function verifyNativeSourceSnapshot(detail) {
   }
 }
 export function verifyNativeSourceAuthority(config, detail) {
+  if (detail.sourcePreparedContinuation) {
+    verifySourcePreparedContinuation(config, detail);
+    return;
+  }
   if (detail.sourcePreparationRecovery) {
     verifyNativeSourcePreparationRecovery(config, detail);
     return;
@@ -184,6 +191,9 @@ export function verifyNativeSourcePreparationFailure(job, result, operations, fa
   'blocked-reconciliation');
 }
 export function nativeSourceValidationRepository(repo, detail) {
+  if (detail.sourcePreparedContinuation)
+    return nativeSourceValidationRepository(repo,
+      detail.sourcePreparedContinuation.originalContinuation);
   const recovery = detail.sourcePreparationRecovery;
   if (!recovery) return repo;
   const original = recovery.originalContinuation, auth = detail.authorization;
@@ -253,6 +263,94 @@ function verifyNativeSourcePreparationRecovery(config, detail) {
     pinned(auth.failure), repo.validationGates[0].profileSha256);
   nativeSourceValidationRepository(repo, detail);
 }
+export function verifyNativeSourceCopyFailure(detail, failure, profileSha256) {
+  verifyUninvokedPreparation(detail.priorJob, detail.priorResult, detail.operations, failure,
+    profileSha256, detail.priorStateDirectory);
+  const validation = detail.operations.find(row => row.kind === 'validation');
+  const residual = join(detail.priorStateDirectory, 'validation-workspaces', hash(validation.id));
+  requireThat(detail.operations.length === 4 &&
+    new Set(detail.operations.map(row => row.kind)).size === 4 &&
+    failure.blockedReason === 'validation-workspace-unavailable' &&
+    detail.priorResult.validation[0].blockedReason === failure.blockedReason &&
+    !failure.output.unitDiagnostics && !failure.output.inspectionError &&
+    typeof failure.output.cleanupError === 'string' && failure.output.cleanupError &&
+    json(failure.output.residualPaths) === json([residual]) &&
+    !existsSync(join(residual, '.git')) &&
+    failure.output.preparationFailure?.stage === 'dependency-copy' &&
+    failure.output.preparationFailure.reason === 'command-timeout' &&
+    failure.output.preparationFailure.timeout === true &&
+    failure.output.preparationFailure.ownedProcessesExited === true &&
+    failure.output.preparationFailure.containmentFailure === false &&
+    json(failure.preparationTimings?.map(row => [row.id, row.status])) === json([
+      ['source-check', 'passed'], ['worktree-create', 'passed'], ['sparse-checkout', 'passed'],
+      ['checkout', 'passed'], ['head-clean-check', 'passed'], ['lfs', 'passed'],
+      ['dependencies', 'blocked'], ['dependency-source-fingerprint', 'passed'],
+      ['dependency-copy', 'blocked']
+    ]),
+  'Prepared source continuation requires the exact sealed zero-native copy timeout',
+  'blocked-reconciliation');
+  return residual;
+}
+function verifySourcePreparedContinuation(config, detail) {
+  const previous = detail.sourcePreparedContinuation.originalContinuation;
+  const auth = detail.authorization;
+  requireThat(previous?.sourcePreparationRecovery && !previous.sourcePreparedContinuation &&
+    detail.nativeSourceCorrection === true && !detail.sourcePreparationRecovery &&
+    !detail.nativePreparationCorrection && !detail.preparationRecovery &&
+    auth.kind === 'native-source-prepared-continuation' &&
+    auth.approved === true && auth.authorizedBy === 'user' &&
+    auth.maxInitialModelAttempts === 0 &&
+    auth.previousAssignmentId === detail.priorJob.id &&
+    auth.previousAttemptId === detail.priorJob.session_id &&
+    auth.sourceRevision === detail.priorResult.sourceRevision &&
+    auth.repairedRevision === auth.sourceRevision &&
+    auth.repairedRevision === previous.authorization.repairedRevision &&
+    auth.baseRevision === detail.priorJob.base_revision &&
+    auth.unitFile === previous.authorization.unitFile &&
+    auth.priorAuthorizationSha256 === previous.authorizationSha256 &&
+    auth.nextConfigSha256 === hash(json(config)) &&
+    detail.authorizationSha256 === hash(json(auth)) &&
+    detail.priorResultSha256 === hash(json(detail.priorResult)) &&
+    detail.priorOperationsSha256 === hash(json(detail.operations)) &&
+    previous.nextStateDirectory === detail.priorStateDirectory &&
+    previous.nextAssignmentId === detail.priorJob.id &&
+    previous.nextAttemptId === detail.priorJob.session_id &&
+    detail.previousConfig.stateDirectory === detail.priorStateDirectory &&
+    detail.priorJob.workspace === previous.priorJob.workspace &&
+    detail.priorJob.base_revision === previous.priorJob.base_revision &&
+    json(detail.priorAssignment) === json(previous.priorAssignment) &&
+    json(detail.files) === json(previous.files) && json(detail.proposal) === json(previous.proposal) &&
+    json(auth.ownerRequest) === json(previous.authorization.ownerRequest) &&
+    json(auth.ownerApproval) === json(previous.authorization.ownerApproval) &&
+    json({ ...config, stateDirectory: null }) ===
+      json({ ...detail.previousConfig, stateDirectory: null }) &&
+    config.limits.maxValidationInfrastructureRetries === 0 &&
+    config.limits.maxValidationRepairRounds === 10 &&
+    json(JSON.parse(detail.operations.find(row =>
+      row.kind === 'continued-from-validation-failure')?.detail ?? 'null')) === json(previous),
+  'Prepared source continuation must preserve its exact authority and cannot recurse',
+  'blocked-authorization');
+  verifyNativeSourceAuthority(detail.previousConfig, previous);
+  const repo = config.repositories.find(row => row.id === detail.priorAssignment.repoId);
+  requireThat(auth.failure.path === detail.priorResult.validation[0].artifactRefs[0],
+    'Prepared source continuation changed its sealed failure reference', 'blocked-reconciliation');
+  const residual = verifyNativeSourceCopyFailure(detail, pinned(auth.failure),
+    repo.validationGates[0].profileSha256);
+  const proof = pinned(auth.preflight);
+  verifyPreparationPreflight(proof, detail.priorJob, detail.priorResult, detail.priorAssignment,
+    detail.operations, repo.validationGates[0].profileSha256);
+  const outside = (a, b) => {
+    const name = relative(resolve(a), resolve(b));
+    return name === '..' || name.startsWith(`..${sep}`) || isAbsolute(name);
+  };
+  requireThat(outside(residual, proof.workspace) && outside(proof.workspace, residual) &&
+    json(proof.preparation.sparseCheckoutPaths) ===
+      json(nativeSourceValidationRepository(repo, previous).sparseCheckoutPaths) &&
+    ['src/native-source-continuation.js', 'src/retained-dependency-copy.js'].every(file =>
+      proof.controllerFiles[file] === hash(readFileSync(join(root, file)))),
+  'Prepared source continuation needs current isolated preparation, not the failed residual',
+  'blocked-reconciliation');
+}
 export async function verifyPreparedNativeSource(config, detail, operationId, attemptId) {
   verifyNativeSourceAuthority(config, detail);
   requireThat(await git(root, ['rev-parse', 'HEAD']) === detail.authorization.controllerRevision &&
@@ -312,6 +410,11 @@ export async function prepareNativeSourceContinuation(config, ledger, id,
       const original = JSON.parse(detail.operations.find(row =>
         row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
       detail.sourcePreparationRecovery = { originalContinuation: original };
+      detail.proposal = structuredClone(original?.proposal);
+    } else if (authorization.kind === 'native-source-prepared-continuation') {
+      const original = JSON.parse(detail.operations.find(row =>
+        row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
+      detail.sourcePreparedContinuation = { originalContinuation: original };
       detail.proposal = structuredClone(original?.proposal);
     }
     verifyNativeSourceAuthority(nextConfig, detail);

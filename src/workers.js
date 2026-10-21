@@ -25,6 +25,7 @@ import {
   dependencyOutputFingerprint, outputPathFingerprint, outputPathFingerprintWithEntries
 } from './output-fingerprint.js';
 import { captureUnitDiagnostics } from './validation-diagnostics.js';
+import { verifyRetainedDependencyCopy, consumeRetainedDependencyCopy } from './retained-dependency-copy.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserveAgencyRequest,
   recordAgencySubmission, reconcileAgencyResult, inspectAgencyRequest, activeWorkerCount,
@@ -1362,6 +1363,9 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
       });
     }
   }
+  rebaseDependencySnapshotLinks(snapshot, workspace, paths, deadline);
+}
+function rebaseDependencySnapshotLinks(snapshot, workspace, paths, deadline) {
   for (const path of paths) {
     const source = join(snapshot, path);
     if (!lstatSync(source).isDirectory()) continue;
@@ -1391,8 +1395,10 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
   }
 }
 export async function seedDeclarativeDependencies(source, workspace, revision, timeoutMs,
-  { expectedSeed = null, timings = [], persist = () => {} } = {}) {
+  { expectedSeed = null, retainedCopy = null, timings = [], persist = () => {} } = {}) {
   const stage = (id, operation) => preparationStage(timings, id, operation, persist);
+  requireThat(!expectedSeed || !retainedCopy,
+    'A prepared seed and an unqualified retained copy cannot be combined', 'blocked-validation');
   const seedGit = (cwd, args) => preparationGit(cwd, args, Math.min(timeoutMs, defaultGitTimeoutMs));
   const paths = (await seedGit(source,
     ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
@@ -1412,6 +1418,10 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
     !await seedGit(workspace, ['status', '--porcelain']),
   'Declarative dependency seed clone must be clean at the exact final revision',
   'blocked-validation');
+  if (retainedCopy)
+    await stage('retained-copy-check', () => verifyRetainedDependencyCopy(retainedCopy,
+      source, workspace, revision, paths,
+      hash(readFileSync(fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url))))));
   const fingerprintPaths = paths.flatMap(path => path === 'ooui/.store'
     ? readdirSync(join(source, path)).sort().map(name => `${path}/${name}`)
     : [path]);
@@ -1427,6 +1437,14 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
       json(expectedSeed.paths) === json(paths),
     'Prepared dependency receipt does not match the current exact source bytes',
     'blocked-validation');
+  } else if (retainedCopy) {
+    await stage('dependency-copy', () => {
+      const copy = verifyRetainedDependencyCopy(retainedCopy, source, workspace, revision, paths,
+        hash(readFileSync(fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url)))));
+      const deadline = Date.now() + Math.min(timeoutMs, 30 * 60 * 1000);
+      consumeRetainedDependencyCopy(copy, deadline);
+      rebaseDependencySnapshotLinks(source, workspace, paths, deadline);
+    });
   } else {
     await stage('dependency-copy', () =>
       materializeDependencySnapshot(source, workspace, paths, timeoutMs,
@@ -3532,10 +3550,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
               file !== continuation.authorization.unitFile),
           proposal.skillExecution);
       preparedValidation ??= await preparationPromise;
-      if (continuation?.preparationRecovery)
+      if (continuation?.preparationRecovery || continuation?.sourcePreparedContinuation)
         preparedValidation = { ...preparedValidation,
           [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } };
-      const validationRepo = continuation?.sourcePreparationRecovery
+      const validationRepo = continuation?.sourcePreparationRecovery || continuation?.sourcePreparedContinuation
         ? (await import('./native-source-continuation.js')).nativeSourceValidationRepository(
           repo, continuation) : repo;
       finalValidation = await (dependencies.runValidation ?? runValidation)(

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync,
   realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -530,7 +532,8 @@ for (const condition of ['valid', 'tampered', 'proof-drift']) {
   });
 }
 
-for (const condition of ['valid', 'source-dirty', 'different-revision', 'existing-output', 'external-link']) {
+for (const condition of ['valid', 'source-dirty', 'different-revision', 'existing-output',
+  'external-link', 'retained-valid', 'retained-byte-mismatch']) {
   test(`declarative final-SHA dependency seed ${condition}`, async t => {
     const ctx = await fixture(t);
     writeFileSync(join(ctx.workspace, '.gitignore'), 'node_modules/\nlib/\n.store/\n.npmrc\n');
@@ -566,7 +569,57 @@ for (const condition of ['valid', 'source-dirty', 'different-revision', 'existin
     symlinkSync(condition === 'external-link' ? ctx.root : packageRoot,
       join(ctx.workspace, 'ooui', 'node_modules', 'workspace-synthetic'),
       process.platform === 'win32' ? 'junction' : 'dir');
-    if (condition === 'valid') {
+    if (condition.startsWith('retained-')) {
+      const owned = fileURLToPath(new URL(`../.state/copy-diagnostic-test-${randomUUID()}`, import.meta.url));
+      const retained = join(owned, randomUUID());
+      t.after(() => rmSync(owned, { recursive: true, force: true }));
+      const paths = ['ooui/.store', 'ooui/node_modules', 'ooui/packages/synthetic/lib'];
+      for (const path of ['ooui/.store/synthetic/node_modules/synthetic/index.js',
+        'ooui/packages/synthetic/lib/index.js', 'ooui/node_modules/fixture/index.js']) {
+        mkdirSync(dirname(join(retained, path)), { recursive: true });
+        writeFileSync(join(retained, path), 'Synthetic built output\n');
+      }
+      symlinkSync(packageRoot, join(retained, 'ooui', 'node_modules', 'workspace-synthetic'),
+        process.platform === 'win32' ? 'junction' : 'dir');
+      if (condition === 'retained-byte-mismatch')
+        writeFileSync(join(retained, 'ooui', 'packages', 'synthetic', 'lib', 'index.js'),
+          'Tampered diagnostic output\n');
+      const progressPath = `${retained}.dependency-copy-test.jsonl`;
+      writeFileSync(progressPath, `${json({
+        format: 'dependency-copy-progress-v1', directoryOffset: 0, paths, checkpointInterval: 10
+      })}\n${json({
+        status: 'passed', completedPaths: paths.length, activePaths: [], failedPath: null
+      })}\n`);
+      const proof = {
+        format: 'standalone-dependency-copy-diagnostic-v1',
+        status: 'diagnostic-copy-completed-not-qualified', phase: 'post-source-check',
+        directoryBatchCopyCompleted: true, source: ctx.workspace, workspace: retained,
+        expectedSource: revision,
+        expectedHelper: hash(readFileSync(new URL('../src/dependency-snapshot-copy.cjs', import.meta.url))),
+        currentPaths: paths, omittedNonDirectories: [], isFormalValidation: false,
+        countsTowardBusinessFive: false, eligibleAsDependencySeed: false,
+        nativeUnitStarted: false, businessStarted: false, completedAt: new Date().toISOString(),
+        batches: [{ index: 0, paths, status: 'passed', ownedProcessesExited: true, progressPath }]
+      };
+      const manifest = join(owned, 'diagnostic.json');
+      writeFileSync(manifest, json(proof));
+      const options = { retainedCopy: { path: manifest, sha256: hash(json(proof)) } };
+      if (condition === 'retained-byte-mismatch')
+        await assert.rejects(seedDeclarativeDependencies(ctx.workspace, target, revision, 30000,
+          options), /copied output bytes/);
+      else {
+        const seeded = await seedDeclarativeDependencies(ctx.workspace, target, revision, 30000, options);
+        assert.equal(seeded.sourceRevision, revision);
+        assert.match(seeded.sha256, /^[a-f0-9]{64}$/);
+        assert.equal(realpathSync(join(target, 'ooui', 'node_modules', 'workspace-synthetic')),
+          realpathSync(join(target, 'ooui', 'packages', 'synthetic')));
+        assert.equal(readFileSync(join(target, 'ooui', 'packages', 'synthetic', 'lib', 'index.js'),
+          'utf8'), 'Synthetic built output\n');
+      }
+      assert(existsSync(`${retained}.dependency-copy-consumed.json`));
+      assert(!existsSync(join(retained, 'ooui', '.store')));
+      assert.equal(await ctx.g(['status', '--porcelain']), '');
+    } else if (condition === 'valid') {
       assert.equal((await command('git', ['rev-parse', 'HEAD'], target)).stdout.trim(), revision);
       assert.equal((await command('git', ['-c', 'core.autocrlf=false',
         'status', '--porcelain'], target)).stdout.trim(), '');

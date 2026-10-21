@@ -10,7 +10,8 @@ import { prepareValidationWorkspace, preparationStage, preparationFailure,
   requireCleanRevision } from '../../src/validation-workspace.js';
 
 const args = process.argv.slice(2);
-const allowed = ['--config', '--assignment', '--output', '--workspace', '--sparse-path', '--prepared-receipt'];
+const allowed = ['--config', '--assignment', '--output', '--workspace', '--sparse-path',
+  '--prepared-receipt', '--retained-copy'];
 const values = name => args.flatMap((value, i) => value === name ? [args[i + 1]] : []);
 requireThat(args.length % 2 === 0 && args.every((value, i) =>
   i % 2 ? typeof value === 'string' && !value.startsWith('--') : allowed.includes(value)),
@@ -18,12 +19,19 @@ requireThat(args.length % 2 === 0 && args.every((value, i) =>
 for (const name of ['--config', '--assignment', '--output', '--workspace'])
   requireThat(values(name).length === 1, `Exactly one ${name} is required`);
 requireThat(values('--prepared-receipt').length <= 1, 'At most one prepared receipt is permitted');
+requireThat(values('--retained-copy').length <= 1 &&
+  !(values('--prepared-receipt').length && values('--retained-copy').length),
+  'Use at most one retained copy or one previously prepared receipt');
 const config = configAt(resolve(values('--config')[0]));
 const output = resolve(values('--output')[0]);
 const workspace = resolve(values('--workspace')[0]);
 const priorBytes = values('--prepared-receipt').length
   ? readFileSync(resolve(values('--prepared-receipt')[0])) : null;
 const prior = priorBytes ? JSON.parse(priorBytes) : null;
+const retainedCopy = values('--retained-copy').length ? {
+  path: resolve(values('--retained-copy')[0]),
+  sha256: hash(readFileSync(resolve(values('--retained-copy')[0])))
+} : null;
 requireThat(!existsSync(output) && (prior || !existsSync(workspace)),
   'Preflight refuses an existing receipt or workspace', 'blocked-reconciliation');
 const ledger = new Ledger(config.stateDirectory, { readOnly: true });
@@ -54,15 +62,16 @@ request.options.installDependencies = false;
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const files = ['src/workers.js', 'src/validation-workspace.js', 'src/native-command.js',
   'src/native-command.ps1', 'src/dependency-snapshot-copy.cjs',
-  'src/output-fingerprint.js', 'src/output-fingerprint-worker.js',
+  'src/output-fingerprint.js', 'src/output-fingerprint-worker.js', 'src/retained-dependency-copy.js',
   'scripts/validation/preflight.mjs', 'scripts/validation/native-preflight.cjs',
-  'src/native-preparation-continuation.js'];
+  'src/native-preparation-continuation.js', 'src/native-source-continuation.js'];
 const receipt = {
   format: 'validation-preflight-v1', id: uuid(), status: 'running', startedAt: now(),
   assignmentId, priorAttemptId: job.session_id, priorResultId: result.id,
   sourceRevision: revision, baseRevision: job.base_revision, workspace,
   controllerFiles: Object.fromEntries(files.map(file => [file, hash(readFileSync(join(root, file)))])),
   profileSha256: gate.profileSha256, originalLedgerSha256: originalLedger,
+  ...(retainedCopy ? { retainedCopy } : {}),
   ...(prior ? { preparedReceipt: {
     path: resolve(values('--prepared-receipt')[0]), sha256: hash(priorBytes)
   } } : {}),
@@ -91,7 +100,7 @@ try {
     timings: receipt.timings, persist,
     hydrate: () => hydrateValidationLfs(config, repo, gate, workspace, revision),
     seed: (source, target) => seedDeclarativeDependencies(source, target, revision,
-      gate.timeoutMs, { timings: receipt.timings, persist })
+      gate.timeoutMs, { retainedCopy, timings: receipt.timings, persist })
   });
   requireThat(receipt.preparation.dependencySeed,
     'Real preflight requires existing byte-verified dependencies, never restore/fullbuild');

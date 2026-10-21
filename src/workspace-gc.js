@@ -3,7 +3,8 @@ import { promisify } from 'node:util';
 import { existsSync, lstatSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
-  now, PilotError, requireThat, safeError, uuid, validateRecord, workspaceCleanupPolicy
+  now, PilotError, requireThat, safeError, uuid, validateRecord, workspaceCleanupPolicy,
+  repositorySourceRef
 } from './common.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
@@ -156,7 +157,7 @@ export async function cleanupWorkspace(config, ledger, id, { execute = false } =
     const repo = config.repositories.find(item => item.id === job.repo);
     retain(repo?.remote && await git(workspace, ['remote', 'get-url', 'origin']) === repo.remote,
       'Workspace remote differs from the configured repository');
-    const sourceRef = `refs/heads/pilot/${id}`;
+    const sourceRef = repositorySourceRef(repo, id);
     retain(await sourceBranch(workspace) === sourceRef,
       'Workspace branch differs from the delivered task branch');
     const artifacts = [

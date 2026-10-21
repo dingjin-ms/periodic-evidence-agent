@@ -1481,6 +1481,15 @@
         }
       }
     },
+    "draftPR": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "isDraft", "headRevision"],
+      "properties": {
+        "url": { "$ref": "#/$defs/uri" },
+        "isDraft": { "const": true },
+        "headRevision": { "$ref": "#/$defs/text" }
+      }
+    },
     "workerResult": {
       "type": "object", "additionalProperties": false,
       "required": ["recordType", "schemaVersion", "id", "assignmentId", "attemptId",
@@ -1500,15 +1509,7 @@
         "draftPR": {
           "anyOf": [
             { "type": "null" },
-            {
-              "type": "object", "additionalProperties": false,
-              "required": ["url", "isDraft", "headRevision"],
-              "properties": {
-                "url": { "$ref": "#/$defs/uri" },
-                "isDraft": { "const": true },
-                "headRevision": { "$ref": "#/$defs/text" }
-              }
-            }
+            { "$ref": "#/$defs/draftPR" }
           ]
         },
         "validation": { "type": "array", "items": { "$ref": "#/$defs/validation" } },

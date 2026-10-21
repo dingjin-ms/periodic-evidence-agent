@@ -33,7 +33,7 @@ function recordEntry(entries, path, value) {
   if (entries) entries.push([path.replaceAll('\\', '/'), value]);
 }
 
-function pathFingerprint(root, path, recordedEntries = null) {
+export function pathFingerprint(root, path, recordedEntries = null) {
   const target = join(root, path);
   if (!existsSync(target)) return null;
   const info = lstatSync(target);

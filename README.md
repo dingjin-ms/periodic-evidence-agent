@@ -875,7 +875,8 @@ cleanup separates source restore, prepared-output verification and source
 cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
-Version 3 staged plans may bind an `azure-artifacts-npm` authentication
+Version 3 staged plans may bind an `azure-artifacts-npm` or approved
+`repository-broker` authentication
 contract. Before a local or Remote Agency author launches, a controller-owned
 preflight checks authentication only when the matching dependency receipt is
 absent. Version-3 authentication profiles also finish exact-base preparation
@@ -921,6 +922,23 @@ The general `npm run setup` command intentionally remains offline with respect
 to product-repository authentication. Agents must never ask users to paste
 tokens; the approved setup command delegates credential acquisition to the
 pinned provider and the Microsoft sign-in flow.
+
+The 1JS SDX profile uses the repository's documented
+`@1js/node-azure-auth` broker. Its preflight runs only `yarn auth --skip-auth`
+from an attested exact-revision checkout and suppresses broker diagnostics; it
+does not acquire or persist credentials. If the check fails, the controller
+returns an explicit `action-required-auth` remediation to run `yarn.cmd auth`
+from the checkout's `midgard` directory. That interactive command is never run
+automatically, and no token or credential value is included in controller
+evidence.
+
+For real 1JS publication, configure `commitIdentity` with the authorized
+corporate author and `pr.sourceBranchPrefix` with a repository-approved user
+namespace, for example `user/<alias>/periodic-evidence-agent`.
+The controller appends the assignment ID and uses the same ref for provisioning,
+push, Draft PR discovery/creation, and cleanup verification. Omitted prefixes
+retain `refs/heads/pilot/` for compatibility; that namespace and a bot author
+email may be rejected by repository policy even when local validation passes.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of

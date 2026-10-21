@@ -107,6 +107,32 @@ test('a batch containing an escaping dependency link fails closed', async t => {
   assert.equal(await outputFingerprint(root, ['node_modules']), null);
 });
 
+test('large native stores split into bounded tasks without changing generic tree hashes', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-store-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = 'midgard/.store';
+  const packageRoot = join(root, path, 'package', 'node_modules', 'pkg');
+  mkdirSync(packageRoot, { recursive: true });
+  for (let index = 0; index < 2100; index++)
+    writeFileSync(join(packageRoot, `${index}.js`), `${index}\n`);
+  mkdirSync(join(root, path, 'empty'));
+  symlinkSync(packageRoot, join(root, path, 'internal-link'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  const expected = outputPathFingerprintWithEntries(root, path);
+  const expectedHash = hash(JSON.stringify([expected.value]));
+  const telemetry = {};
+  const actual = await outputFingerprint(root, [path], true, telemetry);
+  assert.equal(actual.sha256, expectedHash);
+  assert.deepEqual(actual.entries, new Map(expected.entries));
+  assert.equal(await outputFingerprint(root, [path]), expectedHash);
+  if (telemetry.taskCount != null) {
+    assert.ok(telemetry.taskCount > 1);
+    assert.equal(telemetry.hashedFileCount, 2100);
+  }
+  writeFileSync(join(packageRoot, '2099.js'), 'changed\n');
+  assert.notEqual(await outputFingerprint(root, [path]), expectedHash);
+});
+
 test('empty dependency roots retain the serial fingerprint schema', async t => {
   const root = mkdtempSync(join(tmpdir(), 'fingerprint-empty-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

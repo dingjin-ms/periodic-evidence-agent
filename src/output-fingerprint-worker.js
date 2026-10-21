@@ -2,7 +2,7 @@ import { parentPort } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
 import {
   dependencyEntriesFingerprint, dependencyEntryFingerprint, dependencyEntryFingerprintWithEntries,
-  outputPathFingerprint, outputPathFingerprintWithEntries
+  outputPathFingerprint, outputPathFingerprintWithEntries, pathFingerprint
 } from './output-fingerprint.js';
 
 parentPort.on('message', ({
@@ -12,6 +12,10 @@ parentPort.on('message', ({
   try {
     const started = performance.now();
     const fingerprint = (mode, entryPath) => {
+      if (mode === 'tree-path') {
+        const entries = captureEntries ? [] : null;
+        return { value: pathFingerprint(workspace, path, entries), entries };
+      }
       const result = captureEntries
         ? mode === 'dependency-entry'
           ? dependencyEntryFingerprintWithEntries(

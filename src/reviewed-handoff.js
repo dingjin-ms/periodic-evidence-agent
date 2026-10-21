@@ -188,5 +188,5 @@ export async function acceptReviewedHandoff(config, ledger, input, {
   const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
     () => dispatchReviewedHandoff(config, ledger, prepared.assignment.id, dispatchDependencies),
     { kind: 'reviewed-handoff', receipt }, dispatchDependencies.rsi);
-  return { state: result.outcome, ...prepared, result, ...(rsi ? { rsi } : {}) };
+  return { state: result.outcome ?? result.state, ...prepared, result, ...(rsi ? { rsi } : {}) };
 }

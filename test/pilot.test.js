@@ -18,7 +18,7 @@ import { followRelated, readRelatedWorkiq } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
-import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, newCaseBuildSelection, newCaseBuildGroups, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges, verifyPreparedOutputs } from '../src/workers.js';
+import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, newCaseBuildSelection, newCaseBuildGroups, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges, verifyPreparedOutputs, verifyTestOnlyProfileChange, rebindPreparedTestProfile } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
@@ -1474,6 +1474,47 @@ test('cold staged validation passes with one complete prepared pipeline', async 
   assert.ok(artifact.telemetry.preparationDurationMs >= 0);
   assert.ok(artifact.telemetry.validationDurationMs >= 0);
 });
+test('staged policy and test receive the exact base and candidate revisions', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const revision = await ctx.commit('test/behavior.test.js', 'candidate\n', 'Add candidate test');
+  const current = { ...ctx.current, base_revision: ctx.isolated.baseRevision };
+  const seen = [];
+  const execute = async (executable, args, cwd, timeout, env) => {
+    if (['policy', 'test'].includes(env.PILOT_VALIDATION_STAGE)) {
+      assert.equal(env.PILOT_VALIDATION_BASE_REVISION, ctx.isolated.baseRevision);
+      assert.equal(env.PILOT_VALIDATION_REVISION, revision);
+      assert.equal((await command('git', ['rev-parse', 'HEAD'], cwd)).stdout.trim(), revision);
+      seen.push(env.PILOT_VALIDATION_STAGE);
+    }
+    return ctx.execute(executable, args, cwd, timeout, env);
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, current, ctx.repo,
+    revision, execute, rmSync, {});
+  assert.equal(result[0].status, 'passed');
+  assert.deepEqual(seen, ['policy', 'test']);
+});
+for (const variable of ['PILOT_VALIDATION_REVISION', 'PILOT_VALIDATION_BASE_REVISION']) {
+  test(`missing ${variable} blocks staged validation instead of requesting model repair`, async t => {
+    const ctx = await stagedValidationFixture(t);
+    let policyCalls = 0;
+    const execute = async (executable, args, cwd, timeout, env) => {
+      if (env.PILOT_VALIDATION_STAGE === 'policy') {
+        policyCalls++;
+        throw Object.assign(new Error('invalid validation input'), {
+          code: 1, stdout: '', stderr: `${variable} is missing or invalid\r\nAt profile.ps1:31 char:9\r\n`
+        });
+      }
+      return ctx.execute(executable, args, cwd, timeout, env);
+    };
+    const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+      ctx.isolated.baseRevision, execute, rmSync, {});
+    assert.equal(result[0].status, 'blocked');
+    assert.equal(result[0].blockedReason, 'validation-profile-error');
+    assert.equal(result[0].attemptCount, 1);
+    assert.equal(policyCalls, 1);
+    assert.equal(ctx.calls.includes('test'), false);
+  });
+}
 test('cold authenticated preparation runs broker once and cache hits skip it', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
@@ -1804,7 +1845,8 @@ test('corrupt dependency snapshot receipt reruns install and compile', async t =
     'Repair after dependency corruption');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed',
+    readFileSync(result[0].artifactRefs[0], 'utf8'));
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
@@ -1846,7 +1888,8 @@ test('damaged dependency workspace reruns install and compile when production ch
     'Change production after dependency workspace damage');
   const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
     revision, ctx.execute, rmSync, prepared);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed',
+    readFileSync(result[0].artifactRefs[0], 'utf8'));
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 2);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
 });
@@ -1863,6 +1906,83 @@ test('parallel prepared-output fingerprint detects cache mutation', async t => {
   assert.equal(result[0].status, 'passed');
   assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 2);
+});
+test('existing-only compile recovery preserves invalid outputs without rebuilding', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const warm = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute, { requireExistingCompileSnapshots: true });
+  assert.equal(warm.staged.cache, 'hit');
+  const receiptPath = prepared.staged.receiptPath;
+  const receipt = readFileSync(receiptPath, 'utf8');
+  const file = join(prepared.staged.workspace, 'extra', 'node_modules', 'fixture', 'package.json');
+  writeFileSync(file, '{"version":"unverified"}\n');
+  const recovered = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute, { requireExistingCompileSnapshots: true });
+  assert.equal(recovered.staged.error.code, 'prepared-cache-corrupt');
+  const validation = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute, rmSync, recovered);
+  assert.equal(validation[0].status, 'blocked');
+  assert.equal(validation[0].blockedReason, 'prepared-cache-corrupt');
+  assert.match(recovered.staged.error.message, /existing compile snapshot did not qualify/);
+  assert.equal(readFileSync(file, 'utf8'), '{"version":"unverified"}\n');
+  assert.equal(readFileSync(receiptPath, 'utf8'), receipt);
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+});
+test('test-only profile continuation verifies outputs and preserves the original receipt', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const oldGate = ctx.repo.validationGates[0];
+  const original = readFileSync(oldGate.profilePath, 'utf8') +
+    "    if ($stage -in @('all', 'test')) {\n        old runner\n    }\n}\nfinally {\n    Pop-Location\n}\n";
+  writeFileSync(oldGate.profilePath, original);
+  oldGate.profileSha256 = hash(readFileSync(oldGate.profilePath));
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const oldReceipt = readFileSync(prepared.staged.receiptPath, 'utf8');
+  const profilePath = join(ctx.config.stateDirectory, 'corrected-profile.mjs');
+  writeFileSync(profilePath, original.replace('old runner', 'new runner'));
+  const nextGate = { ...oldGate, profilePath, profileSha256: hash(readFileSync(profilePath)) };
+  const receiptPath = join(ctx.config.stateDirectory, 'profile-continuation', 'r.json');
+  const rebound = await rebindPreparedTestProfile(prepared.staged, oldGate, nextGate, receiptPath);
+  assert.equal(readFileSync(prepared.staged.receiptPath, 'utf8'), oldReceipt);
+  assert.equal(rebound.outputs.sha256, prepared.staged.outputs.sha256);
+  assert.equal(rebound.inputs.profileSha256, nextGate.profileSha256);
+  const revision = await ctx.commit('test/behavior.test.js', 'pass\nrepaired\n', 'Test-only candidate');
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current,
+    { ...ctx.repo, validationGates: [nextGate] }, revision, ctx.execute, rmSync, { staged: rebound });
+  assert.equal(result[0].status, 'passed');
+  assert.equal(ctx.calls.filter(value => value === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(value => value === 'compile').length, 1);
+  await assert.rejects(rebindPreparedTestProfile(prepared.staged, oldGate, nextGate, receiptPath),
+    /fresh audit path/);
+  writeFileSync(profilePath, `changed preparation\n${original.replace('old runner', 'new runner')}`);
+  assert.throws(() => verifyTestOnlyProfileChange(oldGate,
+    { ...nextGate, profileSha256: hash(readFileSync(profilePath)) }), /only the final test runner/);
+  writeFileSync(profilePath, original.replace('old runner', 'new runner'));
+  writeFileSync(join(prepared.staged.workspace, 'extra', 'node_modules', 'fixture', 'package.json'),
+    '{"changed":true}\n');
+  await assert.rejects(rebindPreparedTestProfile(prepared.staged, oldGate, nextGate,
+    join(ctx.config.stateDirectory, 'invalid-rebind.json')), /source or outputs changed/);
+});
+test('existing-only recovery preserves an unverified dependency cache without reinstalling', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const receiptPath = prepared.staged.dependencyReceiptPath;
+  const receipt = readFileSync(receiptPath, 'utf8');
+  const file = join(dirname(receiptPath), 'w', 'extra', 'node_modules', 'fixture', 'package.json');
+  writeFileSync(file, '{"version":"unverified"}\n');
+  const revision = await ctx.commit('src/value.js', 'export const value = 2;\n',
+    'Require a new compile snapshot');
+  const recovered = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    revision, ctx.execute, { requireExistingDependencySnapshots: true });
+  assert.equal(recovered.staged.error.code, 'prepared-cache-corrupt');
+  assert.equal(readFileSync(file, 'utf8'), '{"version":"unverified"}\n');
+  assert.equal(readFileSync(receiptPath, 'utf8'), receipt);
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
 });
 test('concurrent prepared-output settlements cannot race past cache mutation',
   async t => {
@@ -2008,6 +2128,30 @@ test('metadata-only ordinary file changes preserve an identical prepared cache',
   assert.ok(verification.details.hashedFileCount > 0);
   assert.ok(verification.details.durationMs >= 100);
 });
+test('dependency snapshots retain generated siblings without widening declared roots', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , cwd, , env] = args;
+    const generated = join(cwd, '.pilot', 'generated-tools', 'compiler.js');
+    if (env.PILOT_VALIDATION_STAGE === 'dependencies') {
+      mkdirSync(dirname(generated), { recursive: true });
+      writeFileSync(generated, 'generated compiler\n');
+    }
+    if (env.PILOT_VALIDATION_STAGE === 'compile')
+      assert.equal(readFileSync(generated, 'utf8'), 'generated compiler\n');
+    return result;
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute);
+  assert.equal(prepared.staged.error, undefined, JSON.stringify(prepared));
+  const dependency = JSON.parse(readFileSync(prepared.staged.dependencyReceipt.path, 'utf8'));
+  assert.ok(dependency.outputs.paths.includes('.pilot/dependencies'));
+  assert.ok(dependency.outputs.paths.includes('.pilot/generated-tools'));
+  assert.ok(dependency.outputs.paths.includes('extra/node_modules'));
+  assert.equal(dependency.outputs.paths.includes('.pilot'), false);
+  assert.equal(dependency.outputs.paths.includes('extra'), false);
+});
 test('metadata event batches preserve cache with incremental verification telemetry',
   async t => {
     const ctx = await stagedValidationFixture(t);
@@ -2034,7 +2178,8 @@ test('metadata event batches preserve cache with incremental verification teleme
       'Exercise batched metadata tolerance');
     const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
       revision, execute, rmSync, prepared);
-    assert.equal(result[0].status, 'passed');
+    assert.equal(result[0].status, 'passed',
+      readFileSync(result[0].artifactRefs[0], 'utf8'));
     assert.equal(existsSync(prepared.staged.workspace), true);
     const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
     const cleanup = artifact.telemetry.validationTimings.find(stage =>

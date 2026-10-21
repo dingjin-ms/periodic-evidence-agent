@@ -34,6 +34,14 @@ test('preparation diagnostics allowlist structured fields without reading raw er
   });
 });
 
+test('shared command re-export preserves the caller abort signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(command(process.execPath, ['-e', 'process.exit(0)'],
+    process.cwd(), undefined, undefined, controller.signal),
+  { name: 'AbortError', code: 'ABORT_ERR' });
+});
+
 test('controller progress failure preserves an already raised primary rejection', async () => {
   const primary = new PilotError('blocked-validation', 'original content rejection');
   const marker = 'fixture-sensitive-progress-exception';

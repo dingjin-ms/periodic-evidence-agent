@@ -351,6 +351,147 @@ test('ADO receipt imports reject noncohort fields and retain the prior committed
     assert.equal(ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE id=?').get('ineligible').n, 0);
   }
 });
+function cappedAdoReceipts(config, lane, count = 62) {
+  const date = '2026-10-09T00:00:00Z';
+  const ids = Array.from({ length: count }, (_, i) => i + 1);
+  const selected = ids.slice(0, config.limits.maxItems);
+  const principal = { objectId: config.identity.objectId, tenantId: config.identity.tenantId,
+    userPrincipalName: config.identity.designatedUser, verifiedAt: date, toolCallId: 'synthetic-identity' };
+  const requests = [
+    { endpoint: 'wiql', body: { query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.Id] = 0" } },
+    { endpoint: 'wiql', body: { query: wiql(config.window, lane, date) } },
+    { endpoint: 'workitemsbatch', body: { ids: selected, asOf: date, errorPolicy: 'Fail', $expand: 'Relations' } }
+  ];
+  const responses = [
+    { asOf: date, workItems: [] }, { asOf: date, workItems: ids.map(id => ({ id })) },
+    { value: selected.map(id => ({ id, rev: 1, fields: { 'System.WorkItemType': 'Bug',
+      'System.AreaPath': area, 'System.Title': `Synthetic capped item ${id}`, 'System.State': 'Resolved',
+      'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
+      'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } })) }
+  ];
+  return { principal, calls: requests.map((request, i) => ({ id: `synthetic-${lane}-${i}`,
+    observedAt: date, tool: 'ado-delegated-read', request, response: responses[i] })) };
+}
+for (const lane of ['created', 'changed']) {
+  test(`app ADO ${lane} awaits bounded hydration before a truthful cap stop`, async t => {
+    const { config, ledger } = setup(t, { configure: c => { c.limits.maxItems = c.dryRun.limits.maxItems = 50; } });
+    const { principal, calls } = cappedAdoReceipts(config, lane), pass = `ado:${lane}`;
+    let result = await appendApp(config, ledger, 'test-run', {
+      eventId: 'synthetic-selection', pass, principal, calls: calls.slice(0, 2) });
+    let state = result.collection.find(p => p.pass === pass);
+    assert.equal(state.error.code, 'awaiting-receipt');
+    assert.deepEqual(state.nextRequest, calls[2].request);
+    assert.equal(state.examinedRecords, 0);
+    assert.equal(state.evidenceCount, 0);
+    assert.equal(state.returnedRecords, 62);
+    assert.equal(state.unexaminedReturnedRecords, 62);
+    result = await appendApp(config, ledger, 'test-run', {
+      eventId: 'synthetic-hydration', pass, principal, calls: calls.slice(2) });
+    state = result.collection.find(p => p.pass === pass);
+    assert.equal(state.state, 'partial');
+    assert.equal(state.error.code, 'partial');
+    assert.equal(state.nextRequest, null);
+    assert.equal(state.cursor, null);
+    assert.equal(state.readCalls, 3);
+    assert.equal(state.examinedRecords, 50);
+    assert.equal(state.evidenceCount, 50);
+    assert.equal(state.returnedRecords, 62);
+    assert.equal(state.unexaminedReturnedRecords, 12);
+    assert.equal(state.duplicateReturnedIds, 0);
+    assert.equal(state.examinationBasis, 'hydrated-valid-records');
+    assert.equal(ledger.all('evidence').length, 50);
+    assert.ok(ledger.all('evidence').every(e => e.source.provenance === 'synthetic'));
+  });
+  test(`app ADO ${lane} injected adapter agrees with bounded receipt replay`, async t => {
+    const { config, ledger } = setup(t, { provenance: 'app-tool',
+      configure: c => { c.limits.maxItems = c.dryRun.limits.maxItems = 50; } });
+    const { calls } = cappedAdoReceipts(config, lane);
+    let count = 0;
+    const result = await collectAppAdo(config, ledger, 'test-run', `ado:${lane}`, async () => async (endpoint, body) => {
+      const expected = calls[count++];
+      assert.deepEqual({ endpoint, body }, expected.request);
+      return expected.response;
+    });
+    const state = result.collection.find(p => p.pass === `ado:${lane}`);
+    assert.equal(count, 3);
+    assert.equal(state.state, 'partial');
+    assert.equal(state.readCalls, 3);
+    assert.equal(state.examinedRecords, 50);
+    assert.equal(state.evidenceCount, 50);
+    assert.equal(state.unexaminedReturnedRecords, 12);
+    assert.equal(state.cursor, null);
+  });
+}
+for (const failure of ['failed-source', 'missing', 'duplicate', 'unexpected', 'invalid-date', 'outside-area', 'outside-window']) {
+  test(`app ADO capped hydration ${failure} is not successful body examination`, async t => {
+    const { config, ledger } = setup(t, { configure: c => { c.limits.maxItems = c.dryRun.limits.maxItems = 50; } });
+    const { principal, calls } = cappedAdoReceipts(config, 'created');
+    if (failure === 'failed-source') { delete calls[2].response; calls[2].failure = { code: failure }; }
+    else {
+      const value = calls[2].response.value;
+      if (failure === 'missing') value.pop();
+      if (failure === 'duplicate') value[1] = value[0];
+      if (failure === 'unexpected') value[0].id = 999;
+      if (failure === 'invalid-date') value[0].fields['System.CreatedDate'] = 'not-a-date';
+      if (failure === 'outside-area') value[0].fields['System.AreaPath'] = 'Other';
+      if (failure === 'outside-window') value[0].fields['System.CreatedDate'] = config.window.end;
+    }
+    const pending = appendApp(config, ledger, 'test-run', {
+      eventId: 'synthetic-invalid', pass: 'ado:created', principal, calls });
+    if (['invalid-date', 'outside-area', 'outside-window'].includes(failure)) await assert.rejects(pending);
+    else {
+      const state = (await pending).collection.find(p => p.pass === 'ado:created');
+      assert.notEqual(state.state, 'complete');
+      assert.equal(state.examinedRecords, 0);
+      assert.equal(state.evidenceCount, 0);
+      assert.equal(state.unexaminedReturnedRecords, 62);
+      assert.equal(state.nextRequest, null);
+      assert.equal(state.cursor, null);
+    }
+    assert.equal(ledger.all('evidence').length, 0);
+  });
+}
+test('app ADO duplicate metadata is separate from unexamined unique IDs', async t => {
+  const { config, ledger } = setup(t);
+  const { principal, calls } = cappedAdoReceipts(config, 'created', 2);
+  calls[1].response.workItems.push({ id: 1 });
+  const result = await appendApp(config, ledger, 'test-run', {
+    eventId: 'synthetic-duplicate-metadata', pass: 'ado:created', principal, calls });
+  const state = result.collection.find(p => p.pass === 'ado:created');
+  assert.equal(state.state, 'complete');
+  assert.equal(state.returnedRecords, 3);
+  assert.equal(state.examinedRecords, 2);
+  assert.equal(state.duplicateReturnedIds, 1);
+  assert.equal(state.unexaminedReturnedRecords, 0);
+});
+test('app ADO malformed WIQL stays failed-source without invented examination', async t => {
+  const { config, ledger } = setup(t);
+  const { principal, calls } = cappedAdoReceipts(config, 'created');
+  calls[1].response.workItems = 'invalid';
+  const result = await appendApp(config, ledger, 'test-run', {
+    eventId: 'synthetic-malformed', pass: 'ado:created', principal, calls: calls.slice(0, 2) });
+  const state = result.collection.find(p => p.pass === 'ado:created');
+  assert.equal(state.state, 'failed-source');
+  assert.equal(state.examinedRecords, 0);
+  assert.equal(state.evidenceCount, 0);
+  assert.equal(state.returnedRecords, 0);
+});
+test('app ADO capped selection preserves call budgets and rejects extra detail receipts', async t => {
+  const { config, ledger } = setup(t, {
+    configure: c => { c.limits.maxItems = c.dryRun.limits.maxItems = 50; c.dryRun.limits.maxCalls = 2; } });
+  const { principal, calls } = cappedAdoReceipts(config, 'created');
+  const result = await appendApp(config, ledger, 'test-run', {
+    eventId: 'synthetic-call-cap', pass: 'ado:created', principal, calls: calls.slice(0, 2) });
+  const state = result.collection.find(p => p.pass === 'ado:created');
+  assert.equal(state.state, 'partial');
+  assert.match(state.error.message, /Tool-call budget/);
+  assert.equal(state.readCalls, 2);
+  assert.equal(state.examinedRecords, 0);
+  assert.equal(state.nextRequest, null);
+  await assert.rejects(appendApp(config, ledger, 'test-run', {
+    eventId: 'synthetic-beyond-cap', pass: 'ado:created', principal, calls: calls.slice(2) }));
+  assert.equal(ledger.all('evidence').length, 0);
+});
 test('app dry run rejects reviews/native workers and ignores historic SDK auth blocks', t => {
   const { config, ledger } = setup(t);
   ledger.blockSource('auth:workiq', { code: 'blocked-auth', message: 'Historical SDK failure' });

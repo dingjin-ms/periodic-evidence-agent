@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "targetRepository": "example/agent",
+  "allowedWritePrefixes": ["src", "test", ".github/skills"],
+  "maxObservations": 20,
+  "maxObservationBytes": 1048576,
+  "maxProposals": 2,
+  "allowDraftPR": false
+}

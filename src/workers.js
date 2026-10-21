@@ -49,8 +49,8 @@ const maxPreparedOutputGuards = 2;
 const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
 const maxOutputFingerprintTaskEntries = 2048;
 const defaultGitTimeoutMs = 120000;
-export async function command(executable, args, cwd, timeout = 120000, env = process.env) {
-  return exec(executable, args, { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
+export async function command(executable, args, cwd, timeout = 120000, env = process.env, signal = undefined) {
+  return exec(executable, args, { cwd, env, signal, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }
 async function gitRaw(cwd, args, env = process.env, timeout = defaultGitTimeoutMs) {
   return (await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
@@ -2180,11 +2180,12 @@ async function runStagedGate(config, ledger, job, repo, gate, revision, prepared
   };
 }
 export class WorkerTools {
-  constructor(config, assignment, workspace, loadedSkill = null, usage = null) {
+  constructor(config, assignment, workspace, loadedSkill = null, usage = null, gitCommand = null) {
     this.config = config; this.assignment = assignment; this.workspace = workspace;
     this.repo = repoFor(config, assignment.repoId); this.loadedSkill = loadedSkill;
     this.allowedWritePrefixes = loadedSkill?.allowedWritePrefixes ?? this.repo.allowedWritePrefixes;
     this.allowedWriteFiles = loadedSkill?.allowedWriteFiles ?? this.repo.allowedWriteFiles ?? [];
+    this.gitCommand = gitCommand ?? (args => git(this.workspace, args));
     this.usage = usage ?? {
       limit: assignment.bounds.maxToolCalls,
       used: 0,
@@ -2212,7 +2213,7 @@ export class WorkerTools {
     const args = this.repo.sparseCheckoutPaths?.length
       ? ['ls-files', '--sparse', '-z'] : ['ls-files', '-z'];
     if (scope) args.push('--', scope);
-    const paths = (await git(this.workspace, args)).split('\0').filter(Boolean);
+    const paths = (await this.gitCommand(args)).split('\0').filter(Boolean);
     requireThat(paths.length <= 200000, 'Repository file list too large', 'blocked-budget');
     requireThat(Buffer.byteLength(paths.join('\n')) <= this.config.limits.maxFileBytes,
       'File list exceeds read limit; narrow pilot_list with a repository-relative directory',
@@ -2231,7 +2232,7 @@ export class WorkerTools {
     try {
       const args = ['grep', '-n', '-I', '-F', '-i', '-m', '10', '-e', query, '--'];
       if (scope) args.push(scope);
-      const matches = (await git(this.workspace, args)).split(/\r?\n/).filter(Boolean).slice(0, 200);
+      const matches = (await this.gitCommand(args)).split(/\r?\n/).filter(Boolean).slice(0, 200);
       requireThat(Buffer.byteLength(matches.join('\n')) <= this.config.limits.maxFileBytes,
         'Search result exceeds read limit', 'blocked-budget');
       return matches;

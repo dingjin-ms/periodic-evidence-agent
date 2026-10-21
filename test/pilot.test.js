@@ -593,9 +593,57 @@ test('ADO out-of-scope area rejected before evidence acceptance', async t => {
   await assert.rejects(collectAdo(config, config.window, async () => {}, 'created', transport([item])), /out-of-scope/);
 });
 test('ADO budget exhaustion is explicit and does not silently truncate', async t => {
-  const { config } = setup(t); config.limits.maxItems = 1;
-  await assert.rejects(collectAdo(config, config.window, async () => {}, 'created', transport([adoItem(1), adoItem(2)])),
+  const { config } = setup(t), evidence = [], calls = []; config.limits.maxItems = 1;
+  await assert.rejects(collectAdo(config, config.window, async e => evidence.push(e), 'created',
+    transport([adoItem(1), adoItem(2)], calls)),
     e => e.code === 'partial');
+  assert.deepEqual(evidence.map(e => e.source.recordId), ['1']);
+  assert.deepEqual(calls.at(-1).body.ids, [1]);
+});
+for (const lane of ['created', 'changed']) for (const count of [0, 49, 50, 62, 251]) {
+  test(`ADO ${lane} hydrates the permitted prefix for ${count} IDs without expanding budgets`, async t => {
+    const { config } = setup(t), evidence = [], calls = [];
+    config.limits.maxItems = count === 251 ? 250 : 50;
+    const pending = collectAdo(config, config.window, async e => evidence.push(e), lane,
+      transport(Array.from({ length: count }, (_, i) => adoItem(i + 1)), calls));
+    if (count > config.limits.maxItems) await assert.rejects(pending, e => e.code === 'partial');
+    else assert.equal((await pending).end, config.window.end);
+    const expected = Math.min(count, config.limits.maxItems);
+    assert.deepEqual(evidence.map(e => Number(e.source.recordId)), Array.from({ length: expected }, (_, i) => i + 1));
+    assert.equal(calls.length, 2 + Math.ceil(expected / 200));
+    assert.equal(calls[1].body.query, wiql(config.window, lane, '2026-10-09T01:00:00Z'));
+    assert.ok(calls.slice(2).every(c => c.body.ids.length <= 200 &&
+      c.body.asOf === '2026-10-09T01:00:00Z' && c.body.errorPolicy === 'Fail'));
+  });
+}
+test('ADO permitted selection does not bypass call exhaustion', async t => {
+  const { config } = setup(t), calls = [], evidence = [];
+  config.limits.maxItems = 50; config.limits.maxCalls = 2;
+  await assert.rejects(collectAdo(config, config.window, async e => evidence.push(e), 'changed',
+    transport(Array.from({ length: 62 }, (_, i) => adoItem(i + 1)), calls)), /Tool-call budget/);
+  assert.equal(calls.length, 2);
+  assert.equal(evidence.length, 0);
+});
+test('ADO split windows share the item budget and skip previously hydrated IDs', async t => {
+  const { config } = setup(t), calls = [], evidence = [];
+  config.limits.maxItems = 3;
+  const items = Array.from({ length: 4 }, (_, i) => adoItem(i + 1));
+  for (const item of items.slice(2)) item.fields['System.CreatedDate'] = '2026-10-08T13:00:00Z';
+  let queryCount = 0;
+  const request = async (endpoint, body) => {
+    calls.push({ endpoint, body });
+    if (endpoint === 'workitemsbatch') return { value: items.filter(i => body.ids.includes(i.id)) };
+    if (++queryCount === 2) throw new PilotError('query-limit', 'synthetic query limit');
+    return { asOf: '2026-10-09T01:00:00Z',
+      workItems: (queryCount === 1 ? [] : queryCount === 3 ? [1, 1, 2] : [2, 3, 4]).map(id => ({ id })) };
+  };
+  await assert.rejects(collectAdo(config, config.window, async e => evidence.push(e), 'created', request),
+    e => e.code === 'partial');
+  assert.deepEqual(evidence.map(e => e.source.recordId), ['1', '2', '3']);
+  assert.deepEqual(calls.filter(c => c.endpoint === 'workitemsbatch').map(c => c.body.ids), [[1, 2], [3]]);
+  assert.equal(calls.length, 6);
+  assert.ok(calls.filter(c => c.endpoint === 'wiql').slice(1)
+    .every(c => c.body.query.includes("ASOF '2026-10-09T01:00:00Z'")));
 });
 test('ADO limit splits the half-open window at one stable asOf', async t => {
   const { config } = setup(t);

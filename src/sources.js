@@ -126,9 +126,10 @@ export async function collectAdo(config, window, emit, lane = 'created', transpo
     }
     const ids = [...new Set(candidates.workItems.map(item => item.id))].filter(id => !seen.has(id));
     requireThat(ids.every(id => Number.isSafeInteger(id) && id > 0), 'Invalid ADO candidate IDs', 'failed-source');
-    budget.item(ids.length);
-    for (let offset = 0; offset < ids.length; offset += 200) {
-      const batch = ids.slice(offset, offset + 200);
+    const selected = ids.slice(0, budget.items);
+    budget.item(selected.length);
+    for (let offset = 0; offset < selected.length; offset += 200) {
+      const batch = selected.slice(offset, offset + 200);
       budget.call();
       const result = await request('workitemsbatch', { ids: batch, asOf: snapshot, errorPolicy: 'Fail', $expand: 'Relations' });
       requireThat(Array.isArray(result.value) && result.value.length === batch.length &&
@@ -144,6 +145,7 @@ export async function collectAdo(config, window, emit, lane = 'created', transpo
         seen.add(item.id);
       }
     }
+    requireThat(selected.length === ids.length, 'Item budget exhausted; coverage is partial', 'partial');
   }
   // A zero-result seed establishes one snapshot before potentially splitting a large interval.
   budget.call();

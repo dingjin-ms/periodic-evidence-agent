@@ -10,6 +10,7 @@ import { agencyTaskId, requireAgencyQualification, reserveAgencyRequest, recordA
 import { requireThat, hash, json, now, utc, uuid, positive, PilotError, safeError } from './common.js';
 import { planImprovement } from './improvements.js';
 import { skillQualificationId, verifyRepositorySkillWorkspace } from './repository-skills.js';
+import { assertRsiProducerNamespace, bindRsiProducer, captureAppRsiOutcome, rsiPolicy } from './rsi-flow.js';
 
 const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed', 'icm:created'];
 const failures = ['blocked-auth', 'unavailable', 'failed-source'];
@@ -37,6 +38,7 @@ function configured(input) {
   requireThat(input.executionMode === 'app-native', 'Select executionMode app-native explicitly');
   identifier(input.agent?.id);
   requireThat(input.statePolicy.accessApproved, 'Local evidence storage approval is required');
+  if (input.rsi?.enabled) assertRsiProducerNamespace(input);
 }
 function directory(config, runId, dry) {
   identifier(runId);
@@ -98,15 +100,18 @@ export function beginApp(config, input) {
   const ledger = new Ledger(directory(config, input.runId, input.dryRun));
   try {
     tables(ledger);
-    const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
-    if (existing) {
-      const run = JSON.parse(existing.body);
-      requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
-    } else {
-      const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
-        limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
-      ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
-    }
+    ledger.transaction(() => {
+      const existing = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(input.runId);
+      if (existing) {
+        const run = JSON.parse(existing.body);
+        requireThat(run.configHash === hash(json(config)) && json(run.input) === json(input), 'Run identity conflict');
+      } else {
+        const run = { ...input, input, agentId: config.agent.id, configHash: hash(json(config)), window: config.window,
+          limits: { maxItems: limits.maxItems, maxCalls: limits.maxCalls }, startedAt: now(), executionMode: 'app-native' };
+        ledger.db.prepare('INSERT INTO app_runs VALUES(?,?)').run(input.runId, json(run));
+      }
+      bindRsiProducer(config, ledger, 'app-flow', input.runId);
+    });
     return appStatus(ledger, input.runId);
   } finally { ledger.close(); }
 }
@@ -238,11 +243,14 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   'Inherited checkpoint no longer reconstructs the recorded examination offset', 'blocked-reconciliation');
   const returned = pass.startsWith('workiq')
     ? Math.max(stats.returned, continuation?.returnedRecords ?? 0)
-    : calls.reduce((n, c) => n + (c.response?.workItems?.length ?? 0), 0);
+    : calls.reduce((n, c) => n + (Array.isArray(c.response?.workItems) ? c.response.workItems.length : 0), 0);
+  const adoReturnedIds = new Set(pass.startsWith('ado')
+    ? calls.flatMap(c => Array.isArray(c.response?.workItems) ? c.response.workItems.map(item => item?.id) : []) : []);
+  const adoRetainedIds = new Set(evidence.map(({ record }) => Number(record.source.recordId)));
   requireThat(currentCalls.length <= run.limits.maxCalls, 'Imported responses exceed approved read-call limit', 'blocked-budget');
   const examined = pass.startsWith('workiq')
-    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : Math.min(returned, run.limits.maxItems);
-  if (identityVerified && returned > local.limits.maxItems) {
+    ? Math.max(stats.examined, continuation?.examinedRecords ?? 0) : evidence.length;
+  if (pass.startsWith('workiq') && identityVerified && returned > local.limits.maxItems) {
     state = 'partial'; cursor = null; nextRequest = null;
     budgetStop = true;
     error = { code: 'partial', message: 'Response exceeds remaining examined-item budget; extra returned records are unexamined' };
@@ -251,7 +259,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
   return { evidence, contexts, result: { pass, state, error, cursor, nextRequest: error?.code === 'awaiting-receipt' ? nextRequest : null,
     readCalls: currentCalls.length, examinedRecords: examined - inheritedExamined, evidenceCount: evidence.length,
     returnedRecords: returned - (continuation?.returnedRecords ?? 0),
-    ...(!pass.startsWith('workiq') ? { returnedRecords: returned } : {
+    ...(!pass.startsWith('workiq') ? { returnedRecords: returned,
+      duplicateReturnedIds: returned - adoReturnedIds.size, examinationBasis: 'hydrated-valid-records' } : {
       cumulativeReturnedRecords: returned, cumulativeExaminedRecords: examined,
       inheritedReadCalls: inherited.length, inheritedExaminedRecords: inheritedExamined,
       inheritedBufferedRecords: continuation ? continuation.returnedRecords - inheritedExamined : 0,
@@ -265,7 +274,8 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
       limitations: ['No historical snapshot or complete edit history', 'No delta/watermark optimization established',
         'Coverage requires all roots and replies, including older roots', 'Absence is not a deletion signal']
     }),
-    unexaminedReturnedRecords: returned - examined,
+    unexaminedReturnedRecords: pass.startsWith('workiq') ? returned - examined
+      : [...adoReturnedIds].filter(id => !adoRetainedIds.has(id)).length,
     provenance: run.provenance === 'synthetic' ? 'synthetic' : directWorkiqVerified ? 'workiq-cli-verified' : directAdoVerified ? 'authenticated-source' : 'app-tool-reported',
     execution: directWorkiqVerified ? 'local-workiq-cli-stdio' : directAdoVerified ? 'delegated-source-adapter' : 'external-app-tool',
     identityVerification: directWorkiqVerified ? 'cli-fetch-verified-object-id-and-UPN' : directAdoVerified ? 'adapter-verified-tenant-and-object-id; UPN is configured binding' : 'validated-app-reported-principal',
@@ -559,6 +569,20 @@ export function appStatus(ledger, runId) {
     summaryPath: join(ledger.directory, `${runId}-summary.json`) };
   writeFileSync(summary.summaryPath, json(summary), { mode: 0o600 });
   return summary;
+}
+export function endApp(config, ledger, runId) {
+  return ledger.transaction(() => {
+    const summary = appStatus(ledger, runId);
+    if (!rsiPolicy(config).enabled) return { ...summary, rsi: { state: 'disabled' } };
+    return { ...summary, rsi: captureAppRsiOutcome(config, ledger, runId, summary) };
+  });
+}
+export async function finishApp(config, ledger, runId, dependencies = {}) {
+  const result = endApp(config, ledger, runId);
+  if (!config.rsi?.automation) return result;
+  const { runRsiPending } = await import('./rsi-execution.js');
+  const execution = await runRsiPending(config, ledger, { runId }, dependencies);
+  return { ...result, rsi: { ...endApp(config, ledger, runId).rsi, execution } };
 }
 export function listAppRuns(config) {
   configured(config);

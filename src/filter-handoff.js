@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { withRsiWorker } from './rsi-flow.js';
 import {
   exclusions, hash, json, readJson, requireThat, utc, validateRecord
 } from './common.js';
@@ -238,6 +239,8 @@ export async function acceptFilterProposerHandoff(config, ledger, input, {
   }
   const prepared = prepareFilterProposerHandoff(config, ledger, input, { intent });
   if (!execute) return { state: 'prepared', ...prepared };
-  const result = await dispatch(config, ledger, prepared.assignment.id, dispatchDependencies);
-  return { state: result.outcome, ...prepared, result };
+  const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
+    () => dispatch(config, ledger, prepared.assignment.id, dispatchDependencies),
+    { kind: 'filter-handoff', handoff: input, filter: prepared.filter }, dispatchDependencies.rsi);
+  return { state: result.outcome, ...prepared, result, ...(rsi ? { rsi } : {}) };
 }

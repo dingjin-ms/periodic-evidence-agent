@@ -63,6 +63,29 @@ setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
 See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
 and the `local-fingerprint-benchmark` skill before running it.
 
+## Offline self-improvement qualification
+
+The opt-in `self-improvement` command qualifies one recovery harness and renders
+a source-bound before/after scorecard. It is **not autonomous self-modification**:
+both arms execute the same reviewed current controller, retaining its existing
+recovery capabilities. Equal correct results mean `harness-qualified` and
+`no-demonstrated-benefit`, not an improvement in live recovery or agent behavior.
+
+The fixed `validation-continuation-v1` fixture exercises the existing
+`prepareLocalValidationContinuation` and `dispatchLocalValidationContinuation`
+helpers against disposable local Git repositories and controller stores. The
+independent parent observes two real native assertion cases and simulated
+publication boundaries. No model, provider, credentials, product repository,
+installed skill, real push or PR is involved.
+
+Start from the inert [policy example](scaffold/self-improvement.example.json).
+It requires explicit finite execution/output/storage limits, a retained state
+owner, and a named child of this checkout's ignored `.state/rsi`. Execution
+approval is false by default. See the [command and ownership contract](APP-NATIVE.md#offline-self-improvement-qualification)
+and the [comparison review requirements](CONTRIBUTING.md#self-improvement-review-evidence).
+This checkout must retain authoritative state through review and follow-up;
+there is no automatic cleanup, archive transfer, candidate promotion or rollout.
+
 ## Devbox repository setup
 
 This optional full product-development setup is not a prerequisite for the
@@ -239,9 +262,10 @@ loading this project; no path to a previous Copilot session is needed.
 
 ## Independent agents and contracts
 
-The three top-level entrypoints are `evidence-collector`, `evidence-filter` and
-`evidence-proposer`. FILTER delegates to the coordinator/planner procedures;
-Proposer selects the configured repository-owner procedure. These packages do
+The four top-level entrypoints are `evidence-collector`, `evidence-filter`,
+`evidence-proposer` and `evidence-rsi`. FILTER delegates to the coordinator/planner procedures;
+Proposer selects the configured repository-owner procedure. RSI inspects flow
+artifacts and proposes changes to the agent system itself. These packages do
 not create additional agents, daemons, permissions or execution budgets.
 
 ```powershell
@@ -249,6 +273,7 @@ npm run pilot -- agents
 npm run pilot -- agent collector help
 npm run pilot -- agent filter help
 npm run pilot -- agent proposer help
+npm run pilot -- agent rsi help
 npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json
 ```
 
@@ -257,7 +282,7 @@ existing helper with unchanged arguments, input schemas, defaults and guards.
 Discovery returns versioned definitions with skill/procedure hashes, input and
 output expectations, supported operations and resumption policy. Unknown roles
 or cross-role operations fail before configuration/state access.
-All three roles can inspect the same app-native run with `app-runs` and
+All four roles can inspect the same app-native run with `app-runs` and
 `app-status --run RUN_ID`; the legacy `reconcile` helper inspects the standalone
 SDK ledger, not an app-native run.
 
@@ -275,6 +300,29 @@ exact-clean-HEAD publication guard. A blocked/uncertain attempt is preserved,
 never reset or blindly redispatched. Source/provider transports, held review,
 dispatch permissions and continuation authorization remain separate gates.
 
+With an explicitly enabled `rsi` policy, proposer controllers capture immutable
+success/failure outcomes and return a post-flow `evidence-rsi` handoff.
+App-native flow owners use `app-end`, including partial and no-candidate runs.
+An approved host invokes the skill; opt-in `rsi.automation` uses either the
+existing restricted native host or providerless continuations in the current
+Copilot App (`executionMode: app-hosted`), commits an isolated candidate and
+independently compares baseline/candidate executions. A pinned app-role plan
+composes the existing role commands and durable assertions; it does not need a
+separate whole-flow executor. Actual app-host continuation remains unqualified
+until exercised operationally; offline simulated responses are not a live run.
+See [app-hosted RSI](APP-NATIVE.md#app-hosted-rsi-continuations). Without that policy,
+the handoff remains capture-only. RSI has durable claim/proposal/result and draft-reservation operations,
+with no duplicate PR creation authorized after an uncertain response. See the
+[end-of-flow RSI contract](APP-NATIVE.md#end-of-flow-rsi-skill).
+The existing offline current/current evaluator is a separate qualification
+building block, not evidence that a proposed change improves the complete flow.
+Large app transport receipts use hash-bound references to the original producer
+events when an inline observation would exceed its bound. Receipts are available
+through bounded, expiring pages without copying or truncating the original data.
+The observation cap remains 1 MiB; metadata that exceeds it still blocks handoff.
+This repairs the oversized-event handoff mechanism, not historical runs or live
+qualification. Local ingestion gains do not establish full-loop productivity.
+
 For an already-authored candidate, the roles can consume genuine saved evidence
 and decisions before a separately authorized validation-only continuation:
 `agent collector replay-evidence`, `agent filter replay-review`, then
@@ -287,6 +335,7 @@ help/status output cannot substitute. See
 | Procedure / project skill | Responsibility | Durable handoff |
 |---|---|---|
 | `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
+| `evidence-rsi` | Inspect flow outcomes and propose agent-system fixes/improvements | Pinned observations, claims, proposals and draft receipts |
 | `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
 | `evidence-improvement-planner` | Aggregate eligible evidence, discover/link coverage and select a qualified repository skill | Versioned areas-to-improve and test-coverage plans |
 | `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |

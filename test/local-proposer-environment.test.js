@@ -3,10 +3,45 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { command, minimalEnvironment, localProposerEnvironment } from '../src/workers.js';
+import { defineTool, restrictedSession } from '../src/runtime.js';
+import { ToolSet, defineTool as sdkDefineTool } from '@github/copilot-sdk';
 
 const names = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 const synthetic = Object.fromEntries(names.map(name => [name, `synthetic-${name}`]));
+
+test('offline CLI and validation worker bootstrap do not resolve the unused model SDK', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'offline-sdk-bootstrap-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const preload = join(root, 'reject-sdk.mjs');
+  writeFileSync(preload, `
+import { registerHooks } from 'node:module';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === '@github/copilot-sdk') throw new Error('unused-model-sdk-bootstrap');
+  return nextResolve(specifier, context);
+} });
+`);
+  for (const args of [
+    [fileURLToPath(new URL('../src/cli.js', import.meta.url)), 'help'],
+    ['--input-type=module', '-e',
+      `await import(${JSON.stringify(new URL('../src/workers.js', import.meta.url).href)});`]
+  ]) {
+    await command(process.execPath, ['--import', pathToFileURL(preload).href, ...args],
+      process.cwd(), 10000, minimalEnvironment());
+  }
+});
+
+test('deferred SDK factories retain the ESM ToolSet identity and actual tool definitions', () => {
+  const options = { description: 'Synthetic tool', parameters: {
+    type: 'object', properties: {}, additionalProperties: false
+  }, handler: () => 'fixture' };
+  assert.deepEqual(defineTool('fixture', options), sdkDefineTool('fixture', options));
+  const session = restrictedSession([{ name: 'fixture' }]);
+  assert.ok(session.availableTools instanceof ToolSet);
+  assert.deepEqual(session.availableTools.toArray(), ['custom:fixture']);
+  assert.equal(session.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
+});
 
 test('local proposer forwards only documented model credentials without changing native filtering', () => {
   const source = { PATH: 'synthetic-path', ...synthetic, COPILOT_HMAC_KEY: 'not-forwarded',

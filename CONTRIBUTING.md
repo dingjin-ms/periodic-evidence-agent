@@ -20,7 +20,46 @@ Use Node 24 and Git. `npm ci --ignore-scripts`, `npm test`, `npm run demo` and
 temporary Git repos and execute synthetic validation programs, but must not
 acquire credentials, call services or launch product workers. Add focused
 regressions for behavioral changes and run the complete offline suite before
-handoff. CI uses a read-only token and no live secrets or account login.
+handoff. Test CI uses a read-only token and no live secrets or account login.
+The separate failure notifier may only comment on PRs and create failure issues;
+it never checks out or executes a tested revision or downloads its artifacts.
+
+## Master CI and merge protection
+
+`Offline pilot checks` runs for pushes and PR merge candidates. Its final
+`offline` job fails unless every test group succeeds, including when a group
+fails, is cancelled or is skipped. Keep this job unconditional and its name
+unique. A green PR run is not proof that a later master run cannot fail:
+Windows process cleanup and other timing-sensitive tests still need root-cause
+fixes, not retries until green or weakened assertions.
+
+A repository administrator must configure **server-side** protection for
+`master`: require a PR, require the GitHub Actions `offline` status check,
+require the branch to be up to date before merging, require review and
+resolution of review conversations, and apply the rules without bypasses
+(including administrators). Disallow force pushes and branch deletion.
+Revalidate after head or base changes. If a merge queue is introduced, first
+add the `merge_group` trigger to the test workflow so queued merge candidates
+also produce the required check.
+
+Check that `gh api repos/OWNER/REPO/branches/master` reports `protected: true`
+and inspect the configured rule; workflow YAML alone cannot enforce merging.
+Private repositories need a GitHub plan supporting protected branches.
+If settings are unavailable, the owner must upgrade or move the repository
+to an approved organization/plan. Do not make a private repository public as
+a workaround. Until protection is enabled, "do not merge red/pending CI" is
+only a contributor policy, not a technical guarantee.
+
+Once `offline-failure.yml` is merged into the default branch, failed or timed-out
+offline PR runs comment on the still-current open `master` PR and mention
+`@dingjin-ms`; failed master pushes create an issue with the same mention.
+Each alert links the exact run, SHA and attempt without copying logs. Duplicate
+delivery of the same run/attempt is suppressed; stale PR heads, successful runs,
+cancelled runs and topic-branch pushes do not generate alerts. API errors fail
+the notifier rather than claim delivery. This notifier is not a required merge
+check and does not retry, merge, revert or automatically close failure issues.
+The recipient must enable the desired GitHub/email/mobile notification delivery
+in their own GitHub settings; a posted mention does not prove delivery.
 
 The reviewed-handoff integration flow is not a source connector test. Keep its
 fixture source-neutral (`kind: fixture`, `provenance: synthetic`) and keep the

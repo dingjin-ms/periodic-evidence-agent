@@ -159,7 +159,7 @@ test('successor native stage delivers a fresh private temp directory to the actu
   ledger.operation('fixture-successor', job.id, 'authoring-successor-from-diagnostic', {});
   const prepared = await prepareValidation(config, job, repo, revision);
   const results = await runValidation(config, ledger, job, repo, revision, undefined, undefined, prepared);
-  assert.equal(results[0].status, 'passed');
+  assert.equal(results[0].status, 'passed', json(results));
   const artifact = JSON.parse(readFileSync(results[0].artifactRefs[0]));
   const fresh = artifact.telemetry.successorNative;
   assert.equal(fresh.initiallyAbsent, true);

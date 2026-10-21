@@ -986,7 +986,7 @@ test('validation records real terminal command execution at exact fixture HEAD a
     executable: process.execPath, args: ['--input-type=module', '-e',
       "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,1)"], timeoutMs: 10000 }];
   const result = await runValidation(config, ledger, current, repo, isolated.baseRevision);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed', json(result));
   assert.equal(result[0].sourceRevision, isolated.baseRevision);
   assert.ok(existsSync(result[0].artifactRefs[0]));
   await assert.rejects(runValidation(config, ledger, current, repo, isolated.baseRevision), /already started/);

@@ -34,6 +34,12 @@ function samePath(left, right) {
     ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+function requireRsiEntry(info) {
+  requireThat(!info.isSymbolicLink() &&
+    (info.isDirectory() || (info.isFile() && info.nlink === 1)),
+  'RSI linked or unsupported path refused', 'blocked-rsi-root');
+}
+
 export function inspectRsiPath(root, path, { missing = false, directory = false } = {}) {
   const target = resolve(path), base = resolve(root), rel = relative(base, target);
   requireThat(rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel),
@@ -46,9 +52,7 @@ export function inspectRsiPath(root, path, { missing = false, directory = false 
       requireThat(missing, 'RSI path is unavailable', 'blocked-rsi-root');
       continue;
     }
-    requireThat(!info.isSymbolicLink() &&
-      (info.isDirectory() || (info.isFile() && info.nlink === 1)),
-    'RSI linked or unsupported path refused', 'blocked-rsi-root');
+    requireRsiEntry(info);
     canonical = current;
   }
   // The deepest existing component's canonical path includes every inspected ancestor.
@@ -377,12 +381,15 @@ export function rsiDirectoryBytes(root) {
   if (!existsSync(root)) return 0;
   let total = 0;
   function visit(path) {
-    inspectRsiPath(root, path);
     const info = lstatSync(path);
+    requireRsiEntry(info);
+    // Canonicalize every enumerated descendant to detect ancestor swaps without rescanning ancestors.
+    requireThat(samePath(realpathSync.native(path), path),
+      'RSI canonical path alias refused', 'blocked-rsi-root');
     if (info.isDirectory()) for (const name of readdirSync(path)) visit(join(path, name));
     else total += info.size;
   }
-  visit(root);
+  visit(resolve(root));
   return total;
 }
 

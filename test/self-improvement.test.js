@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync
+  readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -153,12 +155,42 @@ test('RSI directory accounting canonicalizes each inspected path once without ca
   const file = join(directory, 'value');
   writeFileSync(file, 'before');
   const canonicalize = t.mock.method(realpathSync, 'native');
+  const metadata = t.mock.method(fs, 'lstatSync');
+  syncBuiltinESMExports();
+  t.after(() => { metadata.mock.restore(); syncBuiltinESMExports(); });
   assert.equal(rsiDirectoryBytes(root), 6);
   assert.equal(canonicalize.mock.callCount(), 6, 'Canonicalization must not multiply with ancestor depth');
+  assert.equal(metadata.mock.callCount(), 6, 'Metadata checks must not multiply with ancestor depth');
   canonicalize.mock.resetCalls();
+  metadata.mock.resetCalls();
   writeFileSync(file, 'changed bytes');
   assert.equal(rsiDirectoryBytes(root), 13, 'Every scan must observe current file sizes');
   assert.equal(canonicalize.mock.callCount(), 6);
+  assert.equal(metadata.mock.callCount(), 6);
+});
+
+test('RSI accounting rejects an ancestor replaced by a junction during enumeration', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-swap-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const tree = join(root, 'tree'), directory = join(tree, 'deep'), target = join(root, 'target');
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(target);
+  writeFileSync(join(directory, 'value'), 'owned');
+  writeFileSync(join(target, 'value'), 'foreign');
+  const enumerate = fs.readdirSync;
+  const enumeration = t.mock.method(fs, 'readdirSync', path => {
+    const names = enumerate(path);
+    if (path === directory) {
+      renameSync(directory, `${directory}-original`);
+      symlinkSync(target, directory, 'junction');
+    }
+    return names;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { enumeration.mock.restore(); syncBuiltinESMExports(); });
+  assert.throws(() => rsiDirectoryBytes(tree),
+    error => error.code === 'blocked-rsi-root');
+  assert.equal(readFileSync(join(target, 'value'), 'utf8'), 'foreign');
 });
 
 test('RSI accounting still refuses nested links and canonical aliases including missing targets', t => {

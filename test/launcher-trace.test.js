@@ -4,15 +4,20 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { nativeCommand } from '../src/native-command.js';
 import { minimalEnvironment, command } from '../src/workers.js';
 
-function waitForProcessExit(pid, timeout = 5000) {
-  return command('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
-    fileURLToPath(new URL('./fixtures/wait-for-process-exit.ps1', import.meta.url)),
-    '-ProcessId', String(pid), '-TimeoutMilliseconds', String(timeout)], process.cwd(), 15000, minimalEnvironment());
+async function waitForProcessExit(pid) {
+  try {
+    return await command('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      fileURLToPath(new URL('./fixtures/wait-for-process-exit.ps1', import.meta.url)),
+      '-ProcessId', String(pid)], process.cwd(), 15000, minimalEnvironment());
+  } catch (error) {
+    error.message += `\nExit-barrier diagnostics: ${JSON.stringify({
+      code: error.code, signal: error.signal, killed: error.killed, stdout: error.stdout, stderr: error.stderr
+    })}`;
+    throw error;
+  }
 }
 
 for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher traces ${mode} without changing native behavior`, async t => {
@@ -56,21 +61,3 @@ for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher trac
   } else assert.ok(trace.some(row => row.point === 'command-returned' && row.childPid > 0));
   assert.throws(() => process.kill(trace[0].pid, 0), error => error.code === 'ESRCH');
 });
-
-test('launcher cleanup rejects an active process and accepts its completed exit',
-  { skip: process.platform !== 'win32' }, async t => {
-    const root = mkdtempSync(join(tmpdir(), 'launcher-exit-'));
-    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
-      { cwd: root, stdio: 'ignore', windowsHide: true });
-    const closed = once(child, 'close');
-    t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
-      await closed;
-      rmSync(root, { recursive: true, force: true });
-    });
-    await assert.rejects(waitForProcessExit(child.pid, 0), error => /did not signal exit/.test(error.stderr));
-    child.kill();
-    await closed;
-    await waitForProcessExit(child.pid);
-    rmSync(root, { recursive: true, force: true });
-  });

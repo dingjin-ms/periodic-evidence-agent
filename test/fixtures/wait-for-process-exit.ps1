@@ -1,6 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateRange(1, 2147483647)][int] $ProcessId,
-    [ValidateRange(0, 5000)][int] $TimeoutMilliseconds = 5000
+    [Parameter(Mandatory)][ValidateRange(1, 2147483647)][int] $ProcessId
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,4 +43,10 @@ public static class FixtureProcessExit
     }
 }
 '@
-[FixtureProcessExit]::Wait($ProcessId, $TimeoutMilliseconds)
+# Exercise the negative case in this already initialized host, not another cold launch.
+try {
+    [FixtureProcessExit]::Wait($PID, 0)
+    throw 'The exit barrier incorrectly accepted its own active process'
+}
+catch [TimeoutException] {}
+[FixtureProcessExit]::Wait($ProcessId, 5000)

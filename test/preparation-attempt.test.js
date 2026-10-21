@@ -362,7 +362,7 @@ for (const stage of ['dependencies', 'compile']) {
     });
 }
 
-test('compile full-verification cancellation never publishes its unverified receipt',
+test('compile content-capture cancellation never publishes its unverified receipt',
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
     // The controller canonicalizes aliases, including hosted Windows short temp paths.
@@ -370,7 +370,7 @@ test('compile full-verification cancellation never publishes its unverified rece
     ctx.options.attemptParent = ctx.parent;
     const attemptParent = realpathSync.native(ctx.parent);
     const preload = join(ctx.root, 'hold-verification.mjs');
-    // Hold a real controller read inside verification, not just its asynchronously observed start event.
+    // Hold the actual single-pass content read, not just its asynchronously observed start event.
     writeFileSync(preload, `
 import fs from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
@@ -385,8 +385,7 @@ if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThre
       const root=join(${json(attemptParent)},relative(${json(attemptParent)},path).split(sep)[0]);
       const events=read(join(root,'progress.jsonl'),'utf8').trim().split('\\n').map(JSON.parse);
       const active=events.at(-1);
-      if(active.stage==='verification-full'&&active.phase==='start'&&
-        events.some(event=>event.stage==='compile-output-verification'&&event.phase==='start')){
+      if(active.stage==='compile-output-capture'&&active.phase==='start'){
         fs.writeFileSync(${json(ctx.readyPath + '.tmp')},JSON.stringify(active));
         fs.renameSync(${json(ctx.readyPath + '.tmp')},${json(ctx.readyPath)});
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);
@@ -399,7 +398,7 @@ if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThre
 }
 `);
     const controller = new AbortController();
-    let inCompileVerification = false, interruptedId = null, publishedBeforeCancel = null;
+    let interruptedId = null, publishedBeforeCancel = null;
     let observedRead = null, outcome;
     const previousOptions = process.env.NODE_OPTIONS;
     process.env.NODE_OPTIONS = [previousOptions,
@@ -414,9 +413,7 @@ if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThre
       outcome = await runPreparationAttempt({
         ...ctx.options, signal: controller.signal,
         onProgress: event => {
-          if (event.stage === 'compile-output-verification' && event.phase === 'start')
-            inCompileVerification = true;
-          if (inCompileVerification && event.stage === 'verification-full' && event.phase === 'start')
+          if (event.stage === 'compile-output-capture' && event.phase === 'start')
             interruptedId = event.id;
         }
       });
@@ -504,7 +501,7 @@ test('a case-aliased concurrent runner cannot steal the active controller lease'
     await assertRollback(outcome, ctx);
   });
 
-for (const stage of ['compile', 'verification-full']) {
+for (const stage of ['compile', 'compile-output-capture']) {
   test(`${stage} budget interrupts its active phase without accepting partial preparation`,
     { skip: process.platform !== 'win32' }, async t => {
       const ctx = await fixture(t);

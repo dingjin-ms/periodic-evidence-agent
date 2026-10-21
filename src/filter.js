@@ -141,7 +141,7 @@ export function validateTitleDecisions(index, decisions, indexSha256) {
     else requireThat(decision.disposition !== 'no-title', 'Present title cannot be classified no-title', 'invalid-record');
     if (decision.disposition === 'screen-out') requireThat(exclusions.includes(decision.exclusionType) &&
       text(decision.titleQuote) && entry.title.includes(decision.titleQuote),
-    'Title exclusion requires an existing typed reason and exact title quote', 'invalid-record');
+    `Title exclusion requires an existing typed reason and exact title quote (${entry.source.recordId}/${decision.evidenceId})`, 'invalid-record');
     else requireThat(decision.exclusionType === null && decision.titleQuote === null,
       'Retained decisions cannot assert title exclusions', 'invalid-record');
   }

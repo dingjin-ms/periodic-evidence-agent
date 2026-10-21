@@ -344,6 +344,12 @@ export function reserveAgencyRequest(config, ledger, taskId, input, manifest = n
   positive(config.agency.monitorCadenceSeconds, 'monitorCadenceSeconds');
   tables(ledger);
   return ledger.transaction(() => {
+    const localFilterTable = ledger.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_filter_receipts'").get();
+    requireThat(!localFilterTable || !ledger.db.prepare(
+      "SELECT 1 FROM local_filter_receipts WHERE task_id=? AND kind='request'").get(taskId),
+    'A local FILTER attempt already owns this task; reconcile instead of switching executors',
+    'blocked-reconciliation');
     requireThat(!inspectAgencyRequest(ledger, taskId), 'Agency request already reserved; reconcile, never resubmit', 'blocked-reconciliation');
     const stopped = ledger.db.prepare(`SELECT 1 FROM agency_requests r JOIN agency_receipts s ON s.task_id=r.task_id
       WHERE r.budget_id=? AND s.kind='submission' AND json_extract(s.body,'$.state') IN ('rejected','uncertain') LIMIT 1`)

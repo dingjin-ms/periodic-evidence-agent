@@ -56,6 +56,35 @@ function prepare(store) {
   return prepareSelfImprovementExperiment(store, { observationId: observation.id, observationVersion: 1 });
 }
 
+function cliError(stderr) {
+  const sqliteWarning = /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?/gm;
+  return JSON.parse(stderr.replace(sqliteWarning, '').trim());
+}
+
+test('RSI CLI error parser accepts known SQLite warnings around structured errors', () => {
+  const error = { code: 'blocked-scope', message: 'Rejected fixture operation' };
+  const warning = '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n' +
+    '(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  const plain = JSON.stringify(error);
+  const stderr = warning + warning.replace('123', '456') + JSON.stringify(error, null, 2) + '\n';
+  assert.deepEqual(cliError(plain), error);
+  assert.deepEqual(cliError(stderr), error);
+  assert.deepEqual(cliError(stderr.replaceAll('\n', '\r\n')), error);
+  assert.deepEqual(cliError(plain + '\n' + warning), error);
+  assert.deepEqual(cliError(warning.split('\n')[0] + '\n' + plain), error);
+});
+
+test('RSI CLI error parser rejects unknown diagnostics, malformed JSON and extra errors', () => {
+  const error = JSON.stringify({ code: 'blocked-scope' });
+  for (const stderr of [
+    `unexpected diagnostic\n${error}`,
+    `(node:123) ExperimentalWarning: different warning\n${error}`,
+    '{',
+    `${error}\n${error}`,
+    ''
+  ]) assert.throws(() => cliError(stderr), SyntaxError);
+});
+
 test('RSI policy is opt-in, strictly bounded and rejects product configuration', () => {
   const policy = JSON.parse(readFileSync(new URL('../scaffold/self-improvement.example.json', import.meta.url)));
   assert.equal(validateRecord(policy, 'selfImprovementPolicy').executionApproved, false);
@@ -294,16 +323,16 @@ test('RSI CLI rejects role/product/config drift and status bypasses ordinary cre
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).state, 'uninitialized');
   assert.equal(existsSync(root), false);
-  for (const args of [
-    ['agent', 'proposer', 'self-improvement', 'status', '--policy', policyFile],
-    ['self-improvement', 'status', '--policy', policyFile, '--config', 'not-readable.local.json'],
-    ['self-improvement', 'status', '--policy', policyFile, '--policy', policyFile],
-    ['self-improvement', 'rollout', '--policy', policyFile],
-    ['self-improvement', 'init', '--policy', policyFile, '--resume']
+  for (const [args, code] of [
+    [['agent', 'proposer', 'self-improvement', 'status', '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'status', '--policy', policyFile, '--config', 'not-readable.local.json'], 'blocked-scope'],
+    [['self-improvement', 'status', '--policy', policyFile, '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'rollout', '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'init', '--policy', policyFile, '--resume'], 'blocked-reconciliation']
   ]) {
     result = cli(args);
     assert.equal(result.status, 1);
-    assert.ok(JSON.parse(result.stderr.trim()).code);
+    assert.equal(cliError(result.stderr).code, code, result.stderr);
     assert.equal(existsSync(root), false);
   }
   result = cli(['self-improvement', 'init', '--policy', policyFile]);

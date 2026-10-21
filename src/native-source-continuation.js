@@ -83,6 +83,8 @@ export function verifySourceRepairApproval(detail) {
   'blocked-owner');
 }
 export async function verifyNativeSourceSnapshot(detail) {
+  if (detail.sourcePreparationRecovery)
+    return verifyNativeSourceSnapshot(detail.sourcePreparationRecovery.originalContinuation);
   verifySourceRepairApproval(detail);
   const { priorJob: job, priorResult: result, authorization: auth } = detail;
   requireThat(await git(job.workspace, ['rev-parse', 'HEAD']) === auth.repairedRevision &&
@@ -106,6 +108,10 @@ export async function verifyNativeSourceSnapshot(detail) {
   }
 }
 export function verifyNativeSourceAuthority(config, detail) {
+  if (detail.sourcePreparationRecovery) {
+    verifyNativeSourcePreparationRecovery(config, detail);
+    return;
+  }
   const auth = detail.authorization, previous = detail.previousConfig;
   requireThat(detail.nativeSourceCorrection === true &&
     !detail.nativePreparationCorrection && !detail.preparationRecovery &&
@@ -141,6 +147,111 @@ export function verifyNativeSourceAuthority(config, detail) {
   'Source repair cannot expand beyond the original candidate and failed unit file',
   'blocked-scope');
   verifySourceRepairApproval(detail);
+}
+export function verifyNativeSourcePreparationFailure(job, result, operations, failure, profileSha256) {
+  const gate = result?.validation?.[0], output = failure?.output;
+  requireThat(job?.state === 'blocked' && result?.outcome === 'blocked' &&
+    result.assignmentId === job.id && result.attemptId === job.session_id &&
+    result.draftPR === null && result.remoteValidation.length === 0 &&
+    result.toolUsage.used === 0 && result.toolUsage.rounds.length === 0 &&
+    Object.values(result.toolUsage.byTool).every(value => value === 0) &&
+    result.skillExecution?.status === 'succeeded' &&
+    result.validation.length === 1 && result.validationAttempts.length === 1 &&
+    result.validationAttempts[0].round === 0 &&
+    json(result.validationAttempts[0].validation) === json(result.validation) &&
+    gate.status === 'blocked' && gate.blockedReason === 'validation-workspace-unavailable' &&
+    gate.attemptCount === 1 && gate.artifactRefs.length === 1 &&
+    gate.sourceRevision === result.sourceRevision &&
+    operations.length === 4 && new Set(operations.map(row => row.kind)).size === 4 &&
+    operations.every(row => ({
+      validation: 'blocked', 'continued-from-validation-failure': 'prepared',
+      'reuse-authored-revision': 'completed', 'declarative-registration-continuation': 'completed'
+    })[row.kind] === row.state) &&
+    failure.status === 'blocked' && failure.blockedReason === gate.blockedReason &&
+    failure.revision === result.sourceRevision && failure.gateId === gate.gateId &&
+    failure.attempt === 0 && failure.profileSha256 === profileSha256 &&
+    json(failure.preparationTimings?.map(row => [row.id, row.status])) ===
+      json([['source-check', 'passed'], ['worktree-create', 'passed'], ['checkout', 'blocked']]) &&
+    output?.exitCode === null && output.timeout === false && output.stdout === '' &&
+    !output.nativeReceipt && !output.unitDiagnostics && !output.inspectionError &&
+    !output.cleanupError && !output.residualPaths &&
+    output.preparationFailure?.stage === 'checkout' &&
+    output.preparationFailure.reason === 'command-timeout' &&
+    output.preparationFailure.timeout === true &&
+    output.preparationFailure.ownedProcessesExited === true &&
+    output.preparationFailure.containmentFailure === false,
+  'Source preparation recovery requires its sealed zero-native checkout timeout and completed cleanup',
+  'blocked-reconciliation');
+}
+export function nativeSourceValidationRepository(repo, detail) {
+  const recovery = detail.sourcePreparationRecovery;
+  if (!recovery) return repo;
+  const original = recovery.originalContinuation, auth = detail.authorization;
+  const preparation = JSON.parse(original.operations.find(row =>
+    row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
+  requireThat(json(auth.preparationStrategy) === json(preparation?.authorization?.preflight),
+    'Source preparation must retain the historical reviewed strategy', 'blocked-reconciliation');
+  const proof = pinned(auth.preparationStrategy);
+  const paths = ['ooui', 'packages', 'scripts', 'tools', '.github', '.config', '.buildXL', '.scoper'];
+  requireThat(auth.kind === 'native-source-preparation-recovery' &&
+    proof.format === 'validation-preflight-v1' && proof.status === 'passed' &&
+    proof.assignmentId === detail.priorJob.id &&
+    proof.sourceRevision === original.priorResult.sourceRevision &&
+    proof.baseRevision === detail.priorJob.base_revision &&
+    proof.profileSha256 === repo.validationGates[0].profileSha256 &&
+    proof.preparation?.strategy === 'detached-worktree' &&
+    proof.nativeCaseInvocations === 0 && proof.modelInvocations === 0 &&
+    proof.publicationInvocations === 0 && proof.acceptanceEvidence === false &&
+    json(proof.preparation.sparseCheckoutPaths) === json(paths) &&
+    json(auth.sparseCheckoutPaths) === json(paths) &&
+    (!repo.sparseCheckoutPaths?.length || json(repo.sparseCheckoutPaths) === json(paths)),
+  'Source recovery changes only checkout population, never reuses old-SHA acceptance',
+  'blocked-reconciliation');
+  return { ...repo, sparseCheckoutPaths: [...paths] };
+}
+function verifyNativeSourcePreparationRecovery(config, detail) {
+  const { authorization: auth, previousConfig: previous } = detail;
+  const original = detail.sourcePreparationRecovery.originalContinuation;
+  requireThat(!original?.sourcePreparationRecovery &&
+    detail.nativeSourceCorrection === true &&
+    !detail.nativePreparationCorrection && !detail.preparationRecovery &&
+    auth.kind === 'native-source-preparation-recovery' &&
+    auth.approved === true && auth.authorizedBy === 'user' &&
+    auth.maxInitialModelAttempts === 0 &&
+    auth.previousAssignmentId === detail.priorJob.id &&
+    auth.previousAttemptId === detail.priorJob.session_id &&
+    auth.sourceRevision === detail.priorResult.sourceRevision &&
+    auth.repairedRevision === auth.sourceRevision &&
+    auth.repairedRevision === original?.authorization.repairedRevision &&
+    auth.baseRevision === detail.priorJob.base_revision &&
+    auth.unitFile === original.authorization.unitFile &&
+    auth.nextConfigSha256 === hash(json(config)) &&
+    detail.authorizationSha256 === hash(json(auth)) &&
+    detail.priorResultSha256 === hash(json(detail.priorResult)) &&
+    detail.priorOperationsSha256 === hash(json(detail.operations)) &&
+    previous.stateDirectory === detail.priorStateDirectory &&
+    original.nextStateDirectory === detail.priorStateDirectory &&
+    original.nextAssignmentId === detail.priorJob.id &&
+    original.nextAttemptId === detail.priorJob.session_id &&
+    json({ ...config, stateDirectory: null }) === json({ ...previous, stateDirectory: null }) &&
+    json(detail.priorAssignment) === json(original.priorAssignment) &&
+    detail.priorJob.workspace === original.priorJob.workspace &&
+    detail.priorJob.base_revision === original.priorJob.base_revision &&
+    json(detail.files) === json(original.files) &&
+    json(detail.proposal) === json(original.proposal) &&
+    json(auth.ownerRequest) === json(original.authorization.ownerRequest) &&
+    json(auth.ownerApproval) === json(original.authorization.ownerApproval) &&
+    json(JSON.parse(detail.operations.find(row =>
+      row.kind === 'continued-from-validation-failure')?.detail ?? 'null')) === json(original),
+  'Source preparation recovery must preserve its exact reviewed repair and predecessor',
+  'blocked-authorization');
+  verifyNativeSourceAuthority(previous, original);
+  const repo = config.repositories.find(row => row.id === detail.priorAssignment.repoId);
+  requireThat(auth.failure.path === detail.priorResult.validation[0].artifactRefs[0],
+    'Source preparation failure artifact changed', 'blocked-reconciliation');
+  verifyNativeSourcePreparationFailure(detail.priorJob, detail.priorResult, detail.operations,
+    pinned(auth.failure), repo.validationGates[0].profileSha256);
+  nativeSourceValidationRepository(repo, detail);
 }
 export async function verifyPreparedNativeSource(config, detail, operationId, attemptId) {
   verifyNativeSourceAuthority(config, detail);
@@ -197,6 +308,12 @@ export async function prepareNativeSourceContinuation(config, ledger, id,
         .sort((a, b) => a.path.localeCompare(b.path))
     };
     detail.priorOperationsSha256 = hash(json(detail.operations));
+    if (authorization.kind === 'native-source-preparation-recovery') {
+      const original = JSON.parse(detail.operations.find(row =>
+        row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
+      detail.sourcePreparationRecovery = { originalContinuation: original };
+      detail.proposal = structuredClone(original?.proposal);
+    }
     verifyNativeSourceAuthority(nextConfig, detail);
     await verifyNativeSourceSnapshot(detail);
     requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);

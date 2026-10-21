@@ -3528,8 +3528,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       if (continuation?.preparationRecovery)
         preparedValidation = { ...preparedValidation,
           [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } };
+      const validationRepo = continuation?.sourcePreparationRecovery
+        ? (await import('./native-source-continuation.js')).nativeSourceValidationRepository(
+          repo, continuation) : repo;
       finalValidation = await (dependencies.runValidation ?? runValidation)(
-        config, ledger, current, repo, revision, command, removeValidationPath,
+        config, ledger, current, validationRepo, revision, command, removeValidationPath,
         preparedValidation, proposal.skillExecution ?? null);
       validation = finalValidation;
       requireThat(finalValidation.length > 0,

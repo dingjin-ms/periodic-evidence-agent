@@ -14,9 +14,11 @@ continuation run without refetching captured pages or losing buffered rows.
 Root/reply context and an opt-in modified-time lane are documented in
 [the continuation contract](APP-NATIVE.md#budget-stopped-continuation). Neither
 feature authorizes additional live reads, automatic schedules or a delta feed.
-IcM connector receipts can be replayed **offline** into a separate audit store;
-live connector execution stays blocked pending an explicit timestamp/scope
-contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
+IcM connector receipts can be replayed **offline** into a separate audit store.
+An explicitly approved [incident-created cohort](APP-NATIVE.md#explicit-incident-created-icm-receipts)
+can ingest captured identity/search receipts through `app-append`; helpers do
+not launch its live connector. Default saved-query scope remains fail-closed.
+[Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
 the installed coverage-analysis skill and pinned reference, read source ledgers
 read-only, and cannot authorize product dispatch.
 
@@ -358,6 +360,9 @@ implied. Genuine scanner exclusions remain independent of resolution.
 IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
+The opt-in incident-created receipt path uses its separately approved team,
+S1/S2/S2.5 (API 1/2/25, excluding S0) and UTC window. It is not that saved query,
+does not require its timestamp equivalence and never changes an old run's scope.
 These selectors, the 1JS/Office repo URLs and the field names in
 `scaffold` are integration constraints, not anonymous generic examples or access
 grants. A different deployment needs a reviewed adapter/config change, not a

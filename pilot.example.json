@@ -27,7 +27,7 @@
   },
   "sources": {
     "ado": { "enabled": false, "scopeApproved": false },
-    "icm": { "enabled": false, "scopeApproved": false, "queryId": "599514", "filtersVerified": false, "ownerExport": null },
+    "icm": { "enabled": false, "scopeApproved": false, "queryId": "599514", "filtersVerified": false, "ownerExport": null, "timestampContract": null, "owningTeamId": null, "severity": [1, 2, 25], "top": 5 },
     "workiq": {
       "enabled": false,
       "scopeApproved": false,

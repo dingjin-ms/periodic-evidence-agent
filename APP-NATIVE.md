@@ -1,5 +1,9 @@
 # Independent agents: manual app-hosted pilot
 
+For an ordered operator walkthrough, use the
+[end-to-end RSI runbook](scaffold/RSI-RUNBOOK.md). This document remains the
+detailed command, receipt and continuation reference.
+
 ## Project skills
 
 There are four top-level role entrypoints: `evidence-collector`,

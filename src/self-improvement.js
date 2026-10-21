@@ -38,7 +38,7 @@ export function inspectRsiPath(root, path, { missing = false, directory = false 
   const target = resolve(path), base = resolve(root), rel = relative(base, target);
   requireThat(rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel),
   'RSI path escapes its allocated root', 'blocked-rsi-root');
-  let current = base;
+  let current = base, canonical = null;
   for (const part of ['', ...rel.split(sep).filter(Boolean)]) {
     if (part) current = join(current, part);
     const info = lstatSync(current, { throwIfNoEntry: false });
@@ -49,9 +49,11 @@ export function inspectRsiPath(root, path, { missing = false, directory = false 
     requireThat(!info.isSymbolicLink() &&
       (info.isDirectory() || (info.isFile() && info.nlink === 1)),
     'RSI linked or unsupported path refused', 'blocked-rsi-root');
-    requireThat(samePath(realpathSync.native(current), current),
-      'RSI canonical path alias refused', 'blocked-rsi-root');
+    canonical = current;
   }
+  // The deepest existing component's canonical path includes every inspected ancestor.
+  if (canonical) requireThat(samePath(realpathSync.native(canonical), canonical),
+    'RSI canonical path alias refused', 'blocked-rsi-root');
   if (directory && existsSync(target))
     requireThat(lstatSync(target).isDirectory(), 'RSI directory required', 'blocked-rsi-root');
   return target;

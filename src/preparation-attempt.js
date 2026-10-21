@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync,
 import { join, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { command } from './workers.js';
+import { command } from './command.js';
 import { nativeCommand } from './native-command.js';
 import { Ledger } from './ledger.js';
 import { hash, json, positive, requireThat } from './common.js';

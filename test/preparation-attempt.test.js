@@ -217,6 +217,41 @@ registerHooks({load(url,context,nextLoad){
   return pathToFileURL(preload).href;
 }
 
+test('preparation overlap refusal does not load worker execution before admission',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    const ledger = new Ledger(join(ctx.parent, 'controller'));
+    const name = `preparation-attempt:${hash(realpathSync.native(ctx.source))}`;
+    const owner = ledger.acquire(name);
+    const before = readdirSync(ctx.parent);
+    const marker = 'fixture-worker-execution-import-before-admission';
+    const preload = validationImportFault(ctx, marker);
+    const api = new URL('../src/preparation-attempt.js', import.meta.url).href;
+    try {
+      await assert.rejects(command(process.execPath, ['--import', preload, '--input-type=module', '-e', `
+import {runPreparationAttempt} from ${json(api)};
+try {
+  await runPreparationAttempt(${json(ctx.options)});
+  process.exitCode=1;
+} catch(error) {
+  console.log(JSON.stringify({code:error.code}));
+  process.exitCode=2;
+}
+`], ctx.root, 10000), error => {
+        assert.equal(error.code, 2);
+        assert.deepEqual(JSON.parse(error.stdout), { code: 'overlap' });
+        assert.equal(error.stderr.includes(marker), false);
+        return true;
+      });
+      assert.equal(ledger.db.prepare('SELECT owner FROM locks WHERE name=?').get(name).owner, owner);
+      assert.deepEqual(readdirSync(ctx.parent), before);
+      assertSource(ctx);
+    } finally {
+      ledger.release(name, owner);
+      ledger.close();
+    }
+  });
+
 for (const step of ['clone', 'checkout']) {
   test(`real Git ${step} failure retains only its substep and safe diagnostic without preparing receipts`,
     async t => {

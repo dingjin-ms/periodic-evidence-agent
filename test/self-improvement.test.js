@@ -4,17 +4,17 @@ import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, rmSync, symlinkSync, writeFileSync
+  readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hash, json, uuid, validateRecord } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
-  initializeSelfImprovement, openSelfImprovementStore, persistSelfImprovementArtifact,
+  initializeSelfImprovement, inspectRsiPath, openSelfImprovementStore, persistSelfImprovementArtifact,
   prepareSelfImprovementExperiment, recordSelfImprovementDecision, recordSelfImprovementObservation,
   reserveSelfImprovementEvaluation, selfImprovementOperation, selfImprovementStatus,
-  selfImprovementRoot, selfImprovementWorkload, updateSelfImprovementOperation
+  rsiDirectoryBytes, selfImprovementRoot, selfImprovementWorkload, updateSelfImprovementOperation
 } from '../src/self-improvement.js';
 
 function fixture(t) {
@@ -143,6 +143,42 @@ test('marked mixed namespaces and hardlinked ownership files are refused without
   const linked = files(initialized.root);
   assert.throws(() => openSelfImprovementStore(ctx.policy, ctx.options), /linked or unsupported/);
   assert.deepEqual(files(initialized.root), linked);
+});
+
+test('RSI directory accounting canonicalizes each inspected path once without caching sizes', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const directory = join(root, 'a', 'b', 'c', 'd');
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, 'value');
+  writeFileSync(file, 'before');
+  const canonicalize = t.mock.method(realpathSync, 'native');
+  assert.equal(rsiDirectoryBytes(root), 6);
+  assert.equal(canonicalize.mock.callCount(), 6, 'Canonicalization must not multiply with ancestor depth');
+  canonicalize.mock.resetCalls();
+  writeFileSync(file, 'changed bytes');
+  assert.equal(rsiDirectoryBytes(root), 13, 'Every scan must observe current file sizes');
+  assert.equal(canonicalize.mock.callCount(), 6);
+});
+
+test('RSI accounting still refuses nested links and canonical aliases including missing targets', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-guards-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const tree = join(root, 'tree'), target = join(root, 'target');
+  mkdirSync(join(tree, 'deep'), { recursive: true });
+  mkdirSync(target);
+  const alias = join(tree, 'deep', 'alias');
+  symlinkSync(target, alias, 'junction');
+  assert.throws(() => rsiDirectoryBytes(tree), /linked or unsupported/);
+  rmSync(alias);
+  writeFileSync(join(tree, 'value'), 'original');
+  linkSync(join(tree, 'value'), join(tree, 'deep', 'linked'));
+  assert.throws(() => rsiDirectoryBytes(tree), /linked or unsupported/);
+  const missing = join(tree, 'deep', 'missing', 'value');
+  assert.equal(inspectRsiPath(tree, missing, { missing: true }), missing);
+  t.mock.method(realpathSync, 'native', path => `${path}-different-canonical-path`);
+  assert.throws(() => inspectRsiPath(tree, missing, { missing: true }), /canonical path alias/);
+  assert.equal(existsSync(join(tree, 'deep', 'missing')), false);
 });
 
 test('interrupted marker initialization requires its exact store identity', async t => {

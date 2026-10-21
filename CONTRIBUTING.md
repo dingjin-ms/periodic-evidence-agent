@@ -51,8 +51,12 @@ a workaround. Until protection is enabled, "do not merge red/pending CI" is
 only a contributor policy, not a technical guarantee.
 
 Once `offline-failure.yml` is merged into the default branch, failed or timed-out
-offline PR runs comment on the still-current open `master` PR and mention
-`@dingjin-ms`; failed master pushes create an issue with the same mention.
+offline PR runs comment on the still-current open `master` PR and mention its
+creator, not a fixed maintainer or the workflow actor. Failed master pushes
+create an issue mentioning the creators of merged `master` PRs whose merge SHA
+matches the failed revision. If no such PR exists, the issue mentions the
+original push actor, not a later rerun actor. Missing recipient metadata fails
+the notifier explicitly rather than silently choosing another person.
 Each alert links the exact run, SHA and attempt without copying logs. Duplicate
 delivery of the same run/attempt is suppressed; stale PR heads, successful runs,
 cancelled runs and topic-branch pushes do not generate alerts. API errors fail

@@ -31,16 +31,21 @@ jobs:
             if (!['failure', 'timed_out'].includes(run.conclusion)) return;
             const repo = context.repo;
             const marker = `<!-- offline-failure:${run.id}:${run.run_attempt} -->`;
-            const body = [
-              marker,
-              '@dingjin-ms Offline pilot checks did not pass.',
-              '',
-              `Run: ${run.html_url}`,
-              `Commit: \`${run.head_sha}\`; attempt: ${run.run_attempt}; conclusion: ${run.conclusion}.`,
-              '',
-              'Inspect the failed job and its offline-* evidence artifacts. Do not merge a failing or pending revision.',
-              'Preserve this failure; fix the cause and validate the new revision rather than rerunning until green.'
-            ].join('\n');
+            const bodyFor = recipients => {
+              if (recipients.some(login => typeof login !== 'string' || !login)) {
+                throw new Error('Cannot resolve alert recipient from GitHub metadata');
+              }
+              return [
+                marker,
+                `${recipients.map(login => `@${login}`).join(' ')} Offline pilot checks did not pass.`,
+                '',
+                `Run: ${run.html_url}`,
+                `Commit: \`${run.head_sha}\`; attempt: ${run.run_attempt}; conclusion: ${run.conclusion}.`,
+                '',
+                'Inspect the failed job and its offline-* evidence artifacts. Do not merge a failing or pending revision.',
+                'Preserve this failure; fix the cause and validate the new revision rather than rerunning until green.'
+              ].join('\n');
+            };
             if (run.event === 'pull_request') {
               const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit,
                 { ...repo, commit_sha: run.head_sha, per_page: 100 });
@@ -53,7 +58,9 @@ jobs:
                   { ...repo, issue_number: pull.number, per_page: 100 });
                 if (!comments.some(comment => comment.user?.login === 'github-actions[bot]' &&
                     comment.body?.includes(marker))) {
-                  await github.rest.issues.createComment({ ...repo, issue_number: pull.number, body });
+                  await github.rest.issues.createComment({
+                    ...repo, issue_number: pull.number, body: bodyFor([pull.user?.login])
+                  });
                 }
                 notified++;
               }
@@ -62,10 +69,18 @@ jobs:
               const issues = await github.paginate(github.rest.issues.listForRepo,
                 { ...repo, state: 'all', creator: 'github-actions[bot]', per_page: 100 });
               if (!issues.some(issue => !issue.pull_request && issue.body?.includes(marker))) {
+                const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit,
+                  { ...repo, commit_sha: run.head_sha, per_page: 100 });
+                const mergedPulls = pulls.filter(pull => pull.merged_at &&
+                  pull.merge_commit_sha === run.head_sha && pull.base.ref === 'master' &&
+                  pull.base.repo.full_name === `${repo.owner}/${repo.repo}`);
+                const recipients = mergedPulls.length
+                  ? [...new Set(mergedPulls.map(pull => pull.user?.login))]
+                  : [run.actor?.login];
                 await github.rest.issues.create({
                   ...repo,
                   title: `CI: master offline checks failed (run ${run.run_number}, attempt ${run.run_attempt})`,
-                  body: `${body}\n\nMaster is red. Hold further merges until the failure is diagnosed and a source-bound fix passes.`
+                  body: `${bodyFor(recipients)}\n\nMaster is red. Hold further merges until the failure is diagnosed and a source-bound fix passes.`
                 });
               }
             }

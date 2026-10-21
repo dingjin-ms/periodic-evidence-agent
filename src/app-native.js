@@ -1,7 +1,8 @@
 import { existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { Ledger } from './ledger.js';
-import { collectAdo, collectWorkiq, adoTransport } from './sources.js';
+import { collectAdo, collectWorkiq, adoTransport, evidenceEnvelope } from './sources.js';
+import { configuredIcmMapping, replayIcm, decodeIcmResponse } from './icm-replay.js';
 import { principalPath, validateWorkiqPath, messageSelect, verifyPrincipal } from './runtime.js';
 import { acceptReview, report } from './coordinator.js';
 import { makeAssignment, makePlannedImprovementAssignment, requireCurrentAssignment, reconcileHostedAssignment } from './workers.js';
@@ -121,7 +122,8 @@ function receipt(call, pass) {
   if (call.actorSessionId) identifier(call.actorSessionId);
   if (call.completionEventId) identifier(call.completionEventId);
   requireThat(Boolean(call.response) !== Boolean(call.failure), 'Receipt needs exactly one response or failure');
-  requireThat(call.tool === (pass.startsWith('workiq') ? 'workiq-fetch' : 'ado-delegated-read'),
+  requireThat(pass === 'icm:created' ? ['get_my_icm_context', 'search_incidents'].includes(call.tool) &&
+    typeof call.requestedAt === 'string' : call.tool === (pass.startsWith('workiq') ? 'workiq-fetch' : 'ado-delegated-read'),
     'Receipt tool does not match source');
   if (call.failure) {
     object(call.failure, ['code', 'statusCode', 'requestId', 'errorCode', 'recoveryAction'], ['code']);
@@ -276,10 +278,56 @@ async function replay(config, run, pass, currentCalls, principal, directAdoVerif
     coverage: 'Current source enumeration, not a historical reconstruction',
     classification: 'not-performed', evidenceIds: [] } };
 }
+function replayAppIcm(config, run, calls) {
+  const mapping = configuredIcmMapping(config.sources.icm);
+  const bundle = { format: 'icm-receipts-v1', id: run.runId,
+    provenance: run.provenance === 'synthetic' ? 'synthetic' : 'app-tool-reported',
+    window: run.window, limits: run.limits, mapping,
+    calls: calls.map(call => ({ ...call, arguments: call.request })) };
+  const replayed = replayIcm(bundle, config.identity);
+  const evidence = replayed.versions.map(version => {
+    const call = calls.find(call => call.id === version.callId);
+    const row = decodeIcmResponse(call.response).value[version.offset];
+    const record = evidenceEnvelope('icm', `icm/team/${mapping.owningTeamId}/incident-created`,
+      row.id, null, 'https://portal.microsofticm.com/', json(call.request));
+    record.title = row.title === '' ? null : row.title ?? null;
+    record.sourceStatus = row.state === '' ? null : row.state ?? null;
+    record.createdAt = row.createdDate;
+    record.queriedAt = call.observedAt; record.observedAt = call.observedAt;
+    record.source.provenance = bundle.provenance;
+    record.fields = structuredClone(row);
+    record.missingFields = ['title', 'state', 'description', 'sourceCreateTime']
+      .filter(field => !Object.hasOwn(row, field));
+    record.missingFields.push('sourceRevision', 'directLink');
+    record.discoveryReason = 'Explicit incident-created team/severity cohort; not saved-query coverage';
+    return { record, payload: row };
+  });
+  const { versions, ...coverage } = replayed;
+  return { evidence, contexts: [], result: { ...coverage, pass: 'icm:created',
+    error: replayed.error ?? null,
+    cohortCoverage: replayed.state, timestampContract: mapping.timestampContract,
+    evidenceCount: evidence.length, evidenceIds: [],
+    provenance: bundle.provenance, execution: 'external-app-tool',
+    identityVerification: 'validated-app-reported-active-alias-and-email',
+    liveActivation: 'not-performed-by-helper',
+    limitations: [...replayed.limitations.slice(0, -1),
+      'No connector calls or changed lane; the incident-created cursor advances only after exhausted receipt traversal.'],
+    coverage: 'Incident-created [start,end) receipt enumeration; not saved-query or historical snapshot coverage',
+    cursor: replayed.state === 'complete' ? { end: run.window.end,
+      timestampContract: mapping.timestampContract, owningTeamId: mapping.owningTeamId,
+      severity: mapping.severity, coverage: 'incident-created-receipts-only' } : null,
+    ingestedIntoSourceLedger: true, cursorAdvanced: replayed.state === 'complete',
+    classification: 'not-performed' } };
+}
 export async function appendApp(config, ledger, runId, input, { directAdoVerified = false, directWorkiqVerified = false } = {}) {
   object(input, ['eventId', 'pass', 'calls', 'principal'], ['eventId', 'pass', 'calls']);
   identifier(input.eventId);
-  requireThat(passes.includes(input.pass) && input.pass !== 'icm:created', 'Unsupported collection pass');
+  requireThat(passes.includes(input.pass), 'Unsupported collection pass');
+  if (input.pass === 'icm:created') {
+    configuredIcmMapping(config.sources.icm);
+    requireThat(!input.principal && !directAdoVerified && !directWorkiqVerified,
+      'IcM requires its own captured identity; other adapter verification cannot be substituted');
+  }
   requireThat(Array.isArray(input.calls) && input.calls.length > 0, 'Append at least one actual call receipt');
   const run = getRun(ledger, runId);
   requireThat(run.configHash === hash(json(config)), 'Run configuration changed');
@@ -312,11 +360,18 @@ export async function appendApp(config, ledger, runId, input, { directAdoVerifie
     requireThat(hash(json(continuation.calls)) === continuation.callsHash, 'Continuation receipts changed', 'invalid-record');
     requireThat(!calls.some(c => continuation.calls.some(old => old.id === c.id)), 'Receipt identity reused across continuation');
   }
-  const replayed = await replay(config, run, input.pass, calls, principal, directAdoVerified, directWorkiqVerified, continuation);
+  const replayed = input.pass === 'icm:created' ? replayAppIcm(config, run, calls)
+    : await replay(config, run, input.pass, calls, principal, directAdoVerified, directWorkiqVerified, continuation);
   ledger.transaction(() => {
     const count = ledger.db.prepare('SELECT COUNT(*) n FROM app_events WHERE run_id=? AND pass=?').get(runId, input.pass).n;
     requireThat(count === oldEvents.length, 'Concurrent receipt append; refresh before retrying', 'overlap');
     ledger.db.prepare('INSERT INTO app_events VALUES(?,?,?,?)').run(input.eventId, runId, input.pass, json(input));
+    if (input.pass === 'icm:created') for (const call of input.calls) {
+      const bytes = Buffer.from(json(call)), digest = hash(bytes);
+      ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(digest, bytes);
+      ledger.db.prepare('INSERT OR IGNORE INTO app_artifacts VALUES(?,?,?)')
+        .run(runId, `sqlite:capture:${digest}`, 'icm-app-receipt');
+    }
     const sourceRun = `${runId}:${input.pass}`;
     ledger.db.prepare('INSERT OR IGNORE INTO runs(id,source,state,started_at,window) VALUES(?,?,?,?,?)')
       .run(sourceRun, input.pass, 'collecting', run.startedAt, json(run.window));

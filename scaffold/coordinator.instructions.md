@@ -85,10 +85,12 @@ publication key. Do not recursively schedule RSI from RSI bookkeeping.
    IDs, and read batches of at most 200 using the query snapshot/asOf and
    errorPolicy=Fail. Record revisions, unavailable fields and failed records.
    Source field absence must be distinguished from a successful empty field.
-5. For IcM, verify actual filters for query 599514. Preserve S0/S1/S2/S2.5 and
+5. For saved-query IcM, verify actual filters for query 599514. Preserve S1/S2/S2.5 (API 1/2/25; exclude S0) and
    functional-scope intent from the scan prompt; do not assume the saved query
    enforces it. Separate Dogfood, MSIT, Production and unknown. Use approved
-   connectors or owner exports, never a fabricated endpoint.
+   connectors or owner exports, never a fabricated endpoint. An explicitly
+   selected incident-created cohort uses inclusive createdAfter/exclusive
+   createdBefore UTC bounds, not saved-query Source Created Time equivalence.
 6. Use WorkIQ to read configured workplace seeds and in-scope related resources.
    Map logical read operations to tools exposed by the installed client. Do not
    enable source-mutating tools. Empty seeds mean unconfigured, not tenant-wide

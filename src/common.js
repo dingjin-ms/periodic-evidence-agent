@@ -106,6 +106,9 @@ export function configAt(path) {
   windowCheck(config.window);
   requireThat(config.activation && ['collect', 'review', 'dispatch'].every(k => typeof config.activation[k] === 'boolean'),
     'Explicit collect/review/dispatch activation booleans are required');
+  requireThat(config.sources?.icm?.timestampContract == null ||
+    config.sources.icm.timestampContract === 'incident-created',
+  'IcM timestampContract must be null (legacy saved query) or incident-created');
   requireThat(config.statePolicy?.retention === 'bounded-local' &&
     Number.isInteger(config.statePolicy.rawEvidenceDays) &&
     config.statePolicy.rawEvidenceDays >= 1 && config.statePolicy.rawEvidenceDays <= 7,

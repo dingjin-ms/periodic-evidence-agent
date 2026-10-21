@@ -32,6 +32,9 @@ export function evidenceEnvelope(kind, namespace, id, revision, url, query, snap
     capture: { artifactRef: null, sha256: null, unavailableReason: 'Not yet persisted' }
   };
 }
+export function workiqTitle(subject) {
+  return subject === '' ? null : subject ?? null;
+}
 export async function adoTransport(config) {
   const { tenantId, objectId } = config.identity;
   requireThat(tenantId && objectId, 'ADO requires approved tenantId and delegated user objectId');
@@ -212,7 +215,7 @@ export async function collectWorkiq(config, window, emit, retrieve = null, lane 
           record.queriedAt = observation.observedAt; record.observedAt = observation.observedAt;
           record.source.provenance = observation.provenance;
           record.scopeId = `workiq:${seed.id}`;
-          record.title = message.subject ?? null; record.createdAt = message.createdDateTime ?? null;
+          record.title = workiqTitle(message.subject); record.createdAt = message.createdDateTime ?? null;
           record.source.versionBasis = revision ? 'source-etag' : 'captured-payload-hash';
           record.fields = { message, parentContext: parent, sourceObservation: observation, parentObservation,
             thread: { teamId: seed.teamId, channelId: seed.channelId, rootId: parent?.id ?? message.id,
@@ -271,6 +274,8 @@ export async function collectWorkiq(config, window, emit, retrieve = null, lane 
 }
 export async function collectIcm(config, window, emit) {
   const source = config.sources.icm;
+  requireThat(source.timestampContract == null,
+    'Incident-created IcM receipts use app-append; owner exports remain saved-query only', 'blocked-source');
   requireThat(source.scopeApproved && source.filtersVerified && source.queryId === '599514',
     'IcM query 599514 filters and scope are not verified', 'blocked-source');
   requireThat(source.ownerExport, 'No supported authenticated IcM connector is configured; supply an approved owner export', 'blocked-source');

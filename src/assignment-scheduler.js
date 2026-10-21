@@ -23,20 +23,22 @@ export function selectPreparedAssignments(config, ledger, { limit = null } = {})
   const maximum = Math.min(requested, available);
   const selected = [];
   const pending = preparedJobs(ledger);
+  const repositoryOrder = [...new Set(pending.map(job => job.repoId))]
+    .filter(id => config.repositories.some(repo => repo.id === id));
   const activeByRepository = new Map(config.repositories.map(repo => [
     repo.id, activeRepositoryWorkerCount(ledger, repo.id)
   ]));
   const selectedByRepository = new Map();
   while (selected.length < maximum) {
     let progressed = false;
-    for (const repo of config.repositories) {
-      const index = pending.findIndex(job => job.repoId === repo.id);
+    for (const repoId of repositoryOrder) {
+      const index = pending.findIndex(job => job.repoId === repoId);
       if (index < 0) continue;
-      const active = activeByRepository.get(repo.id) ?? 0;
-      const reserved = selectedByRepository.get(repo.id) ?? 0;
+      const active = activeByRepository.get(repoId) ?? 0;
+      const reserved = selectedByRepository.get(repoId) ?? 0;
       if (active + reserved >= repositoryLimit) continue;
       selected.push(pending.splice(index, 1)[0]);
-      selectedByRepository.set(repo.id, reserved + 1);
+      selectedByRepository.set(repoId, reserved + 1);
       progressed = true;
       if (selected.length >= maximum) break;
     }
@@ -90,8 +92,9 @@ export async function schedulePreparedAssignments(config, ledger, {
             dependencies.dispatchDependencies ?? {});
         return {
           assignmentId: job.id, repoId: job.repoId,
-          state: ledger.job(job.id)?.state ?? null,
-          outcome: result?.outcome ?? null
+          state: result?.state ?? ledger.job(job.id)?.state ?? null,
+          outcome: result?.outcome ?? null,
+          ...(result?.actions ? { actions: result.actions } : {})
         };
       } catch (error) {
         return {
@@ -106,14 +109,18 @@ export async function schedulePreparedAssignments(config, ledger, {
   }
   const results = await Promise.all(executions);
   const completedAt = now();
-  ledger.finishOperation(operationId,
-    results.some(result => result.error) ? 'partial' : 'completed', {
-      selectedAssignmentIds: selection.selected.map(job => job.id),
-      selectedRepositories: selection.selected.map(job => job.repoId),
-      globalLimit: selection.globalLimit,
-      repositoryLimit: selection.repositoryLimit,
-      results,
-      completedAt
-    });
-  return { mode: 'execute', ...selection, results, operationId, completedAt };
+  const state = results.some(result => result.error ||
+    ['action-required-auth', 'blocked', 'blocked-auth', 'failed', 'uncertain',
+      'partial', 'partial-or-blocked', 'draft-pr-validation-failed'].includes(result.state) ||
+    ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome))
+    ? 'partial' : 'completed';
+  ledger.finishOperation(operationId, state, {
+    selectedAssignmentIds: selection.selected.map(job => job.id),
+    selectedRepositories: selection.selected.map(job => job.repoId),
+    globalLimit: selection.globalLimit,
+    repositoryLimit: selection.repositoryLimit,
+    results,
+    completedAt
+  });
+  return { mode: 'execute', state, ...selection, results, operationId, completedAt };
 }

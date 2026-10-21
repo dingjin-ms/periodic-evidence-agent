@@ -104,8 +104,9 @@ if ($stage -in @('authentication-check', 'authentication')) {
         }
         throw 'PILOT_AUTH_PROVIDER_MISSING: artifacts-npm-credprovider 1.2.1 is required'
     }
-    $providerVersion = (& $provider.Source --version).Trim()
-    if ($LASTEXITCODE -ne 0 -or $providerVersion -ne '1.2.1') {
+    $versionCheck = Invoke-CredentialProvider $provider.Source @('--version')
+    $providerVersion = ($versionCheck.Output -join "`n").Trim()
+    if ($versionCheck.ExitCode -ne 0 -or $providerVersion -ne '1.2.1') {
         if ($stage -eq 'authentication-check') {
             $preflight = [ordered]@{
                 state = 'action-required-auth'
@@ -113,19 +114,21 @@ if ($stage -in @('authentication-check', 'authentication')) {
                 providerVersion = '1.2.1'
                 feedCount = $expectedRegistries.Count
                 tokenRecorded = $false
-                reason = 'provider-missing'
+                reason = 'provider-version-mismatch'
                 installProvider = $true
             }
             Write-Output "PILOT_VALIDATION_AUTH_PREFLIGHT:$($preflight | ConvertTo-Json -Compress)"
             exit 0
         }
-        throw "PILOT_AUTH_PROVIDER_VERSION: expected 1.2.1, found $providerVersion"
+        throw 'PILOT_AUTH_PROVIDER_VERSION: expected artifacts-npm-credprovider 1.2.1'
     }
 
     $validation = Invoke-CredentialProvider $provider.Source @(
         '--validate-only', '--config-file', $yarnConfigPath, '--verbosity', 'minimal'
     )
+    $authenticationReason = 'interactive-sign-in-required'
     if ($validation.ExitCode -ne 0) {
+        $authenticationReason = 'credential-validation-failed'
         if ($stage -eq 'authentication-check') {
             $needsAuthentication = $true
         }
@@ -145,7 +148,7 @@ if ($stage -in @('authentication-check', 'authentication')) {
             tokenRecorded = $false
         }
         if ($needsAuthentication) {
-            $preflight.reason = 'interactive-sign-in-required'
+            $preflight.reason = $authenticationReason
             $preflight.installProvider = $false
         }
         Write-Output "PILOT_VALIDATION_AUTH_PREFLIGHT:$($preflight | ConvertTo-Json -Compress)"

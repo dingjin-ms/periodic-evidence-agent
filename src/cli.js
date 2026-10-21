@@ -378,7 +378,7 @@ try {
           'Title materialization requires --file, --index and --output');
         result = materializeTitleScreen(config, option('--index'), option('--file'), option('--output')); break;
       case 'icm-replay':
-        requireThat(!args.includes('--collect'), 'IcM replay is offline only; live timestamp contract is unresolved');
+        requireThat(!args.includes('--collect'), 'IcM replay is offline only; it does not launch a live connector');
         result = persistIcmReplay(config, input()); break;
       case 'stage2-handoff':
         requireThat(option('--output'), 'Stage2 requires an explicit private output path');
@@ -431,7 +431,7 @@ try {
             readinessVerified: false
           })),
           reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
-          icm: 'Offline connector receipt replay and owner export supported. Live connector execution is not enabled; exact timestamp/saved-query scope contract required.',
+          icm: 'Explicit incident-created mode supports app-append receipt ingestion. Offline icm-replay remains audit-only. Legacy owner exports require saved-query verification; no helper launches an IcM connector.',
           validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',
           liveAccessVerified: false
         };
@@ -453,7 +453,7 @@ try {
         } catch (error) { result.push({ source: 'ado', state: 'blocked', error: safeError(error) }); }
         if (!option('--source') || option('--source') === 'icm')
           result.push({ source: 'icm', state: 'blocked', error: { code: 'blocked-scope',
-            message: 'No IcM authentication call made. Live connector execution is not enabled; timestamp/saved-query scope contract required.' } });
+            message: 'No IcM authentication call made. Helpers do not launch the connector; incident-created app-append requires captured identity and exact scoped receipts.' } });
         break;
       }
       case 'status': result = ledger.status(); break;

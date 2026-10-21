@@ -38,7 +38,7 @@ import {
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
 import { prepareValidationWorkspace, removeValidationWorktree,
   preparationFailure as workspacePreparationFailure, preparationStage,
-  preparationGit, requireCleanRevision } from './validation-workspace.js';
+  preparationGit, requireCleanRevision, readDependencyCopyProgress } from './validation-workspace.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
 import {
   declarativeGate, declarativeProfile, declarativeRegistrationFiles, declarativeRequest,
@@ -1330,28 +1330,35 @@ async function materializeDependencySnapshot(snapshot, workspace, paths, timeout
     const remaining = deadline === null ? timeoutMs : Math.min(timeoutMs, deadline - Date.now());
     requireThat(remaining > 0, 'Dependency snapshot copy exceeded its bounded deadline',
       'blocked-validation');
+    const progressPath = `${workspace}.dependency-copy-${uuid()}.jsonl`;
+    writeFileSync(progressPath, `${json({
+      format: 'dependency-copy-progress-v1', directoryOffset: index, paths: batch,
+      checkpointInterval: 10,
+      ...(index === 0 ? { allDirectories: directories } : {})
+    })}\n`, { flag: 'wx' });
     try {
       const output = await nativeCommand(process.execPath,
         [fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url))],
         workspace, remaining, {
           ...minimalEnvironment(),
           PILOT_DEPENDENCY_COPY: json({ snapshot, workspace, paths: batch,
-            deadline: deadline ?? Date.now() + remaining })
+            deadline: deadline ?? Date.now() + remaining, progressPath })
         });
       requireThat(output.stdout.trim() ===
         `PILOT_DEPENDENCY_COPY:${json({ completedPaths: batch.length })}`,
       'Dependency snapshot copy did not confirm its complete batch', 'blocked-validation');
     } catch (error) {
-      const lines = String(error.stdout ?? '').split(/\r?\n/).filter(line =>
-        line.startsWith('PILOT_DEPENDENCY_COPY_FAILURE:'));
-      const failure = lines.length === 1
-        ? JSON.parse(lines[0].slice('PILOT_DEPENDENCY_COPY_FAILURE:'.length)) : null;
+      const dependencyCopy = {
+        ...readDependencyCopyProgress(progressPath, batch, index),
+        helperExitCode: Number.isInteger(error.code) ? error.code : null
+      };
       throw Object.assign(new PilotError('blocked-validation',
         'Dependency snapshot directory batch failed'), {
-        nativeExitCode: failure?.nativeExitCode ?? error.code,
-        killed: error.killed === true || failure?.timeout === true,
+        nativeExitCode: dependencyCopy.nativeExitCode ?? null,
+        killed: error.killed === true || dependencyCopy.timeout === true,
         containmentFailure: error.containmentFailure,
-        ownedProcessesExited: error.ownedProcessesExited
+        ownedProcessesExited: error.ownedProcessesExited,
+        dependencyCopy
       });
     }
   }

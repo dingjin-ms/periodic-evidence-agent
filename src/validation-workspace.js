@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, resolve, relative, isAbsolute, sep } from 'node:path';
 import { nativeCommand } from './native-command.js';
 import { requireThat, now, safeError } from './common.js';
@@ -18,6 +18,7 @@ export function preparationFailure(error) {
     ownedProcessesExited: error.ownedProcessesExited === true,
     containmentFailure: error.containmentFailure === true,
     error: safeError(error),
+    ...(error.dependencyCopy ? { dependencyCopy: error.dependencyCopy } : {}),
     // Never retain arbitrary command text, stdout, stderr or inherited environment.
     reason: error.containmentFailure ? 'process-tree-exit-unconfirmed' :
       error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output-limit' :
@@ -26,6 +27,46 @@ export function preparationFailure(error) {
           error.code === 'EACCES' || error.code === 'EPERM' ? 'access-denied' :
             'command-or-invariant-failed'
   };
+}
+
+export function readDependencyCopyProgress(path, paths, directoryOffset) {
+  const result = { journalPath: path, directoryOffset, batchSize: paths.length };
+  try {
+    requireThat(lstatSync(path).isFile() && lstatSync(path).size <= 1024 * 1024,
+      'Invalid dependency copy progress journal');
+    const lines = readFileSync(path, 'utf8').split('\n');
+    const trailingRecordIncomplete = lines.pop() !== '';
+    const header = JSON.parse(lines.shift());
+    const checkpointInterval = header.checkpointInterval ?? 1;
+    requireThat(header.format === 'dependency-copy-progress-v1' &&
+      header.directoryOffset === directoryOffset &&
+      Number.isInteger(checkpointInterval) && checkpointInterval > 0 && checkpointInterval <= 50 &&
+      JSON.stringify(header.paths) === JSON.stringify(paths),
+    'Dependency copy progress does not match its batch');
+    let last = { status: 'starting', completedPaths: 0, activePaths: [], failedPath: null };
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      requireThat(['copying', 'passed', 'failed'].includes(entry.status) &&
+        Number.isInteger(entry.completedPaths) && entry.completedPaths >= last.completedPaths &&
+        entry.completedPaths <= paths.length &&
+        Array.isArray(entry.activePaths) && entry.activePaths.length <= 1 &&
+        entry.activePaths.every(path => paths.includes(path)) &&
+        (entry.failedPath === null || paths.includes(entry.failedPath)) &&
+        (entry.status !== 'passed' || (entry.completedPaths === paths.length &&
+          entry.activePaths.length === 0 && entry.failedPath === null)),
+      'Invalid dependency copy progress record');
+      last = entry;
+    }
+    return { ...result, checkpointInterval,
+      status: last.status, completedPaths: last.completedPaths,
+      activePaths: last.activePaths, failedPath: last.failedPath,
+      timeout: last.timeout === true,
+      nativeExitCode: Number.isInteger(last.nativeExitCode) ? last.nativeExitCode : null,
+      trailingRecordIncomplete };
+  } catch (error) {
+    return { ...result, status: 'unavailable',
+      diagnosticError: /^[A-Z_]+$/.test(error.code ?? '') ? error.code : 'invalid-progress-record' };
+  }
 }
 
 export async function preparationStage(timings, id, operation, persist = () => {}) {

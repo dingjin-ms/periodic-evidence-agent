@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync,
+  appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { command } from '../src/workers.js';
 import { prepareValidationWorkspace, removeValidationWorktree,
-  preparationStage, preparationFailure } from '../src/validation-workspace.js';
+  preparationStage, preparationFailure, readDependencyCopyProgress } from '../src/validation-workspace.js';
 import { nativeCommand } from '../src/native-command.js';
 
 async function fixture(t) {
@@ -90,6 +93,94 @@ test('nested preparation stages preserve the deepest failure location', async ()
   assert.equal(timings[1].failure.nativeExitCode, 8);
   assert(timings.every(stage => stage.status === 'blocked'));
   assert(!JSON.stringify(timings).includes('private native output'));
+});
+
+async function directoryCopy(t, { paths, fail = false, deadline = Date.now() + 30000 }) {
+  const root = mkdtempSync(join(tmpdir(), 'directory-copy-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const snapshot = join(root, 'source'), workspace = join(root, 'target');
+  mkdirSync(snapshot);
+  mkdirSync(workspace);
+  for (const path of paths) mkdirSync(join(snapshot, path), { recursive: true });
+  const progressPath = `${workspace}.dependency-copy-test.jsonl`;
+  writeFileSync(progressPath, `${JSON.stringify({
+    format: 'dependency-copy-progress-v1', directoryOffset: 50, paths, checkpointInterval: 10
+  })}\n`);
+  const state = { calls: [], observedAtSpawn: [], logs: [], exitCode: 0 };
+  const require = createRequire(import.meta.url);
+  const processMock = {
+    platform: process.platform, exitCode: 0,
+    env: { PILOT_DEPENDENCY_COPY: JSON.stringify({
+      snapshot, workspace, paths, deadline, progressPath
+    }), SYNTHETIC_SECRET: 'never-retain-private-output' }
+  };
+  const spawnSync = (_command, args, options) => {
+    state.calls.push({ args, timeout: options.timeout });
+    state.observedAtSpawn.push(readDependencyCopyProgress(progressPath, paths, 50));
+    return { status: fail && state.calls.length === 2 ? 8 : 7,
+      stdout: 'never-retain-private-output', stderr: 'never-retain-private-output' };
+  };
+  await runInNewContext(readFileSync(new URL('../src/dependency-snapshot-copy.cjs', import.meta.url), 'utf8'), {
+    require: name => name === 'node:child_process' ? { spawnSync } : require(name),
+    process: processMock,
+    console: { log: text => state.logs.push(text), error: text => state.logs.push(text) }
+  });
+  state.exitCode = processMock.exitCode;
+  return { ...state, progressPath, progress: readDependencyCopyProgress(progressPath, paths, 50) };
+}
+
+test('directory copy checkpoints completed groups and preserves each directory timing', async t => {
+  const result = await directoryCopy(t, {
+    paths: ['ooui/.store', ...Array.from({ length: 20 }, (_, index) => `ooui/package-${index}/lib`)]
+  });
+  assert.equal(result.exitCode, 0);
+  assert(result.calls.every(call => call.args.includes('/MT:32')));
+  assert.deepEqual([...new Set(result.observedAtSpawn.map(entry => entry.completedPaths))], [0, 10, 20]);
+  assert.deepEqual(result.observedAtSpawn[0].activePaths, ['ooui/.store']);
+  assert.equal(result.observedAtSpawn[20].activePaths[0], 'ooui/package-19/lib');
+  assert.equal(result.progress.completedPaths, 21);
+  assert.equal(result.progress.status, 'passed');
+  assert.equal(result.logs[0], 'PILOT_DEPENDENCY_COPY:{"completedPaths":21}');
+  const events = readFileSync(result.progressPath, 'utf8').trim().split('\n').slice(1).map(JSON.parse);
+  assert.equal(events.length, 4);
+  assert.equal(events.flatMap(event => event.copyTimings).length, 21);
+  assert(!readFileSync(result.progressPath, 'utf8').includes('never-retain-private-output'));
+});
+
+test('directory copy retains its failed path and completed count without native private output', async t => {
+  const result = await directoryCopy(t, {
+    paths: Array.from({ length: 6 }, (_, index) => `ooui/package-${index}/lib`), fail: true
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.calls.length, 2);
+  assert.equal(result.progress.completedPaths, 1);
+  assert.equal(result.progress.nativeExitCode, 8);
+  assert.equal(result.progress.failedPath, 'ooui/package-1/lib');
+  assert.equal(result.progress.timeout, false);
+  assert.equal(result.progress.status, 'failed');
+  assert(!result.logs.join('\n').includes('never-retain-private-output'));
+});
+
+test('directory copy records the pending root when its shared deadline expires before launch', async t => {
+  const expired = await directoryCopy(t, { paths: ['ooui/lib'], deadline: Date.now() - 1 });
+  assert.equal(expired.exitCode, 1);
+  assert.equal(expired.calls.length, 0);
+  assert.equal(expired.progress.timeout, true);
+  assert.equal(expired.progress.failedPath, 'ooui/lib');
+});
+
+test('copy progress survives an interrupted final record without replacing the primary timeout', async t => {
+  const result = await directoryCopy(t, { paths: ['ooui/lib'] });
+  appendFileSync(result.progressPath, '{"status":"unfinished');
+  const progress = readDependencyCopyProgress(result.progressPath, ['ooui/lib'], 50);
+  assert.equal(progress.completedPaths, 1);
+  assert.equal(progress.trailingRecordIncomplete, true);
+  const failure = preparationFailure(Object.assign(new Error('timeout'), {
+    killed: true, ownedProcessesExited: true, dependencyCopy: progress
+  }));
+  assert.equal(failure.reason, 'command-timeout');
+  assert.deepEqual(failure.dependencyCopy, progress);
+  assert.equal(readDependencyCopyProgress(result.progressPath, ['ooui/other'], 50).status, 'unavailable');
 });
 
 test('Windows Git launcher timeout drains its owned command and descendant before returning',

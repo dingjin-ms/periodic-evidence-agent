@@ -440,6 +440,14 @@ test('oversized app receipts remain losslessly readable through bounded expiring
     page = result.nextPage;
   } while (page !== null);
   assert.equal(Buffer.concat(parts).toString('utf8'), original);
+  const configFile = join(ctx.root, 'config.json'), requestFile = join(ctx.root, 'event-page.json');
+  writeFileSync(configFile, json(ctx.config));
+  writeFileSync(requestFile, json({ observationId: observation.id, index: 0, page: 0 }));
+  const child = spawnSync(process.execPath, ['--no-warnings', cli, 'agent', 'rsi', 'app-rsi-work',
+    '--run', 'flow', '--operation', 'read-event', '--config', configFile, '--file', requestFile],
+  { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(Buffer.from(JSON.parse(child.stdout).result.contentBase64, 'base64'), parts[0]);
   assert.equal(ctx.capture().observationId, observation.id);
   assert.throws(() => readRsiEvent(ctx.config, ctx.ledger, observation, 0, 0,
     Date.parse(observation.payload.data.eventReferences.expiresAt)), /expired/);

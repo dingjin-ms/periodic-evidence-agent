@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,9 @@ import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } f
 import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
 import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
 import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
+import { beginOneShotCollection, advanceOneShotCollection, oneShotCollectionStatus,
+  stopOneShotCollection } from './one-shot-collection.js';
+import { prepareOneShotFilterBudget, reserveOneShotFilterRequest, advanceOneShotHandoff } from './one-shot-handoff.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -75,6 +78,13 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js agent proposer continue-local-validation --prepare|--execute --file request.json --config next.local.json
   node src\\cli.js agent proposer diagnose-local-validation --prepare|--execute --file request.json --config diagnostic.local.json
   node src\\cli.js agent proposer continue-local-authoring --prepare|--execute --file request.json --config successor.local.json
+  node src\\cli.js agent collector one-shot-begin --file collection.json --config collector.local.json
+  node src\\cli.js agent collector one-shot-collect --run ID --collect [--resume] --config collector.local.json
+  node src\\cli.js agent collector one-shot-status|one-shot-stop --run ID --config collector.local.json
+  node src\\cli.js agent filter one-shot-filter-prepare --file handoff.json --config proposer.local.json
+  node src\\cli.js agent filter one-shot-filter-reserve --file handoff.json --task ID --request reservation.json --config proposer.local.json
+  node src\\cli.js agent proposer one-shot-handoff --check --file handoff.json --config proposer.local.json
+  node src\\cli.js agent proposer one-shot-handoff --execute [--resume-auth] --authorize-commit --authorize-push --authorize-draft-pr --file handoff.json --config proposer.local.json
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
@@ -143,7 +153,9 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
   node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
-Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
+App source reads use app-ado --collect and explicitly configured app-workiq-cli --collect.
+one-shot-collect --collect coordinates those same local reads under an aggregate reservation.
+one-shot-filter-* only reserve/check local state; the host must supply the qualified external FILTER executor.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger, agent;
 let automaticPruneConfig;
@@ -151,6 +163,27 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (action.startsWith('one-shot-')) {
+    requireThat(option('--config') && !option('--config').startsWith('--'),
+      'One-shot controls require an explicit --config', 'blocked-authorization');
+    const runAction = ['one-shot-collect', 'one-shot-status', 'one-shot-stop'].includes(action);
+    requireThat(option(runAction ? '--run' : '--file') &&
+      !option(runAction ? '--run' : '--file').startsWith('--'),
+    'One-shot controls require their explicit run or input file', 'blocked-authorization');
+    if (action === 'one-shot-collect') requireThat(args.includes('--collect'),
+      'One-shot source reads require explicit --collect', 'blocked-authorization');
+    if (action === 'one-shot-handoff') {
+      requireThat(args.includes('--check') !== args.includes('--execute') &&
+        (!args.includes('--resume-auth') || args.includes('--execute')),
+      'One-shot handoff requires exactly one of --check or --execute; auth resume requires execution',
+      'blocked-authorization');
+      if (args.includes('--execute')) requireThat(
+        ['--authorize-commit', '--authorize-push', '--authorize-draft-pr'].every(flag => args.includes(flag)),
+        'One-shot execution requires explicit commit, push and draft authorization flags', 'blocked-authorization');
+    }
+    if (action === 'one-shot-filter-reserve') requireThat(option('--task') && option('--request'),
+      'One-shot FILTER reservation requires --task and --request', 'blocked-authorization');
+  }
   if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action)) {
     const allowed = new Set(['--config',
       ...(action.startsWith('app-') ? ['--run', '--production'] : []),
@@ -168,7 +201,7 @@ try {
       'RSI flow commands require explicit --config and the app run when applicable', 'blocked-authorization');
     if (action.endsWith('-work')) {
       const operation = option('--operation');
-      requireThat(['status', 'inspect', ...(action === 'rsi-work' ? ['capture'] : []),
+      requireThat(['status', 'inspect', 'read-event', ...(action === 'rsi-work' ? ['capture'] : []),
         'claim', 'propose', 'reserve-publication', 'result'].includes(operation),
         'Unknown RSI work operation', 'blocked-scope');
       requireThat((operation === 'status') !== seen.has('--file'),
@@ -270,7 +303,8 @@ try {
     if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check', 'filter-local-preflight',
-      'e2e-proof-export', 'e2e-proof-check'].includes(action))
+      'e2e-proof-export', 'e2e-proof-check',
+      'one-shot-filter-prepare', 'one-shot-filter-reserve'].includes(action))
       ledger = new Ledger(config.stateDirectory);
     if (appAction && !['app-begin', 'app-runs', 'app-workiq-continue'].includes(action)) {
       requireThat(option('--run'), 'App commands require --run');
@@ -279,6 +313,29 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'one-shot-begin': result = beginOneShotCollection(config, ledger, input()); break;
+      case 'one-shot-status': result = oneShotCollectionStatus(ledger, option('--run')); break;
+      case 'one-shot-stop': result = stopOneShotCollection(ledger, option('--run')); break;
+      case 'one-shot-collect':
+        result = await advanceOneShotCollection(config, ledger, option('--run'), {
+          resume: args.includes('--resume')
+        }); break;
+      case 'one-shot-filter-prepare':
+      case 'one-shot-filter-reserve': {
+        const request = input();
+        requireThat(typeof request?.filter?.executionLedgerPath === 'string',
+          'One-shot FILTER requires its explicit execution ledger path');
+        ledger = new Ledger(dirname(resolve(request.filter.executionLedgerPath)));
+        result = action === 'one-shot-filter-prepare'
+          ? prepareOneShotFilterBudget(config, ledger, request)
+          : reserveOneShotFilterRequest(config, ledger, request, option('--task'),
+            readJson(resolve(option('--request'))));
+        break;
+      }
+      case 'one-shot-handoff':
+        result = await advanceOneShotHandoff(config, ledger, input(), {
+          execute: args.includes('--execute'), resumeAuth: args.includes('--resume-auth')
+        }); break;
       case 'app-end': result = await finishApp(config, ledger, option('--run')); break;
       case 'rsi-run':
       case 'app-rsi-run':

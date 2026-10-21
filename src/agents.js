@@ -13,7 +13,8 @@ const definitions = {
       'app-begin', 'app-append', 'app-import-parent', 'replay-evidence',
       'app-unavailable', 'app-block', 'app-ado', 'app-ado-reconcile',
       'app-workiq-cli', 'app-workiq-cli-reconcile', 'app-workiq-continue',
-      'app-thread-context', 'icm-replay', 'collect', 'app-end'
+      'app-thread-context', 'icm-replay', 'collect', 'app-end',
+      'one-shot-begin', 'one-shot-collect', 'one-shot-status', 'one-shot-stop'
     ]
   },
   filter: {
@@ -27,7 +28,8 @@ const definitions = {
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
       'filter-local-preflight', 'filter-local-run',
       'stage2-handoff', 'stage2-proposal-check', 'app-review', 'app-plan-improvement',
-      'review', 'review-pending', 'plan-improvement', 'report', 'replay-review', 'app-end'
+      'review', 'review-pending', 'plan-improvement', 'report', 'replay-review', 'app-end',
+      'one-shot-filter-prepare', 'one-shot-filter-reserve'
     ]
   },
   proposer: {
@@ -42,7 +44,7 @@ const definitions = {
     operations: [
       'app-worker', 'qualify-skill', 'submit-filter-handoff', 'submit-reviewed-handoff',
       'dispatch', 'reconcile', 'continue-local-validation', 'diagnose-local-validation',
-      'continue-local-authoring', 'app-end'
+      'continue-local-authoring', 'app-end', 'one-shot-handoff'
     ]
   },
   rsi: {

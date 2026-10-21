@@ -70,7 +70,7 @@ test('adapter uses committed skill bytes when checkout line endings differ', asy
   writeFileSync(join(workspace, '.gitattributes'), '*.md text eol=crlf\n');
   const run = args => new Promise((resolve, reject) => {
     import('node:child_process').then(({ execFile }) =>
-      execFile('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+      execFile('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
         '-c', 'core.safecrlf=false', ...args], { cwd: workspace }, (error, stdout, stderr) =>
         error ? reject(Object.assign(error, { stderr })) : resolve(stdout)));
   });

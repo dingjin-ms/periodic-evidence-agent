@@ -94,7 +94,7 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   const repo = repoConfig(ctx.config, ctx.root);
   mkdirSync(join(repo.referenceCheckout, 'src'), { recursive: true });
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+  const g = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);
@@ -2674,7 +2674,7 @@ test('planned OA skill path reconciles a landed product fix and creates a source
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
   writeFileSync(join(repo.referenceCheckout, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
     '# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+  const g = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);

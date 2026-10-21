@@ -19,6 +19,7 @@ import { prepareFilterBatches, sizeFilterGroups, expandFilterSharing, expandFilt
 import { prepareStage2, coverageSkillName } from '../src/stage2.js';
 import { reconcileFilterExecutionCohort } from '../src/filter-execution.js';
 import { acceptFilterProposerHandoff, prepareFilterProposerHandoff } from '../src/filter-handoff.js';
+import { captureWorkerRsiOutcome, rsiWork } from '../src/rsi-flow.js';
 import {
   qualifyRepositorySkill, repositoryValidationContract, skillQualificationId
 } from '../src/repository-skills.js';
@@ -89,6 +90,7 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
   };
   s.config.repositories = [repo];
   s.config.stateDirectory = ledger.directory;
+  s.config.rsi = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
   Object.assign(s.config.limits, {
     maxItems: 10, workerMaxToolCalls: 20, maxAiCreditsPerSession: 1,
     maxValidationInfrastructureRetries: 0, maxValidationRepairRounds: 0
@@ -121,6 +123,15 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
   const repeated = prepareFilterProposerHandoff(s.config, ledger, input);
   assert.equal(repeated.assignment.id, prepared.assignment.id);
   let modelCalls = 0, draftCalls = 0;
+  const put = ledger.put.bind(ledger);
+  let interruptedDelivery = false;
+  ledger.put = record => {
+    if (record.recordType === 'rsiFlowObservation' && !interruptedDelivery) {
+      interruptedDelivery = true;
+      throw new Error('Synthetic interruption before RSI insert');
+    }
+    return put(record);
+  };
   const executed = await acceptFilterProposerHandoff(s.config, ledger, input, {
     ...options,
     dispatchDependencies: {
@@ -156,6 +167,36 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
       .map(({ status, blockedReason, attemptCount }) => ({ status, blockedReason, attemptCount }));
     throw new Error(`Synthetic proposer failed: ${JSON.stringify(validation)}`, { cause: error });
   });
+  assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
+  ledger.put = put;
+  assert.equal(interruptedDelivery, true);
+  assert.equal(executed.rsi.state, 'blocked');
+  assert.deepEqual(executed.rsi.workerResultIds, [executed.result.id]);
+  assert.equal(ledger.all('rsiFlowObservation').length, 0);
+  const restarted = new Ledger(ledger.directory);
+  try {
+    const recoverable = rsiWork(s.config, restarted, 'status');
+    assert.equal(recoverable.undelivered.length, 1);
+    assert.equal(recoverable.undelivered[0].state, 'capture-pending');
+    assert.equal(recoverable.undelivered[0].workerResultId, executed.result.id);
+    const delivery = rsiWork(s.config, restarted, recoverable.undelivered[0].operation,
+      recoverable.undelivered[0].request);
+    assert.equal(rsiWork(s.config, restarted, 'status').undelivered.length, 0);
+    const observation = restarted.get('rsiFlowObservation', delivery.observationId);
+    const binding = restarted.get('rsiFlowBinding', observation.bindingId);
+    assert.equal(binding.upstream.kind, 'filter-handoff');
+    assert.deepEqual(binding.upstream.filter.retainedIds, prepared.filter.retainedIds);
+    assert.equal(observation.payload.data.workerResult.sourceRevision, executed.result.sourceRevision);
+    assert.equal(observation.payload.data.workerResult.validation[0].status, 'passed');
+    const claim = { observationId: observation.id, claimId: 'synthetic-rsi-claim', executorId: 'synthetic-host' };
+    rsiWork(s.config, restarted, 'claim', claim);
+    const outcome = rsiWork(s.config, restarted, 'result', {
+      ...claim, outcome: 'no-change',
+      rationale: 'The connected synthetic collector/FILTER/proposer run does not establish an agent-system defect.'
+    });
+    assert.equal(outcome.state, 'finished');
+    assert.equal(captureWorkerRsiOutcome(s.config, restarted, executed.result.id).nextRole, null);
+  } finally { restarted.close(); }
   assert.equal(modelCalls, 1); assert.equal(draftCalls, 1);
   assert.equal(executed.state, 'draft-pr-validated');
   assert.equal(executed.assignment.id, prepared.assignment.id);

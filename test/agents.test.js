@@ -35,9 +35,9 @@ function fixture(t) {
   return { root, config, file, invoke, result };
 }
 
-test('exactly three role packages expose pinned existing procedures and detached descriptors', () => {
+test('four role packages expose pinned procedures and detached descriptors', () => {
   const roles = describeAgents();
-  assert.deepEqual(roles.map(row => row.role), ['collector', 'filter', 'proposer']);
+  assert.deepEqual(roles.map(row => row.role), ['collector', 'filter', 'proposer', 'rsi']);
   for (const row of roles) {
     assert.equal(row.format, 'agent-definition-v1');
     for (const skill of [row.skill, ...row.procedures])
@@ -60,7 +60,9 @@ test('role routing rejects unknown and cross-role operations without echoing unt
     ['filter', 'app-worker'], ['proposer', 'review'], ['proposer', 'collect'],
     ['proposer', 'serve'], ['proposer', 'secret-value'],
     ['collector', 'diagnose-local-validation'], ['filter', 'diagnose-local-validation'],
-    ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring']
+    ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring'],
+    ['rsi', 'dispatch'], ['rsi', 'collect'], ['rsi', 'self-improvement'],
+    ['collector', 'rsi-work'], ['proposer', 'app-rsi-work']
   ]) {
     assert.throws(() => agentInvocation(role, command), error =>
       error.code === 'blocked-agent' && !error.message.includes(command));
@@ -105,8 +107,8 @@ test('diagnostic role envelope preserves its receipt without inferring validatio
 
 test('discovery and role help require no configured state or runtime', t => {
   const { root, config, result } = fixture(t);
-  assert.deepEqual(result('agents').map(row => row.role), ['collector', 'filter', 'proposer']);
-  for (const role of ['collector', 'filter', 'proposer']) {
+  assert.deepEqual(result('agents').map(row => row.role), ['collector', 'filter', 'proposer', 'rsi']);
+  for (const role of ['collector', 'filter', 'proposer', 'rsi']) {
     const help = result('agent', role, 'help');
     assert.equal(help.kind, 'result');
     assert.equal(help.result.skill.name, `evidence-${role}`);

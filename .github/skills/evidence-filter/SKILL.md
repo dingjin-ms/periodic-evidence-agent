@@ -8,7 +8,7 @@ description: >-
 
 # FILTER agent entrypoint
 
-This is one of the three top-level roles: Collector, FILTER and Proposer.
+This is one of the four top-level roles: Collector, FILTER, Proposer and RSI.
 The coordinator and improvement-planner procedures are internal procedures of
 this role, not additional agents to spawn. A session is an executor; the local
 ledger and immutable artifacts are durable state.
@@ -75,6 +75,12 @@ result fields when returning an `agent-operation-result-v1` envelope;
 Resume from persisted evidence and decisions, not chat recollection. A changed
 source/result/configuration requires the existing reconciliation procedure, not
 overwriting a sealed handoff.
+
+If the flow ends here with no candidate, a partial cohort or a blocker and
+the original run has RSI enabled, return through the coordinator's `app-end`
+completion path. Preserve unknown phases; do not label the flow successful to
+produce an RSI handoff. The coordinator invokes `evidence-rsi`; this FILTER
+procedure does not gain repository-write or publication authority.
 
 ## Authority
 

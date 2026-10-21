@@ -122,7 +122,7 @@ async function sample(root, files, record) {
   writeFileSync(join(author, 'build.config.json'), '{}\n');
   writeFileSync(join(author, 'src', 'value.cjs'), 'module.exports = 1;\n');
   writeFileSync(join(author, 'test', 'expected.json'), '{"expected":2}\n');
-  const git = args => command('git', ['-c', 'core.hooksPath=',
+  const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], author);
   const commit = async message => {
     await git(['add', '.']);

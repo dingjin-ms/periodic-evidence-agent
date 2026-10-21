@@ -14,9 +14,11 @@ continuation run without refetching captured pages or losing buffered rows.
 Root/reply context and an opt-in modified-time lane are documented in
 [the continuation contract](APP-NATIVE.md#budget-stopped-continuation). Neither
 feature authorizes additional live reads, automatic schedules or a delta feed.
-IcM connector receipts can be replayed **offline** into a separate audit store;
-live connector execution stays blocked pending an explicit timestamp/scope
-contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
+IcM connector receipts can be replayed **offline** into a separate audit store.
+An explicitly approved [incident-created cohort](APP-NATIVE.md#explicit-incident-created-icm-receipts)
+can ingest captured identity/search receipts through `app-append`; helpers do
+not launch its live connector. Default saved-query scope remains fail-closed.
+[Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
 the installed coverage-analysis skill and pinned reference, read source ledgers
 read-only, and cannot authorize product dispatch.
 
@@ -346,10 +348,21 @@ proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
 
 **Intentional product-specific selectors:** the current ADO adapter is fixed to
-`office/OC`, non-Removed Bugs under
-`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
+`office/OC`, Bugs with state **Resolved or Closed** and
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**, under
+`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. Both created
+and changed lanes retain their half-open UTC windows, snapshots and budgets.
+Missing or other resolutions are ineligible; `System.Reason` is not a fallback.
+This is regression-coverage input, not a request to fix unresolved product bugs.
+Duplicate records keep their exact identities and canonical links even when the
+linked bug is outside the area; no extra source reads or canonical merging are
+implied. Genuine scanner exclusions remain independent of resolution.
+IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
+The opt-in incident-created receipt path uses its separately approved team,
+S1/S2/S2.5 (API 1/2/25, excluding S0) and UTC window. It is not that saved query,
+does not require its timestamp equivalence and never changes an old run's scope.
 These selectors, the 1JS/Office repo URLs and the field names in
 `scaffold` are integration constraints, not anonymous generic examples or access
 grants. A different deployment needs a reviewed adapter/config change, not a
@@ -389,6 +402,43 @@ network, commit, push or PR authority. Each binding also declares a narrower
 write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
+
+Resolved/Closed ADO sources may execute only as otherwise eligible,
+source-bound test-coverage improvements in the Fixed/Duplicate cohort.
+They require a current complete coverage plan with a remaining gap and no
+unknowns, a qualified test-authoring binding and its pinned test-only write
+bounds. Generic RCA/product-fix assignments retain terminal-source protection.
+Unchanged terminal-cohort revisits do not themselves invalidate a review;
+changed source captures, superseded plans/qualifications and existing
+reconciliation blockers still block execution across standalone, native and
+continuation paths.
+
+Known product fixes remain in `investigation.existingFixes` and original source
+links. They are not permission to dispatch, nor must they be deleted to propose
+regression coverage. `testCoveragePlan.existingFixesReview` optionally records
+the existing review policy's source-bound reconciliation:
+
+| Field | Required binding |
+|---|---|
+| `investigationId`, `investigationVersion`, `evidenceIds` | Exact current investigation/version and complete evidence set |
+| `planId`, `planVersion`, `sourceRevision` | Exact coverage-plan version and inspected repository revision |
+| `review` | Existing review method, nonblank reviewer and UTC review time at/after the investigation review |
+| `fixes` | Every original fix URL exactly once, each with `url`, `disposition`, `rationale` |
+
+Only all-`product-fix-with-remaining-coverage-gap` entries can pass the qualified
+test-only gate. `coverage-already-satisfied`, `coverage-in-flight` and
+`unresolved` remain durable blocking outcomes. Missing, duplicate, stale or
+mismatched bindings fail closed. This is an agent-evidence review under the
+existing policy, not a new per-finding human approval gate.
+
+Use the existing `plan-improvement` / `app-plan-improvement` input's
+`testCoverage.existingFixesReview` to persist the record. When adding it to an
+existing plan, bind its next version; unchanged replay remains idempotent.
+Changing the plan/source or investigation requires a new bound review. FILTER
+candidates may carry `existingFixes`; handoffs preserve these and previously
+recorded fix URLs and accept the review as `routing.existingFixesReview`.
+Neither fix reconciliation nor retained duplicate relations authorize extra
+source reads or prove canonical duplicate-work merging.
 
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
@@ -777,8 +827,11 @@ cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
 Version 3 staged plans may bind an `azure-artifacts-npm` authentication
-contract. Before a local worker launches, a controller-owned preflight checks
-authentication only when the matching dependency receipt is absent. If the
+contract. Before a local or Remote Agency author launches, a controller-owned
+preflight checks authentication only when the matching dependency receipt is
+absent. Version-3 authentication profiles also finish exact-base preparation
+before authoring, so a subsequently rejected cache cannot strand a new authored
+commit behind an undiscovered authentication requirement. If the
 pinned provider is missing or the current user must sign in, dispatch returns
 `action-required-auth` while the assignment remains `prepared`; no workspace,
 worker session or tool budget is created. The result contains a non-secret,
@@ -786,7 +839,10 @@ structured remediation command bound to a controller-owned `.yarnrc.yml`
 snapshot extracted from the exact base revision. After the user approves any
 required pinned provider installation and completes Microsoft sign-in/MFA, the
 agent retries the original controller command once and resumes the same
-assignment.
+assignment. If preparation reports `blocked-auth` after a receipt-only preflight
+skipped the check, both providers run one forced non-interactive preflight and
+return the same remediation action. This check neither deletes a trusted receipt
+nor automatically retries preparation.
 
 The exact-revision dependency preparation still performs a final non-interactive
 authentication validation before the locked restore. It never emits a token or
@@ -795,6 +851,11 @@ Unexpected provider drift, anonymous requests, expired credentials or feed
 denials after preflight become `blocked-auth` and are not treated as
 infrastructure retries. Dependency and compile cache hits do not run either the
 authentication check or the authentication stage.
+Failure artifacts retain only the stage, a typed safe reason, a numeric process
+exit code when available and `tokenRecorded: false`; raw credential-provider
+diagnostics are not retained. Missing providers, version mismatch, invalid feed
+configuration, explicit refresh requests and credential-validation failures are
+distinct. A validation failure alone does not establish that a login expired.
 
 On a new Windows machine, the agent may prepare the approved provider and
 current user's feed authentication explicitly:
@@ -835,10 +896,20 @@ only when a fresh content hash still matches the verified process-local baseline
 additions, removals, renames and actual content changes invalidate the cache.
 Directory `change` events require recursive content verification, including when
 only an ancestor event is delivered. Overlapping paths coalesce into bounded
-worker tasks without dropping descendant coverage. Settlements serialize per
-guard and wait for queued events after hashing; unknown filenames and watcher
-errors invalidate trust even during initial verification. Artifacts record
-changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
+worker tasks without dropping descendant coverage. Incremental dependency-subtree
+checks use the same recursive partitioner
+as complete snapshots, with at most 2,048 filesystem entries per leaf task and
+the existing five-minute task deadline; parent directory manifests are rebuilt
+from every child result. Settlements serialize per
+guard and wait for queued events after hashing. A `change` notification without a
+filename requires complete-root content/link and membership revalidation against
+the baseline; it never means that changes are ignored. This handles Windows
+access-time notifications caused by reading unchanged files. Unknown `rename`
+notifications and watcher errors still invalidate trust, including during initial
+verification. Repeated events must settle within four passes or trust is rejected.
+Artifacts record changed-path, rehashed-entry, incremental worker-task,
+full-root revalidation and settlement-pass counts alongside wall time.
+Preparation failures preserve the exact verification reason and event details.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an
@@ -1071,14 +1142,20 @@ npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
   --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
-The scheduler selects jobs deterministically, rotates across configured
-repositories, respects active hosted and local workers, and launches only jobs
+The scheduler selects jobs deterministically, visits repositories in order of
+their oldest waiting job, respects active hosted and local workers, and launches only jobs
 that are still `prepared`. Each selected assignment is atomically admitted
 again by normal `dispatch`; an overlapping scheduler can therefore observe an
 `overlap` result but cannot submit a duplicate remote job. Scheduler batches
 and per-assignment outcomes are durable ledger operations. This supports
 concurrent repositories on one Controller machine; the SQLite ledger is not a
 multi-machine lease service.
+
+Authentication actions are retained in each scheduler result while the affected
+job remains `prepared`; other selected repositories may continue. A batch with
+authentication actions, blocked/uncertain jobs or failed outcomes is recorded as
+`partial`, not successful delivery. Follow the returned authentication recovery
+procedure rather than resubmitting the batch blindly.
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
@@ -1212,8 +1289,9 @@ and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
 
-The input contains only the immutable FILTER binding and the repository
-capability used for routing:
+The input contains the immutable FILTER binding and the repository capability
+used for routing, plus optional structured skill input and a source-bound
+`routing.existingFixesReview` when known product fixes require reconciliation:
 
 ```json
 {

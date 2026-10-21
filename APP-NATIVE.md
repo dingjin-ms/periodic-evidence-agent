@@ -384,6 +384,87 @@ IcM unavailable input:
 `{"pass":"icm:created","reason":"no-approved-connector"}`.
 Unstarted/unavailable counts are null, not clean zero.
 
+### Explicit incident-created IcM receipts
+
+An approved incident-created cohort does not require Source Created Time
+equivalence. Select it explicitly in a **new** configuration/run; never edit a
+frozen run or relabel its unavailable pass. The default missing/null
+`timestampContract` retains the legacy saved-query/owner-export requirements.
+No helper launches an IcM connector.
+
+The following settings are illustrative (team `123` is synthetic). Set
+`owningTeamId` to the independently confirmed, approved team. `scopeApproved`
+confirms that team and the exact API severity values `[1,2,25]` (S1/S2/S2.5,
+excluding S0), not saved-query parity:
+
+```json
+{
+  "enabled": true,
+  "scopeApproved": true,
+  "timestampContract": "incident-created",
+  "owningTeamId": 123,
+  "severity": [1, 2, 25],
+  "top": 5
+}
+```
+
+These are `sources.icm` fields. Legacy `queryId`, `filtersVerified` and
+`ownerExport` are not used by this alternate path and must not be relabeled as
+verified. `collectIcm`/owner-export collection does not implement this mode;
+use the existing app-native collector entrypoint:
+
+```powershell
+npm run pilot -- agent collector app-append --run RUN_ID --file .\private\icm-app-receipts.json --config .\pilot.local.json
+```
+
+Input remains `{eventId,pass:"icm:created",calls:[...]}`. Each call has `id`,
+`tool`, `request`, `requestedAt`, `observedAt`, and `response` or `failure`.
+`response` is the original MCP result object (`structuredContent` or one JSON
+text-content block), not the surrounding JSON-RPC envelope. Preserve the
+original wire envelope and hash separately. First supply
+`tool:"get_my_icm_context",request:{}` with the actual active configured
+alias/email response. Subsequent `tool:"search_incidents"` calls use:
+
+```json
+{
+  "incidentAdvancedSearchRequest": {
+    "owningTeamId": 123,
+    "severity": [1, 2, 25],
+    "dateRange": {
+      "createdAfter": "2026-10-08T00:00:00Z",
+      "createdBefore": "2026-10-09T00:00:00Z"
+    },
+    "top": 5,
+    "sortBy": [{ "field": "CreatedDate", "direction": "Descending" }]
+  }
+}
+```
+
+Bounds must exactly match the run window: inclusive `createdAfter`, exclusive
+`createdBefore`, explicit UTC. Required `createdDate` is validated without
+falling back to `sourceCreateTime`; original fractional digits are retained.
+Optional source timestamps, including omitted versus explicit null values,
+remain unchanged in captured payloads and evidence fields. Evidence uses an
+incident-created team namespace, never `icm/query/599514`. Because the search
+contract supplies no incident URL, the evidence link is the portal root and
+`directLink` is marked missing rather than inventing an incident route.
+
+Imported real receipts are `app-tool-reported`, synthetic runs stay
+`synthetic`; neither becomes locally authenticated merely by replay. Call and
+row captures are retained in the app ledger. `readCalls` counts identity/search
+receipts, not initialization/discovery calls in the separate connector
+qualification budget. Offline replay makes no additional source calls.
+
+A returned continuation means partial coverage, even if all supplied rows were
+ingested. A count is reported metadata, not evidence of exhaustive coverage.
+Only the exact returned token may be appended after a **separately authorized**
+read; this helper never executes a next request. Read/item caps, buffered
+unexamined rows, duplicate versions, failed identity/scope checks and terminal
+passes remain distinct. No same-run restart follows a budget/error stop.
+Only successful exhaustion advances an incident-created-labeled cursor.
+Current contents are not historical bodies; FILTER exclusions, review and
+product-worker permissions are unchanged.
+
 ### ADO collection and offline recovery
 
 ```powershell
@@ -391,8 +472,15 @@ npm run pilot -- app-ado --run RUN_ID --pass ado:created --collect
 npm run pilot -- app-ado --run RUN_ID --pass ado:changed --collect
 ```
 
-Both preserve the approved area, Bug/non-Removed filters and explicit UTC
-window. Changed observations do not inflate new-cohort counts.
+Both preserve the approved area, Bug type and explicit half-open UTC window.
+The regression cohort requires state **Resolved or Closed** and the captured
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**. Query selection,
+post-fetch guards and receipt replay enforce the same predicate. Missing,
+unrecognized or other resolutions block acceptance; `System.Reason` never
+substitutes for the resolution field. Changed observations do not inflate
+new-cohort counts. Duplicate resolution does not exclude an in-area bug whose
+canonical target is elsewhere. Exact source identities and relation references
+are retained without fetching the target or asserting canonical deduplication.
 Each pass establishes an asOf snapshot, then queries and batches by it.
 Native identity validation precedes service reads. Auth failure in one pass
 blocks the other; operations are journaled before reads to prevent duplicate
@@ -417,6 +505,9 @@ deterministic scoped collector. The batch also requires
 Imported principal receipts are app-reported, not independent local auth.
 Complete passes alone advance `app:<pass>` cursors; failures retain prior
 committed cursors. Revisions and captures deduplicate across created/changed.
+Older noncohort receipts do not satisfy the new query/input contract. They remain
+immutable historical evidence; do not rewrite them or claim they establish the
+new cohort.
 
 ### Importing an external app receipt bundle
 
@@ -644,7 +735,7 @@ and `sortBy:[{field:"CreatedDate",direction:"Descending"}]`. Only a returned MCP
 `nextPageToken` may be added on the next page; no partner OData token, offset,
 expanded dates, implicit query ID, retry or head restart is substituted.
 Successful pages contain `success:true`, `value`, optional nonnegative
-`@odata.count` and optional `nextPageToken`. Identity/read and examination limits,
+`@odata.count` (explicit null remains unknown) and optional `nextPageToken`. Identity/read and examination limits,
 request equality, returned team/severity/date bounds and token cycles are checked.
 Every row costs an examination, including duplicate versions; changed payloads
 for the same ID remain distinct hashed versions.
@@ -653,16 +744,20 @@ for the same ID remain distinct hashed versions.
 request only**. `state` remains blocked when `timestampContract:null`, even if
 that diagnostic enumeration exhausted pages. `cohortCoverage` and
 `liveActivation` remain blocked in this offline adapter. An explicit
-`timestampContract:"incident-created"` labels diagnostics, not saved-query
-equivalence or live authorization. Source Created Time has no verified input
-mapping and is rejected as a substituted contract. Returned `sourceCreateTime`
+`timestampContract:"incident-created"` labels the recorded incident-created
+enumeration, not saved-query equivalence or live authorization. This standalone
+replay remains audit-only; the explicitly configured `app-append` path above
+can ingest those receipts into a new app evidence run. Source Created Time has
+no verified input mapping and is rejected as a substituted contract. Returned `sourceCreateTime`
 presence is recorded separately; omitted values are not asserted to be null at
 source. `remainingSourceRecords` is unknown until observed exhaustion; a reported
 total is not a stable snapshot. Counts describe the replayed prefix;
 `suppliedReadReceipts` / `unprocessedReadReceipts` identify retained trailing
 receipts after a stop. No automatic continuation is implemented for this adapter.
-Actual saved-query scope, timestamp agreement and separately authorized live
-execution remain prerequisites, not facts established by synthetic tests.
+For saved-query use, actual scope and timestamp agreement remain prerequisites,
+not facts established by synthetic tests. The explicitly selected
+incident-created cohort does not require that agreement. Neither mode grants
+authorization for new live execution.
 
 ## Title-first FILTER screening
 
@@ -679,10 +774,15 @@ npm run pilot -- filter-title-index --file .\private\sources.json --output .\pri
 
 The immutable `filter-title-index-v1` artifact contains all deduplicated evidence
 IDs, titles, source kind/namespace/record ID/revision/version basis, provenance,
-capture hashes/references, source snapshot fingerprints and the 14-exclusion
+capture hashes/references, ADO state/resolution selectors, source snapshot fingerprints and the 14-exclusion
 policy. It does not include descriptions, RCA, full bodies or capture content.
 Titles and identity are projected from read-only SQLite; original records and
 cursors are untouched. Missing or whitespace-only titles remain explicit.
+ADO cohort eligibility is checked before title screening, full-batch loading,
+captured-evidence import and held Stage2 handoffs, including unscreened inputs.
+An ineligible or missing-resolution record blocks the input rather than silently
+dropping a member or rewriting a frozen ledger. Fixed/Duplicate eligibility does
+not waive genuine exclusions, source-bound coverage review or dispatch gates.
 
 An agent or human then writes `filter-title-decisions-v1`; the schema is
 `scaffold/contracts.schema.json#/$defs/filterTitleDecisions`. Required envelope:

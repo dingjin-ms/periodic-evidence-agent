@@ -29,7 +29,12 @@ send messages, or merge code.
    prior cursor and outstanding gaps before querying. Do not let overlapping
    ticks create duplicate work.
 3. Use the configured ADO cohort query for Bugs under the entire Excel Agent area,
-   including subpaths, excluding Removed. Do not narrow to Automation or Bug Bash.
+   including subpaths, with state Resolved or Closed and
+   Microsoft.VSTS.Common.ResolvedReason Fixed or Duplicate. Reject other/missing
+   resolutions; never substitute System.Reason. Do not narrow to Automation or
+   Bug Bash. This selects regression-coverage inputs, not unresolved bugs to fix.
+   Preserve duplicate identities and canonical links even when the target is
+   outside the area; do not fetch it or infer canonical merging.
    Preserve the creation-date cohort query separately from any configured
    changed-evidence scan. If update/revisit behavior is unresolved, do not claim
    continuous change coverage or enable recurring collection.
@@ -37,10 +42,12 @@ send messages, or merge code.
    IDs, and read batches of at most 200 using the query snapshot/asOf and
    errorPolicy=Fail. Record revisions, unavailable fields and failed records.
    Source field absence must be distinguished from a successful empty field.
-5. For IcM, verify actual filters for query 599514. Preserve S0/S1/S2/S2.5 and
+5. For saved-query IcM, verify actual filters for query 599514. Preserve S1/S2/S2.5 (API 1/2/25; exclude S0) and
    functional-scope intent from the scan prompt; do not assume the saved query
    enforces it. Separate Dogfood, MSIT, Production and unknown. Use approved
-   connectors or owner exports, never a fabricated endpoint.
+   connectors or owner exports, never a fabricated endpoint. An explicitly
+   selected incident-created cohort uses inclusive createdAfter/exclusive
+   createdBefore UTC bounds, not saved-query Source Created Time equivalence.
 6. Use WorkIQ to read configured workplace seeds and in-scope related resources.
    Map logical read operations to tools exposed by the installed client. Do not
    enable source-mutating tools. Empty seeds mean unconfigured, not tenant-wide
@@ -134,6 +141,12 @@ For eligible work:
 1. Check existing assignments, fixes and PRs. An existing resolved source item is
    not automatically a new coding task. Reconcile changed evidence with active
    work before issuing a new assignment version.
+   Only current, qualified test-only coverage improvements may use the
+   Resolved/Closed + Fixed/Duplicate cohort. Preserve known product-fix URLs in
+   existingFixes. If nonempty, bind plan.existingFixesReview to every URL and the
+   exact investigation/evidence/plan/source version. Only reviewed product fixes
+   with a remaining coverage gap qualify; already-satisfied, in-flight or
+   unresolved test work stays blocked. Do not turn this into a new human gate.
 2. Persist a prepared assignment with stable ID, exact investigation version,
    evidence IDs, repo owner, intent, questions, acceptance criteria, required
    capabilities, bounds, dependency IDs, validation gates and permissions.

@@ -49,10 +49,12 @@ function Invoke-CredentialProvider {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
+        Push-Location -LiteralPath ([System.IO.Path]::GetTempPath())
         $output = @(& $Provider @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
     }
     finally {
+        Pop-Location
         $ErrorActionPreference = $previousPreference
     }
     return [pscustomobject]@{
@@ -75,14 +77,16 @@ foreach ($registry in $expectedRegistries) {
 
 $provider = Get-Command artifacts-npm-credprovider -ErrorAction SilentlyContinue
 $installedVersion = if ($null -ne $provider) {
-    (& $provider.Source --version).Trim()
+    $versionCheck = Invoke-CredentialProvider $provider.Source @('--version')
+    if ($versionCheck.ExitCode -eq 0) { ($versionCheck.Output -join "`n").Trim() }
 } else {
     $null
 }
 
 if ($installedVersion -ne $providerVersion) {
     if ($CheckOnly) {
-        Write-Preflight 'action-required-auth' 'provider-missing' $true
+        $reason = if ($null -eq $provider) { 'provider-missing' } else { 'provider-version-mismatch' }
+        Write-Preflight 'action-required-auth' $reason $true
         exit 0
     }
     if (-not $InstallProvider) {
@@ -99,9 +103,10 @@ if ($installedVersion -ne $providerVersion) {
         throw "Failed to install $providerPackage"
     }
     $provider = Get-Command artifacts-npm-credprovider -ErrorAction Stop
-    $installedVersion = (& $provider.Source --version).Trim()
+    $versionCheck = Invoke-CredentialProvider $provider.Source @('--version')
+    $installedVersion = if ($versionCheck.ExitCode -eq 0) { ($versionCheck.Output -join "`n").Trim() } else { $null }
     if ($installedVersion -ne $providerVersion) {
-        throw "Expected artifacts-npm-credprovider $providerVersion, found $installedVersion"
+        throw "Expected artifacts-npm-credprovider $providerVersion after installation"
     }
 }
 
@@ -112,7 +117,8 @@ $needsAuthentication = $validation.ExitCode -ne 0 -or
     ($validation.Output -join "`n") -match 'need refresh'
 if ($CheckOnly) {
     if ($needsAuthentication) {
-        Write-Preflight 'action-required-auth' 'interactive-sign-in-required'
+        $reason = if ($validation.ExitCode -ne 0) { 'credential-validation-failed' } else { 'interactive-sign-in-required' }
+        Write-Preflight 'action-required-auth' $reason
     }
     else {
         Write-Preflight 'ready'

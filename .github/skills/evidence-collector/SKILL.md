@@ -96,9 +96,25 @@ An approved dry run stays collection-only in its isolated namespace.
    references are reported separately. A pending bounded detail request is not
    evidence until its actual response is admitted; never fetch omitted IDs
    automatically or extend the original budget.
+   Both lanes require state Resolved or Closed and
+   `Microsoft.VSTS.Common.ResolvedReason` Fixed or Duplicate. Missing/other
+   resolutions fail closed; `System.Reason` is not a fallback. Preserve the
+   approved area/subpaths, date windows, snapshots and limits. Retain duplicate
+   identities and canonical relations even when the linked bug is outside the
+   area, without extra source reads. Do not rewrite older receipts to match.
 6. Record unavailable IcM with `app-unavailable`; absence of an approved
-   connector is unknown coverage, not zero incidents. Do not follow related
-   evidence outside the approved depth/items/calls/scope. These helpers do not
+   connector is unknown coverage, not zero incidents.
+   An explicitly approved incident-created cohort instead selects
+   `sources.icm.timestampContract:"incident-created"` in a new run/config,
+   with enabled/scopeApproved, the confirmed owningTeamId, severity `[1,2,25]`
+   and bounded top. Use `app-append` for captured `get_my_icm_context` then
+   exact `search_incidents` receipts under the incident-created contract in
+   APP-NATIVE.md. Bounds are inclusive createdAfter/exclusive createdBefore
+   UTC. Missing sourceCreateTime is not a blocker for this selected mode and
+   must remain absent, never inferred from createdDate. Preserve partial
+   counts, continuation and cap stops; ingestion does not authorize more reads.
+   Do not follow related evidence outside the approved depth/items/calls/scope.
+   These helpers do not
    automatically perform related-evidence collection. Connector identity success
    and team/severity mapping do not establish saved-query timestamp equivalence.
    `icm-replay` accepts already captured connector receipts **offline**, in a

@@ -26,6 +26,14 @@ export function icmSearchRequest(mapping, window, nextPageToken = null) {
   return { incidentAdvancedSearchRequest: request };
 }
 
+export function configuredIcmMapping(source) {
+  requireThat(source?.enabled === true && source.scopeApproved === true &&
+    source.timestampContract === 'incident-created',
+  'IcM receipt ingestion requires enabled, scope-approved, explicitly selected incident-created mode', 'blocked-scope');
+  return { owningTeamId: source.owningTeamId, severity: source.severity, top: source.top,
+    teamVerified: true, severityVerified: true, timestampContract: source.timestampContract };
+}
+
 // This is a receipt adapter, not a connector launcher or source authorization.
 export function replayIcm(bundle, identity) {
   requireThat(bundle?.format === 'icm-receipts-v1' && /^[a-zA-Z0-9][\w.-]{0,127}$/.test(bundle.id) &&
@@ -82,23 +90,27 @@ export function replayIcm(bundle, identity) {
       requireThat(data.success === true && Array.isArray(data.value), 'Unknown/failed IcM search response',
         [401, 403].includes(data.httpStatus) ? 'blocked-auth' : 'failed-source');
       result.returnedRecords += data.value.length;
-      requireThat(data.value.length <= mapping.top, 'IcM page exceeds configured top', 'partial');
       requireThat(data.nextPageToken === undefined || data.nextPageToken === null ||
         (typeof data.nextPageToken === 'string' && data.nextPageToken.length > 0),
       'Invalid IcM continuation token', 'invalid-record');
       if (data['@odata.count'] !== undefined) {
-        requireThat(Number.isSafeInteger(data['@odata.count']) && data['@odata.count'] >= 0, 'Invalid IcM count', 'invalid-record');
+        requireThat(data['@odata.count'] === null ||
+          Number.isSafeInteger(data['@odata.count']) && data['@odata.count'] >= 0, 'Invalid IcM count', 'invalid-record');
         result.reportedTotals.push(data['@odata.count']);
       }
+      requireThat(data.value.length <= mapping.top, 'IcM page exceeds configured top', 'partial');
       for (const [offset, row] of data.value.entries()) {
         if (result.examinedRecords >= bundle.limits.maxItems) {
           result.bufferedPosition = { callId: call.id, offset };
           requireThat(false, 'IcM examination budget exhausted; buffered rows retained in capture', 'partial');
         }
         result.examinedRecords++;
-        requireThat(Number.isSafeInteger(row.id) && row.id > 0 && row.owningTeamId === mapping.owningTeamId &&
+        requireThat(row && Number.isSafeInteger(row.id) && row.id > 0 && row.owningTeamId === mapping.owningTeamId &&
           mapping.severity.includes(row.severity), 'IcM returned a row outside team/severity scope', 'blocked-scope');
         utc(row.createdDate);
+        for (const field of ['title', 'state'])
+          requireThat(row[field] == null || typeof row[field] === 'string',
+            `Invalid IcM ${field}`, 'invalid-record');
         requireThat(Date.parse(row.createdDate) >= Date.parse(bundle.window.start) &&
           Date.parse(row.createdDate) < Date.parse(bundle.window.end), 'IcM incident-created date outside request', 'blocked-scope');
         const digest = hash(json(row)), key = `${row.id}:${digest}`;
@@ -106,7 +118,8 @@ export function replayIcm(bundle, identity) {
         ids.add(row.id); versions.add(key);
         result.versions.push({ recordId: String(row.id), revision: null, versionBasis: 'captured-payload-hash',
           sha256: digest, callId: call.id, offset, observedAt: call.observedAt, requestedAt: call.requestedAt,
-          request: call.arguments, createdDate: row.createdDate, sourceCreateTime: row.sourceCreateTime ?? null,
+          request: call.arguments, createdDate: row.createdDate,
+          ...(Object.hasOwn(row, 'sourceCreateTime') ? { sourceCreateTime: row.sourceCreateTime } : {}),
           sourceCreateTimePresent: Object.hasOwn(row, 'sourceCreateTime'), artifactRef: `sqlite:capture:${digest}` });
       }
       const token = data.nextPageToken ?? null;
@@ -118,6 +131,8 @@ export function replayIcm(bundle, identity) {
     result.enumeration = expected === null ? 'complete' : 'partial';
     if (expected && result.readCalls >= bundle.limits.maxCalls)
       result.error = { code: 'partial', message: 'IcM read cap reached; pending request is audit-only' };
+    if (expected && result.examinedRecords >= bundle.limits.maxItems)
+      result.error = { code: 'partial', message: 'IcM examination cap reached; pending request is audit-only' };
   } catch (error) {
     result.error = safeError(error);
     result.enumeration = result.error.code === 'partial' ? 'partial' : 'blocked';
@@ -126,6 +141,7 @@ export function replayIcm(bundle, identity) {
   result.unprocessedReadReceipts = bundle.calls.length - result.readCalls;
   result.unexaminedReturnedRecords = result.returnedRecords - result.examinedRecords;
   result.nextRequest = result.error ? null : expected;
+  result.pendingRequest = result.error?.code === 'partial' ? expected : null;
   result.state = result.error?.code === 'blocked-auth' ? 'blocked-auth'
     : mapping.timestampContract === null || result.enumeration === 'blocked' ? 'blocked' : result.enumeration;
   if (mapping.timestampContract === null) result.timestampBlocker = 'Saved-query Source Created Time mapping unresolved';

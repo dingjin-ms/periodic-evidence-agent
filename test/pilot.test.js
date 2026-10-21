@@ -8,12 +8,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CopilotClient } from '@github/copilot-sdk';
 import { probeWorkiq } from '../scripts/Workiq-Auth-Repro.mjs';
 import { Ledger } from '../src/ledger.js';
-import { configAt, hash, json, now, exclusions, PilotError, boundedPath, validateRecord, workspaceCleanupPolicy, proposerExecutorFlight, validationLfsPaths } from '../src/common.js';
-import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, area, wiql, adoRecord } from '../src/sources.js';
+import { configAt, hash, json, now, exclusions, PilotError, Budget, boundedPath, validateRecord, workspaceCleanupPolicy, proposerExecutorFlight, validationLfsPaths } from '../src/common.js';
+import { collectAdo, collectWorkiq, collectIcm, evidenceEnvelope, workiqTitle, area, wiql, adoRecord } from '../src/sources.js';
 import { dryRun } from '../src/dry-run.js';
-import { followRelated } from '../src/followup.js';
+import { followRelated, readRelatedWorkiq } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
 import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
@@ -22,6 +23,7 @@ import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
 import { cleanupWorkspace, cleanupWorkspaces } from '../src/workspace-gc.js';
+import { schedulePreparedAssignments } from '../src/assignment-scheduler.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -46,7 +48,8 @@ function setup(t) {
 function adoItem(id = 1, rev = 1) {
   return { id, rev, fields: {
     'System.Id': id, 'System.WorkItemType': 'Bug', 'System.Title': `Synthetic bug ${id}`,
-    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Active',
+    'System.AreaPath': `${area}\\Synthetic`, 'System.State': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
     'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z'
   } };
 }
@@ -91,7 +94,7 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   const repo = repoConfig(ctx.config, ctx.root);
   mkdirSync(join(repo.referenceCheckout, 'src'), { recursive: true });
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+  const g = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);
@@ -107,9 +110,9 @@ async function fixture(t, provenance = 'synthetic', intent = 'rca-only') {
   return { ...ctx, repo, evidence, investigation, assignment, job, g };
 }
 async function stagedValidationFixture(t, {
-  parallelOutputs = false, authentication = false
+  parallelOutputs = false, authentication = false, provenance = 'synthetic'
 } = {}) {
-  const ctx = await fixture(t);
+  const ctx = await fixture(t, provenance);
   writeFileSync(join(ctx.repo.referenceCheckout, '.gitignore'),
     '.pilot/\nextra/node_modules/\n');
   writeFileSync(join(ctx.repo.referenceCheckout, 'package.json'), '{"packageManager":"fixture@1.0.0"}\n');
@@ -562,7 +565,8 @@ test('ADO WIQL preserves full area and distinct created/changed lanes', () => {
   assert.match(wiql(window), /\[System.CreatedDate\]/);
   assert.match(wiql(window, 'changed'), /\[System.ChangedDate\]/);
   assert.ok(wiql(window).includes(`UNDER '${area}'`));
-  assert.match(wiql(window), /<> 'Removed'/);
+  assert.match(wiql(window), /\[System.State\] IN \('Resolved', 'Closed'\)/);
+  assert.match(wiql(window), /\[Microsoft.VSTS.Common.ResolvedReason\] IN \('Fixed', 'Duplicate'\)/);
   assert.doesNotMatch(wiql(window), /Bug Bash|Automation/);
   assert.throws(() => wiql({ start: '2026-10-08', end: window.end }));
 });
@@ -752,6 +756,21 @@ test('IcM has an explicit unverified-query/connector blocker', async t => {
   await assert.rejects(collectIcm(config, config.window, async () => {}), /not verified/);
   config.sources.icm.scopeApproved = true; config.sources.icm.filtersVerified = true;
   await assert.rejects(collectIcm(config, config.window, async () => {}), /No supported authenticated/);
+});
+test('IcM incident-created selection is opt-in and cannot reuse the saved-query export adapter', async t => {
+  const { config, root } = setup(t);
+  assert.equal(config.sources.icm.timestampContract, null);
+  const file = join(root, 'icm-config.json');
+  delete config.sources.icm.timestampContract;
+  writeFileSync(file, json(config));
+  assert.equal(configAt(file).sources.icm.timestampContract, undefined);
+  config.sources.icm.timestampContract = 'incident-created';
+  writeFileSync(file, json(config));
+  assert.equal(configAt(file).sources.icm.timestampContract, 'incident-created');
+  await assert.rejects(collectIcm(config, config.window, async () => {}), /use app-append/);
+  config.sources.icm.timestampContract = 'sourceCreateTime';
+  writeFileSync(file, json(config));
+  assert.throws(() => configAt(file), /timestampContract/);
 });
 test('IcM owner export cannot masquerade as authenticated collection', async t => {
   const { config, root } = setup(t);
@@ -1526,6 +1545,75 @@ test('trusted dependency cache hits skip authentication checks', async t => {
   assert.equal(missingSnapshotActions[0].state, 'action-required-auth');
   assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
 });
+test('forced recovery preflight checks authentication without deleting trusted caches', async t => {
+  const ctx = await stagedValidationFixture(t, { authentication: true });
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.ok(prepared.staged.receiptPath);
+  ctx.calls.length = 0;
+  ctx.behavior.authenticationPreflight = 'credential-validation-failed';
+  const actions = await preflightValidationAuthentication(
+    ctx.config, ctx.repo, ctx.isolated.baseRevision, ctx.execute, { force: true });
+  assert.equal(actions[0].reason, 'credential-validation-failed');
+  assert.equal(actions[0].requiresInstallApproval, false);
+  assert.ok(existsSync(prepared.staged.receiptPath));
+  assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
+});
+
+test('local cache-miss authentication recovery stays prepared and never launches a model', async t => {
+  const ctx = await stagedValidationFixture(t, {
+    authentication: true, provenance: 'authenticated-source'
+  });
+  ctx.repo.flights = { proposerExecutor: 'local' };
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const investigation = { ...ctx.investigation, id: `${ctx.investigation.id}-auth-dispatch` };
+  ctx.ledger.put(investigation);
+  ctx.job = ctx.ledger.prepare(makeAssignment(ctx.config, investigation, ctx.repo.id, 'defect-fix'));
+  let checks = 0;
+  const action = await dispatch(ctx.config, ctx.ledger, ctx.job.id, {
+    preflightValidationAuthentication: async (config, repo, revision, execute, options) => {
+      if (++checks === 1) return [];
+      assert.deepEqual(options, { force: true });
+      return [{ state: 'action-required-auth', reason: 'credential-validation-failed' }];
+    },
+    prepareValidation: async () => ({
+      staged: { error: { code: 'blocked-auth', message: 'Synthetic late authentication failure' } }
+    }),
+    runModel: () => assert.fail('Late authentication recovery must not launch a model'),
+    runValidation: () => assert.fail('Late authentication recovery must not run tests')
+  });
+  assert.equal(action.state, 'action-required-auth');
+  assert.equal(checks, 2);
+  assert.equal(ctx.ledger.job(ctx.job.id).state, 'prepared');
+  assert.equal(ctx.ledger.all('workerResult').length, 0);
+  assert.equal(ctx.ledger.status().operations.length, 0);
+});
+
+test('local late authentication recovery is bounded when no remediation action is available', async t => {
+  const ctx = await stagedValidationFixture(t, {
+    authentication: true, provenance: 'authenticated-source'
+  });
+  ctx.repo.flights = { proposerExecutor: 'local' };
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const investigation = { ...ctx.investigation, id: `${ctx.investigation.id}-auth-dispatch` };
+  ctx.ledger.put(investigation);
+  ctx.job = ctx.ledger.prepare(makeAssignment(ctx.config, investigation, ctx.repo.id, 'defect-fix'));
+  let checks = 0, preparations = 0;
+  await assert.rejects(dispatch(ctx.config, ctx.ledger, ctx.job.id, {
+    preflightValidationAuthentication: async () => { checks++; return []; },
+    prepareValidation: async () => {
+      preparations++;
+      return { staged: { error: { code: 'blocked-auth', message: 'Synthetic auth failure' } } };
+    },
+    runModel: () => assert.fail('Must not launch a model')
+  }), error => error.code === 'blocked-auth');
+  assert.equal(checks, 2);
+  assert.equal(preparations, 1);
+  assert.equal(ctx.ledger.job(ctx.job.id).state, 'prepared');
+});
+
 test('authentication preflight is singleflight and malformed evidence blocks', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
   ctx.behavior.authenticationPreflight = 'provider-missing';
@@ -1555,7 +1643,11 @@ test('authentication failure blocks before dependency restore without retrying',
   assert.deepEqual(ctx.calls, ['fingerprint', 'authentication']);
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.equal(artifact.output.exitCode, 'blocked-auth');
-  assert.match(artifact.output.stderr, /Azure Artifacts credentials/);
+  assert.match(artifact.output.stderr, /Azure Artifacts authentication/);
+  assert.deepEqual(artifact.output.authenticationFailure, {
+    stage: 'authentication', reason: 'authentication-execution-failed',
+    exitCode: 1, tokenRecorded: false
+  });
   assert.doesNotMatch(artifact.output.stderr, /anonymous user/i);
   assert.equal(artifact.telemetry.preparationTimings.at(-1).id, 'authentication');
 });
@@ -2450,7 +2542,168 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
 });
-test('planned OA skill path creates a source-bound validated draft result through the controller', async t => {
+test('multi-repository scheduler uses isolated real commits, gates and pushes with same-repository exclusion',
+  { timeout: 60000 }, async t => {
+    const { config, ledger, job, repo, root } =
+      await fixture(t, 'authenticated-source', 'defect-fix');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    config.limits.maxWorkers = 3;
+    config.limits.maxWorkersPerRepository = 1;
+    const secondRepo = {
+      ...structuredClone(repo), id: 'second-fixture',
+      referenceCheckout: join(root, 'second-reference'),
+      remote: join(root, 'second-remote.git')
+    };
+    await command('git', ['clone', '--quiet', '--no-hardlinks',
+      repo.referenceCheckout, secondRepo.referenceCheckout], root);
+    writeFileSync(join(secondRepo.referenceCheckout, 'src', 'value.js'),
+      'export const value = 10;\n');
+    await command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-am', 'Distinct second repository baseline'],
+    secondRepo.referenceCheckout);
+    secondRepo.validationGates[0].args = [
+      '--input-type=module', '-e',
+      "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,20)"
+    ];
+    config.repositories.push(secondRepo);
+    const prepare = (id, target) => {
+      const evidence = addEvidence(ledger, id, '1', { fixture: true }, 'authenticated-source');
+      const investigation = review(evidence);
+      investigation.repoIds = [target.id];
+      ledger.put(investigation);
+      return ledger.prepare(makeAssignment(config, investigation, target.id, 'defect-fix'));
+    };
+    const secondJob = prepare('2', secondRepo);
+    const deferredJob = prepare('3', repo);
+    for (const target of config.repositories)
+      await command('git', ['init', '--bare', '--quiet', target.remote], root);
+    const references = await Promise.all(config.repositories.map(async target => ({
+      workspace: target.referenceCheckout,
+      head: (await command('git', ['rev-parse', 'HEAD'], target.referenceCheckout)).stdout.trim()
+    })));
+    const otherLedger = new Ledger(config.stateDirectory);
+    const entered = new Set();
+    let release;
+    const bothAuthoring = new Promise(resolve => { release = resolve; });
+    const dependencies = {
+      runModel: async (_config, _ledger, current, assignment, _investigation, toolkit) => {
+        entered.add(assignment.repoId);
+        if (entered.size === 2) release();
+        await bothAuthoring;
+        assert.equal(ledger.job(job.id).state, 'running');
+        assert.equal(ledger.job(secondJob.id).state, 'running');
+        await assert.rejects(dispatch(config, otherLedger, deferredJob.id),
+          /Repository worker limit/);
+        assert.equal(otherLedger.job(deferredJob.id).state, 'prepared');
+        const expected = assignment.repoId === repo.id ? 1 : 10;
+        assert.match(toolkit.read('src\\value.js'), new RegExp(`value = ${expected};`));
+        toolkit.write('src\\value.js', `export const value = ${expected * 2};\n`);
+        toolkit.finish({
+          outcome: 'propose-change', findings: 'Isolated synthetic source correction',
+          title: 'Synthetic concurrent correction', description: 'Offline concurrency test'
+        });
+      },
+      createDraft: async (_config, _ledger, current, target, revision) => {
+        const remoteHead = (await command('git', ['--git-dir', target.remote,
+          'rev-parse', `refs/heads/pilot/${current.id}`], root)).stdout.trim();
+        assert.equal(remoteHead, revision);
+        return {
+          url: `https://example.invalid/synthetic-draft/${target.id}`,
+          isDraft: true, headRevision: revision
+        };
+      }
+    };
+    const result = await schedulePreparedAssignments(config, ledger, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true
+    }, { dispatchDependencies: dependencies }).finally(() => otherLedger.close());
+    assert.deepEqual(result.results.map(value => value.assignmentId), [job.id, secondJob.id]);
+    assert.ok(result.results.every(value => value.outcome === 'draft-pr-validated'));
+    assert.equal(entered.size, 2);
+    assert.equal(ledger.job(deferredJob.id).state, 'prepared');
+    assert.notEqual(ledger.job(job.id).workspace, ledger.job(secondJob.id).workspace);
+    const outputs = ledger.all('workerResult');
+    assert.equal(outputs.length, 2);
+    for (const output of outputs) {
+      assert.equal(output.validation[0].status, 'passed');
+      assert.equal(output.validation[0].sourceRevision, output.sourceRevision);
+      assert.equal(output.draftPR.headRevision, output.sourceRevision);
+    }
+    assert.notEqual(outputs[0].sourceRevision, outputs[1].sourceRevision);
+    for (const reference of references) {
+      assert.equal((await command('git', ['rev-parse', 'HEAD'], reference.workspace))
+        .stdout.trim(), reference.head);
+      assert.equal((await command('git', ['status', '--porcelain'], reference.workspace))
+        .stdout.trim(), '');
+    }
+  });
+test('real dispatch enforces global capacity and duplicate ownership across ledger connections',
+  { timeout: 30000 }, async t => {
+    const { config, ledger, job, repo } = await fixture(t, 'authenticated-source');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    config.limits.maxWorkers = 1;
+    config.limits.maxWorkersPerRepository = 1;
+    const evidence = addEvidence(ledger, '2', '1', { fixture: true }, 'authenticated-source');
+    const investigation = review(evidence);
+    investigation.repoIds = [repo.id];
+    ledger.put(investigation);
+    const waiting = ledger.prepare(makeAssignment(config, investigation, repo.id, 'rca-only'));
+    const otherLedger = new Ledger(config.stateDirectory);
+    let modelCalls = 0;
+    await dispatch(config, ledger, job.id, {
+      runModel: async (_config, _ledger, _current, _assignment, _investigation, toolkit) => {
+        modelCalls++;
+        await assert.rejects(dispatch(config, otherLedger, waiting.id), /Worker limit reached/);
+        await assert.rejects(dispatch(config, otherLedger, job.id), /never-dispatched/);
+        assert.equal(otherLedger.job(waiting.id).state, 'prepared');
+        toolkit.finish({ outcome: 'investigated', findings: 'Synthetic capacity check' });
+      }
+    }).finally(() => otherLedger.close());
+    assert.equal(modelCalls, 1);
+    assert.equal(ledger.job(job.id).state, 'completed');
+    assert.equal(ledger.job(waiting.id).state, 'prepared');
+  });
+test('simultaneous dispatches atomically admit only one worker across ledger connections',
+  { timeout: 30000 }, async t => {
+    const { config, ledger, job, repo } = await fixture(t, 'authenticated-source');
+    config.activation.dispatch = true;
+    config.limits.maxAiCreditsPerSession = 1;
+    const evidence = addEvidence(ledger, '2', '1', { fixture: true }, 'authenticated-source');
+    const investigation = review(evidence);
+    investigation.repoIds = [repo.id];
+    ledger.put(investigation);
+    const waiting = ledger.prepare(makeAssignment(config, investigation, repo.id, 'rca-only'));
+    const otherLedger = new Ledger(config.stateDirectory);
+    let preflights = 0, modelCalls = 0, release;
+    const simultaneous = new Promise(resolve => { release = resolve; });
+    const dependencies = {
+      preflightValidationAuthentication: async () => {
+        if (++preflights === 2) release();
+        await simultaneous;
+        return [];
+      },
+      runModel: async (_config, _ledger, _current, _assignment, _investigation, toolkit) => {
+        modelCalls++;
+        toolkit.finish({ outcome: 'investigated', findings: 'Synthetic admission race' });
+      }
+    };
+    const results = await Promise.allSettled([
+      dispatch(config, ledger, job.id, dependencies),
+      dispatch(config, otherLedger, waiting.id, dependencies)
+    ]).finally(() => otherLedger.close());
+    assert.equal(preflights, 2);
+    assert.equal(modelCalls, 1);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    const rejected = results.find(result => result.status === 'rejected');
+    assert.equal(rejected.reason.code, 'overlap');
+    assert.match(rejected.reason.message, /Worker limit reached/);
+    assert.deepEqual([ledger.job(job.id).state, ledger.job(waiting.id).state].sort(),
+      ['completed', 'prepared']);
+  });
+test('planned OA skill path reconciles a landed product fix and creates a source-bound test-only draft result', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
@@ -2469,15 +2722,19 @@ test('planned OA skill path creates a source-bound validated draft result throug
   writeFileSync(join(repo.referenceCheckout, 'src', 'value.js'), 'export const value = 1;\n');
   writeFileSync(join(repo.referenceCheckout, 'docs', 'skills', 'Integration-test-core', 'SKILL.md'),
     '# Synthetic OA skill\nAdd focused integration coverage and return structured metadata.\n');
-  const g = args => command('git', ['-c', 'core.hooksPath=', '-c', 'core.autocrlf=false',
+  const g = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', ...args], repo.referenceCheckout);
   await g(['init', '--quiet']);
   await g(['add', '.']);
   await g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--quiet', '-m', 'Synthetic OA fixture']);
-  const evidence = addEvidence(ctx.ledger, 'oa-1', '1', { fixture: true }, 'authenticated-source');
+  const record = adoRecord(adoItem(1), 'Synthetic resolved coverage', now());
+  const productFix = 'https://example.invalid/product/pull/42';
+  record.links = [{ url: productFix, relation: 'ArtifactLink', evidenceId: null, access: 'not-followed-out-of-scope' }];
+  const evidence = ctx.ledger.evidence(record, { id: 1, rev: 1, fields: record.fields, relations: record.links }, 'fixture');
   const investigation = review(evidence);
   investigation.repoIds = [repo.id];
+  investigation.existingFixes = [productFix];
   investigation.observedBehavior = 'OA behavior lacks a focused integration regression test.';
   investigation.expectedBehavior = 'The established behavior is covered by a focused integration test.';
   ctx.ledger.put(investigation);
@@ -2500,13 +2757,25 @@ test('planned OA skill path creates a source-bound validated draft result throug
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  const plan = recordTestCoveragePlan(ctx.ledger, {
+  let plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
     searchStatus: 'complete', existingTests: [], coverageGaps: ['No focused regression test exists.'],
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });
+  assert.throws(() => makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id),
+    /Existing fix requires/);
+  plan = recordTestCoveragePlan(ctx.ledger, { ...plan, existingFixesReview: {
+    investigationId: investigation.id, investigationVersion: investigation.version,
+    evidenceIds: investigation.evidenceIds, planId: plan.id, planVersion: plan.version + 1,
+    sourceRevision: baseRevision,
+    review: { method: investigation.review.method, reviewer: 'synthetic-coverage-review', reviewedAt: now() },
+    fixes: [{ url: productFix, disposition: 'product-fix-with-remaining-coverage-gap',
+      rationale: 'The product implementation is fixed on this base, but the focused regression assertion is absent.' }]
+  } });
   const assignment = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation, plan.id);
+  assert.deepEqual(ctx.ledger.get('investigation', investigation.id).existingFixes, [productFix]);
+  assert.equal(ctx.ledger.get('evidence', evidence.id).links[0].url, productFix);
   const rejected = new WorkerTools(ctx.config, assignment, repo.referenceCheckout, {
     binding: repo.skillBindings[0],
     skillPath: repo.skillBindings[0].skillPath,
@@ -3022,6 +3291,110 @@ test('WorkIQ exhausts root and reply pages, including new reply to old root', as
   assert.equal(captured[0].fields.parentContext.id, 'old');
   assert.equal(cursor.coverage[0].messagesExamined, 3);
   assert.equal(reads.length, 5);
+});
+
+test('WorkIQ titles normalize only empty or absent subjects and retain malformed values for validation', () => {
+  for (const subject of ['', null, undefined, '  Subject  ', ' ', 0, false, [], {}]) {
+    const record = evidenceEnvelope('workiq', 'workiq/test', 'test', null, 'https://example.invalid/message', 'test');
+    record.title = workiqTitle(subject);
+    assert.equal(record.title, subject === '' || subject == null ? null : subject);
+    if (subject == null || typeof subject === 'string') validateRecord(record);
+    else assert.throws(() => validateRecord(record), error => error.code === 'invalid-record');
+  }
+});
+
+test('WorkIQ collection normalizes root and reply titles without changing captured subjects in either lane', async t => {
+  const { config, ledger } = setup(t), seed = channelConfig(config), root = channelRoot(seed);
+  const parent = { ...message('parent'), subject: '' };
+  const replies = [
+    { ...message('empty'), subject: '' }, { ...message('null'), subject: null },
+    message('absent'), { ...message('named'), subject: '  Reply title  ' },
+    { ...message('space'), subject: ' ' }
+  ].map(reply => ({ ...reply, replyToId: parent.id }));
+  const original = structuredClone({ parent, replies });
+  for (const lane of ['created', 'changed']) {
+    const captured = [];
+    const cursor = await collectWorkiq(config, config.window, async (record, payload) => {
+      captured.push(ledger.evidence(record, payload, `title-${lane}`));
+    }, async path => {
+      if (path === principalPath) return principal(config);
+      const pathname = new URL(path, 'https://scope.invalid').pathname;
+      if (pathname === root) return { value: [parent] };
+      assert.equal(pathname, `${root}/parent/replies`);
+      return { value: replies };
+    }, lane);
+    assert.deepEqual(captured.map(record => record.title), [null, null, null, null, '  Reply title  ', ' ']);
+    assert.equal(cursor.coverage[0].messagesExamined, 6);
+    for (const record of captured) {
+      const raw = record.fields.message;
+      const payload = { message: raw, parentContext: raw.id === parent.id ? null : parent };
+      assert.equal(record.capture.sha256, hash(json(payload)));
+      assert.deepEqual(raw, raw.id === parent.id ? original.parent : original.replies.find(reply => reply.id === raw.id));
+    }
+  }
+  assert.deepEqual({ parent, replies }, original);
+});
+
+test('WorkIQ related reads normalize titles without changing source payloads', async t => {
+  const { config, root } = setup(t), seed = channelConfig(config);
+  config.runtime.cliPath = process.execPath;
+  config.runtime.workiqPluginDirectory = root;
+  const { session } = workiqLifecycle();
+  let current, reads, disconnects = 0;
+  session.disconnect = async () => { disconnects++; };
+  session.rpc.tools.execute = async ({ name, arguments: args }) => {
+    assert.equal(name, 'workiq-fetch');
+    const path = args.entityUrls[0]; reads.push(path);
+    const data = path === principalPath ? principal(config) : current;
+    return { resultType: 'success', textResultForLlm: json({ results: [{ statusCode: 200, data }] }) };
+  };
+  t.mock.method(CopilotClient.prototype, 'start', async () => {});
+  t.mock.method(CopilotClient.prototype, 'stop', async () => {});
+  t.mock.method(CopilotClient.prototype, 'createSession', async () => session);
+  const subjects = ['', null, undefined, '  Related title  ', ' '];
+  for (const subject of subjects) {
+    current = { ...message('related'), ...(subject === undefined ? {} : { subject }) };
+    reads = [];
+    const path = `${channelRoot(seed)}/parent/replies/related?$select=${messageSelect}`;
+    const { record, payload } = await readRelatedWorkiq(config,
+      { id: current.id, seed, parent: 'parent', path }, new Budget(config.limits));
+    validateRecord(record);
+    assert.equal(record.title, subject === '' || subject == null ? null : subject);
+    assert.deepEqual(payload, { message: current });
+    assert.deepEqual(record.fields.message, current);
+    assert.deepEqual(reads, [principalPath, path]);
+  }
+  assert.equal(disconnects, subjects.length);
+});
+
+test('WorkIQ tracked revisits normalize titles while preserving source subjects and revision hashes', async t => {
+  const { config, ledger } = setup(t), seed = channelConfig(config);
+  config.schedule.changedEvidencePolicy = 'tracked-open-and-area-changed';
+  const subjects = ['', null, undefined, '  Updated title  ', ' '];
+  const updates = subjects.map((subject, index) => ({
+    ...message(`tracked-${index}`), etag: '2', ...(subject === undefined ? {} : { subject })
+  }));
+  for (const update of updates) {
+    const record = evidenceEnvelope('workiq', `workiq/${seed.teamId}/${seed.channelId}`,
+      update.id, '1', seed.url, 'generic unit fixture');
+    record.scopeId = `workiq:${seed.id}`; record.title = 'Previous title';
+    const evidence = ledger.evidence(record, { message: { ...update, etag: '1', subject: record.title } }, 'initial');
+    ledger.put(review(evidence));
+  }
+  const result = await revisitTracked(config, ledger, { workiq: async path => {
+    if (path === principalPath) return principal(config);
+    const id = new URL(path, 'https://scope.invalid').pathname.split('/').at(-1);
+    return structuredClone(updates.find(update => update.id === id));
+  } });
+  assert.equal(result[0].state, 'complete');
+  assert.equal(result[0].itemsRevisited, subjects.length);
+  for (const record of ledger.latestEvidence()) {
+    const update = updates.find(message => message.id === record.source.recordId);
+    assert.equal(record.title, update.subject === '' || update.subject == null ? null : update.subject);
+    assert.deepEqual(record.fields.message, update);
+    assert.equal(record.capture.sha256, hash(json({ message: update })));
+    assert.equal(ledger.trackedState(record).state, 'current');
+  }
 });
 
 test('WorkIQ paging rejects scope escape and cycles; item exhaustion preserves partial evidence and cursor', async t => {

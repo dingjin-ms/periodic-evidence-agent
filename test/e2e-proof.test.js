@@ -29,6 +29,8 @@ async function fixture(t) {
     'https://example.invalid/issues/1', 'Synthetic issue',
     '2026-10-09T01:00:00Z');
   evidence.title = 'Synthetic issue';
+  evidence.sourceStatus = 'Resolved';
+  evidence.fields = { 'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed' };
   const stored = ledger.evidence(evidence, {
     id: 1, rev: 1, fields: evidence.fields, relations: evidence.links
   }, 'source:ado:created');

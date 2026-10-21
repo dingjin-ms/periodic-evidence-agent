@@ -21,5 +21,20 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - run: npm run check:package
-      - run: npm run check -- --test-concurrency=4 --test-reporter=tap
+      # Keep the real native demo out of contention with the expensive evaluator
+      # fixtures. Run every test file, retaining the demo command deadlines.
+      - name: Offline controller checks
+        shell: pwsh
+        run: |
+          node --check src/cli.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $demoTest = (Resolve-Path test/demo.test.js).Path
+          $controllerTests = @(Get-ChildItem -LiteralPath test -Recurse -File |
+            Where-Object { $_.Extension -in '.js', '.mjs', '.cjs' -and $_.FullName -ne $demoTest } |
+            Sort-Object FullName | ForEach-Object { $_.FullName })
+          if ($controllerTests.Count -eq 0) { throw 'No controller tests discovered' }
+          node --test --test-concurrency=4 --test-reporter=tap @controllerTests
+          exit $LASTEXITCODE
+      - name: Isolated native demo regression
+        run: node --test --test-reporter=tap test/demo.test.js
       - run: npm run demo

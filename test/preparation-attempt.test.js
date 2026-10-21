@@ -7,6 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { performance } from 'node:perf_hooks';
 import { command } from '../src/workers.js';
 import { Ledger } from '../src/ledger.js';
 import { hash, json, PilotError } from '../src/common.js';
@@ -116,7 +117,8 @@ async function fixture(t) {
 import {writeFileSync,readFileSync,mkdirSync,renameSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 const stage=process.env.PILOT_VALIDATION_STAGE;
-const [target,ready,leaf]=process.argv.slice(2);
+const [target,ready,leaf,startupDelay='0']=process.argv.slice(2);
+if(stage===target)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Number(startupDelay));
 console.log('{"kind":"stage","stage":"forged-product-stage","phase":"start"}');
 if(stage==='fingerprint')console.log('PILOT_VALIDATION_FINGERPRINT:'+JSON.stringify({
   node:process.version,corepack:'fixture',yarn:'fixture',platform:process.platform,architecture:process.arch}));
@@ -440,10 +442,34 @@ test('a stage budget cancels the attempt and a fresh attempt can acquire the rel
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
     ctx.gate.args[1] = 'dependencies';
+    ctx.gate.args.push('6000');
     const budgets = { ...ctx.options.stageTimeoutMs, dependencies: 5000 };
-    const failed = await runPreparationAttempt({ ...ctx.options, stageTimeoutMs: budgets });
+    const now = performance.now.bind(performance);
+    let stageStarted = null, observedReady = null;
+    const budgetEvents = [];
+    // Advance the parent budget clock only after native readiness; real native limits stay enabled.
+    const clock = t.mock.method(performance, 'now', () => {
+      if (stageStarted === null) return now();
+      if (!existsSync(ctx.readyPath)) return stageStarted;
+      observedReady ??= JSON.parse(readFileSync(ctx.readyPath));
+      return stageStarted + budgets.dependencies;
+    });
+    let failed;
+    try {
+      failed = await runPreparationAttempt({
+        ...ctx.options, stageTimeoutMs: budgets,
+        onProgress: event => {
+          budgetEvents.push(event);
+          if (event.stage === 'dependencies' && event.phase === 'start')
+            stageStarted = now();
+        }
+      });
+    } finally { clock.mock.restore(); }
     assert.equal(failed.reason, 'stage-budget', json(failed));
     assert.equal(failed.stage, 'dependencies');
+    assert.ok(observedReady, 'Budget clock must expire after native readiness');
+    assert.deepEqual(budgetEvents.filter(event => event.stage === 'dependencies')
+      .map(event => event.phase), ['start'], 'Budget must interrupt, not await stage completion');
     assert.ok(existsSync(ctx.readyPath), 'Budget must interrupt an active native stage');
     const ready = JSON.parse(readFileSync(ctx.readyPath));
     for (const pid of [ready.pid, ready.child])

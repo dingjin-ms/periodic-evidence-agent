@@ -77,6 +77,26 @@ test('SDX example binds a real profile and explicit test-only skill policy while
   assert.equal(loaded.repositories[0].skillBindings[0].sideEffects.push, false);
 });
 
+test('SDX profile pin survives both Git checkout line-ending modes', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'sdx-profile-checkout-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const path = 'scripts/validation/1js-sdx-excel-integration.ps1';
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(path, target);
+  copyFileSync('.gitattributes', join(root, '.gitattributes'));
+  const git = args => command('git', ['-c', 'core.autocrlf=false', ...args], root);
+  await git(['init', '--quiet']);
+  await git(['add', '--', '.gitattributes', path]);
+  const repo = JSON.parse(readFileSync('scaffold/1js-sdx.repository.example.json', 'utf8'));
+  for (const autocrlf of ['true', 'false']) {
+    writeFileSync(target, 'must be replaced by checkout\n');
+    await git(['-c', `core.autocrlf=${autocrlf}`, 'checkout-index', '--force', '--all']);
+    assert.equal(hash(readFileSync(target)), repo.validationGates[0].profileSha256,
+      `Exact profile bytes must survive core.autocrlf=${autocrlf}`);
+  }
+});
+
 test('SDX authentication rejects missing sparse bootstrap before requesting sign-in', async t => {
   if (process.platform !== 'win32') return t.skip('Windows native validation profile');
   const { reference, repo, write } = await fixture(t);

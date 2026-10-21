@@ -38,7 +38,8 @@ async function setup(t, { candidate = false, terminal = true, workiq = false, gi
     adoTransport: async () => async (endpoint, body) => endpoint === 'wiql'
       ? { asOf: '2026-10-09T00:00:00Z', workItems: empty || body.query.includes('[System.Id] = 0') ? [] : [{ id: 1 }] }
       : { value: [{ id: 1, rev: 1, fields: { 'System.WorkItemType': 'Bug', 'System.AreaPath': area,
-        'System.Title': 'Synthetic functional behavior', 'System.State': 'Active',
+        'System.Title': 'Synthetic functional behavior', 'System.State': 'Resolved',
+        'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
         'System.CreatedDate': '2026-10-08T01:00:00Z', 'System.ChangedDate': '2026-10-08T02:00:00Z' } }] },
     workiqFactory: async () => ({ read: async path => ({ structuredContent: { results: [{ statusCode: 200,
       data: path.startsWith('/me?') ? { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }
@@ -73,6 +74,7 @@ async function setup(t, { candidate = false, terminal = true, workiq = false, gi
     validationGates: [{ id: 'synthetic-test', approved: true, isolationVerified: true, executable: process.execPath,
       args: ['--test'], timeoutMs: 10000 }],
     skillBindings: [{ id: 'integration', capability: 'integration-test-authoring', skillPath, enabled: true,
+      allowedWritePrefixes: ['test'], requiresBehaviorCard: false, authoringProvider: 'copilot-sdk',
       qualification: 'qualified', requestedOutcomes: ['add-or-update-tests'],
       sideEffects: { commit: true, push: true, createDraftPR: true } }] }];
   const contract = repositoryValidationContract(config.repositories[0]);
@@ -294,7 +296,7 @@ test('CLI FILTER reservation and proposer check preserve exact core results and 
   const s = await setup(t);
   const configPath = join(s.ledger.directory, 'pilot.local.json'), inputPath = join(s.ledger.directory, 'input.json');
   writeFileSync(configPath, json(s.config)); writeFileSync(inputPath, json(s.input));
-  const invoke = (role, action, flags = []) => spawnSync(process.execPath, ['src\\cli.js', 'agent', role,
+  const invoke = (role, action, flags = []) => spawnSync(process.execPath, [join('src', 'cli.js'), 'agent', role,
     action, '--config', configPath, '--file', inputPath, ...flags], { encoding: 'utf8', timeout: 30000 });
   const budget = invoke('filter', 'one-shot-filter-prepare');
   assert.equal(budget.status, 0, budget.stderr);

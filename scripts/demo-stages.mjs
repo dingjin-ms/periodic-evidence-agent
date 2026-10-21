@@ -58,6 +58,7 @@ async function fixtureRepository(config, root) {
     ],
     skillBindings: [{
       id: 'demo-integration', capability: 'integration-test-authoring', skillPath,
+      allowedWritePrefixes: ['test'], requiresBehaviorCard: false,
       enabled: true, qualification: 'qualified', requestedOutcomes: ['add-or-update-tests'],
       sideEffects: { commit: true, push: true, createDraftPR: true }
     }]
@@ -327,6 +328,9 @@ async function proposerScenario(config, fixture, filter, root, scenario) {
     if (scenario === 'success') {
       const executed = await acceptReviewedHandoff(config, ledger, receipt, options);
       assert.equal(executed.state, 'draft-pr-validated');
+    } else if (scenario === 'failed-validation') {
+      const executed = await acceptReviewedHandoff(config, ledger, receipt, options);
+      assert.equal(executed.state, 'blocked');
     } else {
       await assert.rejects(acceptReviewedHandoff(config, ledger, receipt, options),
         /Every required gate must pass at the clean current revision; no push permitted/);

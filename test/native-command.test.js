@@ -64,6 +64,7 @@ for (const exitCode of [0, 23]) test(`native silent exit ${exitCode} requires ac
     const run = nativeCommand(process.execPath,
       ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched');process.exit(${exitCode})`],
       root, 15000, env);
+    assert.ok(run.child && Number.isInteger(run.child.pid), 'Expose the supervisor handle for cancellation and drain');
     if (exitCode === 0) {
       const output = await run;
       assert.equal(output.stdout, ''); assert.equal(output.stderr, '');

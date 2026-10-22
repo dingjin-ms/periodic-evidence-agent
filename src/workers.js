@@ -2630,9 +2630,13 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           if (unsafeCleanup) { residualPaths.push(target); continue; }
           const cleanupStarted = Date.now();
           try {
-            if (declarative && target === validationWorkspace && existsSync(target))
-              await removeValidationWorktree(job.workspace, target,
+            if (declarative && target === validationWorkspace && existsSync(target)) {
+              const details = await removeValidationWorktree(job.workspace, target,
                 repo.provisionTimeoutMs ?? defaultGitTimeoutMs);
+              output.cleanupDetails ??= [];
+              output.cleanupDetails.push({ targetRole: 'validation-workspace',
+                durationMs: Date.now() - cleanupStarted, ...details });
+            }
             else cleanup(target, { recursive: true, force: true });
           }
           catch (error) {

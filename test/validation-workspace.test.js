@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync,
-  appendFileSync } from 'node:fs';
+  appendFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -67,6 +67,38 @@ test('preparation rejects dirty, reused and source-nested workspaces', async t =
   }), /outside/);
   mkdirSync(ctx.workspace);
   await assert.rejects(prepareValidationWorkspace({ ...ctx, timeoutMs: 30000 }), /fresh/);
+});
+
+test('validation cleanup unlinks junction graphs without visiting external targets', {
+  skip: process.platform !== 'win32'
+}, async t => {
+  const ctx = await fixture(t);
+  await prepareValidationWorkspace({ ...ctx, timeoutMs: 30000 });
+  const external = join(ctx.root, 'external'), canary = join(external, 'canary.txt');
+  const a = join(ctx.workspace, 'a'), b = join(ctx.workspace, 'b');
+  for (const path of [external, a, b]) mkdirSync(path);
+  writeFileSync(canary, 'must survive cleanup');
+  symlinkSync(b, join(a, 'to-b'), 'junction');
+  symlinkSync(a, join(b, 'to-a'), 'junction');
+  symlinkSync(join(ctx.workspace, 'absent'), join(a, 'dangling'), 'junction');
+  symlinkSync(external, join(b, 'external'), 'junction');
+  const result = await removeValidationWorktree(ctx.source, ctx.workspace, 30000);
+  assert.equal(result.unlinkedLinks, 4);
+  assert.equal(result.rootRemoved, true);
+  assert.equal(existsSync(ctx.workspace), false);
+  assert.equal(readFileSync(canary, 'utf8'), 'must survive cleanup');
+  assert.equal(await ctx.git(['status', '--porcelain']), '');
+});
+
+test('validation cleanup rejects source and unregistered paths before changing links', async t => {
+  const ctx = await fixture(t);
+  await assert.rejects(removeValidationWorktree(ctx.source, ctx.source, 30000),
+    /secondary worktree/);
+  assert.equal(readFileSync(join(ctx.source, 'required', 'input.txt'), 'utf8'), 'required');
+  mkdirSync(ctx.workspace);
+  writeFileSync(join(ctx.workspace, 'canary.txt'), 'unregistered');
+  await assert.rejects(removeValidationWorktree(ctx.source, ctx.workspace, 30000), /unregistered/);
+  assert.equal(readFileSync(join(ctx.workspace, 'canary.txt'), 'utf8'), 'unregistered');
 });
 
 test('persistent phase telemetry retains timeout as primary cause without credential output', async () => {

@@ -1,5 +1,10 @@
 # End-to-end execution guide
 
+To include post-flow agent-system improvement, follow the
+[RSI operator runbook](scaffold/RSI-RUNBOOK.md) alongside this product execution
+guide. RSI opt-in, app-host continuations, independent comparison and draft
+publication are separate from product authoring/validation permissions.
+
 This guide covers the gated path from devbox setup to a source-bound draft PR:
 
 ```text

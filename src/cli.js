@@ -380,7 +380,11 @@ try {
           const previousConfig = configAt(request.previousConfigPath);
           const previous = new Ledger(previousConfig.stateDirectory);
           try {
-            result = await (sourceRecovery ? prepareNativeSourceContinuation :
+            const sourcePreparation = sourceRecovery &&
+              request.authorization?.kind === 'native-business-revalidation'
+              ? (await import('./native-business-revalidation.js')).prepareNativeBusinessRevalidation
+              : prepareNativeSourceContinuation;
+            result = await (sourceRecovery ? sourcePreparation :
               preparationRecovery ? prepareNativePreparationContinuation :
               toolRecovery ? prepareAuthoringToolContinuation : prepareRuntimeContinuation)(previousConfig, previous,
               request.previousAssignmentId, config, ledger, request.authorization);

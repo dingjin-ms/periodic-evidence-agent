@@ -3179,6 +3179,13 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
     'Prior authoring state or continuation reservation changed', 'blocked-reconciliation');
   } finally { priorLedger.close(); }
 }
+async function verifyNativeContinuation(config, detail, operationId, attemptId) {
+  if (detail.nativeBusinessRevalidation)
+    return (await import('./native-business-revalidation.js')).verifyPreparedNativeBusiness(
+      config, detail, operationId, attemptId);
+  return (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+    config, detail, operationId, attemptId);
+}
 export async function dispatch(config, ledger, id, dependencies = {}) {
   requireThat(config.activation.dispatch || dependencies[runtimeContinuationPermit] === true ||
     dependencies[authoringToolContinuationPermit] === true ||
@@ -3242,7 +3249,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         origin.detail.priorResult, continuation.proposal);
     }
     if (continuation.nativeSourceCorrection) {
-      await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+      await verifyNativeContinuation(
         config, continuation, continuationOperation.id, job.session_id);
     } else {
       await verifyPreservedChange({ ...config, stateDirectory: continuation.priorStateDirectory },
@@ -3409,7 +3416,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       });
     }
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
-    const preparationPromise = prePreparedValidation
+    const preparationPromise = continuation?.nativeBusinessRevalidation
+      ? Promise.resolve({ [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } })
+      : prePreparedValidation
       ? Promise.resolve(prePreparedValidation)
       : (dependencies.prepareValidation ?? prepareValidation)(
         config, current, repo, revision).catch(error =>
@@ -3541,7 +3550,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         ledger.finishOperation(commitOperation, 'completed', { revision, round: authoring.round });
       }
       if (continuation?.nativeSourceCorrection)
-        await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+        await verifyNativeContinuation(
           config, continuation, continuationOperation.id, current.session_id);
       if (loadedSkill)
         requireFinalizedSkillChanges(config, repo, assignment, current.workspace,
@@ -3550,10 +3559,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
               file !== continuation.authorization.unitFile),
           proposal.skillExecution);
       preparedValidation ??= await preparationPromise;
-      if (continuation?.preparationRecovery || continuation?.sourcePreparedContinuation)
+      if (continuation?.preparationRecovery || continuation?.sourcePreparedContinuation ||
+        continuation?.nativeBusinessRevalidation)
         preparedValidation = { ...preparedValidation,
           [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } };
-      const validationRepo = continuation?.sourcePreparationRecovery || continuation?.sourcePreparedContinuation
+      const validationRepo = continuation?.nativeBusinessRevalidation
+        ? (await import('./native-business-revalidation.js')).nativeBusinessValidationRepository(repo, continuation)
+        : continuation?.sourcePreparationRecovery || continuation?.sourcePreparedContinuation
         ? (await import('./native-source-continuation.js')).nativeSourceValidationRepository(
           repo, continuation) : repo;
       finalValidation = await (dependencies.runValidation ?? runValidation)(
@@ -3582,7 +3594,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     if (outcome === 'propose-change') {
       if (loadedSkill) {
         if (continuation?.nativeSourceCorrection)
-          await (await import('./native-source-continuation.js')).verifyPreparedNativeSource(
+          await verifyNativeContinuation(
             config, continuation, continuationOperation.id, current.session_id);
         requireFinalizedSkillChanges(config, repo, assignment, current.workspace,
           (await workspaceChanges(current.workspace, current.base_revision))

@@ -17,14 +17,16 @@ export async function adoAccessToken(config, purpose) {
 }
 
 export function adoGitEnvironment(token) {
-  return {
+  const environment = {
     ...process.env,
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: 'http.extraHeader',
     GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${token}`,
     GIT_TRACE: '0',
     GIT_TRACE_CURL: '0',
-    GIT_CURL_VERBOSE: '0',
     GIT_TRACE_PACKET: '0'
   };
+  // Git enables legacy curl verbosity when this variable exists, even as "0".
+  delete environment.GIT_CURL_VERBOSE;
+  return environment;
 }

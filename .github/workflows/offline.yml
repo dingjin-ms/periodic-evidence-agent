@@ -8,9 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  offline:
+  tests:
+    name: tests (${{ matrix.group }})
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pilot, remaining, demo]
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -20,6 +25,41 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --ignore-scripts
-      - run: npm run check:package
-      - run: npm test
-      - run: npm run demo
+      - if: matrix.group == 'remaining'
+        run: npm run check:package
+      - run: node --check src/cli.js
+      - name: Run grouped tests
+        run: node scripts\ci-tests.mjs ${{ matrix.group }} "$env:RUNNER_TEMP\ci-tests-${{ matrix.group }}"
+      - if: matrix.group == 'demo'
+        run: npm run demo
+      - name: Record process resource snapshot
+        if: always()
+        shell: pwsh
+        run: |
+          $directory = "$env:RUNNER_TEMP\ci-tests-${{ matrix.group }}"
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64 |
+            ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $directory 'processes.json') -Encoding utf8
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: offline-${{ matrix.group }}
+          path: ${{ runner.temp }}\ci-tests-${{ matrix.group }}
+          if-no-files-found: error
+          retention-days: 7
+  offline:
+    if: always()
+    needs: [tests]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TEST_RESULT: ${{ needs.tests.result }}
+    steps:
+      - name: Require complete offline checks
+        shell: pwsh
+        run: |
+          if ($env:TEST_RESULT -ne 'success') {
+            throw "Offline test groups did not all succeed: $env:TEST_RESULT"
+          }

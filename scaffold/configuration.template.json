@@ -90,7 +90,7 @@
       "settings": {
         "queryId": "599514",
         "queryFiltersVerified": false,
-        "intendedSeverities": ["S0", "S1", "S2", "S2.5"],
+        "intendedSeverities": ["S1", "S2", "S2.5"],
         "intendedProduct": "Excel Agent",
         "excludePureServiceReliability": true,
         "rings": ["Dogfood", "MSIT", "Production", "unknown"],

@@ -35,9 +35,9 @@ function fixture(t) {
   return { root, config, file, invoke, result };
 }
 
-test('exactly three role packages expose pinned existing procedures and detached descriptors', () => {
+test('four role packages expose pinned procedures and detached descriptors', () => {
   const roles = describeAgents();
-  assert.deepEqual(roles.map(row => row.role), ['collector', 'filter', 'proposer']);
+  assert.deepEqual(roles.map(row => row.role), ['collector', 'filter', 'proposer', 'rsi']);
   for (const row of roles) {
     assert.equal(row.format, 'agent-definition-v1');
     for (const skill of [row.skill, ...row.procedures])
@@ -50,6 +50,8 @@ test('exactly three role packages expose pinned existing procedures and detached
     ['evidence-1js-owner', 'evidence-office-owner', 'evidence-oa-owner']);
   assert.ok(describeAgent('proposer').operations.includes('diagnose-local-validation'));
   assert.ok(describeAgent('proposer').operations.includes('continue-local-authoring'));
+  for (const operation of ['filter-local-preflight', 'filter-local-run'])
+    assert.ok(describeAgent('filter').operations.includes(operation));
 });
 
 test('role routing rejects unknown and cross-role operations without echoing untrusted input', () => {
@@ -60,7 +62,10 @@ test('role routing rejects unknown and cross-role operations without echoing unt
     ['filter', 'app-worker'], ['proposer', 'review'], ['proposer', 'collect'],
     ['proposer', 'serve'], ['proposer', 'secret-value'],
     ['collector', 'diagnose-local-validation'], ['filter', 'diagnose-local-validation'],
-    ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring']
+    ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring'],
+    ['rsi', 'dispatch'], ['rsi', 'collect'], ['rsi', 'self-improvement'],
+    ['collector', 'rsi-work'], ['proposer', 'app-rsi-work'],
+    ['collector', 'filter-local-run'], ['proposer', 'filter-local-run']
   ]) {
     assert.throws(() => agentInvocation(role, command), error =>
       error.code === 'blocked-agent' && !error.message.includes(command));
@@ -105,8 +110,8 @@ test('diagnostic role envelope preserves its receipt without inferring validatio
 
 test('discovery and role help require no configured state or runtime', t => {
   const { root, config, result } = fixture(t);
-  assert.deepEqual(result('agents').map(row => row.role), ['collector', 'filter', 'proposer']);
-  for (const role of ['collector', 'filter', 'proposer']) {
+  assert.deepEqual(result('agents').map(row => row.role), ['collector', 'filter', 'proposer', 'rsi']);
+  for (const role of ['collector', 'filter', 'proposer', 'rsi']) {
     const help = result('agent', role, 'help');
     assert.equal(help.kind, 'result');
     assert.equal(help.result.skill.name, `evidence-${role}`);
@@ -170,7 +175,8 @@ test('three roles retain dry-run gates without reviewing or dispatching fixture 
 test('SDK execution is not an implicit fallback from a role invocation', t => {
   const { invoke, config } = fixture(t);
   for (const [role, command] of [
-    ['collector', 'collect'], ['filter', 'review-pending'], ['proposer', 'dispatch']
+    ['collector', 'collect'], ['filter', 'review-pending'], ['proposer', 'dispatch'],
+    ['filter', 'filter-local-run']
   ]) {
     const child = invoke('agent', role, command);
     assert.equal(child.status, 1);
@@ -179,6 +185,38 @@ test('SDK execution is not an implicit fallback from a role invocation', t => {
     assert.match(failure.error.message, /explicit --execution-mode standalone-sdk/);
   }
   assert.equal(existsSync(config.stateDirectory), false);
+});
+
+test('local FILTER role preflight preserves an insufficient budget without creating state', t => {
+  const { config, file, result } = fixture(t);
+  config.filterExecutor = 'local-sdk';
+  config.activation.review = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  config.localFilter = { enabled: true, maxRequests: 1, maxToolCalls: 24,
+    timeoutMs: 600000, maxSourceBytes: 65536, maxRequestBytes: 524288, sources: [] };
+  const configPath = file('pilot.local', config);
+  const before = readFileSync(configPath);
+  const preflight = result('agent', 'filter', 'filter-local-preflight');
+  assert.equal(preflight.acceptance, 'not-inferred');
+  assert.equal(preflight.result.state, 'action-required-budget');
+  assert.equal(preflight.result.configuredCredits, 1);
+  assert.equal(preflight.result.runtimeMinimumCredits, 30);
+  assert.equal(preflight.result.automaticIncreaseAllowed, false);
+  assert.equal(preflight.result.modelInvoked, false);
+  assert.deepEqual(readFileSync(configPath), before);
+  assert.equal(existsSync(config.stateDirectory), false);
+});
+
+test('local FILTER rejects an existing output before reading a manifest or starting execution', t => {
+  const { file, invoke } = fixture(t);
+  const output = file('existing-result', { retained: true });
+  const before = readFileSync(output);
+  const child = invoke('agent', 'filter', 'filter-local-run',
+    '--execution-mode', 'standalone-sdk', '--manifest', 'missing.json',
+    '--batch', 'unstarted', '--output', output);
+  assert.equal(child.status, 1);
+  assert.match(JSON.parse(child.stderr).error.message, /output already exists/);
+  assert.deepEqual(readFileSync(output), before);
 });
 
 for (const route of [

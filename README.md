@@ -9,16 +9,29 @@ An explicitly configured official local WorkIQ CLI transport is also available
 for authorized collection-only runs. It is not a fallback from failed app auth;
 see [the CLI contract](APP-NATIVE.md#explicit-local-workiq-cli-collection).
 Token-renewal and unattended qualification remain deferred.
+For a finite operator-driven Collector -> FILTER -> Proposer -> RSI attempt,
+see [Running the agentic loop with RSI enabled](scaffold/RSI-RUNBOOK.md).
+It separates capture-only opt-in, app-hosted continuations, paired evaluation
+and optional draft publication; it does not promise a one-command live loop.
 Budget-stopped channel scans can prepare a distinct, explicitly authorized
 continuation run without refetching captured pages or losing buffered rows.
 Root/reply context and an opt-in modified-time lane are documented in
 [the continuation contract](APP-NATIVE.md#budget-stopped-continuation). Neither
 feature authorizes additional live reads, automatic schedules or a delta feed.
-IcM connector receipts can be replayed **offline** into a separate audit store;
-live connector execution stays blocked pending an explicit timestamp/scope
-contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
+IcM connector receipts can be replayed **offline** into a separate audit store.
+An explicitly approved [incident-created cohort](APP-NATIVE.md#explicit-incident-created-icm-receipts)
+can ingest captured identity/search receipts through `app-append`; helpers do
+not launch its live connector. Default saved-query scope remains fail-closed.
+[Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
 the installed coverage-analysis skill and pinned reference, read source ledgers
 read-only, and cannot authorize product dispatch.
+
+[Bounded one-shot controls](ONE-SHOT.md) add coordinator-callable aggregate
+collection/FILTER reservations, offline recovery and complete accepted-cohort
+release to the existing helpers. They preserve authenticated WorkIQ provenance
+in collection-only storage and keep saved replay distinct. The coordinating host
+still supplies the authorized external FILTER executor; this is not a standalone
+service or qualified unattended end-to-end run.
 
 ## Account-free quick start
 
@@ -53,6 +66,29 @@ warm verification and independent full-fresh equivalence. It is not part of
 setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
 See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
 and the `local-fingerprint-benchmark` skill before running it.
+
+## Offline self-improvement qualification
+
+The opt-in `self-improvement` command qualifies one recovery harness and renders
+a source-bound before/after scorecard. It is **not autonomous self-modification**:
+both arms execute the same reviewed current controller, retaining its existing
+recovery capabilities. Equal correct results mean `harness-qualified` and
+`no-demonstrated-benefit`, not an improvement in live recovery or agent behavior.
+
+The fixed `validation-continuation-v1` fixture exercises the existing
+`prepareLocalValidationContinuation` and `dispatchLocalValidationContinuation`
+helpers against disposable local Git repositories and controller stores. The
+independent parent observes two real native assertion cases and simulated
+publication boundaries. No model, provider, credentials, product repository,
+installed skill, real push or PR is involved.
+
+Start from the inert [policy example](scaffold/self-improvement.example.json).
+It requires explicit finite execution/output/storage limits, a retained state
+owner, and a named child of this checkout's ignored `.state/rsi`. Execution
+approval is false by default. See the [command and ownership contract](APP-NATIVE.md#offline-self-improvement-qualification)
+and the [comparison review requirements](CONTRIBUTING.md#self-improvement-review-evidence).
+This checkout must retain authoritative state through review and follow-up;
+there is no automatic cleanup, archive transfer, candidate promotion or rollout.
 
 ## Devbox repository setup
 
@@ -101,7 +137,10 @@ exact base revisions, repository skill paths and skill content fingerprints.
 It does not install product-repository dependencies, authenticate accounts,
 enable routing/write permissions or create PRs.
 
-The demo prints JSON with these stable results (paths/timestamps vary):
+### Offline demo coverage
+
+The demo prints JSON with these stable collection fields (excerpt; paths,
+timestamps and generated fixture commits vary):
 
 ```json
 {
@@ -115,7 +154,7 @@ The demo prints JSON with these stable results (paths/timestamps vary):
   ],
   "uniqueEvidence": 3,
   "overallCollectionState": "partial-or-blocked",
-  "workers": 0,
+  "collectionWorkers": 0,
   "scheduleEnabled": false
 }
 ```
@@ -124,10 +163,40 @@ The demo prints JSON with these stable results (paths/timestamps vary):
 dry run. IcM deliberately stays unavailable; unknown coverage is not zero.
 The demo imports a root and an in-window reply to an older root, replays a batch
 without duplicates, then closes/reopens the ledger. It checks synthetic provenance,
-cursor completeness and absence of dispatch. Each invocation creates only its
-own disposable `.state\demo-*\` directory inside the checkout and returns that
-exact directory and summary path. To clean up, remove only the specific demo
-directory printed by that invocation, never the whole `.state` tree.
+cursor completeness and absence of dispatch **from that incomplete collection**.
+It then exercises FILTER and a separately authorized synthetic proposer fixture:
+
+| Stage | Required assertions before the demo can pass |
+|---|---|
+| FILTER | Pack all three records into two complete-context batches; reject missing sharing approval and insufficient batch budget; validate exact payload and detail membership; consolidate duplicate candidates across batches and select the higher-ranked gap. |
+| FILTER negative cases | Missing, partial or conflicting results cannot select a candidate; stale payloads and omitted details are rejected; complete no-candidate results remain unselected. No provider execution or semantic-analysis qualification is claimed. |
+| Synthetic handoff | Direct production handoff of synthetic collection evidence is rejected. A new, explicitly synthetic `reviewed-handoff-v1` fixture pins the selected candidate and original manifest/result hashes without changing the collection ledger. Missing synthetic/commit/push/draft authorization is rejected before preparing a job. |
+| Local proposer | Load a qualified skill from a disposable Git repository, enforce edit bounds, deterministically author a test of the fixture's real selection function, commit locally and execute real behavior and syntax gates in isolated validation checkouts. |
+| Publication guards and recovery | An intentionally failing assertion and a separately injected stale-head result must both block before publication. Only the passing exact-head case reaches mocked push/draft callbacks. Reopening each ledger must still reject duplicate dispatch. |
+
+`workflow.filter` reports the held structural result, not a qualified fresh
+execution cohort: the original source coverage remains incomplete.
+`workflow.proposer` reports three isolated fixture attempts (failed validation,
+stale head, success), their real gate artifacts and simulated publication counts.
+The successful controller outcome is `draft-pr-validated`, but its draft URL is
+`example.invalid`: **no model, source service, product repository, real push or
+real PR is used**. Deterministic FILTER analysis/token counting and model authoring
+are fixtures; existing controller, ledger, skill, Git and validation APIs run.
+This is not unattended live E2E qualification or a bypass of the fresh-cohort guard.
+
+Each invocation writes only its own disposable `.state\demo-*\` directory inside
+the checkout, including the original collection summary, FILTER artifacts,
+fixture checkouts and `workflow-summary.json`. The example and saved collection
+config remain inert; synthetic dispatch is enabled only in an in-memory fixture
+configuration. Node.js 24+, Git and (on Windows) PowerShell 7.3+ are required.
+Windows must retain `PATHEXT` including `.EXE`; the demo rejects its absence and
+also requires actual behavior-test output, not merely a zero process exit.
+The production Windows native runner likewise fails closed on missing/empty or
+unusable `PATHEXT`, requires application resolution and a process exit code,
+and preserves legitimate silent successful commands. It does not invent
+environment defaults or treat nonempty output as proof of success.
+To clean up, remove only the specific demo directory printed by that invocation,
+never the whole `.state` tree.
 
 ## Explicit Teams notifications
 
@@ -197,9 +266,10 @@ loading this project; no path to a previous Copilot session is needed.
 
 ## Independent agents and contracts
 
-The three top-level entrypoints are `evidence-collector`, `evidence-filter` and
-`evidence-proposer`. FILTER delegates to the coordinator/planner procedures;
-Proposer selects the configured repository-owner procedure. These packages do
+The four top-level entrypoints are `evidence-collector`, `evidence-filter`,
+`evidence-proposer` and `evidence-rsi`. FILTER delegates to the coordinator/planner procedures;
+Proposer selects the configured repository-owner procedure. RSI inspects flow
+artifacts and proposes changes to the agent system itself. These packages do
 not create additional agents, daemons, permissions or execution budgets.
 
 ```powershell
@@ -207,6 +277,7 @@ npm run pilot -- agents
 npm run pilot -- agent collector help
 npm run pilot -- agent filter help
 npm run pilot -- agent proposer help
+npm run pilot -- agent rsi help
 npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json
 ```
 
@@ -215,7 +286,7 @@ existing helper with unchanged arguments, input schemas, defaults and guards.
 Discovery returns versioned definitions with skill/procedure hashes, input and
 output expectations, supported operations and resumption policy. Unknown roles
 or cross-role operations fail before configuration/state access.
-All three roles can inspect the same app-native run with `app-runs` and
+All four roles can inspect the same app-native run with `app-runs` and
 `app-status --run RUN_ID`; the legacy `reconcile` helper inspects the standalone
 SDK ledger, not an app-native run.
 
@@ -233,6 +304,29 @@ exact-clean-HEAD publication guard. A blocked/uncertain attempt is preserved,
 never reset or blindly redispatched. Source/provider transports, held review,
 dispatch permissions and continuation authorization remain separate gates.
 
+With an explicitly enabled `rsi` policy, proposer controllers capture immutable
+success/failure outcomes and return a post-flow `evidence-rsi` handoff.
+App-native flow owners use `app-end`, including partial and no-candidate runs.
+An approved host invokes the skill; opt-in `rsi.automation` uses either the
+existing restricted native host or providerless continuations in the current
+Copilot App (`executionMode: app-hosted`), commits an isolated candidate and
+independently compares baseline/candidate executions. A pinned app-role plan
+composes the existing role commands and durable assertions; it does not need a
+separate whole-flow executor. Actual app-host continuation remains unqualified
+until exercised operationally; offline simulated responses are not a live run.
+See [app-hosted RSI](APP-NATIVE.md#app-hosted-rsi-continuations). Without that policy,
+the handoff remains capture-only. RSI has durable claim/proposal/result and draft-reservation operations,
+with no duplicate PR creation authorized after an uncertain response. See the
+[end-of-flow RSI contract](APP-NATIVE.md#end-of-flow-rsi-skill).
+The existing offline current/current evaluator is a separate qualification
+building block, not evidence that a proposed change improves the complete flow.
+Large app transport receipts use hash-bound references to the original producer
+events when an inline observation would exceed its bound. Receipts are available
+through bounded, expiring pages without copying or truncating the original data.
+The observation cap remains 1 MiB; metadata that exceeds it still blocks handoff.
+This repairs the oversized-event handoff mechanism, not historical runs or live
+qualification. Local ingestion gains do not establish full-loop productivity.
+
 For an already-authored candidate, the roles can consume genuine saved evidence
 and decisions before a separately authorized validation-only continuation:
 `agent collector replay-evidence`, `agent filter replay-review`, then
@@ -245,6 +339,7 @@ help/status output cannot substitute. See
 | Procedure / project skill | Responsibility | Durable handoff |
 |---|---|---|
 | `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
+| `evidence-rsi` | Inspect flow outcomes and propose agent-system fixes/improvements | Pinned observations, claims, proposals and draft receipts |
 | `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
 | `evidence-improvement-planner` | Aggregate eligible evidence, discover/link coverage and select a qualified repository skill | Versioned areas-to-improve and test-coverage plans |
 | `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
@@ -358,6 +453,9 @@ implied. Genuine scanner exclusions remain independent of resolution.
 IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
+The opt-in incident-created receipt path uses its separately approved team,
+S1/S2/S2.5 (API 1/2/25, excluding S0) and UTC window. It is not that saved query,
+does not require its timestamp equivalence and never changes an old run's scope.
 These selectors, the 1JS/Office repo URLs and the field names in
 `scaffold` are integration constraints, not anonymous generic examples or access
 grants. A different deployment needs a reviewed adapter/config change, not a
@@ -821,9 +919,13 @@ cleanup separates source restore, prepared-output verification and source
 cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
-Version 3 staged plans may bind an `azure-artifacts-npm` authentication
-contract. Before a local worker launches, a controller-owned preflight checks
-authentication only when the matching dependency receipt is absent. If the
+Version 3 staged plans may bind an `azure-artifacts-npm` or approved
+`repository-broker` authentication
+contract. Before a local or Remote Agency author launches, a controller-owned
+preflight checks authentication only when the matching dependency receipt is
+absent. Version-3 authentication profiles also finish exact-base preparation
+before authoring, so a subsequently rejected cache cannot strand a new authored
+commit behind an undiscovered authentication requirement. If the
 pinned provider is missing or the current user must sign in, dispatch returns
 `action-required-auth` while the assignment remains `prepared`; no workspace,
 worker session or tool budget is created. The result contains a non-secret,
@@ -831,7 +933,10 @@ structured remediation command bound to a controller-owned `.yarnrc.yml`
 snapshot extracted from the exact base revision. After the user approves any
 required pinned provider installation and completes Microsoft sign-in/MFA, the
 agent retries the original controller command once and resumes the same
-assignment.
+assignment. If preparation reports `blocked-auth` after a receipt-only preflight
+skipped the check, both providers run one forced non-interactive preflight and
+return the same remediation action. This check neither deletes a trusted receipt
+nor automatically retries preparation.
 
 The exact-revision dependency preparation still performs a final non-interactive
 authentication validation before the locked restore. It never emits a token or
@@ -840,6 +945,11 @@ Unexpected provider drift, anonymous requests, expired credentials or feed
 denials after preflight become `blocked-auth` and are not treated as
 infrastructure retries. Dependency and compile cache hits do not run either the
 authentication check or the authentication stage.
+Failure artifacts retain only the stage, a typed safe reason, a numeric process
+exit code when available and `tokenRecorded: false`; raw credential-provider
+diagnostics are not retained. Missing providers, version mismatch, invalid feed
+configuration, explicit refresh requests and credential-validation failures are
+distinct. A validation failure alone does not establish that a login expired.
 
 On a new Windows machine, the agent may prepare the approved provider and
 current user's feed authentication explicitly:
@@ -856,6 +966,23 @@ The general `npm run setup` command intentionally remains offline with respect
 to product-repository authentication. Agents must never ask users to paste
 tokens; the approved setup command delegates credential acquisition to the
 pinned provider and the Microsoft sign-in flow.
+
+The 1JS SDX profile uses the repository's documented
+`@1js/node-azure-auth` broker. Its preflight runs only `yarn auth --skip-auth`
+from an attested exact-revision checkout and suppresses broker diagnostics; it
+does not acquire or persist credentials. If the check fails, the controller
+returns an explicit `action-required-auth` remediation to run `yarn.cmd auth`
+from the checkout's `midgard` directory. That interactive command is never run
+automatically, and no token or credential value is included in controller
+evidence.
+
+For real 1JS publication, configure `commitIdentity` with the authorized
+corporate author and `pr.sourceBranchPrefix` with a repository-approved user
+namespace, for example `user/<alias>/periodic-evidence-agent`.
+The controller appends the assignment ID and uses the same ref for provisioning,
+push, Draft PR discovery/creation, and cleanup verification. Omitted prefixes
+retain `refs/heads/pilot/` for compatibility; that namespace and a bot author
+email may be rejected by repository policy even when local validation passes.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of
@@ -880,10 +1007,20 @@ only when a fresh content hash still matches the verified process-local baseline
 additions, removals, renames and actual content changes invalidate the cache.
 Directory `change` events require recursive content verification, including when
 only an ancestor event is delivered. Overlapping paths coalesce into bounded
-worker tasks without dropping descendant coverage. Settlements serialize per
-guard and wait for queued events after hashing; unknown filenames and watcher
-errors invalidate trust even during initial verification. Artifacts record
-changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
+worker tasks without dropping descendant coverage. Incremental dependency-subtree
+checks use the same recursive partitioner
+as complete snapshots, with at most 2,048 filesystem entries per leaf task and
+the existing five-minute task deadline; parent directory manifests are rebuilt
+from every child result. Settlements serialize per
+guard and wait for queued events after hashing. A `change` notification without a
+filename requires complete-root content/link and membership revalidation against
+the baseline; it never means that changes are ignored. This handles Windows
+access-time notifications caused by reading unchanged files. Unknown `rename`
+notifications and watcher errors still invalidate trust, including during initial
+verification. Repeated events must settle within four passes or trust is rejected.
+Artifacts record changed-path, rehashed-entry, incremental worker-task,
+full-root revalidation and settlement-pass counts alongside wall time.
+Preparation failures preserve the exact verification reason and event details.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an
@@ -1116,14 +1253,20 @@ npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
   --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
-The scheduler selects jobs deterministically, rotates across configured
-repositories, respects active hosted and local workers, and launches only jobs
+The scheduler selects jobs deterministically, visits repositories in order of
+their oldest waiting job, respects active hosted and local workers, and launches only jobs
 that are still `prepared`. Each selected assignment is atomically admitted
 again by normal `dispatch`; an overlapping scheduler can therefore observe an
 `overlap` result but cannot submit a duplicate remote job. Scheduler batches
 and per-assignment outcomes are durable ledger operations. This supports
 concurrent repositories on one Controller machine; the SQLite ledger is not a
 multi-machine lease service.
+
+Authentication actions are retained in each scheduler result while the affected
+job remains `prepared`; other selected repositories may continue. A batch with
+authentication actions, blocked/uncertain jobs or failed outcomes is recorded as
+`partial`, not successful delivery. Follow the returned authentication recovery
+procedure rather than resubmitting the batch blindly.
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
@@ -1383,7 +1526,9 @@ Before adding a remote or pushing:
    email. Removing a file from HEAD does not remove it from history; do not
    publish unsuitable history or rewrite it without explicit authorization.
 
-No remote is created and nothing is pushed by installation, tests, demo or CI.
+No live publication remote is created and nothing is pushed to a live remote by
+installation, tests, demo or CI. The demo uses disposable local Git checkouts and
+mocked publication; some controller tests push only to temporary local bare repos.
 Do not send the entire working directory as a zip. After review, use Git's
 committed tree/export so ignored personal files cannot be included accidentally.
 Colleagues must configure their own approved identity/scopes/authentication.

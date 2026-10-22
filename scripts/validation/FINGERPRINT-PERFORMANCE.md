@@ -6,9 +6,10 @@ This change optimizes controller fingerprint planning and worker granularity.
 It does not change the receipt schema, exact-revision/source-cleanliness checks,
 profile/toolchain binding, ordinary-file SHA-256 coverage, source-mutation
 detection or controller-only authority. The five-minute dispatched-task timeout
-is unchanged. Initial baseline capture and the second complete verification
-after watcher installation are both retained. Unknown filenames, rename,
-watcher failure and unstable settlement still fail closed.
+is unchanged. Current preparation starts observation before baseline capture
+and reuses it only while the observer remains healthy; unavailable observation
+requires complete content verification. Unknown filenames, rename, watcher
+failure and unstable settlement still fail closed.
 
 The preceding real OfficeAgent log reported 1,904.645 seconds for initial
 verification of 200 output roots. The first task monitor appeared about
@@ -68,9 +69,9 @@ Captured entries and public fingerprint schemas are unchanged. Capture failure
 does not retry the same recursive scan through a non-capturing fallback.
 
 Planning is still synchronous and may repeat bounded directory enumeration at
-split ancestors. Large ordinary output roots remain recursive path tasks, and
-a single large/slow file can still dominate a task. This is not a solution to
-every filesystem or serialization bottleneck.
+split ancestors. Generic tree batches now use the same entry budget described
+below, but a single large/slow file can still dominate a task. This is not a
+solution to every filesystem or serialization bottleneck.
 
 `outputFingerprint` accepts an optional telemetry object. Initial
 `verifyPreparedOutputs` returns separate baseline and verification telemetry;
@@ -88,6 +89,42 @@ structured clone. Worker JSON timing excludes the structured clone of captured
 entries. Queue sums overlap across workers and cannot be added to wall time.
 **Physical I/O wait, device throughput and antivirus attribution remain
 unmeasured.** No size/mtime fast path replaces complete content hashes.
+
+## Generic-tree batching (October 21, 2026)
+
+Generic roots such as SDX's `.store` previously crossed a scheduling cliff:
+2,047 direct files fit one recursive task, but 2,048 files became 2,048
+single-file tasks. Small generic subtrees now share batches estimated at no
+more than 2,048 entries, including across output roots. Oversized trees still
+split, and parent directories are reconstructed in their original sorted
+order. Missing members reject the entire batch; cancellation, the eight-worker
+cap and the five-minute task timeout remain unchanged.
+
+A same-fixture ABBA comparison used PR #43 head
+`ae64c25d0dab345a73d6eea3123e8ad0ade6f5af` as A and the revised implementation
+as B, with 16,384 direct files in one `.store`. Serial capture preceded each
+measured parallel pass on the shared Windows host.
+
+| Measurement | Before (A, A) | After (B, B) |
+|---|---|---|
+| Tasks per captured pass | 16,384 / 16,384 | 8 / 8 |
+| Full pass wall time | 2,153 / 2,124 ms | 1,909 / 1,895 ms |
+| Process CPU, including workers | 13,437 / 13,609 ms | 11,094 / 11,016 ms |
+| Captured entries | 16,385 / 16,385 | 16,385 / 16,385 |
+
+All four passes matched the complete serial entry map and SHA-256
+`268cb67eee7adb3c063f2a5ca29a05b50b6925b95ead9dca4d29713e3d05a7c6`.
+This demonstrates reduced task overhead for this synthetic fixture, not a
+measured improvement to the historical real-product E2E. Small trees may
+use fewer workers; batching is not a universal wall-clock speedup.
+
+Dependency materialization retains its destination content check and the
+post-compile capture. Its existing timing stage now persists separate
+`details.copyDurationMs`, `details.linkRebaseDurationMs` and
+`details.fingerprint` wall/CPU/task telemetry. These nested measurements
+overlap the materialization stage and must not be added to it. They do not
+attribute physical I/O or establish that either full scan can safely be
+removed; cross-root capture reuse remains a separate change.
 
 ### Preparation rejection diagnostics
 
@@ -123,6 +160,83 @@ The failure stage measures only that verification call, not the earlier output
 capture or the entire preparation. Its nested wall/CPU/task timings overlap the
 stage and must not be added to it. This change cannot recover details discarded
 by older failures and does not itself establish real product native cache reuse.
+
+## Explicit isolated preparation cancellation fixtures
+
+`src/preparation-attempt.js` exports an opt-in controller diagnostic API,
+`runPreparationAttempt`. It is not called by setup, the periodic agent, ordinary
+validation or repository skills. It currently requires Windows Job Object
+containment, one staged gate, a clean exact-revision source, a disjoint existing
+attempt parent, a whole-execution budget and an explicit budget for every
+`preparationStageNames` entry. No real product run is implicitly authorized.
+
+The runner acquires a persistent controller Ledger lease scoped to the attempt
+parent and canonical source. It creates a new attempt with a disposable source
+clone and **fresh private state**, never the caller's retained state. Only
+controller code emits the allowlisted, sequenced stage journal. Product stdout
+is not progress, and does not start, finish or extend budgets. The optional
+`prepareValidation` progress callback is supplied by controller code, not
+configuration or a skill. Async-local gate context isolates its stage identity.
+Observer failures fail closed; a notification failure while reporting a primary
+rejection adds only a fixed secondary diagnostic, preserving the rejection.
+
+Budgets cover source materialization, profile execution, dependency/compile
+checkout, LFS and dependency materialization, output capture and verification.
+Nested verification progress distinguishes baseline, second complete hash and
+settlement without accepting them as substitutes for one another. Existing
+full-hash, source/profile/toolchain binding and watcher rejection rules remain.
+New dependency and compile receipts are published **after** their mandatory
+verification succeeds; an interrupted verification does not publish its receipt.
+Receipt schemas, integrity inputs and ordinary validation APIs remain unchanged.
+
+The parent polls the controller journal at 10 ms, checks both active elapsed
+time and completed-stage durations, and enforces the native whole-execution
+timeout. A stage deadline or an explicit `AbortSignal` cancels the **entire
+attempt**, not just a Promise or one profile process. Native supervisor close
+and recorded controller PID exit are checked before rollback. Disposal of its
+private `data` subtree restores the attempt by isolation/discard, **not** by
+resetting a retained source or selectively repairing an interrupted cache.
+The original source HEAD/tracked status is rechecked. Tests additionally check
+original file bytes, profile/grandchild PID exit, lease exclusion/release and
+absence of partial receipts. Late test assertions use OS creation time to
+disambiguate reassigned PIDs; the controller's fail-closed exit checks remain
+unchanged.
+
+The append-only parent journal is fsynced at stage boundaries and every five
+seconds; final outcome uses an fsynced temporary file and rename. Deadline
+outcomes are `incomplete`, not an invented native rejection. A genuine
+controller rejection retains its classification and reason separately.
+Unconfirmed process drain or cleanup keeps the lease fail closed; never reclaim
+it merely because a timer expired. Successful attempts retain their private
+prepared state; this is **not** a native reuse or assignment-E2E claim.
+Failure to persist the final outcome rejects otherwise successful preparation
+and discards its private state when process drain is confirmed. Both synchronous
+observer failures and rejected async parent observers fail closed without
+exposing their exceptions; parent observers must be synchronous.
+
+Run the small offline interruption fixtures explicitly:
+
+```powershell
+node --test --test-reporter=spec test\preparation-attempt.test.js
+```
+
+They interrupt active dependency and compile profiles (including a grandchild
+and source mutation in the disposable snapshot), in-flight full verification,
+and stage budgets. They also check a fresh successful attempt after cancellation,
+concurrent lease refusal, controller rejection and diagnostic failure. Native
+containment cases are Windows-only; skipped cases on another OS are not proof.
+
+**Limits:** this is a diagnostic runner, not cooperative cancellation throughout
+production call chains, an OS security boundary against same-user hostile code,
+or an automatic recovery service. Parent hard-crash/power-loss recovery is not
+qualified: leases remain held for explicit reconciliation, and orphaned native
+jobs must not be presumed dead. Source inspection before launch and final
+drain/rollback/evidence work are measured outside the native execution budget;
+polling, synchronous filesystem stalls and cleanup can add wall time. No
+hard-real-time, disk-failure durability or real-large-tree cleanup cost guarantee
+is claimed. These fixtures do not authorize a real preparation, explain the old
+99-minute rejection, establish real native hits, or complete event-heavy or
+warm/full-fresh evidence.
 
 ## Explicit local benchmark
 

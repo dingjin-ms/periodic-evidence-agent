@@ -20,7 +20,50 @@ Use Node 24 and Git. `npm ci --ignore-scripts`, `npm test`, `npm run demo` and
 temporary Git repos and execute synthetic validation programs, but must not
 acquire credentials, call services or launch product workers. Add focused
 regressions for behavioral changes and run the complete offline suite before
-handoff. CI uses a read-only token and no live secrets or account login.
+handoff. Test CI uses a read-only token and no live secrets or account login.
+The separate failure notifier may only comment on PRs and create failure issues;
+it never checks out or executes a tested revision or downloads its artifacts.
+
+## Master CI and merge protection
+
+`Offline pilot checks` runs for pushes and PR merge candidates. Its final
+`offline` job fails unless every test group succeeds, including when a group
+fails, is cancelled or is skipped. Keep this job unconditional and its name
+unique. A green PR run is not proof that a later master run cannot fail:
+Windows process cleanup and other timing-sensitive tests still need root-cause
+fixes, not retries until green or weakened assertions.
+
+A repository administrator must configure **server-side** protection for
+`master`: require a PR, require the GitHub Actions `offline` status check,
+require the branch to be up to date before merging, require review and
+resolution of review conversations, and apply the rules without bypasses
+(including administrators). Disallow force pushes and branch deletion.
+Revalidate after head or base changes. If a merge queue is introduced, first
+add the `merge_group` trigger to the test workflow so queued merge candidates
+also produce the required check.
+
+Check that `gh api repos/OWNER/REPO/branches/master` reports `protected: true`
+and inspect the configured rule; workflow YAML alone cannot enforce merging.
+Private repositories need a GitHub plan supporting protected branches.
+If settings are unavailable, the owner must upgrade or move the repository
+to an approved organization/plan. Do not make a private repository public as
+a workaround. Until protection is enabled, "do not merge red/pending CI" is
+only a contributor policy, not a technical guarantee.
+
+Once `offline-failure.yml` is merged into the default branch, failed or timed-out
+offline PR runs comment on the still-current open `master` PR and mention its
+creator, not a fixed maintainer or the workflow actor. Failed master pushes
+create an issue mentioning the creators of merged `master` PRs whose merge SHA
+matches the failed revision. If no such PR exists, the issue mentions the
+original push actor, not a later rerun actor. Missing recipient metadata fails
+the notifier explicitly rather than silently choosing another person.
+Each alert links the exact run, SHA and attempt without copying logs. Duplicate
+delivery of the same run/attempt is suppressed; stale PR heads, successful runs,
+cancelled runs and topic-branch pushes do not generate alerts. API errors fail
+the notifier rather than claim delivery. This notifier is not a required merge
+check and does not retry, merge, revert or automatically close failure issues.
+The recipient must enable the desired GitHub/email/mobile notification delivery
+in their own GitHub settings; a posted mention does not prove delivery.
 
 The reviewed-handoff integration flow is not a source connector test. Keep its
 fixture source-neutral (`kind: fixture`, `provenance: synthetic`) and keep the
@@ -43,6 +86,76 @@ Do not paste source payloads or tokens into issues, PRs, test failures or CI
 artifacts. Sanitized aggregate validation summaries may describe gaps, not imply
 unobserved success. Report sensitive-history findings privately; do not rewrite
 history or publish it as a recovery shortcut.
+
+## Self-improvement review evidence
+
+The first RSI deliverable is recovery-harness qualification and a source-bound
+scorecard, not a claimed improvement. Run the bounded focused regressions with:
+
+```powershell
+node --test --test-concurrency=1 test\self-improvement.test.js test\self-improvement-evaluation.test.js
+```
+
+On Windows, a short-name temporary-root alias can abort Node's file watcher with
+`!_wcsnicmp(filename, dir, dirlen)` in `src\win\fs-event.c`. Check whether
+`tmpdir()` differs from `realpathSync.native(tmpdir())`; use canonical,
+process-local `TEMP`/`TMP` for validation rather than weakening watcher/root
+guards or counting crashed test files as passed:
+
+```powershell
+$canonicalTemp = node -p "require('node:fs').realpathSync.native(require('node:os').tmpdir())"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the validation temporary root' }
+$env:TEMP = $canonicalTemp
+$env:TMP = $canonicalTemp
+npm run check -- --test-concurrency=4
+```
+
+To retain the ordinary qualification test's authoritative store for review,
+set `RSI_RETAIN_QUALIFICATION=1` before running that test and remove the
+environment variable afterward. The test prints the store/experiment identity
+and saves its exact policy in the ignored store. This is not permission for a
+standalone operational trial. The owning checkout must retain that store;
+tests clean only their separately allocated disposable fixture repositories.
+
+Every proposed RSI improvement PR needs a **Before/after loop comparison**
+section generated from verified sealed observations. `self-improvement report`
+returns that Markdown; it does not publish or edit a PR. Report the exact
+controller and loaded working-tree source identities, dependency/evaluator/
+driver/workload/policy/toolchain pins, raw counts and denominators, per-episode
+outcomes, missing data and the limits of the conclusion. A new source identity
+requires fresh evaluation or an explicit stale label. Current/current equality
+must say `no-demonstrated-benefit`; never weaken the old arm to manufacture a bug.
+
+Keep preregistered recovery, healthy and guard populations distinct:
+
+- Recovery uses every selected recovery episode; completion uses recovery plus
+  healthy episodes. Valid pre-test target failures remain unsuccessful in both
+  applicable denominators, not invalid harness executions.
+- Expected guard refusals belong only to guard correctness, not recovered work
+  or task completion. Invalid harness execution, unknown and not-run are
+  separate categories; all selected episodes remain accounted for.
+- Recurrence uses the complete fixed follow-up inventory. Zero opportunities
+  means not applicable, never 100%. Missing observations remain unresolved.
+- Execution coverage and verified assertion coverage use the original common
+  case/assertion inventory, with explicit gain/loss, skipped and unknown items.
+  Pinned nonempty bodies and real case events are required; green wrappers or
+  worker results alone are insufficient. Skip/todo starts are not execution.
+  This is not line/branch coverage.
+- Authority violations, rejected duplicate effects and unsupported success
+  claims are hard failures. A broker refusal and its rejected effect count as
+  one violation; duplicate requests and unsupported actions are separate counts.
+  Available duration/tool counts are diagnostic.
+  Tokens/credits remain not measured, not zero or a configured budget ceiling.
+
+The comparison JSON and Markdown must use the same grading functions and sealed
+inputs. Test false green, missing/skipped/failed/duplicate cases, source drift,
+pre-test failure accounting, finite bounds, immutable versions, root ownership,
+crash boundaries, read-only status and adopt/abandon behavior. Public material
+contains only generic fixture labels and safe aggregates, never raw local paths,
+workplace evidence or credential diagnostics. Metric additions and real
+failure-pattern fixes require separately reviewed evidence, not reward by
+instrumentation volume. No model, live recovery, promotion or publication grant
+is implied by passing these offline tests.
 
 ## Review boundaries
 

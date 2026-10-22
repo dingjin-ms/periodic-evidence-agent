@@ -2,6 +2,7 @@ import { hash, json, requireThat } from './common.js';
 import { readAgencyRequest, previewAgencyResult, selectAgency, validateFilterAnalysisPolicy,
   recordAgencyPolicyEvaluation, filterCandidateSourcesMatch } from './agency-executor.js';
 import { checkFilterBatchResult, consolidateFilterBatches } from './filter-batches.js';
+import { reconcileLocalFilterCohort } from './local-filter.js';
 
 export function evaluateFilterExecution(config, ledger, manifest, taskId, resultBytes, input, policy) {
   const request = readAgencyRequest(ledger, taskId);
@@ -36,6 +37,12 @@ export function recordFilterExecutionEvaluation(config, ledger, manifest, taskId
 export function reconcileFilterExecutionCohort(config, ledger, manifest, resultBytes, policy = null) {
   requireThat(Array.isArray(resultBytes) && resultBytes.every(value => typeof value === 'string'),
     'FILTER execution reconciliation requires exact result bytes', 'invalid-record');
+  requireThat(config.filterExecutor === undefined ||
+    ['agency', 'local-sdk'].includes(config.filterExecutor), 'Unknown FILTER executor');
+  if (config.filterExecutor === 'local-sdk') {
+    requireThat(policy === null, 'Agency policies do not grade local SDK execution');
+    return reconcileLocalFilterCohort(config, ledger, manifest, resultBytes);
+  }
   const results = resultBytes.map(bytes => {
     const result = JSON.parse(bytes), checked = checkFilterBatchResult(config, manifest, result);
     requireThat(checked.resultSha256 === hash(bytes),

@@ -1,0 +1,26 @@
+{
+  "format": "self-improvement-workload-v1",
+  "adapter": "validation-continuation-v1",
+  "provenance": "synthetic",
+  "family": "missing-materialization",
+  "failure": {
+    "signature": "native-input-not-materialized",
+    "phase": "preparation",
+    "intendedWork": "Execute the preserved authored native-input assertions",
+    "unblock": "Verified synthetic object and explicitly authorized lfsPaths addition"
+  },
+  "trace": ["authored", "preparation-failed", "unblock-verified", "continuation-prepared", "native-cases", "simulated-publication"],
+  "coverage": {
+    "before": [],
+    "required": [
+      { "caseId": "native-input-content", "assertionIds": ["exact-content"] },
+      { "caseId": "native-input-integrity", "assertionIds": ["exact-length", "exact-digest"] }
+    ]
+  },
+  "episodes": [
+    { "id": "recovery", "population": "recovery", "scenario": "recover", "followup": false },
+    { "id": "healthy", "population": "healthy", "scenario": "healthy", "followup": true },
+    { "id": "guard-proof", "population": "guard", "scenario": "changed-proof", "followup": false },
+    { "id": "guard-duplicate", "population": "guard", "scenario": "duplicate-dispatch", "followup": false }
+  ]
+}

@@ -1,0 +1,16 @@
+export function classifyReadiness(facts) {
+  const selected = facts.selected;
+  if (!Array.isArray(selected) || !selected.length ||
+      selected.some(id => typeof id !== 'string' || !id) ||
+      new Set(selected).size !== selected.length) return { readiness: 'unproven' };
+  if (facts.blocked === true) return { readiness: 'blocked' };
+  const results = facts.results;
+  if (facts.terminal !== true || typeof facts.sourceRevision !== 'string' || !facts.sourceRevision ||
+      !Array.isArray(results) || results.length !== selected.length ||
+      results.some(item => !item || typeof item !== 'object' || Array.isArray(item)) ||
+      new Set(results.map(item => item.caseId)).size !== selected.length ||
+      results.some(item => !selected.includes(item.caseId) ||
+        item.sourceRevision !== facts.sourceRevision ||
+        !['passed', 'failed'].includes(item.status))) return { readiness: 'unproven' };
+  return { readiness: results.some(item => item.status === 'failed') ? 'failed' : 'passed' };
+}

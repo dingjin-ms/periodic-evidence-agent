@@ -1,0 +1,120 @@
+{
+  "id": "1js",
+  "owner": "siruisun",
+  "routingApproved": false,
+  "routingRules": [
+    "SDX Excel Agent integration-test improvements only"
+  ],
+  "referenceCheckout": null,
+  "baseRef": null,
+  "remote": "https://dev.azure.com/office/Office/_git/1JS",
+  "allowedWritePrefixes": [
+    "midgard/packages/officeaicopilot-agent-excel/tests/integration",
+    "midgard/change"
+  ],
+  "sparseCheckout": {
+    "mode": "workspace-closure",
+    "workspacePackages": "midgard/packages",
+    "targetWorkspaces": [
+      "@1js/officeaicopilot-agent-excel"
+    ],
+    "bootstrapPaths": [
+      "AGENTS.md",
+      "package.json",
+      "yarn.lock",
+      ".yarnrc",
+      ".npmrc",
+      ".githooks",
+      "packages/fast-script-runner",
+      "packages/installer",
+      "packages/local-telemetry",
+      "packages/midgard-yarn",
+      "packages/midgard-yarn-strict",
+      "packages/node-azure-auth",
+      "packages/tsserver-telemetry-settings",
+      "packages/yarn-scoper",
+      "midgard/AGENTS.md",
+      "midgard/package.json",
+      "midgard/yarn.lock",
+      "midgard/.yarnrc",
+      "midgard/.npmrc",
+      "midgard/scripts"
+    ],
+    "additionalWorkspacePaths": [
+      "midgard/packages/commit-scope",
+      "midgard/packages/git-revert",
+      "midgard/packages/ai-package-generator-discoverer",
+      "midgard/packages/whose-code"
+    ]
+  },
+  "changeFile": {
+    "kind": "beachball",
+    "executable": "yarn.cmd",
+    "cwd": "midgard",
+    "packageName": "@1js/officeaicopilot-agent-excel",
+    "changeType": "none",
+    "outputPrefix": "midgard/change"
+  },
+  "toolchain": {
+    "provider": "nvm-windows",
+    "nodeVersion": "22.18.0"
+  },
+  "skillBindings": [
+    {
+      "id": "sdx-excel-integration-tests",
+      "capability": "integration-test-authoring",
+      "skillPath": "midgard/packages/officeaicopilot-agent-excel/.github/skills/excel-agent-integration-tests/SKILL.md",
+      "enabled": false,
+      "qualification": "unqualified",
+      "requestedOutcomes": [
+        "add-or-update-tests",
+        "investigate-failure"
+      ],
+      "allowedWritePrefixes": [
+        "midgard/packages/officeaicopilot-agent-excel/tests/integration",
+        "midgard/change"
+      ],
+      "allowedWriteFiles": [],
+      "requiresBehaviorCard": true,
+      "sideEffects": {
+        "commit": false,
+        "push": false,
+        "createDraftPR": false
+      }
+    }
+  ],
+  "commitIdentity": {
+    "name": null,
+    "email": null
+  },
+  "validationGates": [
+    {
+      "id": "sdx-excel-focused-integration",
+      "approved": false,
+      "isolationVerified": false,
+      "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "args": [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{profile}"
+      ],
+      "profilePath": "../scripts/validation/1js-sdx-excel-integration.ps1",
+      "profileSha256": "e86c22b54946d5d3ee08f8b3d60074c0a0c7623bbc0d0bca5189c4006854c32b",
+      "timeoutMs": 1800000
+    }
+  ],
+  "pr": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "Office",
+    "repositoryId": "1JS",
+    "targetRef": "refs/heads/main",
+    "sourceBranchPrefix": "user/REPLACE_WITH_ALIAS/periodic-evidence-agent",
+    "draftOnly": true,
+    "authorizationEnv": null
+  }
+}

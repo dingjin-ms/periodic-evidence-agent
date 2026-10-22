@@ -1,5 +1,10 @@
 # End-to-end execution guide
 
+To include post-flow agent-system improvement, follow the
+[RSI operator runbook](scaffold/RSI-RUNBOOK.md) alongside this product execution
+guide. RSI opt-in, app-host continuations, independent comparison and draft
+publication are separate from product authoring/validation permissions.
+
 This guide covers the gated path from devbox setup to a source-bound draft PR:
 
 ```text
@@ -61,6 +66,14 @@ helpers and their permission gates; they do not automatically advance stages.
 An operation-result envelope is not proof of role completion, complete-cohort
 acceptance or native validation. See [README.md](./README.md) for the interface.
 
+For the stricter fresh-cohort path, use the
+[bounded one-shot controls](ONE-SHOT.md). They coordinate the existing local
+collectors, reserve whole-cohort FILTER budgets before task reservation and
+gate one proposer on complete source plus accepted execution evidence. The
+existing Copilot session/host remains the orchestrator; external FILTER
+submission/observation, approvals and runtime qualification remain its
+responsibility. Legacy selected-case replay below keeps its original scope.
+
 ## 1. Clone and initialize the devbox
 
 Prerequisites are **Node.js 24+, npm and Git**. Windows native validation and
@@ -100,8 +113,15 @@ executes the offline checks and runs the synthetic demo. Omit the `--repo`
 selection only when setup of every configured skill-backed repository is intended.
 
 **Setup does not authenticate product feeds, install product dependencies,
-enable dispatch or create PRs.** `synthetic-demo-passed` means fixture
-assertions passed, not a live integration-test pass.
+enable production dispatch or create PRs.** `synthetic-demo-passed` means fixture
+assertions passed, not a live integration-test pass. The demo now includes real
+FILTER validation/consolidation and isolated local proposer fixture execution,
+with real Node test gates and failed-validation/stale-head/duplicate-dispatch
+checks. Model authoring and push/draft publication are deterministic mocks.
+The original partial synthetic collection is never promoted; proposer execution
+uses the existing explicitly authorized synthetic reviewed-handoff interface.
+See the [demo stage assertions](README.md#offline-demo-coverage) for the exact
+scope and output artifacts.
 
 Use `npm run setup:repos -- --repo office-agent` only when intentionally
 rerunning the repository layer without repeating dependency installation and
@@ -237,6 +257,13 @@ these reusable corrections when authoring that profile:
   Do not replace this with an uncontained shell or increase timeouts to mask
   leftover descendants. Model launchers use `localProposerEnvironment()`; native
   runners use their narrow environment and separate approved package auth.
+- Preserve the host's `PATHEXT` including `.EXE`. Missing, empty or unusable
+  values fail before native launch with `blocked-native-environment`; the runner
+  does not synthesize defaults. The supervisor resolves an application and
+  requires its process exit code, without requiring output from silent commands.
+  Restore the host environment and follow the existing explicit reconciliation
+  or continuation procedure; do not reset an attempted validation or retry it
+  just because the environment was corrected.
 - When invoking the native wrapper through a PowerShell function, pass the
   separator as the literal string `'--'`. Launch the wrapper with the pinned
   root Yarn tool environment, not plain `node`, so child root tools resolve:
@@ -315,6 +342,168 @@ Missing bodies, incomplete paging and unavailable sources remain explicit;
 unknown coverage is not zero.
 
 ### Prepare, execute and reconcile complete-record batches
+
+#### Explicit local SDK execution
+
+The opt-in local route does not impersonate a hosted Agency job. Select
+`filterExecutor: "local-sdk"` in a separate private configuration, enable
+`activation.review`, and configure `localFilter` explicitly:
+
+```json
+{
+  "enabled": false,
+  "maxRequests": 1,
+  "maxToolCalls": 24,
+  "timeoutMs": 600000,
+  "maxSourceBytes": 65536,
+  "maxRequestBytes": 524288,
+  "useExistingLogin": false,
+  "acceptSoftCreditLimit": false,
+  "sources": [{ "repoId": "1js", "revision": "<exact-40-character-commit>" }]
+}
+```
+
+Enable it only for the approved run. Source pins must refer to configured
+reference checkouts. The existing full-cohort manifest, sharing and model/token
+budget checks still apply. The installed CLI requires at least 30 AI credits
+per session; `filter-local-preflight` returns `action-required-budget` for a
+smaller ceiling without launching or automatically increasing it.
+
+**Credit limits are soft, not hard spending guarantees.** In-flight calls can
+exceed the configured limit. Preflight therefore also requires explicit
+`localFilter.acceptSoftCreditLimit: true` after informed
+approval of that behavior; approval of a hard ceiling alone is insufficient.
+Do not automatically retry a failed attempt or repurpose conditional Proposer
+authorization for another FILTER run.
+
+A separately authorized retry stays in the same ledger and uses the original
+manifest and batch. In a new private configuration, set `localFilter.retry` to
+`{ "batchId": "<batch>", "previousAttemptId": "<failed-attempt>",
+"previousTerminalSha256": "<canonical-terminal-sha256>",
+"authorizationRef": "<new-explicit-approval-receipt>" }`. The terminal hash is
+SHA-256 of the predecessor terminal serialized with two-space JSON indentation
+and a trailing newline. Approve the total `maxRequests` separately and retain
+the original configuration unchanged. By default, only an immutable blocked predecessor
+with matching manifest, payload, model and source pins can have a successor.
+The successor has its own receipt identity; repeated submission, retry forks,
+active predecessors and exhausted request budgets are rejected.
+Reconcile using that retry configuration and a new result-export path.
+
+Reassessing an already completed result requires an explicit
+`retry.reassessment` with `resultSha256`, `reviewRef` and `reason`. This binds the
+rejected result and quality review; it does not silently promote or overwrite
+the prior decisions. A model or context-tier change requires a newly prepared
+verified manifest and `retry.requalification` with `previousManifestSha256`,
+`previousModel` and `reason`. Evidence payload and source pins must remain exact.
+Set `localFilter.contextTier: "long_context"` only when that tier is available
+and its distinct input limits and prices have been qualified.
+
+A retry applies only to its named batch. Other unstarted batches can use the
+same configuration. When another batch subsequently needs a retry, preserve
+the base configuration and append its explicit retry object to
+`localFilter.cohortRetries`. Each batch selects its own retry without changing
+already completed batches' configuration binding. Reconcile with the full
+selection; duplicate selections, unknown batches, mismatched predecessor
+hashes and forks still reject. This is not permission for automatic retry:
+each successor must remain within the user's explicit iteration authorization.
+An explicit retry can also carry `execution` overrides limited to `maxRequests`,
+`maxToolCalls`, `timeoutMs` and `compactDecisions`. They apply only to that retry's batch and
+remain part of its request/configuration hash. Request ceilings count the
+entire ledger, including historical attempts; an increased ceiling must still
+fit the user's total authorized session budget.
+
+A retry may carry an optional `review` containing `reviewRef`, `reviewSha256`
+and a bounded `reason`. The referenced JSON is checked using the canonical
+two-space-indented JSON plus newline hash before execution and reconciliation.
+This preserves source follow-up observations when retrying a blocked predecessor;
+it does not permit `reassessment` against an incomplete result, create semantic
+decisions, or allow a fork. Review text is explicitly untrusted, independently
+verifiable context. Configurations without this field keep their prior instruction
+bytes. Invalid title-exclusion feedback identifies the affected source/evidence
+record; it never corrects the model's quote or exclusion automatically.
+
+The default isolated SDK home does not inherit keychain-backed login. For an
+explicitly approved single-user run, `localFilter.useExistingLogin: true` uses
+the existing CLI login/home without copying credentials. FILTER still sets a
+custom-tool allowlist and denies permission requests, disables custom
+instructions, skills, file hooks, host Git operations, memory, scheduling and
+session-store indexing, and removes installed plugins before sending evidence.
+The runtime can retain session artifacts under the user's existing private
+Copilot home; controller receipts remain in the configured state directory.
+Do not describe this opt-in as empty-home isolation or an OS sandbox. The
+default remains isolated, and authentication failure never selects this mode
+automatically.
+
+```powershell
+node src\cli.js agent filter filter-local-preflight --config local-filter.local.json
+node src\cli.js agent filter filter-local-run --config local-filter.local.json `
+  --manifest private-batches.json --batch <batch-id> --output private-result.json `
+  --execution-mode standalone-sdk
+```
+
+Only bounded Git reads at the pinned commits and a structured finish callback
+are exposed. Read/list/literal-search responses are UTF-8 byte pages, each at most 12 KiB
+including metadata, to avoid the runtime's inaccessible large-output files.
+Page sizing searches for the largest fitting UTF-8 boundary rather than
+halving a response that narrowly exceeds the limit. This reduces source tool
+calls without increasing the response ceiling or relaxing complete-file reads.
+Follow `nextOffset` while `hasMore` is true. Each receipt binds both the complete
+source hash and exact page bytes; a first page is not a complete file review.
+The `complete-opened-source-files-v1` policy rejects finish until every opened
+file has contiguous delivery from byte zero through EOF, including when the
+result has zero candidates. Feedback identifies a pending file and its first
+missing offset, so the same session can finish reading and resubmit. Reading
+the last page or another complete file cannot hide a missing middle page.
+Partial directory listings remain discovery only, not proof of exhaustive
+coverage. The `search` action uses a bounded literal query at the pinned commit;
+its matching lines locate files but do not count as complete reads.
+Malformed source argument shapes reject before source access and can be
+corrected in the same session. Actual out-of-pin/path requests and exhausted
+budgets remain permanent violations. Reconciliation independently checks the same immutable page receipts;
+older receipts without this policy are historical evidence, not newly qualified
+results. Complete delivery still does not independently prove semantic reading
+or that reasoning belongs to the correct evidence record.
+Working-tree edits are not read; no shell, write or publication
+tool is exposed. Complete per-record output and actually inspected source for
+candidates are required. This is SDK permission enforcement, not an OS sandbox
+or independent verification of semantic reasoning.
+
+Policy `incremental-complete-cohort-v1` accepts nonempty `status: "partial"`
+decision chunks. Each chunk includes finished title/detail decisions for its
+records; no manually synthesized reasoning is added. Accepted inputs and their
+hashes are immutable, exact repeats are idempotent, and conflicting duplicates
+reject. A final `status: "complete"` can have empty decision/detail arrays and
+refer to previously reviewed records in its candidates. Completion still
+requires every cohort member and every opened source file. Reconciliation
+rebuilds the result from all accepted inputs and hashes, rather than comparing
+only the final callback arguments with the assembled result.
+
+For large batches, opt into `localFilter.compactDecisions: true` (or the
+retry-scoped execution override). The finish tool then accepts `status`,
+`decisions` and `candidates` directly. A `progress` request with empty arrays
+returns up to 20 unresolved indexes, record IDs and titles without accepting
+any decisions. Each compact decision must identify both its index and exact
+record ID and supply all title/detail dispositions, exclusions, quotes and
+reasons. Only immutable metadata (source identity, hashes, batch identifiers)
+is populated from the verified manifest. Reviewer/session identity and receipt
+time are controller metadata, not model reasoning.
+
+Policy `compact-incremental-complete-cohort-v1` retains both the original
+compact submission and expanded canonical input with their hashes. Independent
+reconciliation repeats expansion from the exact manifest and receipt metadata
+and verifies semantic fields byte-for-byte. It cannot invent reasoning, repair
+conflicting decisions or promote an unknown/blocked candidate to an eligible
+gap. Legacy full-result requests keep their original schema and policy binding.
+
+The local ledger retains immutable request, session, event, source-inspection,
+analysis and terminal receipts. A failed or interrupted attempt cannot be
+automatically retried or switched to Agency. Run `filter-execution-check` below
+with the **same local configuration** and its execution ledger; it explicitly
+grades local receipts rather than requiring or inventing Agency job IDs.
+Structural consolidation alone remains insufficient. CLI result export does
+not overwrite existing files; the canonical result also remains in the ledger.
+
+#### Shared batch preparation and hosted execution
 
 Use `evidence-coordinator` to prepare the private source-ledger manifest,
 complete context groups, sharing approvals and approved token budget under the
@@ -472,6 +661,82 @@ again. A supported continuation preserves the blocked attempt and binds explicit
 authorization to its successor configuration and controller revision. Check the
 selected runtime's accepted budget limits before launch; do not silently raise a
 ceiling to meet a runtime minimum.
+
+For an interrupted installation, the programmatic `prepareValidation` option
+`resumeDependencyWorkspaces` maps gate IDs to their exact unfinished dependency
+workspaces. It rejects source/remote drift and unrelated cache paths, preserves
+partial dependencies, and reruns the native installer before issuing any receipt.
+Partial files are not a successful cache. Keep explicit recovery authorization
+and stage diagnostics; do not modify the original assignment's validation contract.
+
+For receipt-only reconciliation, `requireExistingDependencySnapshots: true`
+rejects a missing or unverifiable dependency cache before quarantine or
+reinstallation. This preserves the candidate receipt and workspace as evidence;
+it does not promote an unverified receipt to a successful cache.
+`requireExistingCompileSnapshots: true` also forbids rebuilding an unqualified
+compile snapshot and implies existing-only dependencies. These cache failures
+use the recorded validation reason `prepared-cache-corrupt`.
+
+Prepared-output capture establishes partitioned observation before hashing.
+When observation remains healthy, one complete content scan establishes the
+baseline; events during that scan are settled against the captured contents.
+Anonymous change notifications require complete-root content revalidation;
+unknown rename events, changed contents and watcher errors invalidate reuse.
+Platforms without recursive observation retain the full comparison fallback.
+Existing receipt formats and content fingerprints remain compatible.
+
+On Windows, a controller-owned PowerShell/.NET observer excludes last-access
+notifications: reading dependencies must not flood the notification queue.
+Content writes, names, sizes, attributes, security and creation changes remain
+observed, including replacement of a watched root through its parent directory.
+The observer must acknowledge setup before hashing starts. Lost notifications,
+observer errors or unexpected process exit still invalidate reuse; they are not
+treated as harmless access events.
+
+Keep preparation, validation and test-only repairs in the same controller
+process when possible. The observation guards are process-local: a disk cache
+hit after restarting the process still requires a complete content scan.
+Calling `prepareValidation` and then `resumePrecommitProposal` in one process
+retains those guards without skipping the normal source, profile, toolchain,
+change-scope or native validation checks. A successful synthetic benchmark is
+not a measured product-E2E latency claim.
+
+If the model already submitted a successful skill result but preparation failed
+before any commit, `resumePrecommitProposal` can resume that preserved proposal.
+It requires the blocked result ID, the original proposal and per-file hashes,
+checks the original base revision and file bounds, and records a one-shot recovery
+operation. It retains the failed result and original model tool usage; it does not
+repeat initial authoring. Native changefile generation, hooks, validation, push
+and Draft gates still run normally. Any subsequent model repair needs its own
+authorized reservation. A committed, validated or published attempt is not
+eligible for this entrypoint.
+
+For an already committed proposal stopped before tests by a missing native
+revision input, `resumeCommittedValidation` binds the latest blocked model result,
+the exact failed validation artifact and every committed file hash. It requires
+a clean, unpublished single commit on the original base. Preparation uses that
+base; normal test-only compatibility checks qualify reuse for the candidate.
+The generated changefile is checked against the actual commit title, not wording
+from a later no-change proposal. Recovery neither authors nor recommits, preserves
+model accounting, and namespaces new validation artifacts without replacing the
+original failure. Native gates and exact-head Draft publication remain required.
+
+For a proven native module-resolution failure, `prepareNativeTestProfileContinuation`
+can qualify a separate ledger with only the final test-runner block corrected.
+Its authorization binds the original failure, source, configurations and controller,
+and permits zero model attempts. Authentication, preparation, policy and the
+validation plan must remain identical. `rebindPreparedTestProfile` verifies the
+original compiled outputs and writes a separate integrity-bound receipt; it never
+rewrites the old receipt or treats a disk receipt as current observation.
+Dispatch through `dispatchLocalValidationContinuation` retains the authored commit,
+historical model usage and ordinary native/publication gates. This narrow recovery
+does not make derived snapshots automatically discoverable by future cache lookup.
+
+The SDX profile runs the selected integration tests through the repository's native
+source resolver and SWC transformer, retaining ts-jest for test-file mock ordering.
+This avoids requiring built exports from every workspace dependency. It inherits
+the package integration configuration and requires actual nonzero passing Jest
+results for every selected absolute path; a zero-test exit code is not acceptance.
 
 The existing proposer role also exposes
 `continue-local-validation`, `diagnose-local-validation` and

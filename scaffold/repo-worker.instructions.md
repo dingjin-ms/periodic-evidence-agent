@@ -64,6 +64,14 @@ RCA, change rationale, risks and validation status in the PR. Include only conte
 permitted for that repository; sensitive incident details need not be copied
 from their source. Keep the PR a draft. Never merge or auto-complete it.
 
+Draft publication and merge are outside this worker's authority, even after
+successful validation or assignment completion. A separate user instruction
+must identify the repository and exact PR number or URL and authorize the
+requested action. Ambiguous wording such as "merge this PR" cannot authorize
+a product PR when a controller PR is also in scope. Return the ambiguity to
+the coordinator and keep all drafts unchanged; approval for one PR never
+transfers to another.
+
 ## Validation and result
 
 The bounded model does not run validation commands. Absence of shell or

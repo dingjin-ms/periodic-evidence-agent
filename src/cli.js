@@ -381,7 +381,8 @@ try {
           const previous = new Ledger(previousConfig.stateDirectory);
           try {
             const sourcePreparation = sourceRecovery &&
-              request.authorization?.kind === 'native-business-revalidation'
+              ['native-business-revalidation', 'native-environment-revalidation']
+                .includes(request.authorization?.kind)
               ? (await import('./native-business-revalidation.js')).prepareNativeBusinessRevalidation
               : prepareNativeSourceContinuation;
             result = await (sourceRecovery ? sourcePreparation :

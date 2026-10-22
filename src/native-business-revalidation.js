@@ -5,6 +5,7 @@ import { hash, json, now, requireThat, utc } from './common.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { verifyPreparationPreflight } from './native-preparation-continuation.js';
 import { nativeSourceValidationRepository, verifyNativeSourceSnapshot } from './native-source-continuation.js';
+import { verifyNativeEnvironmentAuthority } from './native-environment-revalidation.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
 import { command, makePlannedImprovementAssignment, requireCurrentAssignment,
   verifyContinuationPredecessor } from './workers.js';
@@ -57,14 +58,21 @@ export function verifyNativeBusinessFailure(job, result, operations, failure, su
   'Revalidation requires the original failed native batch, not diagnostic passes',
   'blocked-reconciliation');
 }
+function sourceContinuation(detail) {
+  const original = detail.nativeBusinessRevalidation.originalContinuation;
+  return detail.nativeBusinessRevalidation.environmentSuccessor === true
+    ? original.nativeBusinessRevalidation.originalContinuation : original;
+}
 export function nativeBusinessValidationRepository(repo, detail) {
-  return nativeSourceValidationRepository(repo,
-    detail.nativeBusinessRevalidation.originalContinuation);
+  return nativeSourceValidationRepository(repo, sourceContinuation(detail));
 }
 export function verifyNativeBusinessAuthority(config, detail) {
+  if (detail.authorization?.kind === 'native-environment-revalidation')
+    return verifyNativeEnvironmentAuthority(config, detail);
   const { authorization: auth, previousConfig: previous } = detail;
   const original = detail.nativeBusinessRevalidation?.originalContinuation;
   requireThat(original?.sourcePreparedContinuation && !original.nativeBusinessRevalidation &&
+    !detail.nativeBusinessRevalidation.environmentSuccessor &&
     detail.nativeSourceCorrection === true && !detail.sourcePreparedContinuation &&
     !detail.sourcePreparationRecovery && !detail.nativePreparationCorrection &&
     auth.kind === 'native-business-revalidation' && auth.approved === true &&
@@ -137,7 +145,7 @@ export async function verifyPreparedNativeBusiness(config, detail, operationId, 
   'blocked-reconciliation');
   verifyContinuationPredecessor(detail, operationId, attemptId);
   // Historical preparation is not reused; only its unchanged owner-reviewed source is.
-  await verifyNativeSourceSnapshot(detail.nativeBusinessRevalidation.originalContinuation);
+  await verifyNativeSourceSnapshot(sourceContinuation(detail));
 }
 export async function prepareNativeBusinessRevalidation(config, ledger, id,
   nextConfig, nextLedger, authorization) {
@@ -168,11 +176,13 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
       priorResultSha256: hash(json(results[0])), operations,
       priorOperationsSha256: hash(json(operations)), authorization,
       authorizationSha256: hash(json(authorization)), nativeSourceCorrection: true,
-      nativeBusinessRevalidation: { originalContinuation: original },
+      nativeBusinessRevalidation: { originalContinuation: original,
+        ...(authorization.kind === 'native-environment-revalidation'
+          ? { environmentSuccessor: true } : {}) },
       files: original?.files, proposal: original?.proposal, preparedAt: now()
     };
     verifyNativeBusinessAuthority(nextConfig, detail);
-    await verifyNativeSourceSnapshot(original);
+    await verifyNativeSourceSnapshot(sourceContinuation(detail));
     requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
     const qualification = await qualifyRepositorySkill(nextConfig, assignment.repoId,
       assignment.capability, assignment.skillBindingId);
@@ -180,12 +190,12 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
       qualification.skillSha256 === assignment.skillQualification.skillSha256,
     'Revalidation changed the qualified skill or baseline', 'blocked-reconciliation');
     detail.qualification = qualification;
-    const operationId = `${id}:native-business-revalidation:${job.session_id}`;
+    const operationId = `${id}:${authorization.kind}:${job.session_id}`;
     ledger.operation(operationId, id, 'validation-continuation', detail);
     let rebuilt;
     nextLedger.transaction(() => {
       importReviewedContinuation(config, ledger, nextLedger, assignment, qualification,
-        'native-business-revalidation:preserved-evidence');
+        `${authorization.kind}:preserved-evidence`);
       rebuilt = makePlannedImprovementAssignment(nextConfig, nextLedger,
         ledger.get('investigation', assignment.investigationId), assignment.testCoveragePlanId,
         assignment.requestedOutcome, assignment.testCoveragePlanVersion);

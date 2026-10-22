@@ -2632,7 +2632,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           try {
             if (declarative && target === validationWorkspace && existsSync(target)) {
               const details = await removeValidationWorktree(job.workspace, target,
-                repo.provisionTimeoutMs ?? defaultGitTimeoutMs);
+                Math.max(repo.provisionTimeoutMs ?? defaultGitTimeoutMs, 30 * 60 * 1000));
               output.cleanupDetails ??= [];
               output.cleanupDetails.push({ targetRole: 'validation-workspace',
                 durationMs: Date.now() - cleanupStarted, ...details });
@@ -2646,6 +2646,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
             output.cleanupFailures.push({
               targetRole: target === validationWorkspace ? 'validation-workspace' : 'private-profile',
               durationMs: Date.now() - cleanupStarted,
+              timings: error.cleanupTimings ?? [],
               ...workspacePreparationFailure(error)
             });
           }

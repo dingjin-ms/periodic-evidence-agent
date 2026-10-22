@@ -150,38 +150,51 @@ export async function prepareValidationWorkspace({
 }
 
 export async function removeValidationWorktree(source, workspace, timeoutMs) {
-  const listed = await preparationGit(source, ['worktree', 'list', '--porcelain', '-z'], timeoutMs);
-  const actual = resolve(workspace);
-  requireThat(listed.split('\0').some(entry =>
-    entry.startsWith('worktree ') && resolve(entry.slice(9)) === actual),
-  'Refusing cleanup of an unregistered validation worktree', 'blocked-validation');
-  requireThat(actual !== realpathSync(source) && realpathSync(actual) === actual &&
-    lstatSync(actual).isDirectory() && !lstatSync(actual).isSymbolicLink() &&
-    lstatSync(join(actual, '.git')).isFile() && !lstatSync(join(actual, '.git')).isSymbolicLink(),
-  'Validation cleanup requires an unlinked registered secondary worktree', 'blocked-validation');
-  let unlinkedLinks = 0;
-  if (process.platform === 'win32') {
-    const deadline = Date.now() + timeoutMs;
-    const pending = [actual];
-    while (pending.length) {
-      requireThat(Date.now() < deadline, 'Validation link cleanup deadline exceeded', 'blocked-validation');
-      const directory = pending.pop();
-      requireThat(lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink(),
-        'Validation cleanup directory changed into a link', 'blocked-validation');
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isSymbolicLink()) {
-          requireThat(lstatSync(path).isSymbolicLink(),
-            'Validation cleanup link changed', 'blocked-validation');
-          // Git for Windows can leave junctions behind, even after reporting success.
-          unlinkSync(path);
-          unlinkedLinks++;
-        } else if (entry.isDirectory()) pending.push(path);
+  const timings = [];
+  const stage = (id, operation) => preparationStage(timings, id, operation);
+  try {
+    const actual = resolve(workspace);
+    await stage('cleanup-ownership-check', async () => {
+      const listed = await preparationGit(source, ['worktree', 'list', '--porcelain', '-z'], timeoutMs);
+      requireThat(listed.split('\0').some(entry =>
+        entry.startsWith('worktree ') && resolve(entry.slice(9)) === actual),
+      'Refusing cleanup of an unregistered validation worktree', 'blocked-validation');
+      requireThat(actual !== realpathSync(source) && realpathSync(actual) === actual &&
+        lstatSync(actual).isDirectory() && !lstatSync(actual).isSymbolicLink() &&
+        lstatSync(join(actual, '.git')).isFile() && !lstatSync(join(actual, '.git')).isSymbolicLink(),
+      'Validation cleanup requires an unlinked registered secondary worktree', 'blocked-validation');
+    });
+    let unlinkedLinks = 0;
+    await stage('cleanup-link-scan', async () => {
+      if (process.platform !== 'win32') return;
+      const deadline = Date.now() + timeoutMs;
+      const pending = [actual];
+      while (pending.length) {
+        requireThat(Date.now() < deadline, 'Validation link cleanup deadline exceeded', 'blocked-validation');
+        const directory = pending.pop();
+        requireThat(lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink(),
+          'Validation cleanup directory changed into a link', 'blocked-validation');
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          if (entry.isSymbolicLink()) {
+            requireThat(lstatSync(path).isSymbolicLink(),
+              'Validation cleanup link changed', 'blocked-validation');
+            // Git for Windows can leave junctions behind, even after reporting success.
+            unlinkSync(path);
+            unlinkedLinks++;
+          } else if (entry.isDirectory()) pending.push(path);
+        }
       }
-    }
+    });
+    await stage('cleanup-git-remove', () =>
+      preparationGit(source, ['worktree', 'remove', '--force', '--', actual], timeoutMs));
+    await stage('cleanup-root-check', async () => {
+      requireThat(!existsSync(actual),
+        'Git reported cleanup success but the validation workspace remains', 'blocked-validation');
+    });
+    return { unlinkedLinks, rootRemoved: true, timings };
+  } catch (error) {
+    error.cleanupTimings = timings;
+    throw error;
   }
-  await preparationGit(source, ['worktree', 'remove', '--force', '--', actual], timeoutMs);
-  requireThat(!existsSync(actual),
-    'Git reported cleanup success but the validation workspace remains', 'blocked-validation');
-  return { unlinkedLinks, rootRemoved: true };
 }

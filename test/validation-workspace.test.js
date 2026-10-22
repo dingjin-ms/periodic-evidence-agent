@@ -85,6 +85,10 @@ test('validation cleanup unlinks junction graphs without visiting external targe
   const result = await removeValidationWorktree(ctx.source, ctx.workspace, 30000);
   assert.equal(result.unlinkedLinks, 4);
   assert.equal(result.rootRemoved, true);
+  assert.deepEqual(result.timings.map(stage => stage.id), [
+    'cleanup-ownership-check', 'cleanup-link-scan', 'cleanup-git-remove', 'cleanup-root-check'
+  ]);
+  assert(result.timings.every(stage => stage.status === 'passed' && stage.durationMs >= 0));
   assert.equal(existsSync(ctx.workspace), false);
   assert.equal(readFileSync(canary, 'utf8'), 'must survive cleanup');
   assert.equal(await ctx.git(['status', '--porcelain']), '');
@@ -92,8 +96,13 @@ test('validation cleanup unlinks junction graphs without visiting external targe
 
 test('validation cleanup rejects source and unregistered paths before changing links', async t => {
   const ctx = await fixture(t);
-  await assert.rejects(removeValidationWorktree(ctx.source, ctx.source, 30000),
-    /secondary worktree/);
+  await assert.rejects(removeValidationWorktree(ctx.source, ctx.source, 30000), error => {
+    assert.match(error.message, /secondary worktree/);
+    assert.equal(error.cleanupTimings.length, 1);
+    assert.equal(error.cleanupTimings[0].id, 'cleanup-ownership-check');
+    assert.equal(error.cleanupTimings[0].status, 'blocked');
+    return true;
+  });
   assert.equal(readFileSync(join(ctx.source, 'required', 'input.txt'), 'utf8'), 'required');
   mkdirSync(ctx.workspace);
   writeFileSync(join(ctx.workspace, 'canary.txt'), 'unregistered');

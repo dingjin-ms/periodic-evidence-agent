@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hash, json, requireThat, utc } from './common.js';
+import { Ledger } from './ledger.js';
 import { verifyPreparationPreflight } from './native-preparation-continuation.js';
 import { nativeBusinessValidationRepository, verifyNativeBusinessAuthority,
   verifyNativeBusinessFailure } from './native-business-revalidation.js';
@@ -22,6 +23,51 @@ function outside(parent, child) {
 function endpoint(config, repoId) {
   return config.repositories.find(repo => repo.id === repoId)
     ?.validationGates?.[0]?.declarativeE2E?.cdpEndpoint;
+}
+function verifyPreparationRecovery(detail) {
+  const { authorization: auth } = detail;
+  if (!auth.preparationReservationRecovery) {
+    requireThat(!detail.recoveredPreparationReservation,
+      'Unfinished preparation cannot be recovered without pinned evidence', 'blocked-reconciliation');
+    return;
+  }
+  const recovery = pinned(auth.preparationReservationRecovery), reservation = recovery.reservation;
+  const previous = JSON.parse(reservation?.detail ?? 'null');
+  const instruction = pinned(recovery.userLoopInstruction);
+  requireThat(recovery.format === 'native-environment-preparation-recovery-v1' &&
+    typeof recovery.reason === 'string' && recovery.reason.trim() &&
+    reservation && previous &&
+    reservation.id === `${detail.priorJob.id}:native-environment-revalidation:${detail.priorJob.session_id}` &&
+    reservation.kind === 'validation-continuation' && reservation.state === 'started' &&
+    json(reservation) === json(detail.recoveredPreparationReservation) &&
+    !previous.nextAttemptId && !previous.nextAssignmentId && !previous.recoveredPreparationReservation &&
+    previous.authorization?.kind === 'native-environment-revalidation' &&
+    previous.authorization.sourceRevision === auth.sourceRevision &&
+    json(previous.priorJob) === json(detail.priorJob) &&
+    previous.priorResultSha256 === detail.priorResultSha256 &&
+    json(previous.operations) === json(detail.operations) &&
+    json(previous.files) === json(detail.files) && json(previous.proposal) === json(detail.proposal) &&
+    isAbsolute(recovery.abandonedStateDirectory ?? '') &&
+    isAbsolute(detail.nextStateDirectory ?? '') &&
+    previous.nextStateDirectory === recovery.abandonedStateDirectory &&
+    outside(previous.nextStateDirectory, detail.nextStateDirectory) &&
+    outside(detail.nextStateDirectory, previous.nextStateDirectory) &&
+    instruction.format === 'full-live-loop-user-instruction-v1' &&
+    instruction.assignmentId === detail.priorJob.id &&
+    instruction.approvedSourceRevision === auth.sourceRevision &&
+    typeof instruction.userText === 'string' && instruction.userText.trim() &&
+    typeof instruction.followUpUserText === 'string' && instruction.followUpUserText.trim() &&
+    Date.parse(instruction.requestedAt) >= Date.parse(detail.priorResult.reportedAt) &&
+    Date.parse(instruction.requestedAt) <= Date.parse(auth.recordedAt),
+  'Preparation recovery requires its unchanged never-dispatched reservation and actual user loop instruction',
+  'blocked-reconciliation');
+  const abandoned = new Ledger(recovery.abandonedStateDirectory, { readOnly: true });
+  try {
+    const state = abandoned.status();
+    requireThat(!state.jobs.length && !state.operations.length && !state.runs.length && !state.counts.length,
+      'Abandoned preparation must have rolled back completely without a dispatch',
+      'blocked-reconciliation');
+  } finally { abandoned.close(); }
 }
 export function verifyNativeEnvironmentAuthority(config, detail) {
   const { authorization: auth, previousConfig: previous } = detail;
@@ -66,9 +112,8 @@ export function verifyNativeEnvironmentAuthority(config, detail) {
   'blocked-authorization');
   verifyNativeBusinessAuthority(previous, parent);
   const repoId = detail.priorAssignment.repoId;
-  const nextEndpoint = endpoint(config, repoId);
-  requireThat(typeof nextEndpoint === 'string' &&
-    nextEndpoint === auth.isolatedCdpEndpoint && nextEndpoint !== endpoint(previous, repoId),
+  const nextEndpoint = auth.isolatedCdpEndpoint;
+  requireThat(typeof nextEndpoint === 'string' && nextEndpoint !== endpoint(previous, repoId),
   'Environment successor requires its explicitly pinned isolated CDP endpoint',
   'blocked-authorization');
   const url = new URL(nextEndpoint);
@@ -78,15 +123,13 @@ export function verifyNativeEnvironmentAuthority(config, detail) {
   'Environment successor CDP endpoint must be local and credential-free', 'blocked-authorization');
   const normalized = structuredClone(config);
   normalized.stateDirectory = previous.stateDirectory;
-  normalized.repositories.find(repo => repo.id === repoId)
-    .validationGates[0].declarativeE2E.cdpEndpoint = endpoint(previous, repoId);
   requireThat(json(normalized) === json(previous) &&
     config.limits.maxValidationInfrastructureRetries === 0 &&
     config.limits.maxValidationRepairRounds === 10 &&
     /^[a-f0-9]{40}$/.test(auth.controllerRevision ?? '') &&
     controllerFiles.every(file => hash(readFileSync(join(root, file))) ===
       auth.controllerFiles?.[file]),
-  'Environment successor can change only state storage and its isolated browser endpoint',
+  'Environment successor must preserve its qualified configuration and bind the browser only at execution',
   'blocked-authorization');
   utc(auth.authorizedAt); utc(auth.recordedAt);
   const instruction = pinned(auth.userInstruction), environment = pinned(auth.environmentProof);
@@ -121,6 +164,7 @@ export function verifyNativeEnvironmentAuthority(config, detail) {
       auth.nativeSummary.path),
   'Environment successor needs its own sealed failed native batch', 'blocked-reconciliation');
   const failure = pinned(auth.failure);
+  verifyPreparationRecovery(detail);
   verifyNativeBusinessFailure(detail.priorJob, detail.priorResult, detail.operations,
     failure, pinned(auth.nativeSummary), repo.validationGates[0].profileSha256);
   const proof = pinned(auth.preflight);

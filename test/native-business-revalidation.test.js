@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyNativeBusinessFailure, verifyNativeBusinessAuthority } from '../src/native-business-revalidation.js';
+import { verifyNativeBusinessFailure, verifyNativeBusinessAuthority,
+  nativeBusinessValidationRepository, nativeBusinessPredecessorOperations } from '../src/native-business-revalidation.js';
+import { repositoryValidationContract } from '../src/repository-skills.js';
+import { Ledger } from '../src/ledger.js';
 import { hash, json } from '../src/common.js';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -183,7 +186,6 @@ function environmentFixture(t) {
     nextAssignmentId: parent.priorJob.id, nextAttemptId: 'failed-business-attempt' });
   const config = structuredClone(base.config);
   config.stateDirectory = join(config.stateDirectory, '..', 'environment-next');
-  config.repositories[0].validationGates[0].declarativeE2E.cdpEndpoint = 'http://127.0.0.1:9337';
   const job = { ...parent.priorJob, session_id: parent.nextAttemptId };
   const result = structuredClone(parent.priorResult);
   Object.assign(result, { id: 'failed-business-result', attemptId: job.session_id,
@@ -236,14 +238,77 @@ function environmentFixture(t) {
     files: parent.files, proposal: parent.proposal };
   return { config, detail, pin: base.pin, environment };
 }
-test('environment successor admits one new zero-retry batch without changing legacy authority', t => {
+test('environment successor preserves qualification identity and uses its endpoint only for validation', t => {
   const f = environmentFixture(t);
   assert.doesNotThrow(() => verifyNativeBusinessAuthority(f.config, f.detail));
+  const repo = f.config.repositories[0];
+  assert.equal(repositoryValidationContract(repo).sha256,
+    repositoryValidationContract(f.detail.previousConfig.repositories[0]).sha256);
+  const validation = nativeBusinessValidationRepository(repo, f.detail);
+  assert.equal(validation.validationGates[0].declarativeE2E.cdpEndpoint, 'http://127.0.0.1:9337');
+  assert.equal(repo.validationGates[0].declarativeE2E.cdpEndpoint, 'http://127.0.0.1:9222');
+  assert.notEqual(repositoryValidationContract(validation).sha256,
+    repositoryValidationContract(repo).sha256);
   const parent = f.detail.nativeBusinessRevalidation.originalContinuation;
   assert.doesNotThrow(() => verifyNativeBusinessAuthority(f.detail.previousConfig, parent));
   parent.nativeBusinessRevalidation.environmentSuccessor = true;
   assert.throws(() => verifyNativeBusinessAuthority(f.detail.previousConfig, parent),
     error => error.code === 'blocked-authorization');
+});
+test('preparation recovery preserves an exact unfinished reservation, rejects dispatch and nonempty state', t => {
+  const f = environmentFixture(t), d = f.detail;
+  d.nextStateDirectory = f.config.stateDirectory;
+  const abandonedStateDirectory = join(f.config.stateDirectory, '..', 'abandoned-empty');
+  const abandoned = new Ledger(abandonedStateDirectory);
+  abandoned.close();
+  const previous = { authorization: { kind: d.authorization.kind,
+    sourceRevision: d.authorization.sourceRevision }, priorJob: d.priorJob,
+    priorResultSha256: d.priorResultSha256, operations: d.operations,
+    files: d.files, proposal: d.proposal, nextStateDirectory: abandonedStateDirectory };
+  const reservation = { id: `${d.priorJob.id}:${d.authorization.kind}:${d.priorJob.session_id}`,
+    job_id: d.priorJob.id, kind: 'validation-continuation', state: 'started', detail: json(previous) };
+  const instruction = f.pin('actual-loop-instruction.json', {
+    format: 'full-live-loop-user-instruction-v1', assignmentId: d.priorJob.id,
+    approvedSourceRevision: d.authorization.sourceRevision, requestedAt: '2026-01-04T00:00:00Z',
+    userText: 'Continue autonomously.', followUpUserText: 'Loop until five validations pass.'
+  });
+  const recovery = { format: 'native-environment-preparation-recovery-v1', reservation,
+    abandonedStateDirectory, userLoopInstruction: instruction, reason: 'Identity preparation rolled back.' };
+  d.authorization.preparationReservationRecovery = f.pin('recovery.json', recovery);
+  d.authorizationSha256 = hash(json(d.authorization));
+  d.recoveredPreparationReservation = reservation;
+  assert.doesNotThrow(() => verifyNativeBusinessAuthority(f.config, d));
+  const operations = [...d.operations, reservation];
+  assert.deepEqual(nativeBusinessPredecessorOperations(operations, d.authorization), d.operations);
+  assert.throws(() => nativeBusinessPredecessorOperations(operations, {
+    ...d.authorization, preparationReservationRecovery: undefined
+  }), /explicit unfinished-preparation recovery/);
+  assert.throws(() => nativeBusinessPredecessorOperations(
+    [...d.operations, { ...reservation, state: 'prepared' }], d.authorization),
+  /explicit unfinished-preparation recovery/);
+  assert.throws(() => nativeBusinessPredecessorOperations(d.operations, d.authorization),
+    /exact unfinished reservation/);
+  const changed = structuredClone(d);
+  changed.recoveredPreparationReservation.detail = json({ ...previous, nextAttemptId: 'already-dispatched' });
+  assert.throws(() => verifyNativeBusinessAuthority(f.config, changed));
+  for (const [index, mutate] of [
+    record => { record.reservation.detail = json({ ...previous, nextAttemptId: 'allocated-attempt' }); },
+    record => { record.reservation.detail = json({ ...previous, priorResultSha256: '0'.repeat(64) }); },
+    record => { record.reservation.detail = json({ ...previous, files: [] }); },
+    record => { record.reservation.state = 'prepared'; }
+  ].entries()) {
+    const record = structuredClone(recovery), detail = structuredClone(d);
+    mutate(record);
+    detail.authorization.preparationReservationRecovery = f.pin(`invalid-recovery-${index}.json`, record);
+    detail.authorizationSha256 = hash(json(detail.authorization));
+    detail.recoveredPreparationReservation = record.reservation;
+    assert.throws(() => verifyNativeBusinessAuthority(f.config, detail),
+      error => error.code === 'blocked-reconciliation');
+  }
+  const changedState = new Ledger(abandonedStateDirectory);
+  changedState.startRun('unexpected-work', { from: '2026-01-01', to: '2026-01-02' });
+  changedState.close();
+  assert.throws(() => verifyNativeBusinessAuthority(f.config, d), /rolled back completely/);
 });
 test('environment successor rejects old grants, repeated successors and config or owner drift', t => {
   const f = environmentFixture(t);
@@ -264,6 +329,8 @@ test('environment successor rejects old grants, repeated successors and config o
     (c, d) => { d.authorization.repairedRevision = 'f'.repeat(40); },
     (c, d) => { c.limits.maxValidationInfrastructureRetries = 1; },
     (c, d) => { c.repositories[0].validationGates[0].timeoutMs = 999; },
+    (c, d) => { c.repositories[0].validationGates[0].declarativeE2E.cdpEndpoint =
+      d.authorization.isolatedCdpEndpoint; },
     (c, d) => { c.repositories[0].validationGates[0].declarativeE2E.cdpEndpoint =
       d.authorization.isolatedCdpEndpoint = 'http://remote.invalid:9337'; },
     (c, d) => { c.repositories[0].validationGates[0].declarativeE2E.cdpEndpoint =

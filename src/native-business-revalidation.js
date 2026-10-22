@@ -64,7 +64,30 @@ function sourceContinuation(detail) {
     ? original.nativeBusinessRevalidation.originalContinuation : original;
 }
 export function nativeBusinessValidationRepository(repo, detail) {
-  return nativeSourceValidationRepository(repo, sourceContinuation(detail));
+  const validationRepo = nativeSourceValidationRepository(repo, sourceContinuation(detail));
+  if (detail.authorization?.kind !== 'native-environment-revalidation') return validationRepo;
+  return { ...validationRepo, validationGates: validationRepo.validationGates.map(gate => ({
+    ...gate, declarativeE2E: {
+      ...gate.declarativeE2E, cdpEndpoint: detail.authorization.isolatedCdpEndpoint
+    }
+  })) };
+}
+export function nativeBusinessPredecessorOperations(operations, authorization) {
+  const operationId = `${authorization.previousAssignmentId}:${authorization.kind}:${authorization.previousAttemptId}`;
+  const reservation = operations.find(row => row.id === operationId);
+  if (!reservation) {
+    requireThat(!authorization.preparationReservationRecovery,
+      'Preparation recovery requires its exact unfinished reservation', 'blocked-reconciliation');
+    return operations;
+  }
+  requireThat(authorization.kind === 'native-environment-revalidation' &&
+    authorization.preparationReservationRecovery &&
+    reservation.kind === 'validation-continuation' && reservation.state === 'started',
+  'Existing continuation requires explicit unfinished-preparation recovery', 'blocked-reconciliation');
+  const recovery = pinned(authorization.preparationReservationRecovery);
+  requireThat(json(reservation) === json(recovery.reservation),
+    'Unfinished preparation reservation changed', 'blocked-reconciliation');
+  return operations.filter(row => row.id !== operationId);
 }
 export function verifyNativeBusinessAuthority(config, detail) {
   if (detail.authorization?.kind === 'native-environment-revalidation')
@@ -167,7 +190,8 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
     const results = ledger.all('workerResult').filter(row => row.assignmentId === id);
     requireThat(results.length === 1, 'Revalidation needs exactly one sealed predecessor',
       'blocked-reconciliation');
-    const operations = ledger.status().operations.filter(row => row.job_id === id);
+    const allOperations = ledger.status().operations.filter(row => row.job_id === id);
+    const operations = nativeBusinessPredecessorOperations(allOperations, authorization);
     const original = JSON.parse(operations.find(row =>
       row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
     const detail = {
@@ -181,6 +205,8 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
           ? { environmentSuccessor: true } : {}) },
       files: original?.files, proposal: original?.proposal, preparedAt: now()
     };
+    if (authorization.preparationReservationRecovery)
+      detail.recoveredPreparationReservation = pinned(authorization.preparationReservationRecovery).reservation;
     verifyNativeBusinessAuthority(nextConfig, detail);
     await verifyNativeSourceSnapshot(sourceContinuation(detail));
     requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
@@ -191,7 +217,6 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
     'Revalidation changed the qualified skill or baseline', 'blocked-reconciliation');
     detail.qualification = qualification;
     const operationId = `${id}:${authorization.kind}:${job.session_id}`;
-    ledger.operation(operationId, id, 'validation-continuation', detail);
     let rebuilt;
     nextLedger.transaction(() => {
       importReviewedContinuation(config, ledger, nextLedger, assignment, qualification,
@@ -203,6 +228,9 @@ export async function prepareNativeBusinessRevalidation(config, ledger, id,
         json({ ...assignment, skillQualification: null }) ===
         json({ ...rebuilt, skillQualification: null }),
       'Revalidation changed assignment identity or semantics', 'blocked-reconciliation');
+      if (detail.recoveredPreparationReservation)
+        ledger.finishOperation(operationId, 'started', detail);
+      else ledger.operation(operationId, id, 'validation-continuation', detail);
       const nextJob = nextLedger.prepare(rebuilt, { bucket: operationId, maxNew: 1 });
       Object.assign(detail, { nextAssignmentId: rebuilt.id, nextAttemptId: nextJob.session_id });
       nextLedger.operation(operationId, rebuilt.id, 'continued-from-validation-failure', detail);

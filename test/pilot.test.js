@@ -1362,12 +1362,20 @@ test('validation cleanup failures still finalize blocked evidence and operations
   const result = await runValidation(config, ledger,
     { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
     async () => ({ stdout: '', stderr: '' }),
-    () => { throw new Error('synthetic cleanup failure'); });
+    () => { throw Object.assign(new Error('synthetic cleanup failure'), {
+      code: 'ETIMEDOUT', killed: true, ownedProcessesExited: true,
+      stderr: 'synthetic-private-native-output'
+    }); });
   assert.equal(result[0].status, 'blocked');
   assert.equal(result[0].blockedReason, 'validation-cleanup-failed');
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.match(artifact.output.cleanupError, /Operation failed/);
   assert.ok(artifact.output.residualPaths.length > 0);
+  assert.equal(artifact.output.cleanupFailures[0].targetRole, 'validation-workspace');
+  assert.equal(artifact.output.cleanupFailures[0].reason, 'command-timeout');
+  assert.equal(artifact.output.cleanupFailures[0].ownedProcessesExited, true);
+  assert.ok(artifact.output.cleanupFailures[0].durationMs >= 0);
+  assert(!JSON.stringify(artifact).includes('synthetic-private-native-output'));
   const operations = ledger.status().operations;
   assert.equal(operations.length, 1);
   assert.equal(operations[0].state, 'blocked');

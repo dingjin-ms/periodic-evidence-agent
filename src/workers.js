@@ -2628,6 +2628,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       } finally {
         for (const target of [validationWorkspace, privateProfile].filter(Boolean)) {
           if (unsafeCleanup) { residualPaths.push(target); continue; }
+          const cleanupStarted = Date.now();
           try {
             if (declarative && target === validationWorkspace && existsSync(target))
               await removeValidationWorktree(job.workspace, target,
@@ -2637,6 +2638,12 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           catch (error) {
             cleanupError ??= safeError(error).message;
             residualPaths.push(target);
+            output.cleanupFailures ??= [];
+            output.cleanupFailures.push({
+              targetRole: target === validationWorkspace ? 'validation-workspace' : 'private-profile',
+              durationMs: Date.now() - cleanupStarted,
+              ...workspacePreparationFailure(error)
+            });
           }
         }
       }
@@ -3180,6 +3187,9 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
   } finally { priorLedger.close(); }
 }
 async function verifyNativeContinuation(config, detail, operationId, attemptId) {
+  if (detail.nativeCampaignRevalidation)
+    return (await import('./native-validation-campaign.js')).verifyPreparedNativeCampaign(
+      config, detail, operationId, attemptId);
   if (detail.nativeBusinessRevalidation)
     return (await import('./native-business-revalidation.js')).verifyPreparedNativeBusiness(
       config, detail, operationId, attemptId);
@@ -3416,7 +3426,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       });
     }
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
-    const preparationPromise = continuation?.nativeBusinessRevalidation
+    const preparationPromise = continuation?.nativeBusinessRevalidation || continuation?.nativeCampaignRevalidation
       ? Promise.resolve({ [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } })
       : prePreparedValidation
       ? Promise.resolve(prePreparedValidation)
@@ -3560,10 +3570,12 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           proposal.skillExecution);
       preparedValidation ??= await preparationPromise;
       if (continuation?.preparationRecovery || continuation?.sourcePreparedContinuation ||
-        continuation?.nativeBusinessRevalidation)
+        continuation?.nativeBusinessRevalidation || continuation?.nativeCampaignRevalidation)
         preparedValidation = { ...preparedValidation,
           [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } };
-      const validationRepo = continuation?.nativeBusinessRevalidation
+      const validationRepo = continuation?.nativeCampaignRevalidation
+        ? (await import('./native-validation-campaign.js')).nativeCampaignValidationRepository(repo, continuation)
+        : continuation?.nativeBusinessRevalidation
         ? (await import('./native-business-revalidation.js')).nativeBusinessValidationRepository(repo, continuation)
         : continuation?.sourcePreparationRecovery || continuation?.sourcePreparedContinuation
         ? (await import('./native-source-continuation.js')).nativeSourceValidationRepository(

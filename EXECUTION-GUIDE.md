@@ -548,6 +548,18 @@ under `test/fixtures/1js-qualification/`. Seeded workbook and dedicated
 sensitivity both declare Omni. These references are test source assets, not
 runtime evidence or proof that the controller authored or passed a case.
 
+Before a local replay, read the
+[fixture account and credential prerequisites](test/fixtures/1js-qualification/README.md).
+The consumer MSA conversation fixture requires the approved MSA pair in
+`excelendtoendkv` and explicit `--msa-vault excelendtoendkv` selection. Do not
+omit that argument, read the CloudTest default vault or request access to it as
+a workaround for this fixture. The fixture README lists each account lane,
+Omni/Arcadia experience, secret names and the full local MSA command.
+It also describes the temporary PUS1/Debug Info experiment and its canonical
+1JS recipe, startup-triage evidence, cleanup boundaries and local regression
+commands. These are diagnostic options, not permanent fixture or pipeline
+defaults, assertion bypasses or substitutes for native business validation.
+
 Do not merge controller-test Draft PRs into 1JS or enable auto-completion.
 Generated cases are disposable controller-test outputs. Reusable 1JS runner,
 authentication, upload, recovery and evidence-emission fixes are a separate

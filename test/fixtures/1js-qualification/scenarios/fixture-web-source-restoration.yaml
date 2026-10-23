@@ -1,0 +1,36 @@
+version: 1
+level: L3
+id: excel-agent.aad.fixture-web-source-restoration
+name: Enterprise Omni fixture restores the original Web source setting
+tags: [omni-supported, arcadia-ongoing, omni-observing]
+goal: Qualify persisted source mutation while restoring the state captured before the first mutation.
+account:
+  lane: aad-enterprise
+environment:
+  experience: omni
+setup:
+  capture-original-and-enable:
+    use: excel.source.enable
+    with:
+      target: Web
+    outputs:
+      previous: originalWebState
+steps:
+  disable-web:
+    use: excel.source.disable
+    with:
+      target: Web
+verify:
+  - type: assert-provider
+    protected: true
+    provider: source
+    assertion: state
+    parameters:
+      target: Web
+      enabled: false
+cleanup:
+  restore-original:
+    use: excel.source.restore
+    with:
+      target: Web
+      from: originalWebState

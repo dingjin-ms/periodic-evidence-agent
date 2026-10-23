@@ -1,0 +1,28 @@
+version: 1
+level: L3
+id: excel-agent.dedicated.fixture-sensitivity
+name: Dedicated enterprise Omni fixture exposes its workbook sensitivity label
+tags: [omni-supported, arcadia-ongoing, omni-observing]
+goal: Qualify a dedicated-account named workbook without mutating the shared fixture.
+account:
+  lane: dedicated-enterprise
+  preSession:
+    use: excel.account.external-service-login
+    with: {}
+environment:
+  surface: fixture-workbook
+  workbook: clp-labeled
+  experience: omni
+  requiredEnvironmentVariables:
+    - ENTERPRISE_E2E_ENABLED
+timeoutMs: 180000
+setup:
+  wait-for-pane:
+    use: excel.pane.ready
+    with: {}
+verify:
+  - type: assert-provider
+    protected: true
+    provider: sensitivity
+    assertion: visible
+    parameters: {}

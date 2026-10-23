@@ -1,0 +1,52 @@
+version: 1
+level: L3
+id: excel-agent.aad.fixture-seeded-workbook
+name: Enterprise Omni fixture adds to a seeded workbook value
+tags: [omni-supported, arcadia-ongoing, omni-observing]
+goal: Qualify seeded workbook authoring with exact readback and an unchanged neighboring cell.
+account:
+  lane: aad-enterprise
+environment:
+  experience: omni
+timeoutMs: 450000
+setup:
+  seed-input:
+    use: excel.workbook.seed
+    with:
+      cell: A1
+      value: "5"
+  seed-guard:
+    use: excel.workbook.seed
+    with:
+      cell: B1
+      value: FIXTURE-SEEDED-GUARD
+  snapshot-guard:
+    use: excel.workbook.read
+    with:
+      resource: B1
+    outputs:
+      value: guardBefore
+steps:
+  increment-seeded-value:
+    use: excel.prompt.turn
+    with:
+      prompt: Read the number currently in A1, add 10, and write the result back into A1. Do not change any other cell.
+      intent: edit
+      minResponseLength: 1
+verify:
+  - type: assert-provider
+    protected: true
+    provider: workbook
+    assertion: exact
+    timeoutMs: 60000
+    parameters:
+      cell: A1
+      expected: "15"
+  - type: assert-provider
+    protected: true
+    provider: workbook
+    assertion: unchanged
+    parameters:
+      cell: B1
+      from: guardBefore
+      observationMs: 5000

@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "semanticId": "excel-agent.aad.fixture-seeded-workbook",
+      "title": "Enterprise Omni fixture adds to a seeded workbook value",
+      "accountLane": "aad-enterprise",
+      "composites": [
+        "excel.prompt.submit",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.wait",
+        "excel.workbook.read",
+        "excel.workbook.seed",
+        "excel.workbook.seed"
+      ],
+      "assertions": [
+        {
+          "provider": "account",
+          "assertion": "lane",
+          "parameters": {
+            "expected": "aad-enterprise"
+          }
+        },
+        {
+          "provider": "workbook",
+          "assertion": "exact",
+          "parameters": {
+            "cell": "A1",
+            "expected": "15"
+          }
+        },
+        {
+          "provider": "workbook",
+          "assertion": "unchanged",
+          "parameters": {
+            "cell": "B1",
+            "from": {
+              "kind": "resource",
+              "provider": "workbook",
+              "resource": "B1"
+            },
+            "observationMs": 5000
+          }
+        }
+      ],
+      "providers": ["account", "prompt", "workbook"],
+      "operations": [
+        "prompt.submit",
+        "prompt.wait",
+        "workbook.read-resource",
+        "workbook.seed",
+        "workbook.seed"
+      ],
+      "resources": ["workbook:A1", "workbook:B1"],
+      "fixtures": [],
+      "cleanup": []
+    },
+    {
+      "semanticId": "excel-agent.msa.fixture-conversation-isolation",
+      "title": "Consumer Omni fixture isolates conversations without changing workbook data",
+      "accountLane": "consumer-msa",
+      "composites": [
+        "excel.prompt.new-conversation",
+        "excel.prompt.submit",
+        "excel.prompt.submit",
+        "excel.prompt.submit",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.turn",
+        "excel.prompt.wait",
+        "excel.prompt.wait",
+        "excel.prompt.wait",
+        "excel.workbook.read",
+        "excel.workbook.seed"
+      ],
+      "assertions": [
+        {
+          "provider": "account",
+          "assertion": "lane",
+          "parameters": {
+            "expected": "consumer-msa"
+          }
+        },
+        {
+          "provider": "prompt",
+          "assertion": "contains",
+          "parameters": {
+            "response": {
+              "kind": "operation-output",
+              "provider": "prompt",
+              "operation": "wait",
+              "parameters": {
+                "minResponseLength": 1,
+                "responseBaseline": "declarativeInternal4f7cf0f16bb50073"
+              }
+            },
+            "value": "QUALIFY-1JS-MSA-7D31A9",
+            "failureKind": "CONTEXT_NOT_PRESERVED"
+          }
+        },
+        {
+          "provider": "prompt",
+          "assertion": "excludes",
+          "parameters": {
+            "response": {
+              "kind": "operation-output",
+              "provider": "prompt",
+              "operation": "wait",
+              "parameters": {
+                "minResponseLength": 1,
+                "responseBaseline": "declarativeInternal10026463d4abebf7"
+              }
+            },
+            "value": "QUALIFY-1JS-MSA-7D31A9",
+            "failureKind": "CONTEXT_NOT_CLEARED"
+          }
+        },
+        {
+          "provider": "workbook",
+          "assertion": "unchanged",
+          "parameters": {
+            "cell": "A1",
+            "from": {
+              "kind": "resource",
+              "provider": "workbook",
+              "resource": "A1"
+            },
+            "observationMs": 5000
+          }
+        }
+      ],
+      "providers": ["account", "prompt", "workbook"],
+      "operations": [
+        "prompt.new-conversation",
+        "prompt.submit",
+        "prompt.submit",
+        "prompt.submit",
+        "prompt.wait",
+        "prompt.wait",
+        "prompt.wait",
+        "workbook.read-resource",
+        "workbook.seed"
+      ],
+      "resources": ["workbook:A1"],
+      "fixtures": [],
+      "cleanup": [
+        {
+          "type": "invoke-provider",
+          "provider": "prompt",
+          "operation": "new-conversation",
+          "parameters": {}
+        }
+      ]
+    },
+    {
+      "semanticId": "excel-agent.aad.fixture-web-source-restoration",
+      "title": "Enterprise Omni fixture restores the original Web source setting",
+      "accountLane": "aad-enterprise",
+      "composites": ["excel.source.disable", "excel.source.enable"],
+      "assertions": [
+        {
+          "provider": "account",
+          "assertion": "lane",
+          "parameters": {
+            "expected": "aad-enterprise"
+          }
+        },
+        {
+          "provider": "source",
+          "assertion": "state",
+          "parameters": {
+            "target": "Web",
+            "enabled": false
+          }
+        }
+      ],
+      "providers": ["account", "source"],
+      "operations": ["source.set-toggle", "source.set-toggle"],
+      "resources": [],
+      "fixtures": [],
+      "cleanup": [
+        {
+          "type": "set-toggle",
+          "provider": "source",
+          "target": "Web"
+        }
+      ]
+    },
+    {
+      "semanticId": "excel-agent.aad.fixture-local-file-upload",
+      "title": "Enterprise Arcadia fixture combines an uploaded CSV with a seeded anchor",
+      "accountLane": "aad-enterprise",
+      "composites": [
+        "excel.prompt.submit-with-context",
+        "excel.prompt.turn-with-context",
+        "excel.prompt.turn-with-context",
+        "excel.prompt.wait",
+        "excel.upload.fixture",
+        "excel.workbook.read",
+        "excel.workbook.seed",
+        "excel.workbook.seed"
+      ],
+      "assertions": [
+        {
+          "provider": "account",
+          "assertion": "lane",
+          "parameters": {
+            "expected": "aad-enterprise"
+          }
+        },
+        {
+          "provider": "workbook",
+          "assertion": "exact",
+          "parameters": {
+            "cell": "E1",
+            "expected": "2600"
+          }
+        },
+        {
+          "provider": "workbook",
+          "assertion": "unchanged",
+          "parameters": {
+            "cell": "H1",
+            "from": {
+              "kind": "resource",
+              "provider": "workbook",
+              "resource": "H1"
+            },
+            "observationMs": 5000
+          }
+        }
+      ],
+      "providers": ["account", "prompt", "upload", "workbook"],
+      "operations": [
+        "prompt.submit",
+        "prompt.wait",
+        "upload.upload-file",
+        "workbook.read-resource",
+        "workbook.seed",
+        "workbook.seed"
+      ],
+      "resources": ["workbook:E1", "workbook:H1"],
+      "fixtures": ["upload:ingestion-source"],
+      "cleanup": []
+    },
+    {
+      "semanticId": "excel-agent.dedicated.fixture-sensitivity",
+      "title": "Dedicated enterprise Omni fixture exposes its workbook sensitivity label",
+      "accountLane": "dedicated-enterprise",
+      "composites": ["excel.pane.ready"],
+      "assertions": [
+        {
+          "provider": "account",
+          "assertion": "lane",
+          "parameters": {
+            "expected": "dedicated-enterprise"
+          }
+        },
+        {
+          "provider": "sensitivity",
+          "assertion": "visible",
+          "parameters": {}
+        }
+      ],
+      "providers": ["account", "sensitivity"],
+      "operations": [],
+      "resources": [],
+      "fixtures": [],
+      "cleanup": []
+    }
+  ]
+}

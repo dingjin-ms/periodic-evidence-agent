@@ -1,0 +1,56 @@
+version: 1
+level: L3
+id: excel-agent.aad.fixture-local-file-upload
+name: Enterprise Arcadia fixture combines an uploaded CSV with a seeded anchor
+tags: [omni-capability-gap, arcadia-supported, omni-observing]
+goal: Qualify a local-file fixture, preserved rich attachment context, and exact workbook readback.
+account:
+  lane: aad-enterprise
+environment:
+  experience: arcadia
+timeoutMs: 480000
+setup:
+  seed-result:
+    use: excel.workbook.seed
+    with:
+      cell: E1
+      value: FIXTURE-UPLOAD-NOT-RUN
+  seed-anchor:
+    use: excel.workbook.seed
+    with:
+      cell: H1
+      value: "100"
+  snapshot-anchor:
+    use: excel.workbook.read
+    with:
+      resource: H1
+    outputs:
+      value: anchorBefore
+  upload-csv:
+    use: excel.upload.fixture
+    with:
+      fixture: ingestion-source
+steps:
+  combine-file-and-anchor:
+    use: excel.prompt.turn-with-context
+    with:
+      prompt: Add up the Salary of everyone in the Engineering department from the file I uploaded, then add the number currently in H1 and write only that total into E1. Do not import the CSV rows or change any other cell.
+      intent: edit
+      minResponseLength: 1
+verify:
+  - type: assert-provider
+    protected: true
+    provider: workbook
+    assertion: exact
+    timeoutMs: 60000
+    parameters:
+      cell: E1
+      expected: "2600"
+  - type: assert-provider
+    protected: true
+    provider: workbook
+    assertion: unchanged
+    parameters:
+      cell: H1
+      from: anchorBefore
+      observationMs: 5000

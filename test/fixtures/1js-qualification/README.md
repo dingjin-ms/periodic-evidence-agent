@@ -130,3 +130,68 @@ only files whose ownership and replacement copy have been verified.
 These checks supplement the five real fixture runs. Neither an offline check
 nor a later successful attempt erases an earlier failure or establishes
 complete cloud/no-regression coverage.
+
+## Windows offline CI diagnostics
+
+The offline workflow runs `pilot`, `remaining` and `demo` on separate hosted
+VMs. Launching all three concurrently on one shared development machine is
+not the same resource topology. Run local groups serially when investigating
+contention, but preserve `scripts\ci-tests.mjs` file concurrency of four for
+a standard group result. A single-case or concurrency-one diagnostic is not
+a replacement for a complete passing group.
+
+Two inherited Windows settings affected the 2026-10-22 local run:
+
+| Symptom | Controlled diagnostic |
+|---|---|
+| SQLite `ExperimentalWarning` contaminates a CLI stderr JSON assertion | Append `--disable-warning=ExperimentalWarning` to the test process's `NODE_OPTIONS`; do not suppress other errors. |
+| Synthetic Git fixture staging rejects LF under inherited strict CRLF settings | Append a process-only `core.safecrlf=false` Git configuration entry; do not change global configuration or use this override for real source commits. |
+
+Use these overrides only after identifying the corresponding failures.
+From a **fresh PowerShell process** at this repository's root, the following
+preserves existing options and Git entries and writes a new evidence directory:
+
+```powershell
+$env:NODE_OPTIONS = ($env:NODE_OPTIONS + ' --disable-warning=ExperimentalWarning').Trim()
+$count = 0
+if ($env:GIT_CONFIG_COUNT) { $count = [int]$env:GIT_CONFIG_COUNT }
+[Environment]::SetEnvironmentVariable("GIT_CONFIG_KEY_$count", 'core.safecrlf')
+[Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$count", 'false')
+$env:GIT_CONFIG_COUNT = [string]($count + 1)
+$revision = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Cannot bind offline evidence to the source revision' }
+$env:GITHUB_SHA = $revision.Trim()
+$output = Join-Path $env:TEMP ('pea-ci-remaining-' + [guid]::NewGuid().ToString('N'))
+Write-Host "Evidence: $output"
+node scripts\ci-tests.mjs remaining $output
+if ($LASTEXITCODE -ne 0) { throw "Offline CI failed; retain evidence at $output" }
+```
+
+Close that shell afterward; environment overrides are process-scoped, not
+PowerShell block-scoped. Record the overrides with the result. Such a run is
+not an unmodified hosted-environment pass, and these settings do not resolve
+every failure: the controlled run still had native descendant, preparation
+evidence and RSI budget failures.
+
+Preserve `tests.tap`, `summary.json`, source revision, Node version, selected
+file catalogue, concurrency, resource snapshots and all failed attempts.
+Check exit status, complete TAP counts, failures and cancellations together;
+do not combine successful cases from different failed rounds into a green
+matrix. Nested tests may not execute after an early parent failure, so a
+fixed total test count alone does not establish complete coverage.
+
+For an RSI budget failure, compare the exact master and candidate with
+matching physical dependency layouts and unchanged deadlines/assertions.
+Retain diagnostic RSI state locally; inspect existing SQLite ledgers read-only
+and compare the actual loaded controller/skill/lock identity, synthetic Git
+trees and trusted flow-plan bytes. Identify the precise arm, episode and
+phase deadline. An unchanged test file alone is insufficient attribution;
+identical executable inputs still do not prove an external timing cause or
+turn a timeout/unknown guard result into a pass. Do not increase production
+budgets, weaken guards or blindly rerun complete suites to obtain green.
+
+For native PUS1 evidence, preserve both the original reference hash and the
+temporary input hash. The recorded production deployment selector changes
+the YAML bytes: verify the native selection hash and that the only parsed
+change is `environment.deployment: production`, rather than claiming the
+temporary input is byte-identical to the committed default.

@@ -37,7 +37,8 @@ threads.Worker = class extends OriginalWorker {
 };
 syncBuiltinESMExports();
 const { command, prepareValidation: prepare, runValidation: validate, capturePreparedOutputs: captureOutputs,
-  outputFingerprint, verifyPreparedOutputs: verifyOutputs } =
+  outputFingerprint, verifyPreparedOutputs: verifyOutputs, coalescePreparedOutputChanges,
+  planPreparedOutputChanges } =
   await import('../src/workers.js');
 const { Ledger } = await import('../src/ledger.js');
 const { hash, json, PilotError } = await import('../src/common.js');
@@ -284,6 +285,108 @@ for (const rootPath of ['node_modules', 'dist']) {
     });
   }
 }
+
+test('change coalescing preserves ancestor coverage, path boundaries and ordering', () => {
+  const paths = [
+    'dist/pkg/nested/a.js', 'dist/pkg-extra/a.js', 'dist/pkg',
+    'dist/other/b.js', 'dist/other/a.js', 'dist/pkg/nested', 'dist/pkg',
+    'dist/A/a.js', 'dist/a', 'dist', 'dist-extra', 'dist-extra/value.js',
+    '/absolute/child', '', '/absolute', 'bare', 'barely/value.js'
+  ];
+  const original = [...paths];
+  const reference = [...paths].sort((a, b) => a.length - b.length || a.localeCompare(b))
+    .filter((path, index, values) => !values.slice(0, index)
+      .some(parent => path.startsWith(`${parent}/`)));
+  assert.deepEqual(coalescePreparedOutputChanges(paths), reference);
+  assert.deepEqual(paths, original);
+  assert.deepEqual(coalescePreparedOutputChanges([]), []);
+  assert.deepEqual(coalescePreparedOutputChanges([
+    'dist/pkg/a.js', 'dist/pkg-extra/b.js', 'dist/pkg'
+  ]), ['dist/pkg', 'dist/pkg-extra/b.js']);
+});
+
+test('change coalescing does not compare every pair of sibling paths', () => {
+  const paths = Array.from({ length: 2048 }, (_, index) =>
+    `dist/pkg/${String(index).padStart(5, '0')}.js`);
+  const startsWith = String.prototype.startsWith;
+  let comparisons = 0;
+  let result;
+  try {
+    String.prototype.startsWith = function (...args) {
+      comparisons++;
+      return startsWith.apply(this, args);
+    };
+    result = coalescePreparedOutputChanges(paths);
+  } finally {
+    String.prototype.startsWith = startsWith;
+  }
+  assert.deepEqual(result, paths);
+  assert.ok(comparisons <= paths.length * 3,
+    `${comparisons} prefix comparisons for ${paths.length} sibling paths`);
+});
+
+test('change planning preserves exact roots, nested dependency roots and path boundaries', () => {
+  assert.deepEqual(planPreparedOutputChanges([
+    'node_modules', 'node_modules/nested/node_modules',
+    'node_modules/nested/node_modules/pkg/dist', 'dist', 'dist-extra'
+  ], [
+    'dist', 'node_modules/pkg/a.js',
+    'node_modules/nested/node_modules/child/a.js',
+    'node_modules/nested/node_modules/pkg/dist/a.js',
+    'dist-extra/a.js', 'dist-other/a.js'
+  ]), {
+    roots: ['dist'],
+    requestedTasks: [
+      { mode: 'dependency-entry', dependencyPath: 'node_modules', entryPath: 'pkg/a.js' },
+      { mode: 'dependency-entry', dependencyPath: 'node_modules/nested/node_modules',
+        entryPath: 'child/a.js' },
+      { mode: 'path', path: 'node_modules/nested/node_modules/pkg/dist/a.js' },
+      { mode: 'path', path: 'dist-extra/a.js' },
+      null
+    ]
+  });
+  const caseSensitive = process.platform !== 'win32';
+  assert.deepEqual(planPreparedOutputChanges(['Dist', 'dist'], ['dist', 'dist/a.js']), {
+    roots: [caseSensitive ? 'dist' : 'Dist'],
+    requestedTasks: [{ mode: 'path', path: 'dist/a.js' }]
+  });
+  if (!caseSensitive) {
+    const parent = 'i\u0307i\u0307/node_modules';
+    const nested = '\u0130\u0130/node_modules/a';
+    const path = `${parent}/a/file.js`;
+    assert.deepEqual(planPreparedOutputChanges([parent, nested], [path]), {
+      roots: [],
+      requestedTasks: [{ mode: 'dependency-entry', dependencyPath: parent,
+        entryPath: 'a/file.js' }]
+    });
+    assert.deepEqual(planPreparedOutputChanges([nested, parent], [path]), {
+      roots: [], requestedTasks: [{ mode: 'path', path }]
+    });
+  }
+});
+
+test('change planning normalizes output roots once instead of once per event', () => {
+  const roots = Array.from({ length: 128 }, (_, index) =>
+    `packages/pkg-${index}/node_modules`);
+  const paths = Array.from({ length: 256 }, (_, index) =>
+    `${roots[index % roots.length]}/dependency/${index}.js`);
+  const replaceAll = String.prototype.replaceAll;
+  let normalizations = 0;
+  let result;
+  try {
+    String.prototype.replaceAll = function (...args) {
+      normalizations++;
+      return replaceAll.apply(this, args);
+    };
+    result = planPreparedOutputChanges(roots, paths);
+  } finally {
+    String.prototype.replaceAll = replaceAll;
+  }
+  assert.equal(normalizations, roots.length);
+  assert.deepEqual(result.roots, []);
+  assert.equal(result.requestedTasks.length, paths.length);
+  assert.ok(result.requestedTasks.every(task => task.mode === 'dependency-entry'));
+});
 
 test('ancestor and leaf metadata events coalesce into one recursive task', async t => {
   const ctx = await fixture(t);

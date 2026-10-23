@@ -134,6 +134,58 @@ overlap the materialization stage and must not be added to it. They do not
 attribute physical I/O or establish that either full scan can safely be
 removed; cross-root capture reuse remains a separate change.
 
+### Settlement and ordinary-entry metadata overhead (October 22, 2026)
+
+Settlement previously copied all preceding paths and compared their prefixes
+for every observed path. With unrelated sibling events this required quadratic
+work. It now retains the same length/locale ordering, tracks selected roots in
+a Set and checks only each path's slash-delimited ancestors. Prefix boundaries,
+duplicate behavior and input case are preserved; watcher uncertainty and
+content comparisons still fail closed. A regression reproduces 2,096,128 old
+prefix comparisons for 2,048 sibling paths and rejects that pairwise behavior.
+
+Changed-path task planning also previously scanned and normalized every output
+root for every event, both for exact-root detection and prefix matching.
+A per-plan root index now normalizes each root once and resolves events through
+their ancestors. Exact-root first-match behavior, longest-original-root
+selection with stable tie ordering, platform case handling and dependency-entry
+versus generic-path task modes are preserved.
+
+Generic tree fingerprinting now uses `lstat` with `throwIfNoEntry: false`
+instead of checking existence and then calling `lstat` for every ordinary
+entry. Symlinks still receive the existence check, preserving dangling-link
+rejection. File content hashing, directory manifests and captured entry
+schemas are unchanged; this is not a size/mtime cache.
+
+A bounded same-fixture ABBA probe compared the prior implementation (A) with
+these changes (B):
+
+| Measurement | Before (A, A) | After (B, B) |
+|---|---|---|
+| Coalesce 8,192 sibling paths | 313 / 278 ms | 15 / 14 ms |
+| Existence probes for 320 files and 9 directories | 329 / 329 | 0 / 0 |
+| `lstat` calls for that tree | 329 / 329 | 329 / 329 |
+| Captured entries for that tree | 329 / 329 | 329 / 329 |
+
+All four tree passes produced identical complete manifests and captured
+entries. Coalescing also matched the old algorithm on 200 deterministic
+mixed-path fixtures. An optimized-only 77,798-path fixture completed in
+189 ms; there was no old-algorithm measurement at that size.
+
+A separate bounded ABBA comparison of the complete old and new task planners
+used 512 roots and 2,048 changed paths: A took 1,648 / 1,712 ms and B took
+4.4 / 3.8 ms. Complete planned roots and tasks matched, as did another 200
+deterministic mixed-path fixtures. The operation-count regression requires
+one normalization per output root rather than one per root/event pair.
+
+The shared Windows host was concurrently running the existing frozen-R3
+real E2E and focused regression tests. Tree wall times were noisy
+(A: 894 / 355 ms, B: 242 / 208 ms), so the defensible result is the removed
+metadata calls, not a real-product speedup percentage. These changes do not
+prove the cause of that E2E's long synchronous gap, reduce its full-scan
+count, or accelerate the already-running frozen controller. Destination-copy
+verification and post-compile capture remain separate integrity boundaries.
+
 ### Preparation rejection diagnostics
 
 If a newly recorded dependency or compile snapshot fails its output

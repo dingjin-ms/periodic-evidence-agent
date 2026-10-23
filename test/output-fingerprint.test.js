@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync
 } from 'node:fs';
@@ -10,10 +11,60 @@ import { EventEmitter, once } from 'node:events';
 import { channel } from 'node:diagnostics_channel';
 import {
   outputPathFingerprint, outputPathFingerprintWithEntries,
-  dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries
+  dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries, pathFingerprint
 } from '../src/output-fingerprint.js';
 import { capturePreparedOutputs, outputFingerprint, verifyPreparedOutputs } from '../src/workers.js';
 import { hash } from '../src/hash.js';
+
+test('generic fingerprints avoid redundant existence probes for ordinary entries', t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-metadata-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'dist'));
+  for (let index = 0; index < 32; index++)
+    writeFileSync(join(root, 'dist', `${index}.js`), 'same\n');
+  const fs = createRequire(import.meta.url)('node:fs');
+  const exists = fs.existsSync, lstat = fs.lstatSync;
+  let existenceProbes = 0, statCalls = 0;
+  let value;
+  const entries = [];
+  try {
+    fs.existsSync = (...args) => {
+      existenceProbes++;
+      return exists(...args);
+    };
+    fs.lstatSync = (...args) => {
+      statCalls++;
+      return lstat(...args);
+    };
+    syncBuiltinESMExports();
+    value = pathFingerprint(root, 'dist', entries);
+  } finally {
+    fs.existsSync = exists;
+    fs.lstatSync = lstat;
+    syncBuiltinESMExports();
+  }
+  assert.equal(existenceProbes, 0);
+  assert.equal(statCalls, 33);
+  assert.equal(entries.length, 33);
+  assert.ok(value.entries.every(entry => entry.sha256 === hash('same\n')));
+  writeFileSync(join(root, 'dist', '0.js'), 'evil\n');
+  assert.notDeepEqual(pathFingerprint(root, 'dist'), value);
+  assert.equal(pathFingerprint(root, 'missing'), null);
+  assert.equal(pathFingerprint(root, 'dist/0.js/child'), null);
+});
+
+test('generic fingerprints still reject dangling links at roots and within directories', t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-dangling-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'dist'));
+  mkdirSync(join(root, 'target'));
+  symlinkSync(join(root, 'target'), join(root, 'dist', 'alias'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(pathFingerprint(root, 'dist/alias').type, 'link');
+  rmSync(join(root, 'target'), { recursive: true });
+  assert.equal(pathFingerprint(root, 'dist/alias'), null);
+  assert.equal(pathFingerprint(root, 'dist'), null);
+});
 
 test('parallel fingerprint workers stay schema-free and preserve complete output hashes', async t => {
   const root = mkdtempSync(join(tmpdir(), 'output-fingerprint-'));

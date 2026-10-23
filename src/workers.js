@@ -1248,15 +1248,21 @@ function dependencyEntryValue(entry, values, capturedEntries) {
   ]);
   return { name: entry.name, type: 'directory', sha256 };
 }
-function preparedOutputFingerprintTask(guard, path) {
-  const root = guard.paths
-    .filter(candidate => {
-      const key = watchPathKey(candidate);
-      return path === key || path.startsWith(`${key}/`);
-    })
-    .sort((left, right) => right.length - left.length)[0];
+function preparedOutputFingerprintTask(rootsByKey, path) {
+  let root = null, rootKey = null, rootOrder = Infinity, ancestor = path;
+  for (;;) {
+    const candidate = rootsByKey.get(ancestor);
+    if (candidate && (!root || candidate.longest.length > root.length ||
+      (candidate.longest.length === root.length && candidate.order < rootOrder))) {
+      root = candidate.longest;
+      rootKey = ancestor;
+      rootOrder = candidate.order;
+    }
+    const slash = ancestor.lastIndexOf('/');
+    if (slash < 0) break;
+    ancestor = ancestor.slice(0, slash);
+  }
   if (!root) return null;
-  const rootKey = watchPathKey(root);
   if (path !== rootKey && root.toLowerCase().endsWith('node_modules'))
     return {
       mode: 'dependency-entry',
@@ -1265,12 +1271,24 @@ function preparedOutputFingerprintTask(guard, path) {
     };
   return { mode: 'path', path };
 }
+export function planPreparedOutputChanges(outputPaths, paths) {
+  const rootsByKey = new Map();
+  for (const [order, root] of outputPaths.entries()) {
+    const key = watchPathKey(root);
+    const existing = rootsByKey.get(key);
+    if (!existing) rootsByKey.set(key, { first: root, longest: root, order });
+    else if (root.length > existing.longest.length) {
+      existing.longest = root;
+      existing.order = order;
+    }
+  }
+  const roots = paths.map(path => rootsByKey.get(path)?.first).filter(Boolean);
+  const requestedTasks = paths.filter(path => !rootsByKey.get(path)?.first)
+    .map(path => preparedOutputFingerprintTask(rootsByKey, path));
+  return { roots, requestedTasks };
+}
 async function collectPreparedOutputEntries(guard, paths) {
-  const roots = paths.map(path =>
-    guard.paths.find(root => watchPathKey(root) === path)).filter(Boolean);
-  const rootKeys = new Set(roots.map(watchPathKey));
-  const requestedTasks = paths.filter(path => !rootKeys.has(path))
-    .map(path => preparedOutputFingerprintTask(guard, path));
+  const { roots, requestedTasks } = planPreparedOutputChanges(guard.paths, paths);
   if (requestedTasks.some(task => !task)) return null;
   const tasks = [];
   const counts = new Map();
@@ -1522,6 +1540,22 @@ function preparedOutputSettlementStats(guard) {
     coalescedPaths: []
   };
 }
+export function coalescePreparedOutputChanges(paths) {
+  const roots = new Set();
+  return [...paths]
+    .sort((left, right) => left.length - right.length ||
+      left.localeCompare(right))
+    .filter(path => {
+      let ancestor = path;
+      let slash;
+      while ((slash = ancestor.lastIndexOf('/')) >= 0) {
+        ancestor = ancestor.slice(0, slash);
+        if (roots.has(ancestor)) return false;
+      }
+      roots.add(path);
+      return true;
+    });
+}
 async function performPreparedOutputSettlement(guard) {
   const startedAt = Date.now();
   await delay(100);
@@ -1539,11 +1573,7 @@ async function performPreparedOutputSettlement(guard) {
       telemetry.settlementPassCount++;
       const observedEntries = [...guard.changedEntries];
       for (const path of observedEntries) guard.changedEntries.delete(path);
-      const changedEntries = observedEntries
-        .sort((left, right) => left.length - right.length ||
-          left.localeCompare(right))
-        .filter((path, index, values) => !values.slice(0, index)
-          .some(parent => path.startsWith(`${parent}/`)));
+      const changedEntries = coalescePreparedOutputChanges(observedEntries);
       telemetry.coalescedPathCount += changedEntries.length;
       if (telemetry.coalescedPaths.length < 20)
         telemetry.coalescedPaths.push(...changedEntries.slice(

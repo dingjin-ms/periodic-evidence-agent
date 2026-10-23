@@ -28,3 +28,12 @@ and follow it in full.
 The pilot's ownership/write/validation configuration is not automatically
 resolved by this skill. If no valid claimed assignment and isolated workspace
 are supplied, return the missing inputs without modifying or running product code.
+
+## Recorded live E2E proof
+
+The [2026-10-23 1JS proof](../../../e2e-evidence/1js-chat-only-full-live-20261023/README.md)
+records real evidence-to-Draft-PR completion: a new contiguous five-repeat batch
+passed with retry 0, cleanup passed, and Draft PR 5895602 was created. Aurora
+57965896 was triggered but failed case-tag validation before configuration
+snapshot creation; cloud validation remains an open follow-up. This historical
+proof is not authorization for new collection, authoring, validation or writes.

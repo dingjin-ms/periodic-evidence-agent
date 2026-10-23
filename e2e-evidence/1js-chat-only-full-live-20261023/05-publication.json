@@ -1,0 +1,46 @@
+{
+  "checkedAt": "2026-10-23T14:31:13.303Z",
+  "outcome": "draft-pr-validated",
+  "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+  "draftPR": {
+    "url": "https://dev.azure.com/office/Office/_git/1JS/pullrequest/5895602",
+    "isDraft": true,
+    "headRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+    "id": 5895602,
+    "status": "active",
+    "sourceRefName": "refs/heads/user/dingjin/periodic-evidence-agent/assignment-ac679abae4f2478339a5be9e2831011620aba28deec6ef9fded321c475bd06b3",
+    "targetRefName": "refs/heads/feature/agent_reliability",
+    "createdAt": "2026-10-23T14:29:31.9062873Z"
+  },
+  "build": {
+    "id": "1js-pipeline-36540",
+    "provider": "ado",
+    "definitionId": 36540,
+    "buildId": 57965896,
+    "url": "https://dev.azure.com/office/a4aa557b-7dca-453d-9d83-2fe9271852b9/_build/results?buildId=57965896",
+    "status": "queued",
+    "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+    "sourceRef": "refs/heads/user/dingjin/periodic-evidence-agent/assignment-ac679abae4f2478339a5be9e2831011620aba28deec6ef9fded321c475bd06b3",
+    "queuedAt": "2026-10-23T14:21:26.821764Z",
+    "blocking": false,
+    "actualStatus": "completed",
+    "actualResult": "failed",
+    "queueTime": "2026-10-23T14:21:26.821764Z",
+    "startTime": "2026-10-23T14:21:50.1664919Z",
+    "finishTime": "2026-10-23T14:29:15.3022406Z",
+    "templateParameters": {
+      "groupsToRun": "excelAgentDeclarativeAndCrossOffice",
+      "excelAgentExperience": "omni",
+      "testConfigBranch": "current",
+      "allowSharedDefinitionOnPrivateBranch": true
+    }
+  },
+  "uniqueness": {
+    "sourceRefs": 1,
+    "allStatusPrs": 1,
+    "branchBuilds": 1
+  },
+  "uniquenessScope": "Recorded read-only verification, not a new remote query by this archive",
+  "merged": false,
+  "allCloudTestsGreen": false
+}

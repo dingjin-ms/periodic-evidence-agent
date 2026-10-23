@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { configAt, hash, json, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import { loopStages, normalizeLoopRequest, fileArtifact, digest, runEvidenceLoop, loopOperation } from '../src/loop-controller.js';
@@ -15,15 +15,17 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
   c.sources.ado = { enabled: true, scopeApproved: true };
   c.dryRun.limits = { maxItems: 10, maxCalls: 10 };
   c.rsi = JSON.parse(readFileSync('scaffold/rsi-flow.example.json'));
+  writeFileSync(join(root, 'validation-profile.js'), '// Synthetic profile binding');
   c.repositories = [{ id: 'fixture', projectId: 'fixture', routingApproved: true, referenceCheckout: root,
     validationGates: [{ id: 'synthetic', approved: true, isolationVerified: true,
+      profilePath: 'validation-profile.js', profileSha256: hash(readFileSync(join(root, 'validation-profile.js'))),
       executable: process.execPath, args: ['--test'], timeoutMs: 10000 }],
     allowedWritePrefixes: ['test'], skillBindings: [{ id: 'synthetic', enabled: true, qualification: 'qualified',
       capability: 'integration-test-authoring', skillPath: 'synthetic/SKILL.md', requestedOutcomes: ['add-or-update-tests'],
@@ -40,22 +42,48 @@ for (const mode of ['native', 'mailbox']) test(mode + ': fresh collection, FILTE
     verificationSha256: hash(readFileSync(verificationRef)), contextTokens: 1000, maxInputTokens: 500,
     maxPayloadBytes: 1000000, maxBatches: 1,
     reserves: { instructions: 10, sourceAnalysis: 20, output: 100, safety: 10, requestOverhead: 5 } };
+  if (mode.startsWith('local-')) {
+    mkdirSync(join(root, 'synthetic'));
+    writeFileSync(join(root, 'synthetic', 'SKILL.md'), '# Synthetic read-only qualification fixture');
+    const git = args => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', windowsHide: true }).trim();
+    git(['init', '--quiet']); git(['add', 'synthetic/SKILL.md']);
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'Fixture skill']);
+    git(['remote', 'add', 'origin', 'https://example.invalid/fixture']);
+    const revision = git(['rev-parse', 'HEAD']);
+    Object.assign(c.repositories[0], { baseRef: revision, remote: 'https://example.invalid/fixture', qualificationRefresh: 'local' });
+    c.filterExecutor = 'local-sdk'; c.activation.review = true; c.limits.maxAiCreditsPerSession = 30;
+    c.localFilter = { enabled: true, acceptSoftCreditLimit: mode === 'local-sdk', maxRequests: 1,
+      maxToolCalls: 5, timeoutMs: 10000, maxSourceBytes: 10000, maxRequestBytes: 1000000,
+      sources: [{ repoId: 'fixture', revision }] };
+  }
   const collectorConfig = join(root, 'collector.local.json'), proposerConfig = join(root, 'proposer.local.json');
   writeFileSync(collectorConfig, json(c)); writeFileSync(proposerConfig, json(c));
   const deadlineAt = new Date(Date.now() + 600000).toISOString();
   const bundle = { format: 'loop-native-settings-v1', collectorConfig, proposerConfig, executeProposer: false,
-    workflowId: 'native-test', timeZone: 'Asia/Singapore', adapter: mode, rsiMode: 'capture-only', deadlineAt,
+    workflowId: 'native-test', timeZone: 'Asia/Singapore', adapter: mode === 'mailbox' ? 'mailbox' : 'native', rsiMode: 'capture-only', deadlineAt,
     stateOwner: { id: 'synthetic', directory: join(root, 'state'), accessApproved: true, retentionDays: 7 },
     budgets: Object.fromEntries(loopStages.map(stage => [stage, { maxEffects: 10, timeoutMs: 600000 }])),
     collection: { dryRun: true, passes: ['ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
       approvalRef: 'synthetic-only', deadlineAt, maxItems: 10, maxCalls: 10 } },
     filterHost: { id: 'synthetic-host', approvalRef: 'synthetic-only', qualificationRef: verificationRef,
       maxRequests: 1, maxExecutionSeconds: 600, maxReservedTokens: 1000 } };
+  if (mode.startsWith('local-')) bundle.localFilterPlan = {
+    instructions: 'Synthetic complete corpus review',
+    groupingReview: { reviewer: 'test', reviewedAt: now(), rationale: 'Exact singleton membership only' },
+    sharing: { audience: 'synthetic-only', approvalRef: 'synthetic-only' },
+    routing: { capability: 'integration-test-authoring' },
+    authorization: { approvedBy: 'test', approvedAt: now(), approvalRef: 'synthetic-only', deadlineAt,
+      maxFilterRequests: 1, maxFilterExecutionSeconds: 600, maxFilterReservedTokens: 1000,
+      maxFilterAiCredits: 30, maxProposers: 1, maxProposerAiCredits: 30,
+      authorizeCommit: false, authorizePush: false, authorizeDraftPR: false }
+  };
   const bundlePath = join(root, 'bundle.local.json'); writeFileSync(bundlePath, json(bundle));
   let calls = 0;
   const native = createNativeLoopAdapter({ collectionDependencies: {
     adoTransport: async () => async () => { calls++; return { asOf: '2026-10-23T00:00:00Z', workItems: [] }; }
-  } });
+  }, filterDependencies: { counter: async (_config, input) =>
+    ({ sha256: input.sha256, model: input.model, tokenizer: input.tokenizer, tokens: 5 }),
+    connect: async () => { throw new Error('An empty cohort must not launch a model'); } } });
   const adapter = mode === 'mailbox' ? createMailboxLoopAdapter(native) : native;
   const configuration = [bundlePath, collectorConfig, proposerConfig].map(fileArtifact);
   const request = { format: 'evidence-loop-v1', workflowId: 'native-test', occurrence: '2026-10-23T01:00:00Z',
@@ -69,6 +97,17 @@ for (const mode of ['native', 'mailbox']) test(mode + ': fresh collection, FILTE
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   const adapters = Object.fromEntries(loopStages.map(stage => [stage, adapter]));
   let waiting = await runEvidenceLoop(request, ledger, adapters);
+  if (mode === 'local-unapproved') {
+    assert.equal(waiting.code, 'action-required-budget', json(waiting));
+    assert.equal(calls, 0); return;
+  }
+  if (mode === 'local-sdk') {
+    assert.equal(waiting.state, 'complete', json(waiting));
+    assert.equal(waiting.proposer, 'no-candidate'); assert.equal(waiting.rsi, 'captured');
+    const firstCalls = calls;
+    assert.deepEqual(await runEvidenceLoop({ ...request, origin: 'scheduled' }, ledger, adapters), waiting);
+    assert.equal(calls, firstCalls); return;
+  }
   if (mode === 'mailbox') {
     await adapter.drain(loopOperation(ledger, waiting.runId + ':collect').detail.request, ledger);
     waiting = await runEvidenceLoop(request, ledger, adapters);

@@ -9,6 +9,7 @@ import { reconcileFilterExecutionCohort } from './filter-execution.js';
 import { validateFilterManifest } from './filter-batches.js';
 import { prepareFilterProposerHandoff, validateFilterProposerHandoff } from './filter-handoff.js';
 import { dispatch } from './workers.js';
+import { prepareLocalOneShotBudget, acceptLocalOneShotCohort, executeLocalOneShotCohort } from './one-shot-local-filter.js';
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -24,7 +25,8 @@ function validateInput(input) {
   fields(input.filter, ['manifestPath', 'manifestSha256', 'executionLedgerPath', 'resultPaths']);
   fields(input.authorization, ['approvedBy', 'approvedAt', 'approvalRef', 'deadlineAt',
     'maxFilterRequests', 'maxFilterExecutionSeconds', 'maxFilterReservedTokens', 'maxProposers',
-    'maxProposerAiCredits', 'authorizeCommit', 'authorizePush', 'authorizeDraftPR']);
+    'maxProposerAiCredits', 'authorizeCommit', 'authorizePush', 'authorizeDraftPR',
+    ...(Object.hasOwn(input.authorization, 'maxFilterAiCredits') ? ['maxFilterAiCredits'] : [])]);
   Object.values(input).forEach(noCredentials);
   const a = input.authorization;
   requireThat(input.format === 'one-shot-handoff-v1' && text(input.owner) &&
@@ -91,6 +93,7 @@ export function prepareOneShotFilterBudget(config, ledger, input) {
     realpathSync(join(ledger.directory, 'ledger.sqlite')) === realpathSync(input.filter.executionLedgerPath),
   'FILTER reservations must use the declared separate execution ledger', 'blocked-scope');
   const { manifest } = collectedManifest(config, input), id = filterBudgetId(input);
+  if (config.filterExecutor === 'local-sdk') return prepareLocalOneShotBudget(config, ledger, input, manifest, id);
   return ledger.transaction(() => {
     const previous = ledger.db.prepare('SELECT id FROM operations WHERE id=?').get(id);
     if (previous) {
@@ -152,6 +155,7 @@ export function prepareOneShotFilterBudget(config, ledger, input) {
 }
 
 export function reserveOneShotFilterRequest(config, ledger, input, taskId, request) {
+  requireThat(config.filterExecutor !== 'local-sdk', 'Agency reservation cannot execute a local SDK cohort', 'blocked-reconciliation');
   const budget = prepareOneShotFilterBudget(config, ledger, input);
   const planned = budget.requests.find(value => value.taskId === taskId);
   requireThat(planned && Date.now() < Date.parse(input.authorization.deadlineAt) &&
@@ -159,6 +163,13 @@ export function reserveOneShotFilterRequest(config, ledger, input, taskId, reque
   'FILTER request must match its pre-reserved task/token allowance before the deadline', 'blocked-budget');
   return reserveAgencyRequest(config, ledger, taskId, request,
     JSON.parse(readFileSync(input.filter.manifestPath, 'utf8')));
+}
+
+export async function executeOneShotLocalFilter(config, ledger, input, dependencies = {}) {
+  requireThat(config.filterExecutor === 'local-sdk', 'Explicit local SDK FILTER selection required');
+  const budget = prepareOneShotFilterBudget(config, ledger, input);
+  const { manifest } = collectedManifest(config, input);
+  return executeLocalOneShotCohort(config, ledger, input, manifest, budget, dependencies);
 }
 
 function acceptedCohort(config, input) {
@@ -171,6 +182,8 @@ function acceptedCohort(config, input) {
     const budget = filterBudget(ledger, input);
     requireThat(budget.inputSha256 === hash(json(input)) && budget.configSha256 === hash(json(config)),
       'Original aggregate FILTER authorization/configuration changed', 'blocked-reconciliation');
+    if (config.filterExecutor === 'local-sdk')
+      return acceptLocalOneShotCohort(config, ledger, input, manifest, collected, budget, resultBytes);
     const requests = manifest.batches.map(batch => readAgencyRequest(ledger, batch.id));
     requireThat(requests.every(Boolean),
       'Missing FILTER reservation; configure qualified task/request/source pins and the external executor', 'blocked-binding');

@@ -6,11 +6,14 @@ the existing Ledger's operations/captures/locks. The control journal references 
 authoritative one-shot source, FILTER and worker ledgers; it does not replace their
 acceptance records or introduce another storage engine. Inner schedulers remain disabled.
 
-The local adapter invokes supported one-shot collection and release machinery.
-FILTER uses an explicit host continuation: there is still no qualified automatic
-submission/observation client in the one-shot path. A scheduled occurrence can
-truthfully return awaiting-host. This implementation is not a claim of unattended
-live acceptance or arbitrary-harness portability.
+The native adapter invokes supported one-shot collection and release machinery.
+With filterExecutor=local-sdk it prepares the complete corpus, runs the existing
+restricted SDK FILTER and reconciles its immutable execution evidence automatically.
+Agency execution retains its explicit host continuation. Missing qualifications or
+budget approval remain blockers; installing this path does not establish live acceptance.
+
+See [automatic local FILTER setup](scaffold/LOCAL-LOOP.md) for the local SDK path,
+verified o200k tokenization and explicit soft-credit approval.
 
 ## Commands
 
@@ -153,7 +156,7 @@ Two shipped adapters exercise this boundary:
 
 | Adapter | Execution / resumption |
 | --- | --- |
-| local-one-shot-v1 | Invokes existing local helpers; external FILTER and app-hosted RSI may await the approved current host |
+| local-one-shot-v1 | Invokes local helpers, including opt-in local SDK FILTER; external Agency FILTER and app-hosted RSI may await the approved current host |
 | mailbox:local-one-shot-v1 | Only journals roles during controller invocation; a foreground host explicitly drains the reserved role through the same native domain gates |
 
 For mailbox settings use adapter=mailbox when building the original request. After

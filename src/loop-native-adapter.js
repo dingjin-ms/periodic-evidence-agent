@@ -1,16 +1,18 @@
 // Supported local helper bridge. FILTER remains owned by an explicitly bound host.
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configAt, hash, json, requireThat } from './common.js';
 import { Ledger } from './ledger.js';
 import { beginOneShotCollection, advanceOneShotCollection, readOneShotCollectionReceipt,
   oneShotCollectionStatus } from './one-shot-collection.js';
-import { advanceOneShotHandoff } from './one-shot-handoff.js';
+import { advanceOneShotHandoff, executeOneShotLocalFilter } from './one-shot-handoff.js';
+import { localOneShotPreflight } from './one-shot-local-filter.js';
+import { prepareLoopLocalFilter } from './loop-local-filter.js';
 import { openApp, appStatus } from './app-native.js';
 import { rsiPolicy, rsiAutomationPolicy, rsiWork, captureAppRsiOutcome } from './rsi-flow.js';
 import { runRsiPending } from './rsi-execution.js';
-import { repositoryValidationContract } from './repository-skills.js';
+import { repositoryValidationContract, qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { canonical, digest, fileArtifact, captureArtifact, readLoopArtifact, roleReceipt, loopOperation } from './loop-controller.js';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +50,7 @@ export function nativeLoopSettings(pins, runId) {
     };
     requireThat(digest(withoutSelections(derived)) === digest(withoutSelections(proposer)),
       'Host may only specialize agency selections in the derived proposer config', 'blocked-reconciliation');
-    proposer.agency.selections = derived.agency.selections;
+    if (proposer.agency) proposer.agency.selections = derived.agency.selections;
   }
   requireThat(digest({ identity: collector.identity, sources: collector.sources, passes: bundle.collection.passes }) ===
     pins.sourcePolicySha256, 'Source policy pin mismatch', 'blocked-reconciliation');
@@ -84,7 +86,7 @@ function handoffInput(settings, request, ledger) {
   return { input, path };
 }
 
-export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchDependencies = {}, rsiDependencies = {} } = {}) {
+export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchDependencies = {}, rsiDependencies = {}, filterDependencies = {} } = {}) {
   const binding = nativeBinding();
   async function preflight({ pins, runId }) {
     requireThat(binding.revision === loopAdapterRevision(), 'Adapter code changed after loading', 'blocked-reconciliation');
@@ -112,13 +114,33 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       limits.maxItems * count <= a.maxItems && limits.maxCalls * count <= a.maxCalls &&
       a.maxCalls <= pins.budgets.collect.maxEffects &&
       Date.parse(a.deadlineAt) <= Date.parse(pins.deadlineAt), 'Collection exceeds aggregate reservation', 'blocked-budget');
-    requireThat(b.filterHost?.id && b.filterHost?.approvalRef && b.filterHost?.qualificationRef &&
+    const local = p.filterExecutor === 'local-sdk';
+    if (local) {
+      localOneShotPreflight(p);
+      requireThat(p.repositories.every(repo => repo.qualificationRefresh === 'local' &&
+        p.localFilter.sources.some(source => source.repoId === repo.id && source.revision === repo.baseRef)),
+      'Local FILTER requires exact repository revisions and read-only local qualification', 'blocked-binding');
+      requireThat(b.localFilterPlan?.sharing?.approvalRef && b.localFilterPlan?.groupingReview &&
+        b.localFilterPlan?.authorization && b.localFilterPlan?.instructions,
+      'Local FILTER grouping, sharing and release authorization must be pinned before collection');
+      requireThat(p.localFilter.maxRequests <= pins.budgets.filter.maxEffects &&
+        p.localFilter.timeoutMs * p.localFilter.maxRequests <= pins.budgets.filter.timeoutMs,
+      'Local FILTER exceeds the controller request/time reservation', 'blocked-budget');
+      const a = b.localFilterPlan.authorization, batches = p.localFilter.maxRequests;
+      requireThat(a.maxFilterRequests >= batches &&
+        a.maxFilterExecutionSeconds * 1000 >= p.localFilter.timeoutMs * batches &&
+        a.maxFilterAiCredits >= p.limits.maxAiCreditsPerSession * batches &&
+        a.maxProposerAiCredits >= p.limits.maxAiCreditsPerSession * (1 + p.limits.maxValidationRepairRounds) &&
+        a.maxFilterReservedTokens >= (p.filterBatching?.maxInputTokens + p.filterBatching?.reserves.output) * batches &&
+        Date.parse(a.deadlineAt) <= Date.parse(pins.deadlineAt),
+      'Local FILTER/proposer whole-run allocation is incomplete before collection', 'blocked-budget');
+    } else requireThat(b.filterHost?.id && b.filterHost?.approvalRef && b.filterHost?.qualificationRef &&
       ['maxRequests', 'maxExecutionSeconds', 'maxReservedTokens'].every(k => positive(b.filterHost[k])) &&
       b.filterHost.maxRequests <= pins.budgets.filter.maxEffects &&
       b.filterHost.maxExecutionSeconds * 1000 <= pins.budgets.filter.timeoutMs,
     'Bind an approved bounded FILTER host and qualification before collection', 'blocked-capability');
-    requireThat(p.agency && Array.isArray(p.agency.selections) &&
-      positive(p.agency.maxRequests) && p.agency.maxRequests <= b.filterHost.maxRequests &&
+    requireThat((local || (p.agency && Array.isArray(p.agency.selections) &&
+      positive(p.agency.maxRequests) && p.agency.maxRequests <= b.filterHost.maxRequests)) &&
       p.filterBatching?.approved && p.filterBatching.mode === 'verified' &&
       existsSync(p.filterBatching.verificationRef) &&
       hash(readFileSync(p.filterBatching.verificationRef)) === p.filterBatching.verificationSha256,
@@ -151,11 +173,27 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
     mkdirSync(s.root, { recursive: true, mode: 0o700 });
     for (const [name, config] of [['collector', s.collector], ['proposer', s.proposer]]) {
       const path = join(s.root, name + '.config.json');
-      if (!existsSync(path)) writeFileSync(path, json(config), { flag: 'wx', mode: 0o600 });
+      if (!existsSync(path)) {
+        const serialized = structuredClone(config);
+        for (const repo of serialized.repositories) for (const gate of repo.validationGates) {
+          if (gate.profilePath && isAbsolute(gate.profilePath))
+            gate.profilePath = relative(dirname(path), gate.profilePath);
+        }
+        writeFileSync(path, json(serialized), { flag: 'wx', mode: 0o600 });
+      }
     }
     const complete = (outcome, value, ids, artifacts = []) => ({ state: 'complete',
       receipt: roleReceipt(request, outcome, [captureArtifact(ledger, value), ...artifacts], ids) });
     if (request.stage === 'collect') {
+      if (!resume && s.proposer.filterExecutor === 'local-sdk') {
+        const proposer = new Ledger(s.proposer.stateDirectory);
+        try {
+          for (const repo of s.proposer.repositories) for (const skill of repo.skillBindings.filter(skill => skill.enabled)) {
+            const qualification = await qualifyRepositorySkill(s.proposer, repo.id, skill.capability, skill.id);
+            proposer.qualify(skillQualificationId(repo.id, skill.id), qualification);
+          }
+        } finally { proposer.close(); }
+      }
       const collector = new Ledger(s.collector.stateDirectory);
       try {
         if (resume && !collector.db.prepare("SELECT 1 FROM sqlite_master WHERE name='one_shot_collections'").get())
@@ -168,6 +206,13 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       } finally { collector.close(); }
     }
     if (request.stage === 'filter' || request.stage === 'proposer') {
+      const local = s.proposer.filterExecutor === 'local-sdk';
+      if (local && request.stage === 'filter') {
+        const source = new Ledger(s.collector.stateDirectory);
+        try { s.collectionReceiptSha256 = oneShotCollectionStatus(source, request.runId).receiptSha256; }
+        finally { source.close(); }
+        await prepareLoopLocalFilter(s, request, ledger, filterDependencies.counter);
+      }
       const handoff = handoffInput(s, request, ledger);
       if (!handoff) {
         const path = join(s.root, 'filter-request.json');
@@ -179,9 +224,16 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
         return awaiting('Bound host ' + s.bundle.filterHost.id + ' must continue ' + path);
       }
       const a = handoff.input.authorization, b = s.bundle.filterHost;
-      requireThat(a.maxFilterRequests <= b.maxRequests && a.maxFilterExecutionSeconds <= b.maxExecutionSeconds &&
-        a.maxFilterReservedTokens <= b.maxReservedTokens && Date.parse(a.deadlineAt) <= Date.parse(request.pins.deadlineAt),
+      requireThat((local ? a.maxFilterRequests <= request.pins.budgets.filter.maxEffects &&
+        a.maxFilterExecutionSeconds * 1000 <= request.pins.budgets.filter.timeoutMs
+        : a.maxFilterRequests <= b.maxRequests && a.maxFilterExecutionSeconds <= b.maxExecutionSeconds &&
+          a.maxFilterReservedTokens <= b.maxReservedTokens) && Date.parse(a.deadlineAt) <= Date.parse(request.pins.deadlineAt),
       'Host handoff exceeds preflight reservation', 'blocked-budget');
+      if (local && request.stage === 'filter') {
+        const execution = new Ledger(dirname(handoff.input.filter.executionLedgerPath));
+        try { await executeOneShotLocalFilter(s.proposer, execution, handoff.input, filterDependencies); }
+        finally { execution.close(); }
+      }
       const proposer = new Ledger(s.proposer.stateDirectory);
       try {
         const status = await advanceOneShotHandoff(s.proposer, proposer, handoff.input,

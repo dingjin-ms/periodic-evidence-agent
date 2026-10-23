@@ -1,5 +1,10 @@
 # Run the agentic loop with RSI enabled
 
+For shared manual/scheduled execution, see [LOOP-CONTROLLER.md](../LOOP-CONTROLLER.md).
+It adds durable occurrence admission, runtime adapters and the PILOT-22 migration.
+Declare capture-only or evaluated RSI before producer execution; the controls below
+still own host claims, independent comparison and publication gates.
+
 This operator runbook follows **Collector -> FILTER -> Proposer -> RSI** using
 the existing Copilot App host and durable controller ledger. RSI inspects the
 agent system's outcome; it does not turn a product bug into permission to

@@ -602,6 +602,36 @@ for (const stage of ['compile', 'compile-output-capture']) {
     });
 }
 
+test('compile stage budget also includes native startup',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    ctx.gate.args[1] = 'compile';
+    const realNow = performance.now.bind(performance);
+    let expiredAt = null;
+    const clock = t.mock.method(performance, 'now', () =>
+      expiredAt === null ? realNow() : Math.max(realNow(), expiredAt));
+    let outcome;
+    try {
+      outcome = await runPreparationAttempt({
+        ...ctx.options,
+        onProgress: update => {
+          if (update.stage === 'compile' && update.phase === 'start')
+            expiredAt = realNow() + 5001;
+        },
+        stageTimeoutMs: { ...ctx.options.stageTimeoutMs, compile: 5000 }
+      });
+    } finally { clock.mock.restore(); }
+    assert.equal(outcome.reason, 'stage-budget', json(outcome));
+    assert.equal(outcome.stage, 'compile');
+    await assertRollback(outcome, ctx);
+    // A fast host may launch before the parent consumes progress; any such child must still exit.
+    if (existsSync(ctx.readyPath)) {
+      const ready = JSON.parse(readFileSync(ctx.readyPath));
+      for (const pid of [ready.pid, ready.child])
+        await assertExited(pid, outcome.processExitCheckStartedMs, ctx.root);
+    }
+  });
+
 test('controller rejection keeps its blocked classification and reason through attempt rollback',
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);

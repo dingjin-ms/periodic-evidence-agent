@@ -76,6 +76,7 @@
       ],
       "allowedWriteFiles": [],
       "requiresBehaviorCard": true,
+      "requiresCoverageReview": true,
       "sideEffects": {
         "commit": false,
         "push": false,
@@ -103,7 +104,7 @@
         "{profile}"
       ],
       "profilePath": "../scripts/validation/1js-sdx-excel-integration.ps1",
-      "profileSha256": "20445504fe9590643172ec349b82787c4d3db2907a8e3477eadbac0389ce9c4a",
+      "profileSha256": "301692caeffa255f3489dfb2edce700e3e381820fb7c08b1187e052b576f2241",
       "timeoutMs": 1800000
     }
   ],

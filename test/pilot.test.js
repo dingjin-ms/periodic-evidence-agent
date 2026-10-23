@@ -2149,6 +2149,64 @@ test('runner dependency file mutation invalidates the prepared cache', async t =
   assert.equal(result[0].blockedReason, 'prepared-cache-corrupt');
   assert.equal(existsSync(dirname(prepared.staged.workspace)), false);
 });
+test('native artifacts survive a failed test and cleanup preserves the primary failure', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const execute = async (...args) => {
+    const [, , cwd, , env] = args;
+    if (env.PILOT_VALIDATION_STAGE !== 'test') return ctx.execute(...args);
+    writeFileSync(join(env.PILOT_VALIDATION_ARTIFACT_DIRECTORY, 'jest-result.json'),
+      '{"success":false,"numFailedTests":1}\n');
+    writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
+      '{"version":"mutated-by-failing-runner"}\n');
+    ctx.behavior.failTest = true;
+    return ctx.execute(...args);
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'prepared-cache-corrupt');
+  assert.equal(result[0].attemptCount, 1);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.deepEqual(artifact.output.primaryFailure, {
+    stage: 'test', status: 'failed', blockedReason: null, exitCode: 1, timeout: false
+  });
+  assert.equal(artifact.output.cleanupFailure.blockedReason, 'prepared-cache-corrupt');
+  assert.match(artifact.output.stderr, /fixture failure/);
+  assert.equal(existsSync(dirname(prepared.staged.workspace)), false);
+  assert.equal(artifact.nativeArtifacts.length, 1);
+  const retained = artifact.nativeArtifacts[0];
+  assert.equal(retained.stage, 'test');
+  assert.equal(hash(readFileSync(retained.path)), retained.sha256);
+  assert.equal(readFileSync(retained.path).length, retained.bytes);
+  const manifest = JSON.parse(readFileSync(join(ctx.config.stateDirectory, 'runs', ctx.current.id, 'manifest.json')));
+  assert.equal(manifest.artifacts.length, 1);
+  assert.equal(manifest.artifacts[0].sha256, retained.sha256);
+});
+
+test('unsafe native artifact links block acceptance without retrying', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , , , env] = args;
+    if (env.PILOT_VALIDATION_STAGE === 'test')
+      symlinkSync(ctx.current.workspace,
+        join(env.PILOT_VALIDATION_ARTIFACT_DIRECTORY, 'jest-result.json'),
+        process.platform === 'win32' ? 'junction' : 'dir');
+    return result;
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-artifact-unavailable');
+  assert.equal(result[0].attemptCount, 1);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.match(artifact.output.artifactFailure, /bounded ordinary file/);
+  assert.deepEqual(artifact.nativeArtifacts, []);
+});
 test('metadata-only native module changes preserve an identical prepared cache', async t => {
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,

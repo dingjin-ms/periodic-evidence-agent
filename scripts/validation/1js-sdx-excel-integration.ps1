@@ -31,7 +31,7 @@ function Get-ScopedChanges {
         throw 'PILOT_VALIDATION_REVISION is missing or invalid'
     }
 
-    $paths = @(& git diff --name-only `
+    $paths = @(& git -c core.quotePath=false diff --name-only --no-renames `
         $env:PILOT_VALIDATION_BASE_REVISION $env:PILOT_VALIDATION_REVISION)
     if ($LASTEXITCODE -ne 0) {
         throw "git diff exited with code $LASTEXITCODE"
@@ -174,14 +174,22 @@ try {
             if ($outside.Count -gt 0) {
                 throw "SDX validation scope contains unsupported paths: $($outside -join ', ')"
             }
-            $tests = @($changes | Where-Object {
-                $_.StartsWith($integrationRoot) -and $_.EndsWith('.test.ts')
-            } | ForEach-Object {
-                $_.Substring($packageRoot.Length)
+            $testInputs = @($changes | Where-Object {
+                $_.StartsWith($integrationRoot) -and
+                -not $_.StartsWith("${integrationRoot}behavior-cards/") -and
+                -not $_.StartsWith("${integrationRoot}skill-profile/")
             })
-            if ($tests.Count -eq 0) {
-                throw 'SDX integration-test changes must include at least one .test.ts file'
+            if ($testInputs.Count -eq 0) {
+                throw 'SDX integration-test changes must include test or harness inputs'
             }
+            $codeChanges = @($testInputs | Where-Object { $_ -match '\.[cm]?[jt]sx?$' })
+            $existingChanges = @(& git -c core.quotePath=false diff --name-only `
+                --no-renames --diff-filter=MDT `
+                $env:PILOT_VALIDATION_BASE_REVISION $env:PILOT_VALIDATION_REVISION `
+                -- $integrationRoot)
+            if ($LASTEXITCODE -ne 0) { throw "git diff exited with code $LASTEXITCODE" }
+            $lintPaths = @($codeChanges | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                ForEach-Object { $_.Substring($packageRoot.Length) })
         }
         finally {
             Push-Location 'midgard'
@@ -189,13 +197,24 @@ try {
     }
 
     if ($stage -in @('all', 'policy')) {
-        Invoke-Checked node scripts/run-lint-root.js
+        Invoke-Checked $yarn lint:root
+        if ($lintPaths.Count -gt 0) {
+            Invoke-Checked $yarn workspace '@1js/officeaicopilot-agent-excel' lint @lintPaths
+        }
     }
 
     if ($stage -in @('all', 'test')) {
         $packageDirectory = Join-Path (Get-Location).Path 'packages/officeaicopilot-agent-excel'
-        $configurationPath = Join-Path $env:TEMP ("sdx-source-runtime-" + [guid]::NewGuid() + '.cjs')
-        $resultPath = Join-Path $env:TEMP ("sdx-native-results-" + [guid]::NewGuid() + '.json')
+        $artifactDirectory = $env:PILOT_VALIDATION_ARTIFACT_DIRECTORY
+        if (-not $artifactDirectory -or -not [System.IO.Path]::IsPathRooted($artifactDirectory) -or
+            -not (Test-Path -LiteralPath $artifactDirectory -PathType Container) -or
+            @(Get-ChildItem -LiteralPath $artifactDirectory -Force).Count -ne 0) {
+            throw 'PILOT_VALIDATION_PROFILE_ERROR: a fresh absolute artifact directory is required'
+        }
+        $configurationPath = Join-Path $artifactDirectory 'runtime-config.cjs'
+        $resultPath = Join-Path $artifactDirectory 'jest-result.json'
+        $discoveryPath = Join-Path $artifactDirectory 'discovered-tests.json'
+        $selectionPath = Join-Path $artifactDirectory 'selection.json'
         $configuration = @'
 const path = require('node:path');
 const { createRequire } = require('node:module');
@@ -210,7 +229,7 @@ module.exports = {
   resolver: fromPackage.resolve('@1js/jest-config/source-resolver'),
   transformIgnorePatterns: [],
   transform: {
-    '\\.tests?\\.tsx?$': original.transform['\\.tsx?'],
+    '\\.tests?\\.[cm]?tsx?$': original.transform['\\.tsx?'],
     '\\.[cm]?tsx?$': [transformer, { rootDir }],
     '\\.[cm]?js$': [transformer, { rootDir }],
   },
@@ -224,37 +243,118 @@ module.exports = {
         $configuration = $configuration.Replace('__PACKAGE_DIRECTORY__',
             (ConvertTo-Json -InputObject $packageDirectory -Compress))
         [System.IO.File]::WriteAllText($configurationPath, $configuration)
-        $jest = (& node -p "require('path').join(require('path').dirname(require.resolve('jest/package.json', { paths: [process.argv[1]] })), 'bin/jest.js')" $packageDirectory).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jest -PathType Leaf)) {
-            throw 'PILOT_VALIDATION_PROFILE_ERROR: installed native Jest runner is unavailable'
-        }
-        $testPaths = @($tests | ForEach-Object { Join-Path $packageDirectory $_ })
-        Push-Location $packageDirectory
+        $state = 'failed'
+        $phase = 'runner-resolution'
+        $primaryError = $null
+        $testPaths = @()
         try {
-            Invoke-Checked node $jest --config $configurationPath `
-                --runTestsByPath @testPaths --runInBand --passWithNoTests=false `
-                --json --outputFile $resultPath
+            $jest = (& node -p "require('path').join(require('path').dirname(require.resolve('jest/package.json', { paths: [process.argv[1]] })), 'bin/jest.js')" $packageDirectory).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jest -PathType Leaf)) {
+                throw 'PILOT_VALIDATION_PROFILE_ERROR: installed native Jest runner is unavailable'
+            }
+            $phase = 'discovery'
+            Push-Location $packageDirectory
+            try {
+                $discovery = @(& node $jest --config $configurationPath --listTests --json --runInBand)
+                if ($LASTEXITCODE -ne 0) { throw "Jest discovery exited with code $LASTEXITCODE" }
+                [System.IO.File]::WriteAllText($discoveryPath, ($discovery -join "`n"))
+                $discovered = @((Get-Content -LiteralPath $discoveryPath -Raw | ConvertFrom-Json) |
+                    ForEach-Object { [System.IO.Path]::GetFullPath($_) })
+                $integrationDirectory = [System.IO.Path]::GetFullPath(
+                    (Join-Path $packageDirectory 'tests/integration')) + [System.IO.Path]::DirectorySeparatorChar
+                if ($discovered.Count -eq 0 -or
+                    @($discovered | Select-Object -Unique).Count -ne $discovered.Count -or
+                    @($discovered | Where-Object {
+                        -not $_.StartsWith($integrationDirectory, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        -not (Test-Path -LiteralPath $_ -PathType Leaf)
+                    }).Count -gt 0) {
+                    throw 'PILOT_VALIDATION_PROFILE_ERROR: invalid or empty native test discovery'
+                }
+                $changedPaths = @($testInputs | ForEach-Object {
+                    [System.IO.Path]::GetFullPath((Join-Path $packageDirectory $_.Substring($packageRoot.Length)))
+                })
+                $undiscoveredTests = @($changedPaths | Where-Object {
+                    $_ -match '\.tests?\.[cm]?[jt]sx?$' -and
+                    (Test-Path -LiteralPath $_ -PathType Leaf) -and $_ -notin $discovered
+                })
+                if ($undiscoveredTests.Count -gt 0) {
+                    throw 'PILOT_VALIDATION_PROFILE_ERROR: changed tests are excluded by native discovery'
+                }
+                # Existing helpers can have dynamic/mock consumers that Jest's dependency graph misses.
+                $sharedChanges = @($existingChanges | Where-Object {
+                    $_ -in $testInputs -and (
+                        $_ -notmatch '\.tests?\.[cm]?[jt]sx?$' -or
+                        -not (Test-Path -LiteralPath (Join-Path $packageDirectory $_.Substring($packageRoot.Length)))
+                    )
+                })
+                $selectionMode = if ($sharedChanges.Count -gt 0) { 'integration-lane' } else { 'changed-tests' }
+                $testPaths = @($discovered | Where-Object {
+                    $selectionMode -eq 'integration-lane' -or $_ -in $changedPaths
+                })
+                if ($testPaths.Count -eq 0) {
+                    throw 'PILOT_VALIDATION_PROFILE_ERROR: no affected native integration tests selected'
+                }
+                [System.IO.File]::WriteAllText($selectionPath, ([ordered]@{
+                    mode = $selectionMode
+                    changedPaths = $testInputs
+                    sharedChanges = $sharedChanges
+                    expectedPaths = $testPaths
+                } | ConvertTo-Json -Depth 8))
+                $phase = 'test'
+                Invoke-Checked node $jest --config $configurationPath `
+                    --runTestsByPath @testPaths --runInBand --passWithNoTests=false `
+                    --json --outputFile $resultPath
+            }
+            finally {
+                Pop-Location
+            }
+            $phase = 'result-verification'
+            $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+            $actualPaths = @($result.testResults | ForEach-Object { [System.IO.Path]::GetFullPath($_.name) })
+            if (-not $result.success -or $result.numTotalTests -lt 1 -or
+                $result.numPassedTests -ne $result.numTotalTests -or
+                $actualPaths.Count -ne $testPaths.Count -or
+                @($actualPaths | Select-Object -Unique).Count -ne $actualPaths.Count -or
+                @($testPaths | Where-Object { $_ -notin $actualPaths }).Count -gt 0 -or
+                @($result.testResults | Where-Object {
+                    @($_.assertionResults).Count -eq 0 -or
+                    @($_.assertionResults | Where-Object { $_.status -ne 'passed' }).Count -gt 0
+                }).Count -gt 0) {
+                throw 'PILOT_VALIDATION_PROFILE_ERROR: native Jest results do not prove all selected tests passed'
+            }
+            $state = 'passed'
+            $proof = [ordered]@{
+                resultPath = $resultPath
+                suiteCount = $actualPaths.Count
+                testCount = $result.numTotalTests
+                passedCount = $result.numPassedTests
+            }
+            Write-Output "PILOT_VALIDATION_TEST_RESULT:$($proof | ConvertTo-Json -Compress)"
+        }
+        catch {
+            $primaryError = $_
+            if ($phase -ne 'test' -and $_.Exception.Message -notmatch 'PILOT_VALIDATION_PROFILE_ERROR:') {
+                throw "PILOT_VALIDATION_PROFILE_ERROR: native $phase failed: $($_.Exception.Message)"
+            }
+            throw
         }
         finally {
-            Pop-Location
+            try {
+                [System.IO.File]::WriteAllText((Join-Path $artifactDirectory 'run.json'), ([ordered]@{
+                    state = $state
+                    phase = $phase
+                    baseRevision = $env:PILOT_VALIDATION_BASE_REVISION
+                    revision = $env:PILOT_VALIDATION_REVISION
+                    selectedSuiteCount = $testPaths.Count
+                    resultPresent = Test-Path -LiteralPath $resultPath -PathType Leaf
+                    typecheck = 'not-run-integration-tsconfig-not-declared'
+                } | ConvertTo-Json -Depth 8))
+            }
+            catch {
+                if ($null -eq $primaryError) { throw }
+                Write-Warning 'PILOT_VALIDATION_SECONDARY_FAILURE: native run manifest could not be persisted'
+            }
         }
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-        $expectedPaths = @($testPaths | ForEach-Object { [System.IO.Path]::GetFullPath($_) })
-        $actualPaths = @($result.testResults | ForEach-Object { [System.IO.Path]::GetFullPath($_.name) })
-        if (-not $result.success -or $result.numTotalTests -lt 1 -or
-            $result.numPassedTests -ne $result.numTotalTests -or
-            $actualPaths.Count -ne $expectedPaths.Count -or
-            @($expectedPaths | Where-Object { $_ -notin $actualPaths }).Count -gt 0 -or
-            @($result.testResults | Where-Object { @($_.assertionResults).Count -eq 0 }).Count -gt 0) {
-            throw 'PILOT_VALIDATION_PROFILE_ERROR: native Jest results do not prove all selected tests passed'
-        }
-        $proof = [ordered]@{
-            resultPath = $resultPath
-            suiteCount = $actualPaths.Count
-            testCount = $result.numTotalTests
-            passedCount = $result.numPassedTests
-        }
-        Write-Output "PILOT_VALIDATION_TEST_RESULT:$($proof | ConvertTo-Json -Compress)"
     }
 }
 finally {

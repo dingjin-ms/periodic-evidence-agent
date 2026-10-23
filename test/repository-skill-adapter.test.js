@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { configAt, hash } from '../src/common.js';
 import {
   loadRepositorySkill, normalizeSkillResult, pinSkillQualification, qualifyRepositorySkill,
-  normalizeSkillInput, repositoryValidationContract, resolveSkillBinding
+  normalizeSkillInput, repositoryValidationContract, resolveSkillBinding, renderCoverageReview
 } from '../src/repository-skills.js';
 
 function setup(t) {
@@ -255,6 +255,53 @@ test('skill result normalization is deterministic and rejects success-shaped emp
     changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
     unknowns: [], needsHumanDecision: false
   }), /existing coverage/);
+});
+
+test('opt-in coverage reviews account for every changed test without claiming semantic verification', t => {
+  const { workspace, config, assignment } = setup(t);
+  const revision = 'c'.repeat(40);
+  const receipt = qualification(config, assignment, revision);
+  const loaded = loadRepositorySkill(config, assignment, workspace, revision, receipt);
+  const proposal = {
+    status: 'succeeded', classification: 'missing-coverage',
+    changedFiles: ['test/a.test.ts', 'test/b.tests.tsx', 'test/card.md'],
+    testsAddedOrUpdated: ['budget boundary', 'late response'],
+    behaviorCardsAddedOrUpdated: ['test/card.md'], unknowns: [], needsHumanDecision: false
+  };
+  assert.equal(normalizeSkillResult(loaded, proposal).coverageReview, undefined);
+  loaded.binding.requiresCoverageReview = true;
+  assert.throws(() => normalizeSkillResult(loaded, proposal), /seam coverage review/);
+  const review = {
+    seam: 'handler | executor', evidenceBasis: 'Synthetic evidence fixture-1',
+    unitEvidence: ['src/executor.test.ts: deadline'], integrationEvidence: [],
+    testFiles: ['test/a.test.ts', 'test\\b.tests.tsx'],
+    defectDetected: 'Fail if preview time is not subtracted',
+    residuals: ['Gate-off intent requires product-owner review']
+  };
+  const normalized = normalizeSkillResult(loaded, { ...proposal, coverageReview: [review] });
+  assert.equal(normalized.coverageReviewAssurance, 'author-reported-not-independently-verified');
+  assert.deepEqual(normalized.coverageReview[0].testFiles, ['test/a.test.ts', 'test/b.tests.tsx']);
+  const description = renderCoverageReview(normalized);
+  assert.match(description, /handler \\\| executor/);
+  assert.match(description, /not an independent semantic quality grade/);
+  assert.match(description, /Gate-off intent/);
+  assert.equal(renderCoverageReview(null), '');
+  for (const testFiles of [['test/a.test.ts'], ['test/not-changed.test.ts'], ['test/card.md']])
+    assert.throws(() => normalizeSkillResult(loaded,
+      { ...proposal, coverageReview: [{ ...review, testFiles }] }), /Coverage review/);
+  assert.throws(() => normalizeSkillResult(loaded,
+    { ...proposal, coverageReview: [{ ...review, unitEvidence: undefined }] }));
+  const helperOnly = normalizeSkillResult(loaded, {
+    ...proposal, changedFiles: ['test/shared.ts', 'test/card.md'], testsAddedOrUpdated: [],
+    coverageReview: [{ ...review, testFiles: [], integrationEvidence: ['test/existing.test.ts: shared consumer'] }]
+  });
+  assert.deepEqual(helperOnly.coverageReview[0].testFiles, []);
+  assert.throws(() => normalizeSkillResult(loaded, {
+    ...proposal, coverageReview: [{ ...review, testFiles: [] }]
+  }), /every changed test file/);
+  assert.equal(normalizeSkillResult(loaded, {
+    status: 'blocked', changedFiles: [], needsHumanDecision: true
+  }).status, 'blocked');
 });
 
 test('declarative E2E skill input is versioned, complete and has unique item IDs', t => {

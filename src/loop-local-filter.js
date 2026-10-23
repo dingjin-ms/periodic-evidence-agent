@@ -24,8 +24,7 @@ export async function prepareLoopLocalFilter(settings, request, ledger, counter)
       sha(corpus.coverage.map(({ runId, coverage }) => ({ runId, coverage })))])];
   const batchRequest = { format: 'filter-batch-request-v1',
       sources: collected.snapshot.sources, instructions: plan.instructions,
-      groups: corpus.evidence.map(record => ({ id: 'record-' + hash(record.id).slice(0, 24),
-        memberIds: [record.id], contextIds: [], reason: 'Exact individual source record; no semantic grouping asserted' })),
+      groups: requiredSourceGroups(corpus.evidence),
       groupingReview: plan.groupingReview,
       sharing: { ...plan.sharing, materials: materials.map(sha256 =>
         ({ sha256, eligibility: 'approved', restrictions: ['Approved bounded FILTER review only'] })) }
@@ -34,11 +33,35 @@ export async function prepareLoopLocalFilter(settings, request, ledger, counter)
   const manifest = JSON.parse(readFileSync(manifestPath));
   requireThat(sha(manifest.request) === sha(batchRequest), 'Local FILTER preparation request changed', 'blocked-reconciliation');
   const handoff = { format: 'one-shot-handoff-v1', owner: request.pins.stateOwner.id,
-    collection: { stateDirectory: settings.collector.stateDirectory, runId: request.runId,
+    collection: { stateDirectory: settings.collector.stateDirectory, runId: settings.collectionRunId ?? request.runId,
       receiptSha256: settings.collectionReceiptSha256 },
     filter: { manifestPath, manifestSha256: hash(readFileSync(manifestPath)),
       executionLedgerPath: join(settings.root, 'filter-execution', 'ledger.sqlite'),
       resultPaths: manifest.batches.map((_batch, index) => join(settings.root, 'filter-result-' + index + '.json')) },
     routing: plan.routing, authorization: plan.authorization };
   writeFileSync(handoffPath, bytes(handoff), { flag: 'wx', mode: 0o600 });
+}
+
+export function requiredSourceGroups(records) {
+  const parent = new Map(records.map(record => [record.id, record.id]));
+  const find = id => parent.get(id) === id ? id : find(parent.get(id));
+  const union = (a, b) => parent.set(find(a), find(b));
+  const keys = new Map(), urls = new Map();
+  for (const record of records) {
+    const source = record.source, t = record.fields?.thread;
+    for (const key of [JSON.stringify([source.kind, source.namespace, source.recordId]),
+      ...(t ? [JSON.stringify(['thread', t.teamId, t.channelId, t.rootId])] : [])]) {
+      if (keys.has(key)) union(record.id, keys.get(key));
+      else keys.set(key, record.id);
+    }
+    urls.set(record.url, [...(urls.get(record.url) ?? []), record.id]);
+  }
+  for (const record of records) for (const link of record.links ?? [])
+    for (const other of urls.get(link.url) ?? []) union(record.id, other);
+  const groups = new Map();
+  for (const record of records) { const key = find(record.id); groups.set(key, [...(groups.get(key) ?? []), record.id]); }
+  return [...groups.values()].map(ids => ids.sort()).map(memberIds => ({
+    id: 'related-' + hash(JSON.stringify(memberIds)).slice(0, 24), memberIds, contextIds: [],
+    reason: 'Required source-version, thread and explicit-link closure; no semantic grouping asserted'
+  })).sort((a, b) => a.id.localeCompare(b.id));
 }

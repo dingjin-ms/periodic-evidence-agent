@@ -106,6 +106,7 @@ export async function runEvidenceLoop(input, ledger, adapters) {
   const { request, pins, runId, plan } = normalizeLoopRequest(input);
   requireThat(realpathSync(ledger.directory) === realpathSync(pins.stateOwner.directory), 'Wrong state owner');
   const lock = 'evidence-loop:' + runId, owner = ledger.acquire(lock);
+  const releases = [];
   const report = (state, extra = {}) => ({ format: 'evidence-loop-report-v1', runId, state,
     window: pins.window, plan, pinsSha256: digest(pins), ...extra });
   try {
@@ -134,6 +135,8 @@ export async function runEvidenceLoop(input, ledger, adapters) {
         typeof adapter.verify === 'function', 'Unavailable or changed capability: ' + stage, 'blocked-capability');
       await adapter.preflight({ runId, pins, stage });
     }
+    for (const adapter of new Set(plan.map(stage => adapters[stage])))
+      if (adapter.acquireRun) releases.push(await adapter.acquireRun({ pins, runId }, ledger));
     const preflightId = runId + ':preflight';
     if (!loopOperation(ledger, preflightId)) {
       ledger.operation(preflightId, runId, 'loop-preflight', {});
@@ -190,5 +193,8 @@ export async function runEvidenceLoop(input, ledger, adapters) {
     if (original && digest(original.detail.pins) === digest(pins))
       ledger.finishOperation(runId, 'started', { pins, report: value });
     return value;
-  } finally { ledger.release(lock, owner); }
+  } finally {
+    try { for (const release of releases.reverse()) release(); }
+    finally { ledger.release(lock, owner); }
+  }
 }

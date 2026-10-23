@@ -19,8 +19,8 @@ of an unknown overrun. Keep the flag false until the owner accepts that behavior
 Add localFilterPlan to the native settings file with:
 
 - instructions: bounded read-only FILTER instructions;
-- groupingReview: reviewer, reviewedAt and rationale approving an exact singleton
-  source-record partition, not asserting semantic review;
+- groupingReview: reviewer, reviewedAt and rationale approving the required closure
+  of source versions, thread members and explicit links, without asserting semantic review;
 - sharing: approved audience and approvalRef for all collected materials;
 - routing: the existing repository authoring capability;
 - authorization: the one-shot handoff authorization from ONE-SHOT.md, plus

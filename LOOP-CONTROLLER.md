@@ -236,3 +236,34 @@ or convert incomplete coverage into success. HTTP 429 is reported as
 `blocked-throttled`, preserving the server's `retryAfterSeconds` when supplied.
 A terminated run remains unchanged; a newly authorized collection iteration must
 retain its predecessor and first rule out unknown reads, rather than resetting it.
+
+### Explicit recovery after completed collection
+
+A native settings bundle may declare `collectionReuse` with `approvedBy`,
+`approvalRef`, `requestPath`, `requestSha256` and `receiptSha256`. This is an explicit
+successor request with a new workflow identity, not a reset or a change to old pins.
+It requires the exact original collector configuration, owner, source policy and
+window, and a completed, independently rechecked collection receipt. Any original
+FILTER execution/handoff, Proposer intent or RSI intent prevents this recovery.
+Only one successor can claim the collection, and its invocation holds the original
+controller's enforced lock throughout execution. Chained and mailbox recovery are
+not supported. Source reads are not repeated and no old receipt is rewritten.
+
+This permits correcting a pre-submission FILTER preparation or capacity error.
+Required source versions, thread members and explicit links are grouped together
+mechanically before verified token packing; singleton groups are insufficient.
+
+If a recovered collection predates a controller update, its RSI producer binding
+still names the original code and Node version. Keep that producer installation.
+For an existing capture-only RSI intent, the following command verifies its full
+source fingerprint and the original upstream receipts, invokes the actual original
+capture helper, verifies the resulting observation, then reconciles the role:
+
+```powershell
+& ORIGINAL_NODE scripts/loop-reconcile-rsi.mjs --request APPROVED_REQUEST --producer-root ORIGINAL_CHECKOUT --approval-ref APPROVAL_REFERENCE
+```
+
+Use real approved paths, then resume the normal manual/scheduled wrapper. This
+command cannot rebind a producer, recover evaluated RSI, launch a model, or replace
+a completed receipt. The observation remains attributed to the original producer;
+it does not qualify an evaluated improvement to a newer controller.

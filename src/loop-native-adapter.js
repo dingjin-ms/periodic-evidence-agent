@@ -13,7 +13,7 @@ import { openApp, appStatus } from './app-native.js';
 import { rsiPolicy, rsiAutomationPolicy, rsiWork, captureAppRsiOutcome } from './rsi-flow.js';
 import { runRsiPending } from './rsi-execution.js';
 import { repositoryValidationContract, qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
-import { canonical, digest, fileArtifact, captureArtifact, readLoopArtifact, roleReceipt, loopOperation } from './loop-controller.js';
+import { canonical, digest, fileArtifact, captureArtifact, readLoopArtifact, roleReceipt, loopOperation, normalizeLoopRequest } from './loop-controller.js';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 export function loopAdapterRevision() {
@@ -57,7 +57,41 @@ export function nativeLoopSettings(pins, runId) {
   requireThat(digest({ collector: pins.configuration[1], proposer: pins.configuration[2],
     executeProposer: bundle.executeProposer, rsiMode: pins.rsiMode }) === pins.executionPolicySha256,
   'Execution policy pin mismatch', 'blocked-reconciliation');
-  return { bundle, collector, proposer, root };
+  const result = { bundle, collector, proposer, root, collectionRunId: runId };
+  if (bundle.collectionReuse) {
+    const reuse = bundle.collectionReuse;
+    requireThat(bundle.adapter === 'native' && reuse.approvalRef && reuse.approvedBy && reuse.requestPath && reuse.requestSha256,
+      'Collection reconciliation requires an explicit approved original request', 'blocked-reconciliation');
+    const bytes = readFileSync(reuse.requestPath);
+    requireThat(hash(bytes) === reuse.requestSha256, 'Original request changed', 'blocked-reconciliation');
+    const old = normalizeLoopRequest(JSON.parse(bytes));
+    const oldBundle = JSON.parse(readFileSync(old.pins.configuration[0].path));
+    requireThat(!oldBundle.collectionReuse && old.runId !== runId &&
+      digest(old.pins.stateOwner) === digest(pins.stateOwner) &&
+      digest(old.pins.window) === digest(pins.window) && old.pins.sourcePolicySha256 === pins.sourcePolicySha256 &&
+      digest(old.pins.configuration[1]) === digest(pins.configuration[1]) && old.pins.rsiMode === pins.rsiMode,
+    'Reconciliation must retain the exact original source policy, configuration, window and owner', 'blocked-reconciliation');
+    const prior = nativeLoopSettings(old.pins, old.runId);
+    const sourceControl = new Ledger(old.pins.stateOwner.directory);
+    try {
+      const collected = loopOperation(sourceControl, old.runId + ':collect')?.detail.receipt;
+      requireThat(collected?.outcome === 'collected' &&
+        !loopOperation(sourceControl, old.runId + ':filter')?.detail.receipt &&
+        !loopOperation(sourceControl, old.runId + ':proposer') && !loopOperation(sourceControl, old.runId + ':rsi') &&
+        !loopOperation(sourceControl, old.runId + ':native-handoff-input') &&
+        !existsSync(join(prior.root, 'filter-execution')) && !existsSync(join(prior.root, 'handoff.json')),
+      'Only a completed collection with no downstream execution may be reconciled', 'blocked-reconciliation');
+      result.reusedReceipt = JSON.parse(readLoopArtifact(sourceControl, collected.artifacts[0]));
+      const source = new Ledger(prior.collector.stateDirectory);
+      try {
+        requireThat(digest(readOneShotCollectionReceipt(prior.collector, source, old.runId, reuse.receiptSha256)) ===
+          digest(result.reusedReceipt), 'Original collection receipt changed', 'blocked-reconciliation');
+      } finally { source.close(); }
+    } finally { sourceControl.close(); }
+    result.collector = prior.collector;
+    result.collectionRunId = old.runId;
+  }
+  return result;
 }
 
 function collectionInput(settings, request) {
@@ -70,11 +104,11 @@ function handoffInput(settings, request, ledger) {
   const bytes = readFileSync(path), input = JSON.parse(bytes);
   const collector = new Ledger(settings.collector.stateDirectory);
   try {
-    requireThat(input.collection.runId === request.runId &&
+    requireThat(input.collection.runId === settings.collectionRunId &&
       input.collection.stateDirectory === settings.collector.stateDirectory &&
-      input.collection.receiptSha256 === oneShotCollectionStatus(collector, request.runId).receiptSha256 &&
+      input.collection.receiptSha256 === oneShotCollectionStatus(collector, settings.collectionRunId).receiptSha256 &&
       digest(JSON.parse(readLoopArtifact(ledger, request.upstream[0].artifacts[0]))) ===
-        digest(readOneShotCollectionReceipt(settings.collector, collector, request.runId)),
+        digest(readOneShotCollectionReceipt(settings.collector, collector, settings.collectionRunId)),
     'Host handoff must reference this exact collected receipt', 'blocked-reconciliation');
   } finally { collector.close(); }
   const id = request.runId + ':native-handoff-input';
@@ -194,6 +228,8 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
           }
         } finally { proposer.close(); }
       }
+      if (s.reusedReceipt)
+        return complete('collected', s.reusedReceipt, [s.collectionRunId]);
       const collector = new Ledger(s.collector.stateDirectory);
       try {
         if (resume && !collector.db.prepare("SELECT 1 FROM sqlite_master WHERE name='one_shot_collections'").get())
@@ -209,7 +245,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       const local = s.proposer.filterExecutor === 'local-sdk';
       if (local && request.stage === 'filter') {
         const source = new Ledger(s.collector.stateDirectory);
-        try { s.collectionReceiptSha256 = oneShotCollectionStatus(source, request.runId).receiptSha256; }
+        try { s.collectionReceiptSha256 = oneShotCollectionStatus(source, s.collectionRunId).receiptSha256; }
         finally { source.close(); }
         await prepareLoopLocalFilter(s, request, ledger, filterDependencies.counter);
       }
@@ -251,23 +287,23 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       } finally { proposer.close(); }
     }
     // RSI uses the producer binding created before collection. No retroactive binding or old dry-run promotion.
-    const { ledger: source } = openApp(s.collector, request.runId, true);
+    const { ledger: source } = openApp(s.collector, s.collectionRunId, true);
     try {
       // The existing pre-execution app binding now captures the connected loop,
       // including its actual accepted FILTER and proposer results, not a fabricated worker.
-      const summary = { ...appStatus(source, request.runId), loop: {
+      const summary = { ...appStatus(source, s.collectionRunId), loop: {
         runId: request.runId, receipts: request.upstream,
         results: request.upstream.map(receipt => JSON.parse(readLoopArtifact(ledger, receipt.artifacts[0])))
       } };
-      const observation = captureAppRsiOutcome(s.collector, source, request.runId, summary);
+      const observation = captureAppRsiOutcome(s.collector, source, s.collectionRunId, summary);
       if (request.pins.rsiMode === 'capture-only') {
-        const status = rsiWork(s.collector, source, 'status', {}, { runId: request.runId });
+        const status = rsiWork(s.collector, source, 'status', {}, { runId: s.collectionRunId });
         requireThat(status.observations.length > 0, 'RSI capture did not create an observation');
         return complete('captured', { collector: status.observations, upstream: request.upstream,
           scope: 'connected loop observation; manual analysis pending' },
         status.observations.map(o => o.id));
       }
-      const status = rsiWork(s.collector, source, 'status', {}, { runId: request.runId });
+      const status = rsiWork(s.collector, source, 'status', {}, { runId: s.collectionRunId });
       requireThat(status.observations.length === 1, 'Multiple RSI observations require explicit reconciliation', 'blocked-reconciliation');
       const work = status.work.find(item => item.observationId === observation.observationId);
       requireThat(work, 'Missing RSI work item for this exact loop observation', 'blocked-reconciliation');
@@ -275,7 +311,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       requireThat(prior || Date.now() < Date.parse(request.pins.deadlineAt),
         'RSI start deadline exhausted', 'blocked-budget');
       const execution = prior?.state === 'completed' ? prior.detail.result
-        : await runRsiPending(s.collector, source, { runId: request.runId }, rsiDependencies);
+        : await runRsiPending(s.collector, source, { runId: s.collectionRunId }, rsiDependencies);
       if (execution.state === 'awaiting-host') return awaiting('Continue existing RSI execution ' + execution.executionId + ' through app-rsi-run; preserve its original host claim.');
       if (!execution.comparison || !execution.report)
         return blocked('rsi-evaluation-incomplete', 'Existing RSI execution has no paired comparison; inspect ' + work.id);
@@ -290,7 +326,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
     const value = JSON.parse(readLoopArtifact(ledger, receipt.artifacts[0]));
     if (request.stage === 'collect') {
       const collector = new Ledger(s.collector.stateDirectory);
-      try { requireThat(digest(readOneShotCollectionReceipt(s.collector, collector, request.runId)) === digest(value),
+      try { requireThat(digest(readOneShotCollectionReceipt(s.collector, collector, s.collectionRunId)) === digest(value),
         'Collection receipt changed', 'blocked-reconciliation'); }
       finally { collector.close(); }
     } else if (request.stage === 'filter' || request.stage === 'proposer') {
@@ -304,9 +340,9 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
         'Accepted FILTER/proposer state changed', 'blocked-reconciliation');
       } finally { proposer.close(); }
     } else {
-      const { ledger: source } = openApp(s.collector, request.runId, true);
+      const { ledger: source } = openApp(s.collector, s.collectionRunId, true);
       try {
-        const status = rsiWork(s.collector, source, 'status', {}, { runId: request.runId });
+        const status = rsiWork(s.collector, source, 'status', {}, { runId: s.collectionRunId });
         requireThat(status.observations.length > 0 && (receipt.outcome !== 'captured' ||
           digest(status.observations) === digest(value.collector)), 'RSI observation changed', 'blocked-reconciliation');
         if (receipt.outcome === 'evaluated') {
@@ -318,6 +354,21 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
     }
   }
   return { binding, capabilities: ['collect', 'filter', 'proposer', 'rsi'],
+    acquireRun: ({ pins, runId }, ledger) => {
+      const s = nativeLoopSettings(pins, runId);
+      if (!s.reusedReceipt) return () => {};
+      const key = 'evidence-loop:' + s.collectionRunId, owner = ledger.acquire(key);
+      try {
+        nativeLoopSettings(pins, runId); // Recheck after acquiring the predecessor's enforced lock.
+        const id = s.collectionRunId + ':collection-successor';
+        const prior = loopOperation(ledger, id);
+        requireThat(!prior || prior.detail.runId === runId,
+          'Original collection already has a different successor', 'blocked-reconciliation');
+        if (!prior) ledger.operation(id, runId, 'loop-collection-reconciliation', {
+          runId, originalRunId: s.collectionRunId, authorization: s.bundle.collectionReuse });
+        return () => ledger.release(key, owner);
+      } catch (error) { ledger.release(key, owner); throw error; }
+    },
     qualification: 'supported-local-helpers; live host/source/product/evaluator qualification not inferred',
     preflight, execute: (request, ledger) => perform(request, ledger, false),
     resume: (request, ledger) => perform(request, ledger, true), verify };

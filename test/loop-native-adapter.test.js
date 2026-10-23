@@ -15,7 +15,7 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
@@ -52,7 +52,7 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved']) test(
     const revision = git(['rev-parse', 'HEAD']);
     Object.assign(c.repositories[0], { baseRef: revision, remote: 'https://example.invalid/fixture', qualificationRefresh: 'local' });
     c.filterExecutor = 'local-sdk'; c.activation.review = true; c.limits.maxAiCreditsPerSession = 30;
-    c.localFilter = { enabled: true, acceptSoftCreditLimit: mode === 'local-sdk', maxRequests: 1,
+    c.localFilter = { enabled: true, acceptSoftCreditLimit: mode !== 'local-unapproved', maxRequests: 1,
       maxToolCalls: 5, timeoutMs: 10000, maxSourceBytes: 10000, maxRequestBytes: 1000000,
       sources: [{ repoId: 'fixture', revision }] };
   }
@@ -79,12 +79,18 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved']) test(
   };
   const bundlePath = join(root, 'bundle.local.json'); writeFileSync(bundlePath, json(bundle));
   let calls = 0;
+  let failPreparation = mode === 'local-reconcile';
   const native = createNativeLoopAdapter({ collectionDependencies: {
     adoTransport: async () => async () => { calls++; return { asOf: '2026-10-23T00:00:00Z', workItems: [] }; }
-  }, filterDependencies: { counter: async (_config, input) =>
-    ({ sha256: input.sha256, model: input.model, tokenizer: input.tokenizer, tokens: 5 }),
+  }, filterDependencies: { counter: async (_config, input) => {
+    if (failPreparation) throw new Error('Known pre-submission preparation failure');
+    return { sha256: input.sha256, model: input.model, tokenizer: input.tokenizer, tokens: 5 };
+  },
     connect: async () => { throw new Error('An empty cohort must not launch a model'); } } });
-  const adapter = mode === 'mailbox' ? createMailboxLoopAdapter(native) : native;
+  const adapter = mode === 'mailbox' ? createMailboxLoopAdapter(native) : mode === 'local-rsi-recover'
+    ? { ...native, execute: (request, ledger) => request.stage === 'rsi'
+      ? { state: 'blocked', code: 'fixture-capture-hold', action: 'Exercise explicit original-producer recovery' }
+      : native.execute(request, ledger) } : native;
   const configuration = [bundlePath, collectorConfig, proposerConfig].map(fileArtifact);
   const request = { format: 'evidence-loop-v1', workflowId: 'native-test', occurrence: '2026-10-23T01:00:00Z',
     origin: 'manual', timeZone: 'Asia/Singapore', rsiMode: 'capture-only', configuration, deadlineAt,
@@ -97,6 +103,55 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved']) test(
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   const adapters = Object.fromEntries(loopStages.map(stage => [stage, adapter]));
   let waiting = await runEvidenceLoop(request, ledger, adapters);
+  if (mode === 'local-rsi-recover') {
+    assert.equal(waiting.code, 'fixture-capture-hold', json(waiting));
+    const originalCalls = calls, requestPath = join(root, 'rsi-request.json');
+    writeFileSync(requestPath, json(request));
+    const recover = producerRoot => spawnSync(process.execPath, ['scripts/loop-reconcile-rsi.mjs',
+      '--request', requestPath, '--producer-root', producerRoot, '--approval-ref', 'synthetic-only'],
+    { encoding: 'utf8', timeout: 30000, windowsHide: true });
+    assert.notEqual(recover(root).status, 0, 'Unqualified producer must fail before capture');
+    assert.equal(loopOperation(ledger, waiting.runId + ':rsi').detail.receipt, undefined);
+    const originalBundle = readFileSync(bundlePath);
+    writeFileSync(bundlePath, Buffer.concat([originalBundle, Buffer.from(' ')]));
+    try { assert.notEqual(recover(process.cwd()).status, 0, 'Byte-level configuration drift must block recovery'); }
+    finally { writeFileSync(bundlePath, originalBundle); }
+    const recovered = recover(process.cwd());
+    assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+    assert.equal(JSON.parse(recovered.stdout).newModelCalls, 0);
+    const completed = await runEvidenceLoop({ ...request, origin: 'scheduled' }, ledger, adapters);
+    assert.equal(completed.state, 'complete', json(completed));
+    assert.equal(completed.rsi, 'captured'); assert.equal(calls, originalCalls);
+    return;
+  }
+  if (mode === 'local-reconcile') {
+    assert.equal(waiting.state, 'blocked');
+    const originalCalls = calls, original = normalizeLoopRequest(request);
+    const originalPath = join(root, 'original-request.json'); writeFileSync(originalPath, json(request));
+    const oldSettings = nativeLoopSettings(original.pins, original.runId);
+    const source = new Ledger(oldSettings.collector.stateDirectory);
+    const receiptSha256 = oneShotCollectionStatus(source, original.runId).receiptSha256; source.close();
+    const nextBundle = { ...bundle, collectionReuse: { approvedBy: 'test', approvalRef: 'synthetic-only',
+      requestPath: originalPath, requestSha256: hash(readFileSync(originalPath)), receiptSha256 } };
+    const nextPath = join(root, 'successor-settings.json'); writeFileSync(nextPath, json(nextBundle));
+    const next = { ...request, workflowId: 'successor', configuration: [fileArtifact(nextPath), ...configuration.slice(1)] };
+    failPreparation = false;
+    const predecessorLock = 'evidence-loop:' + original.runId, predecessorOwner = ledger.acquire(predecessorLock);
+    try {
+      const refused = await runEvidenceLoop(next, ledger, adapters);
+      assert.equal(refused.state, 'blocked'); assert.equal(calls, originalCalls);
+      assert.equal(loopOperation(ledger, original.runId + ':collection-successor'), null);
+    } finally { ledger.release(predecessorLock, predecessorOwner); }
+    const completed = await runEvidenceLoop(next, ledger, adapters);
+    assert.equal(completed.state, 'complete', json(completed));
+    assert.equal(completed.rsi, 'captured'); assert.equal(calls, originalCalls);
+    assert.deepEqual(await runEvidenceLoop({ ...next, origin: 'scheduled' }, ledger, adapters), completed);
+    assert.equal(calls, originalCalls);
+    const conflict = await runEvidenceLoop({ ...next, workflowId: 'second-successor' }, ledger, adapters);
+    assert.equal(conflict.state, 'blocked'); assert.equal(conflict.code, 'blocked-reconciliation');
+    assert.equal(calls, originalCalls);
+    return;
+  }
   if (mode === 'local-unapproved') {
     assert.equal(waiting.code, 'action-required-budget', json(waiting));
     assert.equal(calls, 0); return;

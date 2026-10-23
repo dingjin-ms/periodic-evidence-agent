@@ -9,6 +9,10 @@ An explicitly configured official local WorkIQ CLI transport is also available
 for authorized collection-only runs. It is not a fallback from failed app auth;
 see [the CLI contract](APP-NATIVE.md#explicit-local-workiq-cli-collection).
 Token-renewal and unattended qualification remain deferred.
+For a finite operator-driven Collector -> FILTER -> Proposer -> RSI attempt,
+see [Running the agentic loop with RSI enabled](scaffold/RSI-RUNBOOK.md).
+It separates capture-only opt-in, app-hosted continuations, paired evaluation
+and optional draft publication; it does not promise a one-command live loop.
 Budget-stopped channel scans can prepare a distinct, explicitly authorized
 continuation run without refetching captured pages or losing buffered rows.
 Root/reply context and an opt-in modified-time lane are documented in

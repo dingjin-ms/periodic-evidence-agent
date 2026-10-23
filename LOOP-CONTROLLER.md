@@ -228,3 +228,11 @@ partial collection, no-candidate and meaningful synthetic four-stage work throug
 both transports. A native integration test additionally uses real collection,
 FILTER acceptance and RSI capture helpers with a synthetic empty source and both
 actual wrapper executables. None is a live source/product/RSI acceptance run.
+
+WorkIQ deployments that throttle sequential enumeration can set
+`runtime.workiqCli.minReadIntervalMs` (0–60000) before admission. This spaces reads
+after the preceding response; it does not retry, hide calls from the source budget
+or convert incomplete coverage into success. HTTP 429 is reported as
+`blocked-throttled`, preserving the server's `retryAfterSeconds` when supplied.
+A terminated run remains unchanged; a newly authorized collection iteration must
+retain its predecessor and first rule out unknown reads, rather than resetting it.

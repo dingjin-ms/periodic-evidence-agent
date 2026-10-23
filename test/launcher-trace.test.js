@@ -9,7 +9,7 @@ import { minimalEnvironment } from '../src/workers.js';
 
 for (const mode of ['blocked-filesystem', 'dispatch-child']) test(`launcher traces ${mode} without changing native behavior`, async t => {
   const root = mkdtempSync(join(tmpdir(), 'launcher-trace-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const script = join(root, '.yarn', 'releases', 'synthetic.cjs');
   mkdirSync(join(root, '.yarn', 'releases'), { recursive: true });
   writeFileSync(script, mode === 'blocked-filesystem'

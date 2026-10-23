@@ -6,13 +6,13 @@ import {
 import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { channel } from 'node:diagnostics_channel';
 import {
   outputPathFingerprint, outputPathFingerprintWithEntries,
   dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries
 } from '../src/output-fingerprint.js';
-import { outputFingerprint } from '../src/workers.js';
+import { capturePreparedOutputs, outputFingerprint, verifyPreparedOutputs } from '../src/workers.js';
 import { hash } from '../src/hash.js';
 
 test('parallel fingerprint workers stay schema-free and preserve complete output hashes', async t => {
@@ -161,6 +161,75 @@ test('generic tree batches stay bounded across the split threshold and multiple 
   writeFileSync(join(root, paths[0], '8191.js'), 'changed\n');
   const expected = paths.map(path => outputPathFingerprint(root, path));
   assert.equal(await outputFingerprint(root, paths), hash(JSON.stringify(expected)));
+});
+
+test('nested planning counts each directory once without reusing content verification', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-plan-counts-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const paths = ['midgard/.store', 'node_modules'];
+  for (const path of paths) {
+    const nested = join(root, path, 'a', 'b', 'c');
+    mkdirSync(nested, { recursive: true });
+    for (let index = 0; index < 2050; index++)
+      writeFileSync(join(nested, `${index}.js`), `${index}\n`);
+  }
+  const telemetry = {};
+  const expected = paths.map(path => outputPathFingerprintWithEntries(root, path));
+  const captured = await outputFingerprint(root, paths, true, telemetry);
+  assert.equal(captured.sha256, hash(JSON.stringify(expected.map(value => value.value))));
+  assert.deepEqual(captured.entries, new Map(expected.flatMap(value => value.entries)));
+  if (availableParallelism() > 1) {
+    assert.equal(telemetry.planningCountDirectoryReads, 7);
+    assert.ok(telemetry.planningCountCacheHits >= 5);
+  }
+  writeFileSync(join(root, paths[0], 'a', 'b', 'c', '0.js'), 'changed\n');
+  assert.notEqual(await outputFingerprint(root, paths), captured.sha256);
+});
+
+test('prepared output observation installs split directory watches and detects changed content', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-watch-planning-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const nested = join(root, 'output', 'a', 'b');
+  mkdirSync(nested, { recursive: true });
+  mkdirSync(join(root, 'output', 'small'));
+  writeFileSync(join(root, 'output', 'small', 'value.js'), 'same\n');
+  for (let index = 0; index < 2050; index++)
+    writeFileSync(join(nested, `${index}.js`), `${index}\n`);
+  const watchers = new Map();
+  let ready = false;
+  const observerFactory = async () => ({
+    watch(path, options, callback) {
+      const watcher = new EventEmitter();
+      watcher.on('change', callback);
+      watcher.close = () => {};
+      watcher.unref = () => watcher;
+      watchers.set(path, { watcher, ...options });
+      return watcher;
+    },
+    async ready() { ready = true; },
+    close() {}
+  });
+  const receiptPath = join(root, 'receipt.json');
+  const telemetry = {};
+  const captured = await capturePreparedOutputs(
+    receiptPath, root, ['output'], null, telemetry, observerFactory);
+  assert.equal(telemetry.observation.available, true);
+  assert.equal(telemetry.observation.verified, true);
+  assert.equal(ready, true);
+  assert.equal(watchers.size, 4);
+  for (const path of ['output', 'output/a', 'output/a/b'])
+    assert.equal(watchers.get(join(root, path)).recursive, false);
+  assert.equal(watchers.get(join(root, 'output/small')).recursive, true);
+  const outputs = { paths: ['output'], sha256: captured.sha256 };
+  const unchanged = await verifyPreparedOutputs(receiptPath, root, outputs);
+  assert.equal(unchanged.valid, true);
+  assert.equal(unchanged.method, 'watch');
+  writeFileSync(join(nested, '0.js'), 'x\n');
+  watchers.get(nested).watcher.emit('change', 'change', '0.js');
+  const changed = await verifyPreparedOutputs(receiptPath, root, outputs);
+  assert.equal(changed.valid, false);
+  assert.equal(changed.method, 'watch');
+  assert.match(changed.reason, /content-changed:output\/a\/b\/0\.js/);
 });
 
 test('generic tree worker batches reject a missing member without returning partial captures', async t => {

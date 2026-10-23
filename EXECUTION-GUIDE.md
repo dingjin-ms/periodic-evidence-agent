@@ -733,6 +733,41 @@ This avoids requiring built exports from every workspace dependency. It inherits
 the package integration configuration and requires actual nonzero passing Jest
 results for every selected absolute path; a zero-test exit code is not acceptance.
 
+Selection comes from native Jest discovery, including `.tests.ts` and `.test.tsx`,
+not a single filename suffix. Added tests (and new private helpers) run only the
+changed tests. Modified existing helpers, fixture data, snapshots, or removed
+tests select the integration lane conservatively: dynamic/mock consumers cannot
+always be bounded by a static dependency graph. Changed existing tests still run
+precisely. Tests excluded by native discovery block instead of disappearing from
+the expected set. Policy runs native root lint and package lint on changed JS/TS
+files without `--fix`. The package's source-only tsconfig is not claimed as
+integration-test typechecking.
+
+The controller supplies a fresh `PILOT_VALIDATION_ARTIFACT_DIRECTORY` per native
+stage outside the disposable workspace. The SDX test stage retains its runtime
+configuration, discovery, selection, raw Jest JSON and run manifest there, even
+when Jest fails. The controller records bounded ordinary-file hashes in the
+validation artifact's `nativeArtifacts`; raw results are not replaced by a
+success-only summary. Direct diagnostic profile invocations must also supply a
+fresh absolute directory. Retention and access rules for private run evidence
+apply to these files. Primary validation failure and cleanup failure remain
+separate, while a corrupt or unconfirmed cache still blocks acceptance.
+
+The SDX example opts into `requiresCoverageReview`. Successful changed-test
+proposals must include `skillResult.coverageReview`, recording the seam, original
+evidence basis, existing unit and integration evidence, changed test files,
+the realistic defect each assertion detects, and residuals. Every changed test
+must be accounted for; the normalized inventory is retained and rendered in the
+Draft description as **author-reported, not independently verified**. Other
+bindings remain unchanged unless they opt in. A coverage inventory or passing
+test count is not a substitute for held-out independent evaluation. For a
+helper-only change, `testFiles` is empty and `integrationEvidence` identifies
+the existing consumer suites; this does not require inventing a new test.
+Use the
+existing pinned RSI evaluator with separately reviewed cases for such claims;
+do not label author-written cases as held-out or invent reviewer acceptance,
+credit savings or real-product performance from synthetic contract tests.
+
 The existing proposer role also exposes
 `continue-local-validation`, `diagnose-local-validation` and
 `continue-local-authoring`, each with explicit `--prepare` or `--execute` and

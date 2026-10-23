@@ -68,8 +68,10 @@ sorted manifest order. One physical-root resolution is shared within a batch.
 Captured entries and public fingerprint schemas are unchanged. Capture failure
 does not retry the same recursive scan through a non-capturing fallback.
 
-Planning is still synchronous and may repeat bounded directory enumeration at
-split ancestors. Generic tree batches now use the same entry budget described
+Planning is still synchronous. Directory entry-count estimates are memoized
+only within one planning pass, so split ancestors reuse already computed
+subtree counts. The count cache is discarded before worker execution; it is
+not a content cache. Generic tree batches use the same entry budget described
 below, but a single large/slow file can still dominate a task. This is not a
 solution to every filesystem or serialization bottleneck.
 
@@ -89,6 +91,12 @@ structured clone. Worker JSON timing excludes the structured clone of captured
 entries. Queue sums overlap across workers and cannot be added to wall time.
 **Physical I/O wait, device throughput and antivirus attribution remain
 unmeasured.** No size/mtime fast path replaces complete content hashes.
+
+The additional `planningCountDirectoryReads` and `planningCountCacheHits`
+fields measure count-estimation work, not worker reads or all filesystem I/O.
+The nested-tree regression checks one count traversal per directory, complete
+serial hash/entry equivalence and detection of a subsequent content change.
+This operation-count reduction does not establish a real SDX wall-clock gain.
 
 ## Generic-tree batching (October 21, 2026)
 

@@ -780,6 +780,203 @@ This path does not prove source collection, complete FILTER execution or a new
 coverage gap. The native skill must still inspect the selected source rather
 than assume the fixture's historical gap remains open.
 
+### 1JS fixture qualification and edited-commit repair
+
+The existing Cross-App creation/verification case and Omni AAD blank-workbook
+case remain the two baseline shapes; they are not missing fixtures.
+`test/fixtures/reviewed-handoff/1js-fixture-qualification.mini-spec-batch.json`
+adds six authoring inputs for other execution mechanisms:
+
+| Input | Mechanism to qualify |
+|---|---|
+| `excel-agent-omni-seeded-workbook` | AAD Omni, deterministic input setup and protected workbook readback |
+| `excel-agent-omni-msa-conversation-isolation` | Consumer MSA Omni, exact conversation canary and unchanged workbook |
+| `excel-agent-omni-restore-web-source` | Mutable account state, persisted change and original-value restoration |
+| `excel-agent-arcadia-local-file-upload` | Registered local CSV fixture, workbook input and exact combined result |
+| `excel-agent-arcadia-custom-skill-cleanup` | Authorized, uniquely owned persistent skill resource with paired removal |
+| `excel-agent-dedicated-sensitivity` | Dedicated AAD login, Omni, named labeled workbook and read-only assertion |
+
+These are mini-specs, not generated product scenarios, reviewed evidence,
+authorization or passed validation receipts. Use them as the qualified
+repository skill's input only after the normal routing, registration, account
+and side-effect prerequisites are satisfied. Keep incompatible account,
+experience and shared-state cohorts serial and independently attributable.
+An existing helper or a schema-valid input is not live fixture qualification.
+The skill-resource and dedicated-workbook inputs retain their existing
+authorization gates. A missing approved profile, principal or resource blocks
+that input independently; it must not disappear from the reported inventory.
+
+**Ownership boundary, clarified on 2026-10-20:** controller E2E input JSON and
+qualification assets live in this Periodic repository. The five native
+qualification reference scenarios and their catalog/capability contracts are
+under `test/fixtures/1js-qualification/`. Seeded workbook and dedicated
+sensitivity both declare Omni. These references are test source assets, not
+runtime evidence or proof that the controller authored or passed a case.
+
+Before a local replay, read the
+[fixture account and credential prerequisites](test/fixtures/1js-qualification/README.md).
+The consumer MSA conversation fixture requires the approved MSA pair in
+`excelendtoendkv` and explicit `--msa-vault excelendtoendkv` selection. Do not
+omit that argument, read the CloudTest default vault or request access to it as
+a workaround for this fixture. The fixture README lists each account lane,
+Omni/Arcadia experience, secret names and the full local MSA command.
+It also describes the temporary PUS1/Debug Info experiment and its canonical
+1JS recipe, startup-triage evidence, cleanup boundaries and local regression
+commands. These are diagnostic options, not permanent fixture or pipeline
+defaults, assertion bypasses or substitutes for native business validation.
+
+Do not merge controller-test Draft PRs into 1JS or enable auto-completion.
+Generated cases are disposable controller-test outputs. Reusable 1JS runner,
+authentication, upload, recovery and evidence-emission fixes are a separate
+mergeable 1JS change, without the five qualification cases or their default
+catalog, lifecycle and package-command registrations. Controller tests must
+still exercise their normal authoring and publication flow rather than copy
+these reference scenarios and claim successful model authoring.
+
+The historical native results below were captured before this separation.
+Keep their exact revisions and evidence; moving assets does not create new
+passes or qualify the final implementation. Future native replays must stage
+the reference declarations in an isolated test workspace or a complete external
+declaration bundle, including its matching selection/catalog dependencies,
+instead of re-registering them in the mergeable 1JS checkout.
+
+Real screenshots, traces, profiles and execution-result JSON belong in local
+or CI artifact storage, outside Git tracking. An ignored `test-results`
+directory inside a checkout is artifact storage, not repository source.
+Retain useful failure evidence for investigation; temporary does not mean
+delete it immediately. Only sanitized authored inputs and expected contracts
+belong in `test/fixtures`.
+
+The explicit local MSA vault option is not a pipeline credential-source change.
+Without that option, retain environment-pair precedence, the original
+`ct-onejs-user-prod` fallback, missing-secret behavior and default cache
+semantics. Explicit local selection has a separate cache and is rejected under
+`CI`, `TF_BUILD` or `BUILD_BUILDID`. Keep the product pipeline definitions,
+named-secret declarations, central selection policy and default case inventory
+unchanged. Offline credential regressions do not substitute for an actual
+feature-branch pipeline run.
+
+**Separation validation (2026-10-20):** the 1JS build, package lint,
+85 targeted credential/launcher/interruption regressions and strict product
+catalog parity passed. Both focused Periodic qualification tests passed.
+All five moved reference scenarios also loaded through the native 1JS
+declaration loader and passed capability-matrix validation. The default
+product registries and `testConfigurability` match the pre-qualification
+baseline; pipeline definitions and central execution policy were not changed.
+These are offline checks, not new live fixture or controller qualification
+results; no feature-branch pipeline was queued.
+
+**MSA / Omni status as of 2026-10-20: initial account setup verified; fixture
+deferred until the Copilot entry is restored.**
+
+This applies to input `excel-agent-omni-msa-conversation-isolation` and generated
+1JS scenario `excel-agent.msa.fixture-conversation-isolation`. The real local
+setup replay established the following:
+
+- The approved MSA pair from `excelendtoendkv` worked with the existing
+  credential provider and login helper. A new isolated browser context had
+  zero cookies before login; no enterprise AAD session was reused.
+- Authentication through `login.live.com` succeeded. The actual signed-in
+  identity shown in the account menu exactly matched the configured MSA user
+  in an in-memory comparison. The account-management link pointed to
+  `account.microsoft.com`. No account or credential values were recorded;
+  avatar initials or photos alone are not evidence of account type.
+- A new workbook loaded and FUS1 routing was confirmed. With Omni requested,
+  the original 120-second entry probe still returned
+  `COPILOT_ENTRY_UNAVAILABLE`. Conversation-isolation and protected workbook
+  assertions did not run. A common root cause with pipeline failures,
+  including any licensing cause, has not been established.
+
+No account-selection fix is currently required. By agreement, postpone this
+fixture until the entry becomes available; retain its Periodic-owned reference
+declaration, catalog entry and original business assertions. Then resume normal
+live qualification, including five
+consecutive retry-disabled passes. This setup replay is not a fixture pass,
+a qualified controller binding or proof of the full live evidence-to-delivery
+path. The deferral does not add a skip to the generated scenario.
+
+Local evidence is not checked into this repository. Under
+`%USERPROFILE%\.copilot\session-state\90092c27-6dea-41b2-a3c4-b4ddccb19208\files`,
+see `msa-consumer-replay-20261020-result.json` and
+`msa-consumer-replay-20261020-retained.png`. The screenshot shows the loaded
+workbook and missing entry, not an expanded account-menu identity proof.
+
+**Dedicated sensitivity / Omni status as of 2026-10-20: migrated and replayed;
+blocked before the protected sensitivity assertion.**
+
+Input `excel-agent-dedicated-sensitivity` and generated 1JS scenario
+`excel-agent.dedicated.fixture-sensitivity` now select Omni. Dedicated identifies
+the `dedicated-enterprise` account lane, not a separate Copilot experience.
+The scenario, reviewed catalogs, capability matrix, mini-spec and associated
+regression checks agree on Omni. The approved external-service login, original
+`clp-labeled` resource, `ENTERPRISE_E2E_ENABLED` authorization gate, 180-second
+scenario timeout and protected `sensitivity.visible` contract remain unchanged.
+
+| Check | Actual result |
+|---|---|
+| Standard native execution | One attempt, workers=1, retries=0; failed after 126818 ms with `COPILOT_ENTRY_UNAVAILABLE` from the original 90-second entry probe |
+| Approved identity | A separate retained Chromium replay started with zero cookies; an authenticated SharePoint current-user read returned HTTP 200 and exactly matched the approved dedicated principal in memory |
+| Original workbook and deployment | The existing `clp-labeled` workbook opened; the original cluster helper reported actual FUS1 |
+| Active flights | The WAC runtime feature dictionary reported `DefaultExcelAgentOmni=true` and `EnableSharedAgentShell=true`, not merely requested URL flags |
+| Entry diagnosis | No Copilot-affordance DOM matches were present in the inspected frames; selecting the Home tab did not restore the entry |
+| Actual pane experience and protected assertion | Not verified/executed because no Copilot pane opened; active flights alone do not prove a visible Omni experience or a sensitivity pass |
+| Five-pass qualification | Not started; no fixture pass, qualified controller binding or full live controller result is claimed |
+
+Build, package lint, configuration formatting, two focused 1JS foundation tests,
+strict catalog parity and the focused Periodic mini-spec regression passed.
+No credential, fixture URL, workbook content or sensitivity label was changed.
+No assertion was weakened, timeout increased or product skip introduced.
+The migration does not fix the remaining host-entry problem.
+
+The retained WAC log also contains HTTP 500 for `RoamingServiceHandler.ashx`
+and HTTP 404 for `people.ashx`. Neither is established as the cause of the
+missing entry. Licensing, tenant policy and a common cause with MSA/pipeline
+failures remain unproven. Earlier Edge retention diagnostics ended during
+sign-in and are not identity or qualification evidence; the successful
+retained identity proof uses the same Playwright Chromium engine as native.
+Keep this fixture blocked, rather than treating the MSA deferral agreement as
+authorization to defer it or counting this diagnostic as a passing test.
+
+Local evidence remains outside this repository. Under the same session
+`files` directory noted above, see `dedicated-omni-final-status-20261020.json`,
+`dedicated-omni-retained-chromium-20261020-result.json`,
+`dedicated-omni-retained-chromium-20261020.png` and
+`dedicated-omni-inspection-20261020.json`. The standard native evidence is in
+the 1JS task worktree at
+`ooui/apps/excel-agent-declarative-e2e/test-results/excel-agent-local-83e4dce639421f2e`.
+The owned Chromium target is retained on local CDP port 9226; the separate
+MSA browser on port 9225 is not reused or closed. Resume the original protected
+scenario once the entry can be opened for this same account/resource, then
+require five consecutive retry-disabled passes on the final implementation.
+
+The local controller regression uses
+`1js-validation-repair-drill.json` and its adjacent `.runner.mjs.txt` fixture.
+The runner text is copied into a disposable synthetic repository, outside the
+model's write allowlist; it is not a product runner or a new supported provider.
+The first commit has an incorrect workbook seed and missing state restoration.
+The first repair fixes only the seed, so a second commit still fails cleanup.
+The second repair restores state, and its new SHA starts a fresh five-pass,
+retry-disabled qualification. The protected expected result remains 15 in all
+rounds. Each earlier failed commit and its diagnostics remain recorded.
+
+The regression runs real local Git commits, isolated validation processes and
+scratch-resource cleanup, but injects model, build and Draft PR boundaries.
+Budgets of zero or one repair must leave the remote empty and create neither
+build nor Draft PR. Two repairs must publish only the final passing SHA, queue
+one non-blocking synthetic build and link it to one synthetic Draft PR.
+Owned scratch resources and validation clones must be removed before the next
+round, while an unrelated-session sentinel remains unchanged during execution.
+This proves controller isolation, not real browser cleanup or product behavior.
+
+For a live edited-commit qualification, diagnose each genuine failure before
+editing only the allowed declarations. Do not deliberately corrupt a shared
+account or weaken an assertion to manufacture a pass. Preserve the initial and
+intermediate failures, derive each repair from its actual native feedback,
+and reset per-case consecutive counters whenever implementation changes.
+Require five consecutive real passes with workers=1 and retries=0 on the final
+implementation SHA, including actual owned-browser cleanup and original-state
+restoration. No failed or earlier-revision evidence may authorize publication.
+
 ## 8. Reconcile terminal evidence
 
 Require the exact final source/profile identity, actual command exits, expected

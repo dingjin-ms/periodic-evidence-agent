@@ -1,0 +1,78 @@
+version: 1
+level: L3
+id: excel-agent.msa.fixture-conversation-isolation
+name: Consumer Omni fixture isolates conversations without changing workbook data
+tags: [omni-supported, arcadia-ongoing, omni-observing]
+goal: Qualify consumer conversation recall and reset with an independent unchanged-workbook oracle.
+account:
+  lane: consumer-msa
+environment:
+  experience: omni
+timeoutMs: 720000
+setup:
+  seed-guard:
+    use: excel.workbook.seed
+    with:
+      cell: A1
+      value: FIXTURE-WORKBOOK-UNCHANGED
+  snapshot-guard:
+    use: excel.workbook.read
+    with:
+      resource: A1
+    outputs:
+      value: guardBefore
+  establish-token:
+    use: excel.prompt.turn
+    with:
+      prompt: "Remember this exact token for later: QUALIFY-1JS-MSA-7D31A9. Reply only in chat and do not change the workbook."
+      intent: chat
+      minResponseLength: 1
+steps:
+  recall-token:
+    use: excel.prompt.turn
+    with:
+      prompt: Without changing the workbook, reply in chat with the exact token I asked you to remember.
+      intent: chat
+      minResponseLength: 1
+    outputs:
+      response: recalledResponse
+  start-new-chat:
+    use: excel.prompt.new-conversation
+    with: {}
+  check-reset:
+    use: excel.prompt.turn
+    with:
+      prompt: Without changing the workbook, reply in chat with the exact token I asked you to remember.
+      intent: chat
+      minResponseLength: 1
+    outputs:
+      response: resetResponse
+verify:
+  - type: assert-provider
+    protected: true
+    provider: prompt
+    assertion: contains
+    parameters:
+      response: ${recalledResponse}
+      value: QUALIFY-1JS-MSA-7D31A9
+      failureKind: CONTEXT_NOT_PRESERVED
+  - type: assert-provider
+    protected: true
+    provider: prompt
+    assertion: excludes
+    parameters:
+      response: ${resetResponse}
+      value: QUALIFY-1JS-MSA-7D31A9
+      failureKind: CONTEXT_NOT_CLEARED
+  - type: assert-provider
+    protected: true
+    provider: workbook
+    assertion: unchanged
+    parameters:
+      cell: A1
+      from: guardBefore
+      observationMs: 5000
+cleanup:
+  clear-conversation:
+    use: excel.prompt.new-conversation
+    with: {}

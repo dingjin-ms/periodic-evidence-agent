@@ -22,7 +22,7 @@ function outside(parent, child) {
   const path = relative(resolve(parent), resolve(child));
   return path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
 }
-export function verifyNativeBusinessFailure(job, result, operations, failure, summary, profileSha256) {
+export function verifyNativeFailureEnvelope(job, result, operations, failure, profileSha256) {
   const gate = result?.validation?.[0], output = failure?.output;
   requireThat(job?.state === 'blocked' && result?.outcome === 'blocked' &&
     result.assignmentId === job.id && result.attemptId === job.session_id &&
@@ -49,6 +49,9 @@ export function verifyNativeBusinessFailure(job, result, operations, failure, su
     })[row.kind] === row.state),
   'Revalidation requires one sealed, unpublished, zero-model native business failure',
   'blocked-reconciliation');
+}
+export function verifyNativeBusinessFailure(job, result, operations, failure, summary, profileSha256) {
+  verifyNativeFailureEnvelope(job, result, operations, failure, profileSha256);
   requireThat(summary?.status === 'failed' && Array.isArray(summary.cases) &&
     summary.cases.length > 0 && summary.cases.length <= 5 &&
     summary.cases.some(item => ['failed', 'timedOut'].includes(item.status)) &&

@@ -37,7 +37,7 @@ function fixture(t) {
   const previous = { stateDirectory: join(directory, 'prior'),
     limits: { maxValidationRepairRounds: 10, maxValidationInfrastructureRetries: 0 },
     repositories: [{ id: 'synthetic', sparseCheckoutPaths: ['ooui'], validationGates: [{
-      id: 'native', profile: '1js-declarative-e2e-v1', profileSha256: profile,
+      id: 'native', profile: '1js-declarative-e2e-v1', profileSha256: profile, timeoutMs: 3600000,
       declarativeE2E: { cdpEndpoint: 'http://127.0.0.1:9222' }
     }] }] };
   const config = { ...previous, stateDirectory: join(directory, 'next') };
@@ -191,8 +191,8 @@ test('cannot skip a campaign batch or import an unrelated earlier acceptance', t
   rehash(same);
   assert.throws(() => verifyNativeCampaignAuthority(f.config, same), /exact attested consumed predecessor/);
 });
-test('admits the next sealed campaign failure only with new preparation and the same campaign root', t => {
-  const f = fixture(t), detail = structuredClone(f.detail);
+function nextCampaign(f) {
+  const detail = structuredClone(f.detail);
   const previous = structuredClone(f.detail);
   Object.assign(previous, { nextStateDirectory: f.config.stateDirectory,
     nextAssignmentId: detail.priorJob.id, nextAttemptId: 'campaign-zero-attempt' });
@@ -222,9 +222,114 @@ test('admits the next sealed campaign failure only with new preparation and the 
   detail.priorResultSha256 = hash(json(detail.priorResult));
   detail.priorOperationsSha256 = hash(json(detail.operations));
   rehash(detail);
+  return { config, detail, previous };
+}
+test('admits the next sealed campaign failure only with new preparation and the same campaign root', t => {
+  const { config, detail, previous } = nextCampaign(fixture(t));
   assert.doesNotThrow(() => verifyNativeCampaignAuthority(config, detail));
   previous.authorization.batchIndex = 8;
   detail.operations.find(row => row.kind === 'continued-from-validation-failure').detail = json(previous);
   detail.priorOperationsSha256 = hash(json(detail.operations));
   assert.throws(() => verifyNativeCampaignAuthority(config, detail), /reserved same-source chain/);
+});
+
+function interruptedCampaign(t) {
+  const f = fixture(t), next = nextCampaign(f), { config, detail } = next;
+  const budget = { kind: 'native-command-budget-adjustment-v1',
+    sourceRevision: detail.authorization.sourceRevision,
+    previousCommandTimeoutMs: 1800000, commandTimeoutMs: 3000000,
+    originalConfig: f.pin('original-config.json', detail.previousConfig) };
+  config.repositories[0].validationGates[0].declarativeE2E.commandTimeoutMs = 3000000;
+  const summary = { status: 'running', cases: Array.from({ length: 4 }, (_, index) => ({
+    repeatEachIndex: index, status: 'passed', expectedStatus: 'passed', retry: 0,
+    durationMs: 250000 + index
+  })) };
+  const nativeSummary = f.pin(join('next', 'native-validation', hash('campaign-zero-validation'),
+    'native-batch', 'summary.json'), summary);
+  const failure = { ...JSON.parse(readFileSync(detail.authorization.failure.path)),
+    output: { exitCode: 1, timeout: false, stderr: 'Native pages were not restored',
+      cleanupDetails: [{ rootRemoved: true }] } };
+  const failureRef = f.pin('interrupted-failure.json', failure);
+  detail.priorResult.validation[0].artifactRefs = [failureRef.path];
+  const job = { startedAt: '2026-01-04T00:00:00Z', completedAt: '2026-01-04T00:40:00Z',
+    exitCode: 1, timeout: false, ownedProcessesExited: true, containmentFailure: false };
+  const closed = { ownedBrowserClosed: true, originalBrowserContacted: false };
+  const outerPages = { existingOwnedPagesPreserved: false, originalBrowserContacted: false };
+  const driverFailure = { automaticReplayAllowed: false };
+  const refs = [failureRef, nativeSummary,
+    f.pin(join('formal', 'job.json'), job),
+    f.pin(join('formal', 'owned-browser-closed.json'), closed),
+    f.pin(join('formal', 'owned-browser-cleanup.json'), outerPages),
+    f.pin(join('formal', 'driver-failure.json'), driverFailure),
+    f.pin(join('next', 'native-validation', hash('campaign-zero-validation'), 'browser-cleanup.json'),
+      { before: [{}], after: [{}, {}] })];
+  const evidence = {
+    resultId: detail.priorResult.id, attemptId: detail.priorJob.session_id,
+    sourceRevision: detail.priorResult.sourceRevision, outcome: 'blocked', summaryStatus: 'running',
+    fifthCaseFinalized: false, nativePageCounts: { before: 1, after: 2 }, workspaceAbsent: true,
+    cases: summary.cases.map(item => ({ repeat: item.repeatEachIndex, status: item.status,
+      expectedStatus: item.expectedStatus, retry: item.retry, durationMs: item.durationMs })),
+    artifact: { path: failureRef.path, output: {
+      ...failure.output, cleanupFailures: [], residualPaths: []
+    } },
+    job, closed, outerPages, driverFailure,
+    evidence: Object.fromEntries(refs.map(ref => [ref.path, { sha256: ref.sha256 }]))
+  };
+  Object.assign(detail.authorization, { failure: failureRef, nativeSummary,
+    nextConfigSha256: hash(json(config)), commandBudgetAdjustment: budget,
+    interruptedNativeBatch: f.pin('interruption.json', evidence) });
+  const proof = JSON.parse(readFileSync(detail.authorization.preflight.path));
+  proof.originalLedgerSha256 = hash(json({ job: detail.priorJob, result: detail.priorResult,
+    assignment: detail.priorAssignment, operations: detail.operations }));
+  detail.authorization.preflight = f.pin('interrupted-preflight.json', proof);
+  detail.priorResultSha256 = hash(json(detail.priorResult));
+  rehash(detail);
+  return { ...f, ...next, evidence };
+}
+
+test('admits a sealed interrupted batch without rewriting its running summary or loosening business checks', t => {
+  const { config, detail } = interruptedCampaign(t);
+  const before = structuredClone({ config, detail });
+  const summaryBefore = readFileSync(detail.authorization.nativeSummary.path);
+  assert.doesNotThrow(() => verifyNativeCampaignAuthority(config, detail));
+  assert.deepEqual({ config, detail }, before);
+  assert.deepEqual(readFileSync(detail.authorization.nativeSummary.path), summaryBefore);
+  delete detail.authorization.interruptedNativeBatch;
+  rehash(detail);
+  assert.throws(() => verifyNativeCampaignAuthority(config, detail), /original failed native batch/);
+});
+
+test('bounded command budget adjustment cannot change profile, gate deadline, flight or retries', t => {
+  const f = interruptedCampaign(t);
+  for (const mutate of [
+    c => { c.repositories[0].validationGates[0].profileSha256 = '9'.repeat(64); },
+    c => { c.repositories[0].validationGates[0].timeoutMs = 7200000; },
+    c => { c.repositories[0].validationGates[0].declarativeE2E.commandTimeoutMs = 7200000; },
+    c => { c.repositories[0].validationGates[0].declarativeE2E.flight = true; },
+    c => { c.limits.maxValidationInfrastructureRetries = 1; }
+  ]) {
+    const config = structuredClone(f.config), detail = structuredClone(f.detail);
+    mutate(config); detail.authorization.nextConfigSha256 = hash(json(config)); rehash(detail);
+    assert.throws(() => verifyNativeCampaignAuthority(config, detail), /budget adjustment/);
+  }
+});
+
+test('interrupted admission rejects live or invented termination and missing original evidence', t => {
+  const f = interruptedCampaign(t);
+  let index = 0;
+  for (const mutate of [
+    e => { e.job.ownedProcessesExited = false; },
+    e => { e.closed.ownedBrowserClosed = false; },
+    e => { e.sourceRevision = '9'.repeat(40); },
+    e => { e.cases[0].retry = 1; },
+    e => { e.fifthCaseFinalized = true; },
+    e => { e.workspaceAbsent = false; },
+    e => { delete e.evidence[Object.keys(e.evidence).find(path => /[\\/]job.json$/.test(path))]; }
+  ]) {
+    const detail = structuredClone(f.detail), evidence = structuredClone(f.evidence);
+    mutate(evidence);
+    detail.authorization.interruptedNativeBatch = f.pin(`invalid-interruption-${index++}.json`, evidence);
+    rehash(detail);
+    assert.throws(() => verifyNativeCampaignAuthority(f.config, detail));
+  }
 });

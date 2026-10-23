@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { hash, json, now, requireThat, utc } from './common.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { verifyNativeBusinessFailure } from './native-business-revalidation.js';
+import { verifyCampaignCommandBudget, verifyInterruptedNativeBatch } from './native-campaign-interruption.js';
 import { verifyPreparationPreflight } from './native-preparation-continuation.js';
 import { nativeSourceValidationRepository, verifyNativeSourceSnapshot } from './native-source-continuation.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
@@ -45,6 +46,7 @@ export function nativeCampaignValidationRepository(repo, detail) {
 }
 export function verifyNativeCampaignAuthority(config, detail) {
   const { authorization: auth, previousConfig: previous } = detail;
+  const originalConfig = verifyCampaignCommandBudget(config, detail, pinned);
   requireThat(detail.nativeCampaignRevalidation === true &&
     detail.nativeSourceCorrection === true && !detail.nativeBusinessRevalidation &&
     !detail.sourcePreparedContinuation && !detail.sourcePreparationRecovery &&
@@ -67,7 +69,8 @@ export function verifyNativeCampaignAuthority(config, detail) {
     detail.priorResultSha256 === hash(json(detail.priorResult)) &&
     detail.priorOperationsSha256 === hash(json(detail.operations)) &&
     previous.stateDirectory === detail.priorStateDirectory &&
-    json({ ...config, stateDirectory: null }) === json({ ...previous, stateDirectory: null }),
+    (auth.commandBudgetAdjustment ||
+      json({ ...config, stateDirectory: null }) === json({ ...previous, stateDirectory: null })),
   'Campaign admission must preserve one approved source and one complete zero-retry batch',
   'blocked-authorization');
   const history = pinned(auth.historicalAttestation);
@@ -80,7 +83,7 @@ export function verifyNativeCampaignAuthority(config, detail) {
     /^[a-f0-9]{40}$/.test(history.controllerRevision ?? '') &&
     json(Object.keys(history.controllerFiles ?? {}).sort()) === json([...historicalFiles].sort()) &&
     historicalFiles.every(file => /^[a-f0-9]{64}$/.test(history.controllerFiles[file])) &&
-    history.configSha256 === hash(json({ ...config, stateDirectory: history.priorStateDirectory })) &&
+    history.configSha256 === hash(json({ ...originalConfig, stateDirectory: history.priorStateDirectory })) &&
     history.sourceRevision === auth.sourceRevision &&
     source?.authorization?.repairedRevision === auth.sourceRevision &&
     json(auth.ownerRequest) === json(source.authorization.ownerRequest) &&
@@ -138,6 +141,10 @@ export function verifyNativeCampaignAuthority(config, detail) {
       json(priorContinuation.proposal) === json(detail.proposal),
     'Campaign batches must follow the reserved same-source chain without forks or skipped batches',
     'blocked-reconciliation');
+    if (priorContinuation.authorization.commandBudgetAdjustment)
+      requireThat(json(priorContinuation.authorization.commandBudgetAdjustment) ===
+        json(auth.commandBudgetAdjustment),
+      'A command budget adjustment must retain its original pinned lineage', 'blocked-reconciliation');
   }
   const repo = config.repositories.find(row => row.id === detail.priorAssignment.repoId);
   const native = detail.operations.find(row => row.kind === 'validation');
@@ -152,8 +159,16 @@ export function verifyNativeCampaignAuthority(config, detail) {
   'Campaign admission requires its own failed native evidence and isolated loopback browser',
   'blocked-reconciliation');
   const failure = pinned(auth.failure);
-  verifyNativeBusinessFailure(detail.priorJob, detail.priorResult, detail.operations,
-    failure, pinned(auth.nativeSummary), repo.validationGates[0].profileSha256);
+  if (auth.interruptedNativeBatch) {
+    requireThat(auth.batchIndex > 0 && auth.commandBudgetAdjustment,
+      'Interrupted continuation needs a separately pinned bounded Controller budget adjustment',
+      'blocked-authorization');
+    verifyInterruptedNativeBatch(detail, failure, pinned(auth.nativeSummary),
+      repo.validationGates[0].profileSha256, pinned(auth.interruptedNativeBatch));
+  } else {
+    verifyNativeBusinessFailure(detail.priorJob, detail.priorResult, detail.operations,
+      failure, pinned(auth.nativeSummary), repo.validationGates[0].profileSha256);
+  }
   const analysis = pinned(auth.failureAnalysis);
   requireThat(analysis.format === 'native-campaign-failure-analysis-v1' &&
     analysis.previousAttemptId === detail.priorJob.session_id &&

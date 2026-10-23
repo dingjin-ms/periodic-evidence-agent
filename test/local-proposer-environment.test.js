@@ -15,12 +15,14 @@ import { teamsArmToken } from '../src/teams-notifications.js';
 const names = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
 const synthetic = Object.fromEntries(names.map(name => [name, `synthetic-${name}`]));
 
-test('offline CLI and validation worker bootstrap do not resolve unused service SDKs', async t => {
+test('offline CLI and validation worker bootstrap do not resolve unused service SDKs or compile FILTER schemas', async t => {
   const root = mkdtempSync(join(tmpdir(), 'offline-sdk-bootstrap-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const preload = join(root, 'reject-sdk.mjs');
   writeFileSync(preload, `
 import { registerHooks } from 'node:module';
+import Ajv2020 from ${JSON.stringify(new URL('../node_modules/ajv/dist/2020.js', import.meta.url).href)};
+Ajv2020.prototype.compile = () => { throw new Error('unused-filter-schema-bootstrap'); };
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (['@github/copilot-sdk', '@azure/identity'].includes(specifier))
     throw new Error('unused-service-sdk-bootstrap');

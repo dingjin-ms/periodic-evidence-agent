@@ -1,5 +1,10 @@
 # Bounded one-shot coordinator controls
 
+For the shared manual/scheduled entrypoint and runtime adapter contracts, see
+[LOOP-CONTROLLER.md](LOOP-CONTROLLER.md). That controller calls these controls and
+preserves their gates. Its FILTER host continuation remains explicit; installing
+the controller does not qualify an unattended external executor.
+
 These opt-in controls add aggregate reservations, safe resumption and a stricter
 accepted-cohort release gate to the existing local ledger and helpers. The
 coordinating Copilot session/host still orchestrates the work. They are **not a

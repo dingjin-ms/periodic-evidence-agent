@@ -230,7 +230,7 @@ function save(ledger, id, detail) {
   return { format: 'one-shot-handoff-status-v1', operationId: id, ...detail,
     dispatchAllowed: false, externalFilterBinding: 'not-provided-by-this-helper' };
 }
-function preDispatchAuthProof(ledger, detail) {
+export function preDispatchAuthProof(ledger, detail) {
   const job = ledger.job(detail.assignment.id), assignment = ledger.get('assignment', detail.assignment.id);
   requireThat(job?.state === 'prepared' && job.session_id === detail.assignment.attemptId &&
     !job.workspace && !job.base_revision && assignment?.execution === 'local' &&
@@ -242,7 +242,7 @@ function preDispatchAuthProof(ledger, detail) {
   'blocked-reconciliation');
   return hash(json({ job, assignment }));
 }
-function reconcileProposer(ledger, detail) {
+export function reconcileProposer(ledger, detail) {
   const job = ledger.job(detail.assignment.id);
   requireThat(job && job.session_id === detail.assignment.attemptId &&
     hash(json(ledger.get('assignment', job.id))) === detail.assignment.sha256,

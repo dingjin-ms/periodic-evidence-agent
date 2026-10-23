@@ -2252,6 +2252,45 @@ test('ADO Draft build queues the exact pushed revision once without polling', as
   assert.equal(ledger.status().operations.find(operation =>
     operation.id === `${job.id}:draft-build:1js-pipeline-36540`).state, 'queued');
 });
+test('ADO Draft build accepts the matching response project GUID without requeueing', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.pr = { provider: 'ado', organization: 'office', project: 'Office' };
+  repo.draftBuild = { enabled: true, provider: 'ado', id: 'aurora', definitionId: 36540 };
+  const projectId = 'a4aa557b-7dca-453d-9d83-2fe9271852b9';
+  const url = `https://dev.azure.com/office/${projectId}/_build/results?buildId=57965896`;
+  let calls = 0;
+  const receipt = await queueAdoDraftBuild(config, ledger, job, repo, 'd'.repeat(40), async () => {
+    calls++;
+    return { id: 57965896, project: { id: projectId, name: 'Office' }, _links: { web: { href: url } } };
+  });
+  assert.equal(calls, 1);
+  assert.equal(receipt.url, url);
+  assert.equal(receipt.buildId, 57965896);
+  assert.equal(ledger.status().operations.find(row => row.kind === 'draft-build').state, 'queued');
+});
+test('ADO Draft build rejects unrelated GUIDs, projects and hosts', async t => {
+  const projectId = 'a4aa557b-7dca-453d-9d83-2fe9271852b9';
+  const approved = `https://dev.azure.com/office/${projectId}/_build/results?buildId=5`;
+  for (const response of [
+    { project: { id: projectId, name: 'AnotherProject' }, url: approved },
+    { project: { id: projectId, name: 'Office' }, url: approved.replace(projectId, 'b'.repeat(36)) },
+    { project: { id: projectId, name: 'Office' }, url: approved.replace('dev.azure.com', 'example.com') },
+    { project: undefined, url: approved }
+  ]) {
+    await t.test(response.url + ':' + response.project?.name, async sub => {
+      const { config, ledger, job, repo } = await fixture(sub);
+      repo.pr = { provider: 'ado', organization: 'office', project: 'Office' };
+      repo.draftBuild = { enabled: true, provider: 'ado', id: 'aurora', definitionId: 36540 };
+      let calls = 0;
+      await assert.rejects(queueAdoDraftBuild(config, ledger, job, repo, 'd'.repeat(40), async () => {
+        calls++;
+        return { id: 5, project: response.project, _links: { web: { href: response.url } } };
+      }), /approved build URL/);
+      assert.equal(calls, 1);
+      assert.equal(ledger.status().operations.find(row => row.kind === 'draft-build').state, 'started');
+    });
+  }
+});
 test('ADO draft provider uses a configured user source branch namespace', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.remote = 'https://dev.azure.com/test/project/_git/fixture';

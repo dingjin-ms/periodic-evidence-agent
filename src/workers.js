@@ -2713,6 +2713,27 @@ export function draftSourceRef(repo, jobId) {
   'Invalid Draft PR source branch prefix', 'blocked-config');
   return `refs/heads/${prefix}/${jobId}`;
 }
+export function adoDraftBuildUrl(repo, queued) {
+  requireThat(Number.isInteger(queued.id) && queued.id > 0,
+    'ADO Draft build response did not include a build ID', 'blocked-build');
+  const projects = [repo.pr.project];
+  if (typeof queued.project?.name === 'string' &&
+    queued.project.name.toLowerCase() === repo.pr.project.toLowerCase() &&
+    typeof queued.project.id === 'string' &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(queued.project.id))
+    projects.push(queued.project.id);
+  const fallbackUrl =
+    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_build/results?buildId=${queued.id}`;
+  const url = queued._links?.web?.href ?? fallbackUrl;
+  const approvedUrlPrefixes = projects.flatMap(project => [
+    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(project)}/_build/`,
+    `https://${encodeURIComponent(repo.pr.organization)}.visualstudio.com/${encodeURIComponent(project)}/_build/`
+  ]);
+  requireThat(typeof url === 'string' && !url.includes('@') &&
+    approvedUrlPrefixes.some(prefix => url.toLowerCase().startsWith(prefix.toLowerCase())),
+  'ADO Draft build response did not include an approved build URL', 'blocked-build');
+  return url;
+}
 export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride) {
   const build = repo.draftBuild;
   requireThat(build?.enabled === true && build.provider === 'ado' &&
@@ -2748,18 +2769,7 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
     sourceVersion: revision,
     templateParameters: build.templateParameters ?? {}
   });
-  requireThat(Number.isInteger(queued.id) && queued.id > 0,
-    'ADO Draft build response did not include a build ID', 'blocked-build');
-  const fallbackUrl =
-    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_build/results?buildId=${queued.id}`;
-  const url = queued._links?.web?.href ?? fallbackUrl;
-  const approvedUrlPrefixes = [
-    `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_build/`,
-    `https://${encodeURIComponent(repo.pr.organization)}.visualstudio.com/${encodeURIComponent(repo.pr.project)}/_build/`
-  ];
-  requireThat(typeof url === 'string' && !url.includes('@') &&
-    approvedUrlPrefixes.some(prefix => url.toLowerCase().startsWith(prefix.toLowerCase())),
-  'ADO Draft build response did not include an approved build URL', 'blocked-build');
+  const url = adoDraftBuildUrl(repo, queued);
   const receipt = {
     id: build.id,
     provider: 'ado',

@@ -2389,6 +2389,68 @@ test('LFS paths are exact, bounded and bound into the native validation contract
     repositoryValidationContract({ validationGates: [{ id: 'fixture' }] }).sha256);
 });
 const gitLfsAvailable = spawnSync('git', ['lfs', 'version'], { windowsHide: true }).status === 0;
+function useFixtureLfsTransfer(t, ctx) {
+  const oid = hash(ctx.content);
+  const source = join(ctx.isolated.workspace, '.git', 'lfs', 'objects',
+    oid.slice(0, 2), oid.slice(2, 4), oid);
+  const requests = join(ctx.root, 'lfs-requests.jsonl');
+  const agent = join(ctx.root, 'lfs-transfer.mjs');
+  // Keep native fetch/checkout, but avoid the nested Git processes of standalone-file.
+  writeFileSync(agent, `
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { appendFileSync, copyFileSync, readFileSync, writeSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+const input = createInterface({ input: process.stdin });
+const send = value => writeSync(1, JSON.stringify(value) + '\\n');
+input.on('line', line => {
+  const request = JSON.parse(line);
+  if (request.event === 'init') {
+    assert.equal(request.operation, 'download');
+    assert.equal(request.remote, 'pilot-validation-lfs');
+    send({});
+  } else if (request.event === 'download') {
+    assert.equal(request.oid, ${json(oid)});
+    assert.equal(request.size, ${ctx.content.length});
+    const bytes = readFileSync(${json(source)});
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), request.oid);
+    assert.equal(bytes.length, request.size);
+    appendFileSync(${json(requests)}, JSON.stringify(request) + '\\n');
+    const path = ${json(join(ctx.root, 'lfs-download'))};
+    copyFileSync(${json(source)}, path);
+    send({ event: 'complete', oid: request.oid, path });
+  } else if (request.event === 'terminate') {
+    process.exit(0);
+  } else {
+    throw new Error('Unexpected fixture LFS transfer request');
+  }
+});
+`);
+  const entries = [
+    ['lfs.standalonetransferagent', 'fixture'],
+    ['lfs.customtransfer.fixture.path', process.execPath],
+    ['lfs.customtransfer.fixture.args', json(agent)],
+    ['lfs.customtransfer.fixture.concurrent', 'false']
+  ];
+  const count = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+  assert.ok(Number.isSafeInteger(count) && count >= 0);
+  const overrides = [
+    ['GIT_CONFIG_COUNT', String(count + entries.length)],
+    ...entries.flatMap(([key, value], index) => [
+      [`GIT_CONFIG_KEY_${count + index}`, key],
+      [`GIT_CONFIG_VALUE_${count + index}`, value]
+    ])
+  ];
+  const previous = overrides.map(([key]) => [key, process.env[key]]);
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  for (const [key, value] of overrides) process.env[key] = value;
+  return requests;
+}
 async function lfsValidationFixture(t) {
   const ctx = await stagedValidationFixture(t);
   await command('git', ['lfs', 'install', '--local', '--skip-smudge'], ctx.isolated.workspace);
@@ -2408,6 +2470,7 @@ test('staged native build hydrates only approved LFS objects at the exact revisi
   skip: !gitLfsAvailable
 }, async t => {
   const ctx = await lfsValidationFixture(t);
+  const requests = useFixtureLfsTransfer(t, ctx);
   const execute = async (...args) => {
     const cwd = args[2], stage = args[4].PILOT_VALIDATION_STAGE;
     if (stage === 'compile' || stage === 'test') {
@@ -2429,6 +2492,9 @@ test('staged native build hydrates only approved LFS objects at the exact revisi
     revision, execute, rmSync, prepared);
   assert.equal(result[0].status, 'passed');
   assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  assert.deepEqual(readFileSync(requests, 'utf8').trim().split('\n')
+    .map(line => JSON.parse(line).oid), [hash(ctx.content)],
+  'Native LFS must transfer only the approved object, without refetching during reuse');
   assert.equal((await command('git', ['status', '--porcelain'], ctx.isolated.workspace)).stdout, '');
 });
 test('LFS fetch errors preserve sanitized native evidence and do not start the compiler', {

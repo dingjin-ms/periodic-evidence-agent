@@ -40,7 +40,10 @@ export function nativeCampaignValidationRepository(repo, detail) {
   const validation = nativeSourceValidationRepository(repo, original);
   return { ...validation, validationGates: validation.validationGates.map(gate => ({
     ...gate, declarativeE2E: {
-      ...gate.declarativeE2E, cdpEndpoint: detail.authorization.isolatedCdpEndpoint
+      ...gate.declarativeE2E, cdpEndpoint: detail.authorization.isolatedCdpEndpoint,
+      ...(detail.authorization.commandBudgetAdjustment ? {
+        commandTimeoutMs: detail.authorization.commandBudgetAdjustment.commandTimeoutMs
+      } : {})
     }
   })) };
 }

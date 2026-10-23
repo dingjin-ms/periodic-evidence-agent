@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hash, json } from '../src/common.js';
 import { nativeCampaignValidationRepository, verifyNativeCampaignAuthority } from '../src/native-validation-campaign.js';
+import { repositoryValidationContract } from '../src/repository-skills.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'native-campaign-'));
@@ -239,7 +240,6 @@ function interruptedCampaign(t) {
     sourceRevision: detail.authorization.sourceRevision,
     previousCommandTimeoutMs: 1800000, commandTimeoutMs: 3000000,
     originalConfig: f.pin('original-config.json', detail.previousConfig) };
-  config.repositories[0].validationGates[0].declarativeE2E.commandTimeoutMs = 3000000;
   const summary = { status: 'running', cases: Array.from({ length: 4 }, (_, index) => ({
     repeatEachIndex: index, status: 'passed', expectedStatus: 'passed', retry: 0,
     durationMs: 250000 + index
@@ -304,6 +304,7 @@ test('bounded command budget adjustment cannot change profile, gate deadline, fl
   for (const mutate of [
     c => { c.repositories[0].validationGates[0].profileSha256 = '9'.repeat(64); },
     c => { c.repositories[0].validationGates[0].timeoutMs = 7200000; },
+    c => { c.repositories[0].validationGates[0].declarativeE2E.commandTimeoutMs = 3000000; },
     c => { c.repositories[0].validationGates[0].declarativeE2E.commandTimeoutMs = 7200000; },
     c => { c.repositories[0].validationGates[0].declarativeE2E.flight = true; },
     c => { c.limits.maxValidationInfrastructureRetries = 1; }
@@ -312,6 +313,25 @@ test('bounded command budget adjustment cannot change profile, gate deadline, fl
     mutate(config); detail.authorization.nextConfigSha256 = hash(json(config)); rehash(detail);
     assert.throws(() => verifyNativeCampaignAuthority(config, detail), /budget adjustment/);
   }
+});
+
+test('projects an authorized command budget only at execution without changing the pinned qualification contract', t => {
+  const { config, detail } = interruptedCampaign(t);
+  const before = structuredClone({ config, detail });
+  const original = JSON.parse(readFileSync(detail.authorization.commandBudgetAdjustment.originalConfig.path));
+  const repo = config.repositories[0];
+  assert.doesNotThrow(() => verifyNativeCampaignAuthority(config, detail));
+  assert.deepEqual(repositoryValidationContract(repo),
+    repositoryValidationContract(original.repositories[0]));
+  const execution = nativeCampaignValidationRepository(repo, detail);
+  assert.equal(execution.validationGates[0].declarativeE2E.commandTimeoutMs, 3000000);
+  assert.equal(execution.validationGates[0].declarativeE2E.cdpEndpoint, 'http://127.0.0.1:9338');
+  assert.equal(repo.validationGates[0].declarativeE2E.commandTimeoutMs, undefined);
+  assert.equal(repo.validationGates[0].timeoutMs, 3600000);
+  assert.deepEqual({ config, detail }, before);
+  detail.authorization.commandBudgetAdjustment.commandTimeoutMs = 7200000;
+  rehash(detail);
+  assert.throws(() => verifyNativeCampaignAuthority(config, detail), /budget adjustment/);
 });
 
 test('interrupted admission rejects live or invented termination and missing original evidence', t => {

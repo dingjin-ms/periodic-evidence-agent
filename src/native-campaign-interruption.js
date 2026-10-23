@@ -97,10 +97,9 @@ export function verifyCampaignCommandBudget(config, detail, pin) {
     gate.declarativeE2E?.commandTimeoutMs === undefined,
   'Only a bounded 30-to-50-minute Controller command budget adjustment is permitted',
   'blocked-authorization');
-  gate.declarativeE2E.commandTimeoutMs = adjustment.commandTimeoutMs;
   requireThat(json(expected) === json(config) &&
-    [original, expected].some(candidate => json({ ...candidate, stateDirectory: null }) ===
-      json({ ...detail.previousConfig, stateDirectory: null })),
+    json({ ...original, stateDirectory: null }) ===
+      json({ ...detail.previousConfig, stateDirectory: null }),
   'Command budget adjustment must not change the profile, gate budget, flights or business settings',
   'blocked-authorization');
   return original;

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hash, json, requireThat } from './common.js';
+import { operationDetail } from './operation-evidence.js';
 import { verifyNativeFailureEnvelope } from './native-business-revalidation.js';
 
 export function verifyInterruptedNativeBatch(detail, failure, summary, profileSha256, evidence) {
@@ -73,8 +74,8 @@ export function verifyInterruptedNativeBatch(detail, failure, summary, profileSh
       Array.isArray(failure.output.residualPaths) && failure.output.residualPaths.length === 0),
   'Interrupted admission requires exited owned processes and actual workspace cleanup, not a live batch',
   'blocked-reconciliation');
-  const predecessor = JSON.parse(detail.operations.find(row =>
-    row.kind === 'continued-from-validation-failure').detail);
+  const predecessor = operationDetail(detail.operations.find(row =>
+    row.kind === 'continued-from-validation-failure'), detail.priorStateDirectory);
   const ref = predecessor.authorization.preflight;
   requireThat(hash(readFileSync(ref.path)) === ref.sha256 &&
     !existsSync(JSON.parse(readFileSync(ref.path)).workspace),

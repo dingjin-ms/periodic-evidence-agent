@@ -8,6 +8,7 @@ import { seedDeclarativeDependencies, hydrateValidationLfs, minimalEnvironment }
 import { nativeCommand, nativeTemporaryDirectory } from '../../src/native-command.js';
 import { prepareValidationWorkspace, preparationStage, preparationFailure,
   requireCleanRevision } from '../../src/validation-workspace.js';
+import { OPERATION_REFS_V1, ledgerSnapshotHash } from '../../src/operation-evidence.js';
 
 const args = process.argv.slice(2);
 const allowed = ['--config', '--assignment', '--output', '--workspace', '--sparse-path',
@@ -45,12 +46,15 @@ const result = results[0], revision = result.sourceRevision;
 const repo = config.repositories.find(repo => repo.id === job.repo);
 const gate = declarativeGate(repo);
 verifyDeclarativeRegistration(config, repo, assignment, job.workspace, result.skillExecution);
-const originalLedger = hash(json({ job, result, assignment, operations: ledger.status().operations }));
+const originalLedger = ledgerSnapshotHash({
+  job, result, assignment, operations: ledger.status().operations
+}, OPERATION_REFS_V1);
 if (prior)
   requireThat(prior.format === 'validation-preflight-v1' &&
     ['passed', 'blocked'].includes(prior.status) && prior.completedAt &&
     prior.assignmentId === assignmentId && prior.sourceRevision === revision &&
     prior.priorAttemptId === job.session_id && prior.priorResultId === result.id &&
+    prior.ledgerSnapshotFormat === OPERATION_REFS_V1 &&
     prior.originalLedgerSha256 === originalLedger &&
     prior.profileSha256 === gate.profileSha256 &&
     prior.workspace === workspace && prior.preparation?.workspace === workspace &&
@@ -64,13 +68,15 @@ const files = ['src/workers.js', 'src/validation-workspace.js', 'src/native-comm
   'src/native-command.ps1', 'src/dependency-snapshot-copy.cjs',
   'src/output-fingerprint.js', 'src/output-fingerprint-worker.js', 'src/retained-dependency-copy.js',
   'scripts/validation/preflight.mjs', 'scripts/validation/native-preflight.cjs',
-  'src/native-preparation-continuation.js', 'src/native-source-continuation.js'];
+  'src/native-preparation-continuation.js', 'src/native-source-continuation.js',
+  'src/operation-evidence.js'];
 const receipt = {
   format: 'validation-preflight-v1', id: uuid(), status: 'running', startedAt: now(),
   assignmentId, priorAttemptId: job.session_id, priorResultId: result.id,
   sourceRevision: revision, baseRevision: job.base_revision, workspace,
   controllerFiles: Object.fromEntries(files.map(file => [file, hash(readFileSync(join(root, file)))])),
   profileSha256: gate.profileSha256, originalLedgerSha256: originalLedger,
+  ledgerSnapshotFormat: OPERATION_REFS_V1,
   ...(retainedCopy ? { retainedCopy } : {}),
   ...(prior ? { preparedReceipt: {
     path: resolve(values('--prepared-receipt')[0]), sha256: hash(priorBytes)
@@ -121,9 +127,9 @@ try {
     await requireCleanRevision(workspace, revision, repo.provisionTimeoutMs ?? 120000);
     await requireCleanRevision(job.workspace, revision, repo.provisionTimeoutMs ?? 120000);
   }, persist);
-  requireThat(hash(json({ job: ledger.job(assignmentId),
+  requireThat(ledgerSnapshotHash({ job: ledger.job(assignmentId),
     result: ledger.get('workerResult', result.id), assignment: ledger.get('assignment', assignmentId),
-    operations: ledger.status().operations })) === originalLedger,
+    operations: ledger.status().operations }, OPERATION_REFS_V1) === originalLedger,
   'Original ledger changed during preflight', 'blocked-reconciliation');
   requireThat(files.every(file =>
     hash(readFileSync(join(root, file))) === receipt.controllerFiles[file]),

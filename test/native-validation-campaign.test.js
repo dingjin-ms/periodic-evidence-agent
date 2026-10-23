@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { hash, json } from '../src/common.js';
 import { nativeCampaignValidationRepository, verifyNativeCampaignAuthority } from '../src/native-validation-campaign.js';
 import { repositoryValidationContract } from '../src/repository-skills.js';
+import { Ledger } from '../src/ledger.js';
+import { OPERATION_REFS_V1, ledgerSnapshotHash, operationRows } from '../src/operation-evidence.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'native-campaign-'));
@@ -232,6 +234,33 @@ test('admits the next sealed campaign failure only with new preparation and the 
   detail.operations.find(row => row.kind === 'continued-from-validation-failure').detail = json(previous);
   detail.priorOperationsSha256 = hash(json(detail.operations));
   assert.throws(() => verifyNativeCampaignAuthority(config, detail), /reserved same-source chain/);
+});
+
+test('compact campaign evidence preserves the complete predecessor and preparation bindings', t => {
+  const f = fixture(t), { config, detail } = nextCampaign(f);
+  const ledger = new Ledger(detail.priorStateDirectory);
+  try {
+    for (const row of detail.operations) {
+      const body = JSON.parse(row.detail ?? '{}');
+      ledger.operation(row.id, detail.priorJob.id, row.kind, body);
+      ledger.finishOperation(row.id, row.state, body);
+    }
+    const raw = ledger.status().operations;
+    detail.operationsFormat = OPERATION_REFS_V1;
+    detail.operations = operationRows(raw, OPERATION_REFS_V1);
+    detail.priorOperationsSha256 = hash(json(detail.operations));
+    const proof = JSON.parse(readFileSync(detail.authorization.preflight.path));
+    proof.ledgerSnapshotFormat = OPERATION_REFS_V1;
+    proof.originalLedgerSha256 = ledgerSnapshotHash({ job: detail.priorJob,
+      result: detail.priorResult, assignment: detail.priorAssignment, operations: raw }, OPERATION_REFS_V1);
+    proof.controllerFiles['src/operation-evidence.js'] =
+      hash(readFileSync(new URL('../src/operation-evidence.js', import.meta.url)));
+    detail.authorization.preflight = f.pin('compact-preflight.json', proof);
+    rehash(detail);
+    assert.doesNotThrow(() => verifyNativeCampaignAuthority(config, detail));
+    ledger.finishOperation('continuation', 'prepared', { altered: true });
+    assert.throws(() => verifyNativeCampaignAuthority(config, detail), /operation evidence changed/);
+  } finally { ledger.close(); }
 });
 
 function interruptedCampaign(t) {

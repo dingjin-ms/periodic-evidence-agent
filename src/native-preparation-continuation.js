@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hash, json, now, requireThat, utc } from './common.js';
+import { OPERATION_REFS_V1, ledgerSnapshotHash } from './operation-evidence.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { qualifyRepositorySkill } from './repository-skills.js';
 import { command, makePlannedImprovementAssignment, requireCurrentAssignment,
@@ -260,13 +261,15 @@ export function verifyPreparationPreflight(proof, job, result, assignment, opera
     'src/output-fingerprint.js', 'src/output-fingerprint-worker.js',
     'scripts/validation/preflight.mjs', 'scripts/validation/native-preflight.cjs',
     'src/native-preparation-continuation.js'];
+  if (proof.ledgerSnapshotFormat === OPERATION_REFS_V1)
+    required.push('src/operation-evidence.js');
   requireThat(proof.format === 'validation-preflight-v1' && proof.status === 'passed' &&
     proof.completedAt && proof.assignmentId === job.id &&
     proof.priorAttemptId === job.session_id && proof.priorResultId === result.id &&
     proof.sourceRevision === result.sourceRevision && proof.baseRevision === job.base_revision &&
     proof.profileSha256 === profileSha256 &&
-    proof.originalLedgerSha256 === hash(json({ job, result,
-      assignment, operations })) &&
+    proof.originalLedgerSha256 === ledgerSnapshotHash({ job, result,
+      assignment, operations }, proof.ledgerSnapshotFormat) &&
     proof.nativeCaseInvocations === 0 && proof.modelInvocations === 0 &&
     proof.publicationInvocations === 0 && proof.acceptanceEvidence === false &&
     proof.publicationEligible === false &&

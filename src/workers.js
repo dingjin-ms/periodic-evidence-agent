@@ -13,6 +13,7 @@ import { join, dirname, resolve, relative, isAbsolute, extname } from 'node:path
 import { setTimeout as delay } from 'node:timers/promises';
 import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, validateRecord, PilotError, modelPreflight, workspaceCleanupPolicy, validationPackageAuth, validationLfsPaths } from './common.js';
 import { cleanupWorkspace } from './workspace-gc.js';
+import { operationRowsHash } from './operation-evidence.js';
 import { withClient, authoringSession, defineTool } from './runtime.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification,
@@ -3186,7 +3187,8 @@ export function verifyContinuationPredecessor(continuation, operationId, nextAtt
       priorResult && hash(priorResult.body) === continuation.priorResultSha256 &&
       reservation?.kind === 'validation-continuation' && reservation.state === 'prepared' &&
       JSON.parse(reservation.detail).nextAttemptId === nextAttemptId &&
-      hash(json(operations.filter(operation => operation.id !== operationId))) ===
+      operationRowsHash(operations.filter(operation => operation.id !== operationId),
+        continuation.operationsFormat) ===
         continuation.priorOperationsSha256,
     'Prior authoring state or continuation reservation changed', 'blocked-reconciliation');
   } finally { priorLedger.close(); }

@@ -2,6 +2,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hash, json, now, requireThat, utc } from './common.js';
+import { OPERATION_REFS_V1, operationRows, operationDetail,
+  verifyOperationReferences } from './operation-evidence.js';
 import { importReviewedContinuation } from './local-continuation.js';
 import { verifyNativeBusinessFailure } from './native-business-revalidation.js';
 import { verifyCampaignCommandBudget, verifyInterruptedNativeBatch } from './native-campaign-interruption.js';
@@ -49,6 +51,11 @@ export function nativeCampaignValidationRepository(repo, detail) {
 }
 export function verifyNativeCampaignAuthority(config, detail) {
   const { authorization: auth, previousConfig: previous } = detail;
+  if (detail.operationsFormat !== undefined) {
+    requireThat(detail.operationsFormat === OPERATION_REFS_V1,
+      'Unknown campaign operation evidence format', 'blocked-reconciliation');
+    verifyOperationReferences(detail.operations, detail.priorStateDirectory);
+  }
   const originalConfig = verifyCampaignCommandBudget(config, detail, pinned);
   requireThat(detail.nativeCampaignRevalidation === true &&
     detail.nativeSourceCorrection === true && !detail.nativeBusinessRevalidation &&
@@ -120,12 +127,12 @@ export function verifyNativeCampaignAuthority(config, detail) {
     Date.parse(auth.recordedAt) <= Date.now() + 60000,
   'Campaign admission must be recorded after the sealed failure and original instruction',
   'blocked-authorization');
-  const priorContinuation = JSON.parse(detail.operations.find(row =>
-    row.kind === 'continued-from-validation-failure')?.detail ?? 'null');
+  const priorContinuation = operationDetail(detail.operations.find(row =>
+    row.kind === 'continued-from-validation-failure'), detail.priorStateDirectory);
   if (auth.batchIndex === 0) {
     requireThat(json(detail.priorJob) === json(history.job) &&
       json(detail.priorResult) === json(history.result) &&
-      json(detail.operations) === json(history.operations) &&
+      json(detail.operations) === json(operationRows(history.operations, detail.operationsFormat)) &&
       hash(json(priorContinuation)) === history.continuationSha256,
     'The first campaign batch must follow its exact attested consumed predecessor',
     'blocked-reconciliation');
@@ -225,12 +232,14 @@ export async function prepareNativeCampaignBatch(config, ledger, id, nextConfig,
     const results = ledger.all('workerResult').filter(row => row.assignmentId === id);
     requireThat(results.length === 1, 'Campaign admission requires exactly one sealed predecessor',
       'blocked-reconciliation');
-    const operations = ledger.status().operations.filter(row => row.job_id === id);
+    const operations = operationRows(ledger.status().operations.filter(row => row.job_id === id),
+      OPERATION_REFS_V1);
     const history = pinned(authorization.historicalAttestation);
     const source = history.originalSourceContinuation;
     const detail = { previousConfig: config, priorStateDirectory: priorRoot,
       nextStateDirectory: nextRoot, priorJob: job, priorAssignment: assignment,
       priorResult: results[0], priorResultSha256: hash(json(results[0])), operations,
+      operationsFormat: OPERATION_REFS_V1,
       priorOperationsSha256: hash(json(operations)), authorization,
       authorizationSha256: hash(json(authorization)), nativeSourceCorrection: true,
       nativeCampaignRevalidation: true, files: source.files, proposal: source.proposal,

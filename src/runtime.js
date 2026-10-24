@@ -1,9 +1,17 @@
-import { CopilotClient, RuntimeConnection, defineTool, ToolSet } from '@github/copilot-sdk';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { join, delimiter, isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
 import { requireThat, PilotError, json, safeError } from './common.js';
 
-export { defineTool };
+const require = createRequire(import.meta.url);
+function loadSdk() {
+  // Resolve the ESM entry explicitly: bare require selects a different SDK instance.
+  return require(fileURLToPath(import.meta.resolve('@github/copilot-sdk')));
+}
+export function defineTool(name, options) {
+  return loadSdk().defineTool(name, options);
+}
 export function cliPath(name) {
   if (isAbsolute(name)) return name;
   const candidates = (process.env.PATH ?? '').split(delimiter).map(dir => join(dir, process.platform === 'win32' && !name.endsWith('.exe') ? `${name}.exe` : name));
@@ -12,6 +20,7 @@ export function cliPath(name) {
   return found;
 }
 export function createClient(config, workingDirectory, workplace = false) {
+  const { CopilotClient, RuntimeConnection } = loadSdk();
   return new CopilotClient({
     connection: RuntimeConnection.forStdio({ path: cliPath(config.runtime.cliPath),
       args: config.limits.maxAiCreditsPerSession > 0 ? ['--max-ai-credits', String(config.limits.maxAiCreditsPerSession)] : [] }),
@@ -23,6 +32,7 @@ export function createClient(config, workingDirectory, workplace = false) {
   });
 }
 export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '' } = {}) {
+  const { ToolSet } = loadSdk();
   const names = new Set(tools.map(t => t.name));
   return {
     sessionId, workingDirectory, tools,
@@ -243,6 +253,7 @@ export async function withWorkiq(config, fn) {
   requireThat(config.runtime.workiqPluginDirectory && existsSync(config.runtime.workiqPluginDirectory),
     'Configure the already-installed WorkIQ plugin directory; SDK config discovery is off by default', 'blocked-runtime');
   return withClient(config, config.stateDirectory, async client => {
+    const { ToolSet } = loadSdk();
     let allowed = null;
     const session = await client.createSession({
       pluginDirectories: [config.runtime.workiqPluginDirectory],

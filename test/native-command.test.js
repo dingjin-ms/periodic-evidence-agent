@@ -102,12 +102,15 @@ for (const mode of ['timeout', 'abort', 'nonzero-exit', 'success', 'output-overf
     const idsPath = join(root, 'pids.json'), grandchildPath = join(root, 'grandchild.json');
     const grandchildScript = join(root, 'grandchild.mjs');
     writeFileSync(grandchildScript, 'setInterval(()=>{},1000);');
-    writeFileSync(leaf, `import{spawn}from'node:child_process';import{writeFileSync}from'node:fs';
+    writeFileSync(leaf, `import{spawn}from'node:child_process';import{writeFileSync,renameSync}from'node:fs';
       const child=spawn(process.execPath,[${JSON.stringify(grandchildScript)}],{stdio:'ignore'});
-      writeFileSync(${JSON.stringify(grandchildPath)},JSON.stringify(child.pid));setInterval(()=>{},1000);`);
-    writeFileSync(parent, `import{spawn}from'node:child_process';import{writeFileSync,existsSync}from'node:fs';
+      writeFileSync(${JSON.stringify(grandchildPath + '.tmp')},JSON.stringify(child.pid));
+      renameSync(${JSON.stringify(grandchildPath + '.tmp')},${JSON.stringify(grandchildPath)});
+      setInterval(()=>{},1000);`);
+    writeFileSync(parent, `import{spawn}from'node:child_process';import{writeFileSync,existsSync,renameSync}from'node:fs';
       const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{stdio:'ignore'});
-      writeFileSync(${JSON.stringify(idsPath)},JSON.stringify({parent:process.pid,child:child.pid}));
+      writeFileSync(${JSON.stringify(idsPath + '.tmp')},JSON.stringify({parent:process.pid,child:child.pid}));
+      renameSync(${JSON.stringify(idsPath + '.tmp')},${JSON.stringify(idsPath)});
       while(!existsSync(${JSON.stringify(grandchildPath)}))await new Promise(resolve=>setTimeout(resolve,10));
       console.log('synthetic-started');
       ${mode === 'timeout' || mode === 'abort' ? 'setInterval(()=>{},1000);' :

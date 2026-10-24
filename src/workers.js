@@ -1,6 +1,4 @@
-import { execFile } from 'node:child_process';
 import { availableParallelism } from 'node:os';
-import { promisify } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
 import { channel } from 'node:diagnostics_channel';
@@ -53,9 +51,10 @@ import {
   parseDeclarativeOutput, skillChangePopulation, verifyDeclarativeRegistration
 } from './declarative-e2e.js';
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
+import { command } from './command.js';
 import { createPreparedOutputObserver } from './prepared-output-observer.js';
 
-const exec = promisify(execFile);
+export { command };
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
 const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
@@ -73,11 +72,8 @@ const outputFingerprintTaskTimeoutMs = 5 * 60 * 1000;
 const maxOutputFingerprintTaskEntries = 2048;
 const defaultGitTimeoutMs = 120000;
 const preparationProgress = channel('periodic-evidence-agent.validation-preparation');
-export async function command(executable, args, cwd, timeout = 120000, env = process.env, signal = undefined) {
-  return exec(executable, args, { cwd, env, signal, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
-}
 async function gitRaw(cwd, args, env = process.env, timeout = defaultGitTimeoutMs) {
-  return (await command('git', ['-c', 'core.longpaths=true',
+  return (await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
     '-c', 'protocol.file.allow=always', ...args], cwd, timeout, env)).stdout;
 }

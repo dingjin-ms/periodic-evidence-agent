@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -142,10 +143,10 @@ test('CLI FILTER reservation and proposer check preserve exact core results and 
   assert.equal(JSON.parse(checked.stdout).acceptance, 'not-inferred');
   const notAllowed = invoke('filter', 'one-shot-handoff', ['--execute']);
   assert.equal(notAllowed.status, 1);
-  assert.equal(JSON.parse(notAllowed.stderr).code, 'blocked-agent');
+  assert.equal(cliError(notAllowed.stderr).code, 'blocked-agent');
   const missingAuthorization = invoke('proposer', 'one-shot-handoff', ['--execute']);
   assert.equal(missingAuthorization.status, 1);
-  assert.equal(JSON.parse(missingAuthorization.stderr).error.code, 'blocked-authorization');
+  assert.equal(cliError(missingAuthorization.stderr).error.code, 'blocked-authorization');
   assert.equal(s.ledger.status().jobs.length, 0);
   writeFileSync(s.resultPath, bytes({ ...s.result, status: 'partial' }));
   const blocked = invoke('proposer', 'one-shot-handoff', ['--check']);

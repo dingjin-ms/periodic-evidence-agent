@@ -191,6 +191,15 @@ test('RSI failure does not launch a recursive failure review', async t => {
   assert.equal(result.failureReview, undefined);
 });
 
+test('FILTER throttling is not diagnosed as incomplete source collection', t => {
+  const s = fixture(t);
+  const { pins, runId } = normalizeLoopRequest(s.request);
+  const result = reviewLoopFailure(s.ledger, pins, { runId, stage: 'filter', state: 'blocked', statusCode: 429 });
+  const review = JSON.parse(readLoopArtifact(s.ledger, result.artifacts[1]));
+  assert.match(review.diagnosis, /filter stage/);
+  assert.doesNotMatch(review.proposal, /continuation of the confirmed rejected read/);
+});
+
 test('concurrent admission uses enforced ledger ownership', async t => {
   let release, entered;
   const started = new Promise(resolve => { entered = resolve; });

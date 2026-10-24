@@ -17,7 +17,7 @@ export function reviewLoopFailure(ledger, pins, failure, evidence = null) {
       receipt.artifacts.forEach(a => readLoopArtifact(ledger, a));
     for (const artifact of evidence?.artifacts ?? []) readLoopArtifact(ledger, artifact);
     const details = failureDetails(failure);
-    const throttled = details.statusCode === 429;
+    const throttled = failure.stage === 'collect' && details.statusCode === 429;
     const diagnosis = throttled
       ? 'A source returned HTTP 429; collection coverage remains incomplete.'
       : 'The admitted ' + failure.stage + ' stage did not produce a verified successful receipt.';

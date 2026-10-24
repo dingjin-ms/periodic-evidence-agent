@@ -13,6 +13,12 @@ export function cliEnvelope(result) {
     requireThat(texts?.length === 1, 'CLI fetch returned no unique structured/text envelope', 'blocked-protocol');
     try { envelope = JSON.parse(texts[0].text); }
     catch {
+      // Only parse the CLI's fixed HTTP error prefix, never its downstream body.
+      const http = result.isError && /^Remote tool 'fetch' failed: Response status code does not indicate success: ([45]\d{2}) \([^\r\n)]*\)\./.exec(texts[0].text);
+      if (http) {
+        const failure = cliFailure({ statusCode: Number(http[1]) });
+        throw Object.assign(new PilotError(failure.code, 'CLI fetch reported an HTTP failure; raw diagnostics suppressed'), failure);
+      }
       throw new PilotError(/AuthenticationRequired|authentication requires|sign in again/i.test(texts[0].text)
         ? 'blocked-auth' : 'blocked-protocol', 'CLI fetch returned non-JSON content; raw diagnostics suppressed');
     }

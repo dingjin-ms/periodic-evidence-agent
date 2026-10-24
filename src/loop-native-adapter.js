@@ -367,16 +367,19 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
         const artifacts = [];
         const transports = source.db.prepare('SELECT body FROM app_transport WHERE run_id=? ORDER BY rowid')
           .all(s.collectionRunId).map(row => {
-            const record = JSON.parse(row.body), call = record.call;
+            // WorkIQ wraps its call with transport state; ADO journals the call directly.
+            const record = JSON.parse(row.body), call = record.call ?? record;
+            const hasResponse = Object.hasOwn(call, 'response');
+            const state = record.state ?? (call.failure ? 'failed' : hasResponse ? 'received' : 'requested');
             if (record.captureSha256) {
               const artifact = { kind: 'capture', sha256: record.captureSha256 };
               const bytes = readLoopArtifact(source, artifact);
               ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(artifact.sha256, bytes);
               artifacts.push(artifact);
             }
-            return { state: record.state, callId: call.id, requestSha256: digest(call.request),
+            return { state, callId: call.id, requestSha256: digest(call.request),
               captureSha256: record.captureSha256 ?? null,
-              effectCertainty: record.state === 'received' || record.captureSha256 ? 'response-recorded' : 'unknown',
+              effectCertainty: hasResponse || record.captureSha256 ? 'response-recorded' : 'unknown',
               failure: call.failure ? { code: call.failure.code, ...failureDetails(call.failure) } : null };
           });
         return { availability: 'recorded', artifacts, transports,

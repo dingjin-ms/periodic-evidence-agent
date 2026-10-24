@@ -15,7 +15,7 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'native-mixed-throttled', 'mailbox-mixed-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
@@ -57,8 +57,10 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
       sources: [{ repoId: 'fixture', revision }] };
   }
   const throttled = mode.endsWith('-throttled');
+  const mixed = mode.includes('-mixed-');
+  if (mixed) c.dryRun.limits = { maxItems: 5, maxCalls: 5 };
   if (throttled) {
-    c.sources.ado.enabled = false;
+    c.sources.ado.enabled = mixed;
     c.sources.workiq.enabled = true; c.sources.workiq.scopeApproved = true;
     c.runtime.workiqCli = { enabled: true, executable: process.execPath, packageVersion: '1.0.1', timeoutMs: 1000 };
   }
@@ -69,7 +71,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
     workflowId: 'native-test', timeZone: 'Asia/Singapore', adapter: mode === 'mailbox' ? 'mailbox' : 'native', rsiMode: 'capture-only', deadlineAt,
     stateOwner: { id: 'synthetic', directory: join(root, 'state'), accessApproved: true, retentionDays: 7 },
     budgets: Object.fromEntries(loopStages.map(stage => [stage, { maxEffects: 10, timeoutMs: 600000 }])),
-    collection: { dryRun: true, passes: [throttled ? 'workiq:created' : 'ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
+    collection: { dryRun: true, passes: mixed ? ['ado:created', 'workiq:created'] : [throttled ? 'workiq:created' : 'ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
       approvalRef: 'synthetic-only', deadlineAt, maxItems: 10, maxCalls: 10 } },
     filterHost: { id: 'synthetic-host', approvalRef: 'synthetic-only', qualificationRef: verificationRef,
       maxRequests: 1, maxExecutionSeconds: 600, maxReservedTokens: 1000 } };
@@ -84,12 +86,12 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
       authorizeCommit: false, authorizePush: false, authorizeDraftPR: false }
   };
   const bundlePath = join(root, 'bundle.local.json'); writeFileSync(bundlePath, json(bundle));
-  let calls = 0;
+  let calls = 0, workiqCalls = 0;
   let failPreparation = mode === 'local-reconcile';
   const native = createNativeLoopAdapter({ collectionDependencies: {
     workiqFactory: async () => ({ read: async () => {
       calls++;
-      return calls === 1 ? { structuredContent: { results: [{ statusCode: 200,
+      return ++workiqCalls === 1 ? { structuredContent: { results: [{ statusCode: 200,
         data: { id: c.identity.objectId, userPrincipalName: c.identity.designatedUser } }] } }
         : { isError: true, structuredContent: { results: [{ statusCode: 429, retryAfterSeconds: 60 }] } };
     }, close: async () => {} }),
@@ -128,12 +130,20 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
     assert.equal(snapshot.evidence.sourceCoverageComplete, false);
     assert.equal(snapshot.evidence.transports.at(-1).failure.retryAfterSeconds, 60);
     assert.equal(snapshot.evidence.producerBindings.length, 1);
-    assert.equal(snapshot.evidence.passes[0].calls, 2);
+    assert.equal(snapshot.evidence.passes.at(-1).calls, 2);
+    if (mixed) {
+      assert.equal(snapshot.evidence.passes[0].state, 'complete');
+      assert.equal(snapshot.evidence.transports.length, 4);
+      assert.equal(snapshot.evidence.transports[0].state, 'received');
+      assert.equal(snapshot.evidence.transports[0].effectCertainty, 'response-recorded');
+      assert.match(snapshot.evidence.transports[0].requestSha256, /^[a-f0-9]{64}$/);
+      assert.equal(snapshot.evidence.transports[0].failure, null);
+    }
     assert.equal(loopOperation(ledger, waiting.runId + ':filter'), null);
     assert.equal(loopOperation(ledger, waiting.runId + ':rsi'), null);
-    assert.equal(calls, 2);
+    assert.equal(calls, mixed ? 4 : 2);
     assert.deepEqual(await runEvidenceLoop(request, ledger, adapters), waiting);
-    assert.equal(calls, 2);
+    assert.equal(calls, mixed ? 4 : 2);
     return;
   }
   if (mode === 'local-rsi-recover') {

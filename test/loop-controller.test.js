@@ -184,6 +184,27 @@ test('review completion survives lost acknowledgment and missing artifacts prese
   assert.equal(s.ledger.db.prepare("SELECT COUNT(*) n FROM operations WHERE kind='loop-failure-review'").get().n, 1);
 });
 
+for (const location of ['evidence', 'receipt']) test('cached review rejects deleted ' + location + ' capture', t => {
+  const s = fixture(t);
+  const { pins, runId } = normalizeLoopRequest(s.request);
+  const artifact = captureArtifact(s.ledger, { diagnostic: 'original stage evidence' });
+  const failure = { runId, stage: 'collect', state: 'blocked', statusCode: 429,
+    receipts: location === 'receipt' ? [{ artifacts: [artifact] }] : [] };
+  const evidence = { artifacts: location === 'evidence' ? [artifact] : [] };
+  const first = reviewLoopFailure(s.ledger, pins, failure, evidence);
+  assert.equal(first.state, 'diagnosed-and-proposed');
+  s.reopen();
+  s.ledger.db.prepare('DELETE FROM captures WHERE hash=?').run(artifact.sha256);
+  // The cached review and snapshot still exist; their referenced evidence does not.
+  first.artifacts.forEach(a => readLoopArtifact(s.ledger, a));
+  const repeated = reviewLoopFailure(s.ledger, pins, failure, evidence);
+  assert.equal(repeated.state, 'blocked');
+  assert.equal(repeated.code, 'blocked-reconciliation');
+  assert.equal(repeated.operationId, first.operationId);
+  assert.equal(failure.state, 'blocked');
+  assert.equal(s.ledger.db.prepare("SELECT COUNT(*) n FROM operations WHERE kind='loop-failure-review'").get().n, 1);
+});
+
 test('RSI failure does not launch a recursive failure review', async t => {
   const s = fixture(t, 'direct', { uncertain: 'rsi' });
   const result = await s.run();

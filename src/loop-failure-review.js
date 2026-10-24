@@ -8,14 +8,14 @@ export function reviewLoopFailure(ledger, pins, failure, evidence = null) {
   const snapshot = { format: 'loop-failure-snapshot-v1', pins, failure, evidence };
   const id = failure.runId + ':failure-review:' + digest(snapshot);
   try {
+    for (const receipt of failure.receipts ?? [])
+      receipt.artifacts.forEach(a => readLoopArtifact(ledger, a));
+    for (const artifact of evidence?.artifacts ?? []) readLoopArtifact(ledger, artifact);
     const prior = loopOperation(ledger, id);
     if (prior?.detail.result) {
       prior.detail.result.artifacts.forEach(a => readLoopArtifact(ledger, a));
       return prior.detail.result;
     }
-    for (const receipt of failure.receipts ?? [])
-      receipt.artifacts.forEach(a => readLoopArtifact(ledger, a));
-    for (const artifact of evidence?.artifacts ?? []) readLoopArtifact(ledger, artifact);
     const details = failureDetails(failure);
     const throttled = failure.stage === 'collect' && details.statusCode === 429;
     const diagnosis = throttled

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -426,6 +427,101 @@ test('app-hosted semantic resumption cannot renew an expired arm deadline', asyn
   assert.equal(expired.error.code, 'blocked-budget');
   assert.equal(commands, previousCommands);
   assert.equal(ctx.ledger.db.prepare("SELECT detail FROM operations WHERE kind='rsi-baseline-evaluation'").get().detail, original);
+});
+
+test('raw retention uses one fresh pre-write scan and preserves native and post-write storage guards', async t => {
+  for (const scenario of ['ordinary', 'native-bytes', 'native-link', 'manifest-overflow']) await t.test(scenario, async t => {
+    const ctx = fixture(t, config => {
+      config.rsi.automation.executionMode = 'app-hosted';
+      delete config.rsi.automation.authoringProvider;
+      delete config.rsi.automation.maxAiCredits;
+      config.authoringProviders = {};
+      const reference = config.rsi.automation.referenceCheckout;
+      cpSync(fileURLToPath(new URL('../.github/skills', import.meta.url)), join(reference, '.github', 'skills'),
+        { recursive: true });
+      execFileSync('git', ['-c', 'core.autocrlf=false', 'add', '.'], { cwd: reference, windowsHide: true });
+      execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'Pin fixture role skills'], { cwd: reference, windowsHide: true });
+      config.rsi.automation.baselineRevision = execFileSync('git', ['rev-parse', 'HEAD'],
+        { cwd: reference, encoding: 'utf8', windowsHide: true }).trim();
+      config.rsi.automation.evaluation = appFlowProfile(config);
+    });
+    let commands = 0, directory, tracking = false, outputPath;
+    const events = [];
+    const originalReadDirectory = fs.readdirSync, originalWrite = fs.writeFileSync;
+    const readDirectory = t.mock.method(fs, 'readdirSync', (...args) => {
+      if (tracking && args[0] === directory) events.push('scan');
+      return originalReadDirectory(...args);
+    });
+    const write = t.mock.method(fs, 'writeFileSync', (...args) => {
+      if (tracking && String(args[0]).endsWith('payload.json')) {
+        events.push('payload');
+        outputPath ??= args[0];
+      }
+      return originalWrite(...args);
+    });
+    syncBuiltinESMExports();
+    t.after(() => { readDirectory.mock.restore(); write.mock.restore(); syncBuiltinESMExports(); });
+    const treeBytes = path => {
+      const info = fs.lstatSync(path);
+      return info.isDirectory() ? originalReadDirectory(path).reduce((sum, name) =>
+        sum + treeBytes(join(path, name)), 0) : info.size;
+    };
+    const dependencies = {
+      launch: () => assert.fail('no model'),
+      executeFlowCommand: async (_executable, args) => {
+        commands++;
+        if (commands > 1) throw new Error('Synthetic storage probe stops before the next native execution');
+        const index = args.indexOf('agent');
+        const output = { stdout: json({ format: 'agent-operation-result-v1', role: args[index + 1],
+          operation: args[index + 2], kind: 'result', result: {} }), stderr: '' };
+        if (commands === 1) {
+          const operation = ctx.ledger.db.prepare("SELECT detail FROM operations WHERE kind='rsi-execution'").get();
+          directory = JSON.parse(operation.detail).execution.directory;
+          const limit = ctx.config.rsi.automation.maxWorkspaceBytes;
+          if (scenario === 'native-link') {
+            const source = join(ctx.root, 'native-link-source');
+            writeFileSync(source, 'synthetic native mutation');
+            fs.linkSync(source, join(directory, 'native-link'));
+          } else if (scenario === 'native-bytes') {
+            writeFileSync(join(directory, 'native-growth'), Buffer.alloc(limit + 1));
+          } else if (scenario === 'manifest-overflow') {
+            const bytes = treeBytes(directory) + treeBytes(join(ctx.config.stateDirectory, 'af')) +
+              treeBytes(join(ctx.config.stateDirectory, 'runs'));
+            const payloadBytes = Buffer.byteLength(json({ ...output, exitCode: 0 }));
+            writeFileSync(join(directory, 'native-growth'), Buffer.alloc(limit - bytes - payloadBytes));
+          }
+          tracking = true;
+        }
+        return output;
+      }
+    };
+    const first = (await finishApp(ctx.config, ctx.ledger, 'flow', dependencies)).rsi.execution;
+    assert.equal(first.state, 'awaiting-host', JSON.stringify(first));
+    const invoke = hostAction => runRsiPending(ctx.config, ctx.ledger, { runId: 'flow', hostAction }, dependencies);
+    const action = { executionId: first.executionId, phase: 'authoring', requestSha256: first.invocation.sha256,
+      hostSessionId: 'offline-storage-fixture', action: 'claim' };
+    await invoke(action);
+    writeFileSync(join(first.invocation.request.workspace, 'src', 'flow.mjs'), fixed);
+    const result = await invoke({ ...action, action: 'complete', result: decision });
+    tracking = false;
+    if (scenario === 'ordinary') {
+      assert.equal(result.state, 'blocked', JSON.stringify(result));
+      assert.equal(result.error.code, 'failed', 'stop at the injected native boundary, not an expired budget');
+      assert.deepEqual(events.slice(0, 3), ['scan', 'payload', 'scan'],
+        'reuse only the current pre-write measurement, then rescan the actual retained files');
+      assert.equal(commands, 2);
+    } else {
+      assert.equal(result.state, 'blocked', JSON.stringify(result));
+      assert.equal(result.error.code, scenario === 'native-link' ? 'blocked-scope' : 'blocked-budget');
+      assert.equal(commands, 1, 'storage violations cannot admit the next native command');
+      if (scenario === 'manifest-overflow') {
+        assert.ok(outputPath, 'payload alone fits the pre-write measurement');
+        assert.ok(existsSync(join(dirname(outputPath), 'manifest.json')));
+        assert.match(result.error.message, /storage bound/);
+      } else assert.equal(outputPath, undefined, 'native mutations must be checked before retaining output');
+    }
+  });
 });
 
 test('authorized draft adapter follows qualified evidence and reconciles without another model or create', async t => {

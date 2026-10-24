@@ -222,14 +222,16 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     requireThat(json(execution.controller) === json(pinRsiController()),
       'RSI loaded controller changed', 'blocked-reconciliation');
     pinRsiEvaluation(automation.evaluation, execution.workspace);
-    storageBytes();
+    const bytes = storageBytes();
     remaining(execution);
+    return bytes;
   };
   function retainRaw(key, value) {
-    check();
     const bytes = json(value);
+    // Serialize before measuring; reuse only this synchronous pre-write check.
+    const usedBytes = check();
     requireThat(Buffer.byteLength(bytes) <= config.rsi.maxObservationBytes &&
-      storageBytes() + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
+      usedBytes + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
     'RSI raw artifact exceeds the execution storage bound', 'blocked-budget');
     const rawRun = `${rawPrefix}${hash(key).slice(0, 24)}`;
     const artifact = persistRunArtifact(config, rawRun, 'payload.json', bytes);

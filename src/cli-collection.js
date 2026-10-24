@@ -2,6 +2,7 @@ import { appendApp, appStatus, noCredentials, workiqContinuation } from './app-n
 import { workiqCli, cliEnvelope, cliFailure } from './workiq-cli.js';
 import { principalPath, verifyPrincipal, validateWorkiqPath, messageSelect } from './runtime.js';
 import { hash, json, now, uuid, requireThat, safeError, PilotError } from './common.js';
+import { failureDetails } from './failure-details.js';
 
 function storedRun(ledger, runId) {
   const row = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(runId);
@@ -33,6 +34,7 @@ function capture(ledger, runId, raw) {
   ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(digest, bytes);
   ledger.db.prepare('INSERT OR IGNORE INTO app_artifacts VALUES(?,?,?)')
     .run(runId, `sqlite:capture:${digest}`, 'workiq-cli-mcp-response');
+  return digest;
 }
 
 export async function collectCliWorkiq(config, ledger, runId, factory = workiqCli, pass = 'workiq:created') {
@@ -79,28 +81,29 @@ export async function collectCliWorkiq(config, ledger, runId, factory = workiqCl
       ledger.db.prepare('INSERT INTO app_transport VALUES(?,?,?,?)').run(call.id, runId, pass,
         json({ execution: 'local-workiq-cli-stdio', state: 'requested', call }));
       readCalls++;
+      let captureSha256;
       try {
         const raw = await client.read(path);
         call.observedAt = now();
-        capture(ledger, runId, raw);
+        captureSha256 = capture(ledger, runId, raw);
         const envelope = cliEnvelope(raw), entry = envelope.results[0];
         if (entry.statusCode !== 200 || !entry.data || typeof entry.data !== 'object') {
           const failure = cliFailure(envelope);
           call.failure = failure;
-          throw new PilotError(failure.code, 'CLI entity read failed; see recorded response and safe failure category');
+          throw Object.assign(new PilotError(failure.code, 'CLI entity read failed; see recorded response and safe failure category'), failure);
         }
         call.response = envelope;
         if (path === principalPath) verifyPrincipal(config, entry.data);
         ledger.db.prepare('UPDATE app_transport SET body=? WHERE id=?')
-          .run(json({ execution: 'local-workiq-cli-stdio', state: 'received', call }), call.id);
+          .run(json({ execution: 'local-workiq-cli-stdio', state: 'received', call, captureSha256 }), call.id);
         status = await appendApp(config, ledger, runId, { eventId: `cli-${call.id}`, pass, calls: [call] },
           { directWorkiqVerified: true });
       } catch (error) {
         call.observedAt ??= now();
-        const failure = call.failure ?? { code: error.code ?? 'failed-source' };
+        const failure = call.failure ?? { code: error.code ?? 'failed-source', ...failureDetails(error) };
         if (!call.response) call.failure = failure;
         ledger.db.prepare('UPDATE app_transport SET body=? WHERE id=?')
-          .run(json({ execution: 'local-workiq-cli-stdio', state: 'failed', call, error: safeError(error) }), call.id);
+          .run(json({ execution: 'local-workiq-cli-stdio', state: 'failed', call, captureSha256, error: safeError(error) }), call.id);
         throw error;
       }
       const result = status.collection.find(p => p.pass === pass);

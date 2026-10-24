@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { configAt, hash, json, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
-import { loopStages, normalizeLoopRequest, fileArtifact, digest, runEvidenceLoop, loopOperation } from '../src/loop-controller.js';
+import { loopStages, normalizeLoopRequest, fileArtifact, digest, runEvidenceLoop, loopOperation, readLoopArtifact } from '../src/loop-controller.js';
 import { createNativeLoopAdapter, nativeLoopSettings } from '../src/loop-native-adapter.js';
 import { createMailboxLoopAdapter } from '../src/loop-mailbox-adapter.js';
 import { readOneShotCollectionReceipt, oneShotCollectionStatus } from '../src/one-shot-collection.js';
@@ -15,7 +15,7 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
@@ -56,6 +56,12 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
       maxToolCalls: 5, timeoutMs: 10000, maxSourceBytes: 10000, maxRequestBytes: 1000000,
       sources: [{ repoId: 'fixture', revision }] };
   }
+  const throttled = mode.endsWith('-throttled');
+  if (throttled) {
+    c.sources.ado.enabled = false;
+    c.sources.workiq.enabled = true; c.sources.workiq.scopeApproved = true;
+    c.runtime.workiqCli = { enabled: true, executable: process.execPath, packageVersion: '1.0.1', timeoutMs: 1000 };
+  }
   const collectorConfig = join(root, 'collector.local.json'), proposerConfig = join(root, 'proposer.local.json');
   writeFileSync(collectorConfig, json(c)); writeFileSync(proposerConfig, json(c));
   const deadlineAt = new Date(Date.now() + 600000).toISOString();
@@ -63,7 +69,7 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
     workflowId: 'native-test', timeZone: 'Asia/Singapore', adapter: mode === 'mailbox' ? 'mailbox' : 'native', rsiMode: 'capture-only', deadlineAt,
     stateOwner: { id: 'synthetic', directory: join(root, 'state'), accessApproved: true, retentionDays: 7 },
     budgets: Object.fromEntries(loopStages.map(stage => [stage, { maxEffects: 10, timeoutMs: 600000 }])),
-    collection: { dryRun: true, passes: ['ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
+    collection: { dryRun: true, passes: [throttled ? 'workiq:created' : 'ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
       approvalRef: 'synthetic-only', deadlineAt, maxItems: 10, maxCalls: 10 } },
     filterHost: { id: 'synthetic-host', approvalRef: 'synthetic-only', qualificationRef: verificationRef,
       maxRequests: 1, maxExecutionSeconds: 600, maxReservedTokens: 1000 } };
@@ -81,13 +87,19 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
   let calls = 0;
   let failPreparation = mode === 'local-reconcile';
   const native = createNativeLoopAdapter({ collectionDependencies: {
+    workiqFactory: async () => ({ read: async () => {
+      calls++;
+      return calls === 1 ? { structuredContent: { results: [{ statusCode: 200,
+        data: { id: c.identity.objectId, userPrincipalName: c.identity.designatedUser } }] } }
+        : { isError: true, structuredContent: { results: [{ statusCode: 429, retryAfterSeconds: 60 }] } };
+    }, close: async () => {} }),
     adoTransport: async () => async () => { calls++; return { asOf: '2026-10-23T00:00:00Z', workItems: [] }; }
   }, filterDependencies: { counter: async (_config, input) => {
     if (failPreparation) throw new Error('Known pre-submission preparation failure');
     return { sha256: input.sha256, model: input.model, tokenizer: input.tokenizer, tokens: 5 };
   },
     connect: async () => { throw new Error('An empty cohort must not launch a model'); } } });
-  const adapter = mode === 'mailbox' ? createMailboxLoopAdapter(native) : mode === 'local-rsi-recover'
+  const adapter = mode.startsWith('mailbox') ? createMailboxLoopAdapter(native) : mode === 'local-rsi-recover'
     ? { ...native, execute: (request, ledger) => request.stage === 'rsi'
       ? { state: 'blocked', code: 'fixture-capture-hold', action: 'Exercise explicit original-producer recovery' }
       : native.execute(request, ledger) } : native;
@@ -103,6 +115,27 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   const adapters = Object.fromEntries(loopStages.map(stage => [stage, adapter]));
   let waiting = await runEvidenceLoop(request, ledger, adapters);
+  if (throttled) {
+    if (mode.startsWith('mailbox')) {
+      await adapter.drain(loopOperation(ledger, waiting.runId + ':collect').detail.request, ledger);
+      waiting = await runEvidenceLoop(request, ledger, adapters);
+    }
+    assert.equal(waiting.state, 'blocked', json(waiting));
+    assert.equal(waiting.statusCode, 429, json(waiting));
+    assert.equal(waiting.retryAfterSeconds, 60);
+    assert.equal(waiting.failureReview.state, 'diagnosed-and-proposed', json(waiting));
+    const snapshot = JSON.parse(readLoopArtifact(ledger, waiting.failureReview.artifacts[0]));
+    assert.equal(snapshot.evidence.sourceCoverageComplete, false);
+    assert.equal(snapshot.evidence.transports.at(-1).failure.retryAfterSeconds, 60);
+    assert.equal(snapshot.evidence.producerBindings.length, 1);
+    assert.equal(snapshot.evidence.passes[0].calls, 2);
+    assert.equal(loopOperation(ledger, waiting.runId + ':filter'), null);
+    assert.equal(loopOperation(ledger, waiting.runId + ':rsi'), null);
+    assert.equal(calls, 2);
+    assert.deepEqual(await runEvidenceLoop(request, ledger, adapters), waiting);
+    assert.equal(calls, 2);
+    return;
+  }
   if (mode === 'local-rsi-recover') {
     assert.equal(waiting.code, 'fixture-capture-hold', json(waiting));
     const originalCalls = calls, requestPath = join(root, 'rsi-request.json');

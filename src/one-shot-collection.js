@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hash, json, now, requireThat, safeError, utc, uuid } from './common.js';
+import { failureDetails } from './failure-details.js';
 import { beginApp, openApp, collectAppAdo, reconcileAppAdo, noCredentials } from './app-native.js';
 import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
 import { loadFilterCorpus } from './filter.js';
@@ -51,9 +52,9 @@ function checkedConfig(config, ledger, row) {
   'One-shot configuration or state owner changed; do not resume under new permissions',
   'blocked-reconciliation');
 }
-function block(ledger, runId, code, action) {
+function block(ledger, runId, code, action, details = {}) {
   ledger.db.prepare('UPDATE one_shot_collections SET blocker=? WHERE id=?')
-    .run(json({ code, action }), runId);
+    .run(json({ code, action, ...failureDetails(details) }), runId);
   return oneShotCollectionStatus(ledger, runId);
 }
 function passRows(ledger, runId) {
@@ -277,7 +278,7 @@ export async function advanceOneShotCollection(config, ledger, runId, {
       ledger.db.prepare('UPDATE one_shot_collection_passes SET state=?,result=? WHERE run_id=? AND pass=?')
         .run(complete ? 'complete' : 'blocked', result ? json(result) : null, runId, pass.pass);
       if (!complete) return block(ledger, runId, result?.state ?? 'blocked-reconciliation',
-        `${pass.pass} is incomplete or unqualified. Preserve reservations and source receipts; no retry or downstream release.`);
+        `${pass.pass} is incomplete or unqualified. Preserve reservations and source receipts; no retry or downstream release.`, result?.error);
       ledger.db.prepare('UPDATE one_shot_collections SET blocker=NULL WHERE id=?').run(runId);
     }
     row = stored(ledger, runId);

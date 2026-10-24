@@ -46,6 +46,22 @@ const message = (id, createdDateTime = '2026-10-08T01:00:00Z') => ({
   webUrl: `https://example.invalid/${id}`
 });
 
+for (const isError of [true, false]) test('429 details survive collection, isError=' + isError, async t => {
+  const { config, ledger } = setup(t);
+  const tr = transport(config, [{ isError, structuredContent: { results: [{ statusCode: 429,
+    retryAfterSeconds: 60, errorCode: 'Throttled', rawDiagnostic: 'must-not-escape' }] } }]);
+  const result = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const pass = result.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'blocked-throttled');
+  assert.equal(pass.error.statusCode, 429); assert.equal(pass.error.retryAfterSeconds, 60);
+  const row = JSON.parse(ledger.db.prepare("SELECT body FROM app_transport ORDER BY rowid DESC LIMIT 1").get().body);
+  assert.equal(row.call.failure.retryAfterSeconds, 60);
+  assert.match(row.captureSha256, /^[a-f0-9]{64}$/);
+  assert.equal(row.call.failure.rawDiagnostic, undefined);
+  assert.equal(tr.paths.length, 2); assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.equal(pass.nextRequest, null);
+});
+
 test('CLI collector journals all calls, old-root replies, provenance and complete cursor without dispatch', async t => {
   const { config, ledger } = setup(t);
   const tr = transport(config, [

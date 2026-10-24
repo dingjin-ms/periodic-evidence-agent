@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configAt, hash, json, requireThat } from './common.js';
+import { failureDetails } from './failure-details.js';
 import { Ledger } from './ledger.js';
 import { beginOneShotCollection, advanceOneShotCollection, readOneShotCollectionReceipt,
   oneShotCollectionStatus } from './one-shot-collection.js';
@@ -21,7 +22,7 @@ export function loopAdapterRevision() {
     .map(name => [name, hash(readFileSync(join(sourceDirectory, name)))]));
 }
 export const nativeBinding = () => ({ id: 'local-one-shot-v1', revision: loopAdapterRevision() });
-const blocked = (code, action) => ({ state: 'blocked', code, action });
+const blocked = (code, action, details) => ({ state: 'blocked', code, action, ...failureDetails(details) });
 const awaiting = action => ({ state: 'awaiting-host', code: 'host-continuation-required', action });
 const positive = n => Number.isFinite(n) && n > 0;
 
@@ -237,7 +238,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
         if (!resume) beginOneShotCollection(s.collector, collector, collectionInput(s, request));
         const status = await advanceOneShotCollection(s.collector, collector, request.runId, collectionDependencies);
         if (!status.sourceCoverageComplete) return blocked(status.blocker?.code ?? 'partial-collection',
-          status.blocker?.action ?? 'Selected source coverage is incomplete; reconcile original collection passes.');
+          status.blocker?.action ?? 'Selected source coverage is incomplete; reconcile original collection passes.', status.blocker);
         return complete('collected', readOneShotCollectionReceipt(s.collector, collector, request.runId), [request.runId]);
       } finally { collector.close(); }
     }
@@ -354,6 +355,40 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
     }
   }
   return { binding, capabilities: ['collect', 'filter', 'proposer', 'rsi'],
+    failureEvidence(request, ledger) {
+      const s = nativeLoopSettings(request.pins, request.runId);
+      const path = join(s.collector.stateDirectory, 'app-native', 'dry-runs', s.collectionRunId, 'ledger.sqlite');
+      if (!existsSync(path)) return { availability: 'source-ledger-missing', artifacts: [],
+        effectCertainty: 'unknown; no source replay permitted' };
+      const { ledger: source } = openApp(s.collector, s.collectionRunId, true);
+      const collector = new Ledger(s.collector.stateDirectory);
+      try {
+        const status = oneShotCollectionStatus(collector, s.collectionRunId);
+        const artifacts = [];
+        const transports = source.db.prepare('SELECT body FROM app_transport WHERE run_id=? ORDER BY rowid')
+          .all(s.collectionRunId).map(row => {
+            const record = JSON.parse(row.body), call = record.call;
+            if (record.captureSha256) {
+              const artifact = { kind: 'capture', sha256: record.captureSha256 };
+              const bytes = readLoopArtifact(source, artifact);
+              ledger.db.prepare('INSERT OR IGNORE INTO captures VALUES(?,?)').run(artifact.sha256, bytes);
+              artifacts.push(artifact);
+            }
+            return { state: record.state, callId: call.id, requestSha256: digest(call.request),
+              captureSha256: record.captureSha256 ?? null,
+              effectCertainty: record.state === 'received' || record.captureSha256 ? 'response-recorded' : 'unknown',
+              failure: call.failure ? { code: call.failure.code, ...failureDetails(call.failure) } : null };
+          });
+        return { availability: 'recorded', artifacts, transports,
+          producerBindings: source.all('rsiFlowBinding'),
+          configurationSha256: status.configSha256, requestSha256: status.requestSha256,
+          sourceCoverageComplete: status.sourceCoverageComplete,
+          reserved: status.reserved,
+          passes: status.passes.map(p => ({ pass: p.pass, state: p.state, reservation: p.reservation,
+            calls: p.result?.readCalls ?? null, examined: p.result?.examinedRecords ?? null,
+            evidence: p.result?.evidenceCount ?? null, failure: failureDetails(p.result?.error) })) };
+      } finally { collector.close(); source.close(); }
+    },
     acquireRun: ({ pins, runId }, ledger) => {
       const s = nativeLoopSettings(pins, runId);
       if (!s.reusedReceipt) return () => {};

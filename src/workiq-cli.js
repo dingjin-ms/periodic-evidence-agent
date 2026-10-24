@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PilotError, requireThat, positive } from './common.js';
 import { principalPath, validateWorkiqPath } from './runtime.js';
+import { failureDetails } from './failure-details.js';
 
 export function cliEnvelope(result) {
   let envelope = result?.structuredContent;
@@ -16,7 +17,10 @@ export function cliEnvelope(result) {
         ? 'blocked-auth' : 'blocked-protocol', 'CLI fetch returned non-JSON content; raw diagnostics suppressed');
     }
   }
-  requireThat(!result.isError, 'CLI fetch reported a tool error', cliFailure(envelope).code);
+  if (result.isError) {
+    const failure = cliFailure(envelope);
+    throw Object.assign(new PilotError(failure.code, 'CLI fetch reported a tool error'), failure);
+  }
   requireThat(envelope && Array.isArray(envelope.results) && envelope.results.length === 1,
     'CLI fetch returned an unrecognized entity envelope', 'blocked-protocol');
   return envelope;
@@ -28,14 +32,7 @@ export function cliFailure(envelope) {
   const policy = entry?.statusCode === 403 || /AccessDenied|PolicyDenied|Forbidden/i.test(entry?.errorCode ?? '');
   const code = auth ? 'blocked-auth' : policy ? 'blocked-permission'
     : entry?.statusCode === 429 ? 'blocked-throttled' : 'failed-source';
-  const result = { code };
-  if (Number.isInteger(entry?.statusCode)) result.statusCode = entry.statusCode;
-  if (Number.isSafeInteger(entry?.retryAfterSeconds) && entry.retryAfterSeconds >= 0)
-    result.retryAfterSeconds = entry.retryAfterSeconds;
-  for (const key of ['errorCode', 'recoveryAction']) {
-    if (typeof entry?.[key] === 'string' && /^[\w.-]{1,128}$/.test(entry[key])) result[key] = entry[key];
-  }
-  return result;
+  return { code, ...failureDetails(entry) };
 }
 
 // No arbitrary tool/method surface escapes this module. Diagnostics are discarded,

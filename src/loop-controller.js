@@ -2,6 +2,8 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { hash, now, requireThat, safeError, utc, windowCheck } from './common.js';
+import { failureDetails } from './failure-details.js';
+import { reviewLoopFailure } from './loop-failure-review.js';
 
 export const loopStages = Object.freeze(['collect', 'filter', 'proposer', 'rsi']);
 export const canonical = value => JSON.stringify(value, (_key, item) =>
@@ -107,8 +109,18 @@ export async function runEvidenceLoop(input, ledger, adapters) {
   requireThat(realpathSync(ledger.directory) === realpathSync(pins.stateOwner.directory), 'Wrong state owner');
   const lock = 'evidence-loop:' + runId, owner = ledger.acquire(lock);
   const releases = [];
+  const receipts = [];
+  let activeRole = null;
   const report = (state, extra = {}) => ({ format: 'evidence-loop-report-v1', runId, state,
     window: pins.window, plan, pinsSha256: digest(pins), ...extra });
+  const failureReview = async value => {
+    if (!activeRole || activeRole.stage === 'rsi') return value;
+    try {
+      const evidence = await adapters[activeRole.stage].failureEvidence?.(activeRole, ledger) ?? null;
+      value.failureReview = reviewLoopFailure(ledger, pins, value, evidence);
+    } catch (error) { value.failureReview = { state: 'blocked', ...safeError(error) }; }
+    return value;
+  };
   try {
     const slot = 'loop-occurrence:' + digest({ workflowId: pins.workflowId, timeZone: pins.timeZone, window: pins.window });
     ledger.transaction(() => {
@@ -149,17 +161,18 @@ export async function runEvidenceLoop(input, ledger, adapters) {
         if (!loopOperation(ledger, id)) ledger.operation(id, runId, 'loop-reservation', pins.budgets[stage]);
       }
     });
-    const receipts = [];
     for (const stage of plan) {
       const operationId = runId + ':' + stage;
       const role = { format: 'loop-role-request-v1', operationId, runId, stage, pins,
         upstream: structuredClone(receipts), budget: pins.budgets[stage] };
+      activeRole = null;
       const operation = loopOperation(ledger, operationId);
       const filter = receipts.find(r => r.operationId === runId + ':filter');
       const skipped = stage === 'proposer' && filter.outcome !== 'eligible';
       requireThat(!operation || digest(operation.detail.request) === digest(role),
         'Persisted role request changed', 'blocked-reconciliation');
       if (operation?.detail.receipt) {
+        activeRole = role;
         validateReceipt(ledger, role, operation.detail.receipt);
         if (!skipped) await adapters[stage].verify(role, operation.detail.receipt, ledger);
         receipts.push(operation.detail.receipt);
@@ -169,13 +182,16 @@ export async function runEvidenceLoop(input, ledger, adapters) {
         requireThat(Date.now() < Date.parse(pins.deadlineAt), 'Run admission deadline exhausted', 'blocked-budget');
         ledger.operation(operationId, runId, 'loop-role', { request: role, state: 'intent' });
       }
+      activeRole = role;
       const result = skipped ? { state: 'complete', receipt: roleReceipt(role, filter.outcome, filter.artifacts, filter.ledgerIds) }
         : await adapters[stage][operation ? 'resume' : 'execute'](role, ledger);
       requireThat(['complete', 'awaiting-host', 'blocked'].includes(result?.state), 'Invalid adapter outcome', 'blocked-reconciliation');
       if (result.state !== 'complete') {
         requireThat(text(result.code) && text(result.action), 'Adapter hold requires a concrete code/action');
         ledger.finishOperation(operationId, 'started', { request: role, state: result.state, outcome: result });
-        const value = report(result.state, { stage, code: result.code, action: result.action, receipts });
+        const value = report(result.state, { stage, code: result.code, action: result.action,
+          ...failureDetails(result), receipts });
+        if (result.state === 'blocked') await failureReview(value);
         ledger.finishOperation(runId, 'started', { pins, report: value });
         return value;
       }
@@ -188,7 +204,9 @@ export async function runEvidenceLoop(input, ledger, adapters) {
     ledger.finishOperation(runId, 'recorded', { pins, report: value });
     return value;
   } catch (error) {
-    const value = report('blocked', { ...safeError(error), reconciliationRequired: true });
+    const value = report('blocked', { ...safeError(error), reconciliationRequired: true,
+      ...(activeRole ? { stage: activeRole.stage, receipts } : {}) });
+    await failureReview(value);
     const original = loopOperation(ledger, runId);
     if (original && digest(original.detail.pins) === digest(pins))
       ledger.finishOperation(runId, 'started', { pins, report: value });

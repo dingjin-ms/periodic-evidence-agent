@@ -8,7 +8,7 @@ import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { configAt, hash, json } from '../src/common.js';
 import { beginApp, openApp, endApp, appendApp } from '../src/app-native.js';
-import { bindRsiProducer, rsiWork, rsiPolicy, readRsiEvent } from '../src/rsi-flow.js';
+import { bindRsiProducer, isCleanRsiHead, rsiWork, rsiPolicy, readRsiEvent } from '../src/rsi-flow.js';
 import { principalPath } from '../src/runtime.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -76,6 +76,46 @@ function proposal(ctx, request) {
     ...source, changedFiles: ['test/coverage.txt'],
     artifacts: [{ role: 'analysis', ref: 'fixture:analysis', sha256: hash('fixture analysis') }]
   };
+}
+
+test('RSI status snapshots require one exact HEAD and no changed or unknown entries', () => {
+  const revision = 'a'.repeat(40);
+  const headers = `# branch.oid ${revision}\n# branch.head (detached)`;
+  assert.equal(isCleanRsiHead(headers, revision), true);
+  assert.equal(isCleanRsiHead(headers.replace('(detached)', 'main') +
+    '\r\n# branch.upstream origin/main\r\n# branch.ab +0 -0', revision), true);
+  for (const status of ['', `# branch.oid ${revision}`, headers.replace(revision, 'b'.repeat(40)),
+    headers.replace(revision, '(initial)'), `${headers}\n# branch.oid ${revision}`,
+    `${headers}\n1 .M N... 100644 100644 100644 ${revision} ${revision} tracked`,
+    `${headers}\n1 M. N... 100644 100644 100644 ${revision} ${revision} staged`,
+    `${headers}\n2 R. N... 100644 100644 100644 ${revision} ${revision} R100 renamed\toriginal`,
+    `${headers}\nu UU N... conflict`, `${headers}\n? "# branch.oid ${revision}"`,
+    `${headers}\nunexpected diagnostic`])
+    assert.equal(isCleanRsiHead(status, revision), false, status);
+});
+
+for (const condition of ['untracked', 'unstaged', 'staged', 'wrong-head']) {
+  test(`RSI baseline snapshot refuses ${condition} before claiming work`, t => {
+    const ctx = fixture(t);
+    const request = ctx.request(ctx.capture().observationId);
+    const reference = ctx.config.rsi.targetBaseline.referenceCheckout;
+    const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'user.name=Fixture',
+      '-c', 'user.email=fixture@example.invalid', ...args],
+    { cwd: reference, encoding: 'utf8', timeout: 10000, windowsHide: true });
+    if (condition === 'wrong-head') {
+      git(['checkout', '--quiet', '-b', 'other']);
+      git(['commit', '--quiet', '--allow-empty', '-m', 'Different HEAD']);
+    } else {
+      const path = condition === 'untracked' ? 'extra.txt' : join('test', 'coverage.txt');
+      writeFileSync(join(reference, path), 'changed fixture\n');
+      if (condition === 'staged') git(['add', '--', path]);
+    }
+    const original = json(ctx.ledger.latest('rsiWorkItem'));
+    assert.throws(() => rsiWork(ctx.config, ctx.ledger, 'claim', request),
+      /target baseline is stale/);
+    assert.equal(json(ctx.ledger.latest('rsiWorkItem')), original);
+  });
 }
 
 test('a caller cannot hide a protected ancestor behind a substituted baseline', t => {

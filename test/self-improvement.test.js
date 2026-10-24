@@ -1,19 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, rmSync, symlinkSync, writeFileSync
+  readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hash, json, uuid, validateRecord } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
-  initializeSelfImprovement, openSelfImprovementStore, persistSelfImprovementArtifact,
+  initializeSelfImprovement, inspectRsiPath, openSelfImprovementStore, persistSelfImprovementArtifact,
   prepareSelfImprovementExperiment, recordSelfImprovementDecision, recordSelfImprovementObservation,
   reserveSelfImprovementEvaluation, selfImprovementOperation, selfImprovementStatus,
-  selfImprovementRoot, selfImprovementWorkload, updateSelfImprovementOperation
+  rsiDirectoryBytes, selfImprovementRoot, selfImprovementWorkload, updateSelfImprovementOperation
 } from '../src/self-improvement.js';
 
 function fixture(t) {
@@ -55,6 +58,30 @@ function prepare(store) {
   const observation = recordSelfImprovementObservation(store, selfImprovementWorkload());
   return prepareSelfImprovementExperiment(store, { observationId: observation.id, observationVersion: 1 });
 }
+
+test('RSI CLI error parser accepts known SQLite warnings around structured errors', () => {
+  const error = { code: 'blocked-scope', message: 'Rejected fixture operation' };
+  const warning = '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n' +
+    '(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  const plain = JSON.stringify(error);
+  const stderr = warning + warning.replace('123', '456') + JSON.stringify(error, null, 2) + '\n';
+  assert.deepEqual(cliError(plain), error);
+  assert.deepEqual(cliError(stderr), error);
+  assert.deepEqual(cliError(stderr.replaceAll('\n', '\r\n')), error);
+  assert.deepEqual(cliError(plain + '\n' + warning), error);
+  assert.deepEqual(cliError(warning.split('\n')[0] + '\n' + plain), error);
+});
+
+test('RSI CLI error parser rejects unknown diagnostics, malformed JSON and extra errors', () => {
+  const error = JSON.stringify({ code: 'blocked-scope' });
+  for (const stderr of [
+    `unexpected diagnostic\n${error}`,
+    `(node:123) ExperimentalWarning: different warning\n${error}`,
+    '{',
+    `${error}\n${error}`,
+    ''
+  ]) assert.throws(() => cliError(stderr), SyntaxError);
+});
 
 test('RSI policy is opt-in, strictly bounded and rejects product configuration', () => {
   const policy = JSON.parse(readFileSync(new URL('../scaffold/self-improvement.example.json', import.meta.url)));
@@ -118,6 +145,72 @@ test('marked mixed namespaces and hardlinked ownership files are refused without
   const linked = files(initialized.root);
   assert.throws(() => openSelfImprovementStore(ctx.policy, ctx.options), /linked or unsupported/);
   assert.deepEqual(files(initialized.root), linked);
+});
+
+test('RSI directory accounting canonicalizes each inspected path once without caching sizes', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const directory = join(root, 'a', 'b', 'c', 'd');
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, 'value');
+  writeFileSync(file, 'before');
+  const canonicalize = t.mock.method(realpathSync, 'native');
+  const metadata = t.mock.method(fs, 'lstatSync');
+  syncBuiltinESMExports();
+  t.after(() => { metadata.mock.restore(); syncBuiltinESMExports(); });
+  assert.equal(rsiDirectoryBytes(root), 6);
+  assert.equal(canonicalize.mock.callCount(), 6, 'Canonicalization must not multiply with ancestor depth');
+  assert.equal(metadata.mock.callCount(), 6, 'Metadata checks must not multiply with ancestor depth');
+  canonicalize.mock.resetCalls();
+  metadata.mock.resetCalls();
+  writeFileSync(file, 'changed bytes');
+  assert.equal(rsiDirectoryBytes(root), 13, 'Every scan must observe current file sizes');
+  assert.equal(canonicalize.mock.callCount(), 6);
+  assert.equal(metadata.mock.callCount(), 6);
+});
+
+test('RSI accounting rejects an ancestor replaced by a junction during enumeration', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-swap-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const tree = join(root, 'tree'), directory = join(tree, 'deep'), target = join(root, 'target');
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(target);
+  writeFileSync(join(directory, 'value'), 'owned');
+  writeFileSync(join(target, 'value'), 'foreign');
+  const enumerate = fs.readdirSync;
+  const enumeration = t.mock.method(fs, 'readdirSync', path => {
+    const names = enumerate(path);
+    if (path === directory) {
+      renameSync(directory, `${directory}-original`);
+      symlinkSync(target, directory, 'junction');
+    }
+    return names;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { enumeration.mock.restore(); syncBuiltinESMExports(); });
+  assert.throws(() => rsiDirectoryBytes(tree),
+    error => error.code === 'blocked-rsi-root');
+  assert.equal(readFileSync(join(target, 'value'), 'utf8'), 'foreign');
+});
+
+test('RSI accounting still refuses nested links and canonical aliases including missing targets', t => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-accounting-guards-')));
+  t.after(() => rmSync(root, { recursive: true }));
+  const tree = join(root, 'tree'), target = join(root, 'target');
+  mkdirSync(join(tree, 'deep'), { recursive: true });
+  mkdirSync(target);
+  const alias = join(tree, 'deep', 'alias');
+  symlinkSync(target, alias, 'junction');
+  assert.throws(() => rsiDirectoryBytes(tree), /linked or unsupported/);
+  rmSync(alias);
+  writeFileSync(join(tree, 'value'), 'original');
+  linkSync(join(tree, 'value'), join(tree, 'deep', 'linked'));
+  assert.throws(() => rsiDirectoryBytes(tree), /linked or unsupported/);
+  const missing = join(tree, 'deep', 'missing', 'value');
+  assert.equal(inspectRsiPath(tree, missing, { missing: true }), missing);
+  t.mock.method(realpathSync, 'native', path => `${path}-different-canonical-path`);
+  assert.throws(() => inspectRsiPath(tree, missing, { missing: true }), /canonical path alias/);
+  assert.equal(existsSync(join(tree, 'deep', 'missing')), false);
 });
 
 test('interrupted marker initialization requires its exact store identity', async t => {
@@ -294,16 +387,16 @@ test('RSI CLI rejects role/product/config drift and status bypasses ordinary cre
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).state, 'uninitialized');
   assert.equal(existsSync(root), false);
-  for (const args of [
-    ['agent', 'proposer', 'self-improvement', 'status', '--policy', policyFile],
-    ['self-improvement', 'status', '--policy', policyFile, '--config', 'not-readable.local.json'],
-    ['self-improvement', 'status', '--policy', policyFile, '--policy', policyFile],
-    ['self-improvement', 'rollout', '--policy', policyFile],
-    ['self-improvement', 'init', '--policy', policyFile, '--resume']
+  for (const [args, code] of [
+    [['agent', 'proposer', 'self-improvement', 'status', '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'status', '--policy', policyFile, '--config', 'not-readable.local.json'], 'blocked-scope'],
+    [['self-improvement', 'status', '--policy', policyFile, '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'rollout', '--policy', policyFile], 'blocked-scope'],
+    [['self-improvement', 'init', '--policy', policyFile, '--resume'], 'blocked-reconciliation']
   ]) {
     result = cli(args);
     assert.equal(result.status, 1);
-    assert.ok(JSON.parse(result.stderr.trim()).code);
+    assert.equal(cliError(result.stderr).code, code, result.stderr);
     assert.equal(existsSync(root), false);
   }
   result = cli(['self-improvement', 'init', '--policy', policyFile]);

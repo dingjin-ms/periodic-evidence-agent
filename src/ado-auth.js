@@ -1,7 +1,7 @@
-import { AzureCliCredential } from '@azure/identity';
 import { PilotError, requireThat } from './common.js';
 
 export async function adoAccessToken(config, purpose) {
+  const { AzureCliCredential } = await import('@azure/identity');
   const credential = new AzureCliCredential({ tenantId: config.identity.tenantId });
   let token;
   try {

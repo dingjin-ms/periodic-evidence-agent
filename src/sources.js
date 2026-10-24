@@ -1,4 +1,3 @@
-import { AzureCliCredential } from '@azure/identity';
 import { Budget, PilotError, hash, json, now, requireThat, readJson, utc, validateRecord, windowCheck } from './common.js';
 import { withWorkiq, validateSeed, principalPath, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage } from './runtime.js';
 import { adoCohortWiql, requireAdoCohort } from './ado-cohort.js';
@@ -38,6 +37,7 @@ export function workiqTitle(subject) {
 export async function adoTransport(config) {
   const { tenantId, objectId } = config.identity;
   requireThat(tenantId && objectId, 'ADO requires approved tenantId and delegated user objectId');
+  const { AzureCliCredential } = await import('@azure/identity');
   const credential = new AzureCliCredential({ tenantId, processTimeoutInMs: 30000 });
   return async (endpoint, body) => {
     requireThat(['wiql', 'workitemsbatch'].includes(endpoint), 'ADO endpoint is not read-allowlisted', 'blocked-scope');

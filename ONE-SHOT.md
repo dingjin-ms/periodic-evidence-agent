@@ -1,5 +1,10 @@
 # Bounded one-shot coordinator controls
 
+For the shared manual/scheduled entrypoint and runtime adapter contracts, see
+[LOOP-CONTROLLER.md](LOOP-CONTROLLER.md). That controller calls these controls and
+preserves their gates. Its FILTER host continuation remains explicit; installing
+the controller does not qualify an unattended external executor.
+
 These opt-in controls add aggregate reservations, safe resumption and a stricter
 accepted-cohort release gate to the existing local ledger and helpers. The
 coordinating Copilot session/host still orchestrates the work. They are **not a
@@ -10,7 +15,8 @@ new service, scheduler or working unattended end-to-end runner**.
 | Collection | Runs the existing local ADO and explicitly selected WorkIQ CLI collectors, sequentially | Approved identity, scope, window, finite budgets and working authentication |
 | FILTER preparation | Checks full captured corpus, reserves the entire cohort's task/time/token capacity before any task reservation | Explicit grouping/sharing decisions, verified tokenizer and qualified source/task/runtime bindings |
 | FILTER reservation | Calls the existing `reserveAgencyRequest`, preserving its concurrency, uncertainty and qualification guards | Exact original request bytes, fresh source preflight and token receipt |
-| FILTER execution | **No submission, observation or polling client is provided** | Existing approved external executor and inspected, immutable submission/result receipts |
+| External Agency FILTER execution | No submission, observation or polling client is provided | Existing approved external executor and inspected, immutable submission/result receipts |
+| Local SDK FILTER execution | Calls the existing restricted local executor and reconciles model/source/session receipts | Verified tokenizer, pinned source revisions and explicit soft-credit approval |
 | Held release | Reproduces complete source and execution acceptance; selects at most the existing top candidate | Separately authorized local proposer configuration and qualified repository skill |
 | Proposer | Calls the existing local dispatcher once; reads its persisted results on resume | Existing model, repository, native test and publication bindings |
 

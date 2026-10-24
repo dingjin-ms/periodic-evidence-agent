@@ -341,6 +341,39 @@ async function deliveredWorkspace(t, { historicalFailure = false } = {}) {
   return { ...ctx, isolated, result, artifact };
 }
 
+test('named contract validation does not compile the unused document root union', () => {
+  const script = `
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const originalRead = fs.readFileSync;
+let intercepted = 0;
+fs.readFileSync = function (path, ...options) {
+  const value = originalRead.call(this, path, ...options);
+  if (path instanceof URL && path.href === ${JSON.stringify(new URL('../scaffold/contracts.schema.json', import.meta.url).href)}) {
+    intercepted++;
+    const schema = JSON.parse(value);
+    schema.oneOf.push({ $ref: '#/$defs/unused-root-union-member' });
+    return JSON.stringify(schema);
+  }
+  return value;
+};
+syncBuiltinESMExports();
+const { validateRecord } = await import(${JSON.stringify(new URL('../src/common.js', import.meta.url).href)});
+const examples = JSON.parse(originalRead(${JSON.stringify(fileURLToPath(new URL('../scaffold/example-flows.json', import.meta.url)))}, 'utf8'));
+validateRecord(examples, 'examples');
+const configuration = JSON.parse(originalRead(${JSON.stringify(fileURLToPath(new URL('../scaffold/configuration.template.json', import.meta.url)))}, 'utf8'));
+validateRecord(configuration, 'configuration');
+const invalid = structuredClone(examples.records.find(record => record.recordType === 'workerResult'));
+delete invalid.validation[0].attemptCount;
+assert.throws(() => validateRecord(invalid), error => error.code === 'invalid-record');
+assert.throws(() => validateRecord({}, 'missing-record-type'), error => error.code === 'invalid-record');
+assert.equal(intercepted, 1);
+`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: process.cwd(), encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+});
 test('portable scaffold config and all synthetic example records remain valid', () => {
   validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
   validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
@@ -986,7 +1019,7 @@ test('validation records real terminal command execution at exact fixture HEAD a
     executable: process.execPath, args: ['--input-type=module', '-e',
       "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,1)"], timeoutMs: 10000 }];
   const result = await runValidation(config, ledger, current, repo, isolated.baseRevision);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed', json(result));
   assert.equal(result[0].sourceRevision, isolated.baseRevision);
   assert.ok(existsSync(result[0].artifactRefs[0]));
   await assert.rejects(runValidation(config, ledger, current, repo, isolated.baseRevision), /already started/);

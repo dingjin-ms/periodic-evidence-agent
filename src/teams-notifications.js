@@ -1,4 +1,3 @@
-import { AzureCliCredential } from '@azure/identity';
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { PilotError, requireThat } from './common.js';
@@ -55,9 +54,10 @@ export function teamsNotificationCard({ text, test = false, mention }) {
 
 export async function teamsArmToken(config, credential) {
   validateConfig(config);
+  const azureIdentity = credential == null ? await import('@azure/identity') : null;
   let access;
   try {
-    access = await (credential ?? new AzureCliCredential({
+    access = await (credential ?? new azureIdentity.AzureCliCredential({
       tenantId: config.identity.tenantId
     })).getToken('https://management.azure.com/.default');
   } catch {

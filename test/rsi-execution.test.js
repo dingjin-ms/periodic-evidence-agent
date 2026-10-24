@@ -118,7 +118,11 @@ function fixture(t, configure = () => {}, retainProof = false, fullFlow = false)
   };
   configure(config);
   let ledger;
-  t.after(() => { ledger?.close(); if (!retained) rmSync(root, { recursive: true, force: true }); });
+  t.after(() => {
+    ledger?.close();
+    if (!retained && !t.error) rmSync(root, { recursive: true, force: true });
+    else if (!retained) t.diagnostic(`RSI failed fixture retained at ${root}`);
+  });
   beginApp(config, { runId: 'flow', dryRun: true, provenance: 'synthetic' });
   ledger = openApp(config, 'flow').ledger;
   let launches = 0;
@@ -135,6 +139,26 @@ function fixture(t, configure = () => {}, retainProof = false, fullFlow = false)
   return { root, config, get ledger() { return ledger; }, launch, get launches() { return launches; },
     reopen() { ledger.close(); ledger = openApp(config, 'flow').ledger; } };
 }
+
+test('RSI fixture cleanup retains failed evidence and removes successful disposable state', t => {
+  for (const failed of [false, true]) {
+    const hooks = [], diagnostics = [];
+    const context = {
+      error: failed ? new Error('Synthetic fixture failure') : null,
+      after: hook => hooks.push(hook),
+      diagnostic: message => diagnostics.push(message)
+    };
+    const ctx = fixture(context);
+    t.after(() => {
+      if (existsSync(ctx.root)) rmSync(ctx.root, { recursive: true, force: true });
+    });
+    assert.ok(existsSync(join(ctx.root, 'reference', '.git')));
+    assert.equal(hooks.length, 1);
+    hooks[0]();
+    assert.equal(existsSync(ctx.root), failed);
+    assert.deepEqual(diagnostics, failed ? [`RSI failed fixture retained at ${ctx.root}`] : []);
+  }
+});
 
 test('normal flow ending executes RSI, authors a real candidate and independently compares both native flows', async t => {
   const ctx = fixture(t, () => {}, true);

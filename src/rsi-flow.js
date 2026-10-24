@@ -82,6 +82,13 @@ function verificationGit(args, cwd, admit) {
   }).trim();
 }
 
+export function isCleanRsiHead(status, revision) {
+  const lines = status.trim().split(/\r?\n/);
+  return lines.filter(line => line.startsWith('# branch.oid ')).join('\n') === `# branch.oid ${revision}` &&
+    lines.filter(line => line.startsWith('# branch.head ')).length === 1 &&
+    lines.every(line => line.startsWith('# '));
+}
+
 function pinTargetBaseline(config, admit = () => 10000) {
   const automatic = config.rsi.automation;
   const target = config.rsi.targetBaseline ?? (automatic ? {
@@ -100,8 +107,7 @@ function pinTargetBaseline(config, admit = () => 10000) {
     `git@github.com:${repository}`, `git@github.com:${repository}.git`]
     .includes(git(['remote', 'get-url', 'origin'])) &&
     git(['rev-parse', `refs/heads/${target.branch}`]) === target.revision &&
-    git(['rev-parse', 'HEAD']) === target.revision &&
-    git(['status', '--porcelain', '--untracked-files=all']) === '',
+    isCleanRsiHead(git(['status', '--porcelain=v2', '--branch', '--untracked-files=all']), target.revision),
   'RSI publication target baseline is stale or differs from its pinned repository', 'blocked-reconciliation');
   return { ...target, referenceCheckout: realpathSync.native(target.referenceCheckout) };
 }
@@ -469,8 +475,7 @@ function verifyCandidate(config, proposal, binding, admit) {
     'RSI candidate checkout is linked or unavailable', 'blocked-scope');
   const git = args => verificationGit(args, path, admit);
   requireThat(resolve(git(['rev-parse', '--show-toplevel'])) === path &&
-    git(['rev-parse', 'HEAD']) === proposal.candidateRevision &&
-    git(['status', '--porcelain', '--untracked-files=all']) === '',
+    isCleanRsiHead(git(['status', '--porcelain=v2', '--branch', '--untracked-files=all']), proposal.candidateRevision),
   'RSI candidate must be the exact clean checkout HEAD', 'blocked-reconciliation');
   const target = config.rsi.targetRepository;
   requireThat([

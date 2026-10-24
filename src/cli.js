@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { configAt, readJson, safeError, requireThat, proposerExecutorFlight } from './common.js';
 import { Ledger } from './ledger.js';
@@ -8,13 +10,16 @@ import { collect, acceptReview, reviewPending, route, report, reconcile, tick, r
 import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
 import { adoTransport } from './sources.js';
 import { dryRun } from './dry-run.js';
-import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, finishApp, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { assertRsiProducerNamespace, rsiAutomationPolicy, rsiErrorHandoff, rsiPolicy, rsiWork } from './rsi-flow.js';
+import { runRsiPending } from './rsi-execution.js';
 import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
 import { persistIcmReplay } from './icm-replay.js';
 import { prepareStage2, checkStage2Files } from './stage2.js';
 import { prepareTitleIndex, materializeTitleScreen } from './filter.js';
 import { prepareFilterBatches, sizeFilterGroups, checkFilterBatchFiles, consolidateFilterBatches } from './filter-batches.js';
 import { reconcileFilterExecutionCohort } from './filter-execution.js';
+import { localFilterPreflight, executeLocalFilterBatch } from './local-filter.js';
 import { planImprovement } from './improvements.js';
 import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
 import { bootstrapLocalRepository } from './local-settings.js';
@@ -25,6 +30,7 @@ import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
 import { cleanupAgencyTransports } from './agency-transport-gc.js';
+import { reconcileAgencyRemoteJob } from './agency-remote-authoring.js';
 import { describeAgent, describeAgents, agentInvocation, agentOperationResult, agentOperationError } from './agents.js';
 import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
 import { continueRoleValidation } from './role-continuation.js';
@@ -40,6 +46,9 @@ import { prepareNativeSourceContinuation } from './native-source-continuation.js
 import { dispatchNativeSourceContinuation } from './workers.js';
 import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
 import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
+import { beginOneShotCollection, advanceOneShotCollection, oneShotCollectionStatus,
+  stopOneShotCollection } from './one-shot-collection.js';
+import { prepareOneShotFilterBudget, reserveOneShotFilterRequest, advanceOneShotHandoff } from './one-shot-handoff.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -48,7 +57,7 @@ const [action = 'help', ...args] = roleInvocation ? invocationArgs.slice(2) : in
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
 ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
-  'workspace-gc', 'transport-gc', 'dispatch-ready'].includes(action)
+  'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
@@ -64,12 +73,13 @@ function failedOutcome(result) {
     ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
-    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces']
+    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'rsi', 'execution']
       .some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js self-improvement init|observe|prepare|evaluate|decision|status|report --policy rsi.local.json [--file request.json]
   node src\\cli.js agents
-  node src\\cli.js agent collector|filter|proposer help
+  node src\\cli.js agent collector|filter|proposer|rsi help
   node src\\cli.js agent ROLE EXISTING_COMMAND [existing command arguments]
   node src\\cli.js agent collector replay-evidence --file captured-inputs.json --config held-replay.local.json
   node src\\cli.js agent filter replay-review --file recorded-review.json --config held-replay.local.json
@@ -80,6 +90,13 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js agent proposer continue-authoring-tools --prepare|--execute --file request.json --config next.local.json
   node src\\cli.js agent proposer continue-native-preparation --prepare|--execute --file request.json --config next.local.json
   node src\\cli.js agent proposer continue-native-source --prepare|--execute --file request.json --config next.local.json
+  node src\\cli.js agent collector one-shot-begin --file collection.json --config collector.local.json
+  node src\\cli.js agent collector one-shot-collect --run ID --collect [--resume] --config collector.local.json
+  node src\\cli.js agent collector one-shot-status|one-shot-stop --run ID --config collector.local.json
+  node src\\cli.js agent filter one-shot-filter-prepare --file handoff.json --config proposer.local.json
+  node src\\cli.js agent filter one-shot-filter-reserve --file handoff.json --task ID --request reservation.json --config proposer.local.json
+  node src\\cli.js agent proposer one-shot-handoff --check --file handoff.json --config proposer.local.json
+  node src\\cli.js agent proposer one-shot-handoff --execute [--resume-auth] --authorize-commit --authorize-push --authorize-draft-pr --file handoff.json --config proposer.local.json
   node src\\cli.js setup [--repo ID ...] [--allow-clone] [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
@@ -91,6 +108,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js workspace-gc --config pilot.local.json [--execute]
   node src\\cli.js transport-gc --config pilot.local.json [--execute]
+  node src\\cli.js reconcile-remote-authoring --assignment ID --round N --config pilot.local.json
   node src\\cli.js dispatch-ready --config pilot.local.json [--execute --limit N --authorize-commit --authorize-push --authorize-draft-pr]
   node src\\cli.js state-prune [--dry-run] [--config pilot.local.json]
   node src\\cli.js doctor
@@ -116,6 +134,11 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js app-unavailable --run ID --file unavailable.json
   node src\\cli.js app-block --run ID --file authentication-failure.json
   node src\\cli.js app-status --run ID
+  node src\\cli.js app-end --run ID [--production] --config pilot.local.json
+  node src\\cli.js agent rsi app-rsi-work --run ID [--production] --operation status|inspect|claim|propose|reserve-publication|result [--file request.json] --config pilot.local.json
+  node src\\cli.js agent rsi rsi-work --operation status|inspect|capture|claim|propose|reserve-publication|result [--file request.json] --config pilot.local.json
+  node src\\cli.js agent rsi rsi-run [--file host-action.json] --config pilot.local.json
+  node src\\cli.js agent rsi app-rsi-run --run ID [--production] [--file host-action.json] --config pilot.local.json
   node src\\cli.js app-ado --run ID --pass ado:created|ado:changed --collect
   node src\\cli.js app-ado-reconcile --run ID --pass ado:created|ado:changed
   node src\\cli.js app-workiq-cli --run ID --pass workiq:created|workiq:changed --collect --config pilot.local.json
@@ -131,6 +154,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js filter-batch-check --file batch-result.json --manifest private-batches.json
   node src\\cli.js filter-consolidate --file result-paths.json --manifest private-batches.json --output consolidation.json
   node src\\cli.js filter-execution-check --file result-paths.json --manifest private-batches.json --ledger execution.sqlite
+  node src\\cli.js filter-local-preflight --config local-filter.local.json
+  node src\\cli.js filter-local-run --manifest private-batches.json --batch ID --output private-result.json --execution-mode standalone-sdk
   node src\\cli.js e2e-proof-export --file private-proof-request.json --output e2e-evidence\\RUN_ID
   node src\\cli.js e2e-proof-check --file private-proof-request.json --bundle e2e-evidence\\RUN_ID
   node src\\cli.js stage2-proposal-check --file private-proposal.json --handoff private-handoff.json
@@ -140,12 +165,61 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js plan-improvement --file improvement-plan.json --config pilot.local.json
   node src\\cli.js qualify-skill --repo office-agent --capability integration-test-authoring --binding oa-integration-test-core --config pilot.local.json
 App commands default to isolated dry-run storage. They never call SDK WorkIQ.
-Only app-ado --collect and explicitly configured app-workiq-cli --collect perform source reads.
+App source reads use app-ado --collect and explicitly configured app-workiq-cli --collect.
+one-shot-collect --collect coordinates those same local reads under an aggregate reservation.
+one-shot-filter-* only reserve/check local state; the host must supply the qualified external FILTER executor.
 No source writes, merge, validation retry/cancel or automatic lock stealing.`;
 let ledger, agent;
 let automaticPruneConfig;
 try {
+  requireThat(!(roleInvocation && action === 'self-improvement'),
+    'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (action.startsWith('one-shot-')) {
+    requireThat(option('--config') && !option('--config').startsWith('--'),
+      'One-shot controls require an explicit --config', 'blocked-authorization');
+    const runAction = ['one-shot-collect', 'one-shot-status', 'one-shot-stop'].includes(action);
+    requireThat(option(runAction ? '--run' : '--file') &&
+      !option(runAction ? '--run' : '--file').startsWith('--'),
+    'One-shot controls require their explicit run or input file', 'blocked-authorization');
+    if (action === 'one-shot-collect') requireThat(args.includes('--collect'),
+      'One-shot source reads require explicit --collect', 'blocked-authorization');
+    if (action === 'one-shot-handoff') {
+      requireThat(args.includes('--check') !== args.includes('--execute') &&
+        (!args.includes('--resume-auth') || args.includes('--execute')),
+      'One-shot handoff requires exactly one of --check or --execute; auth resume requires execution',
+      'blocked-authorization');
+      if (args.includes('--execute')) requireThat(
+        ['--authorize-commit', '--authorize-push', '--authorize-draft-pr'].every(flag => args.includes(flag)),
+        'One-shot execution requires explicit commit, push and draft authorization flags', 'blocked-authorization');
+    }
+    if (action === 'one-shot-filter-reserve') requireThat(option('--task') && option('--request'),
+      'One-shot FILTER reservation requires --task and --request', 'blocked-authorization');
+  }
+  if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action)) {
+    const allowed = new Set(['--config',
+      ...(action.startsWith('app-') ? ['--run', '--production'] : []),
+      ...(action.endsWith('-work') ? ['--operation', '--file'] : []),
+      ...(action.endsWith('-run') ? ['--file'] : [])]);
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(allowed.has(key) && !seen.has(key), 'Unknown or duplicate RSI option', 'blocked-scope');
+      seen.add(key);
+      if (key !== '--production') requireThat(args[++index] && !args[index].startsWith('--'),
+        'RSI option requires a value', 'blocked-scope');
+    }
+    requireThat(seen.has('--config') && (!action.startsWith('app-') || seen.has('--run')),
+      'RSI flow commands require explicit --config and the app run when applicable', 'blocked-authorization');
+    if (action.endsWith('-work')) {
+      const operation = option('--operation');
+      requireThat(['status', 'inspect', 'read-event', ...(action === 'rsi-work' ? ['capture'] : []),
+        'claim', 'propose', 'reserve-publication', 'result'].includes(operation),
+        'Unknown RSI work operation', 'blocked-scope');
+      requireThat((operation === 'status') !== seen.has('--file'),
+        'RSI status takes no file; all other operations require one', 'blocked-scope');
+    }
+  }
   if (action === 'continue-local-validation')
     requireThat(args.includes('--prepare') !== args.includes('--execute') &&
       option('--file') && option('--config'),
@@ -162,6 +236,16 @@ try {
     ? JSON.stringify(agentOperationResult(agent, describeAgent(role)), null, 2)
     : help);
   else if (action === 'agents') console.log(JSON.stringify(describeAgents(), null, 2));
+  else if (action === 'self-improvement') {
+    // Keep the judge out of this process's normal worker imports and automatic pruning.
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./self-improvement-cli.js', import.meta.url)), ...args
+    ], { stdio: 'inherit', windowsHide: true, shell: false, timeout: 3660000 });
+    requireThat(!result.error && result.status !== null,
+      'RSI command did not finish; inspect retained state without retrying execution',
+      'blocked-reconciliation');
+    process.exitCode = result.status;
+  }
   else if (action === 'setup') {
     const result = await setupLocalEnvironment({
       settingsPath: configFile,
@@ -210,6 +294,12 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiPolicy(config).enabled, 'RSI is disabled for this configuration', 'blocked-authorization');
+    if (config.rsi?.enabled || ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action))
+      assertRsiProducerNamespace(config);
+    if (['rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiAutomationPolicy(config), 'RSI automation is not authorized', 'blocked-authorization');
     if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
     if (action !== 'state-prune') {
       automaticPruneConfig = config;
@@ -219,14 +309,16 @@ try {
     if (config.executionMode === 'app-native' && !appAction &&
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
         'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
-        'continue-native-preparation', 'continue-native-source', 'review-pending', 'tick', 'serve', 'runtime-smoke'].includes(action)) {
+        'continue-native-preparation', 'continue-native-source', 'review-pending', 'tick', 'serve',
+        'runtime-smoke', 'filter-local-run'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
     if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
-      'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
-      'e2e-proof-export', 'e2e-proof-check'].includes(action))
+      'filter-batch-check', 'filter-consolidate', 'filter-execution-check', 'filter-local-preflight',
+      'e2e-proof-export', 'e2e-proof-check',
+      'one-shot-filter-prepare', 'one-shot-filter-reserve'].includes(action))
       ledger = new Ledger(config.stateDirectory);
     if (appAction && !['app-begin', 'app-runs', 'app-workiq-continue'].includes(action)) {
       requireThat(option('--run'), 'App commands require --run');
@@ -235,6 +327,68 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'one-shot-begin': result = beginOneShotCollection(config, ledger, input()); break;
+      case 'one-shot-status': result = oneShotCollectionStatus(ledger, option('--run')); break;
+      case 'one-shot-stop': result = stopOneShotCollection(ledger, option('--run')); break;
+      case 'one-shot-collect':
+        result = await advanceOneShotCollection(config, ledger, option('--run'), {
+          resume: args.includes('--resume')
+        }); break;
+      case 'one-shot-filter-prepare':
+      case 'one-shot-filter-reserve': {
+        const request = input();
+        requireThat(typeof request?.filter?.executionLedgerPath === 'string',
+          'One-shot FILTER requires its explicit execution ledger path');
+        ledger = new Ledger(dirname(resolve(request.filter.executionLedgerPath)));
+        result = action === 'one-shot-filter-prepare'
+          ? prepareOneShotFilterBudget(config, ledger, request)
+          : reserveOneShotFilterRequest(config, ledger, request, option('--task'),
+            readJson(resolve(option('--request'))));
+        break;
+      }
+      case 'one-shot-handoff':
+        result = await advanceOneShotHandoff(config, ledger, input(), {
+          execute: args.includes('--execute'), resumeAuth: args.includes('--resume-auth')
+        }); break;
+      case 'app-end': result = await finishApp(config, ledger, option('--run')); break;
+      case 'rsi-run':
+      case 'app-rsi-run':
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI host action must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = await runRsiPending(config, ledger, {
+          runId: action === 'app-rsi-run' ? option('--run') : null,
+          hostAction: option('--file') ? input() : null
+        });
+        break;
+      case 'rsi-work':
+      case 'app-rsi-work': {
+        requireThat(option('--operation'), 'RSI work requires --operation');
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI input must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = rsiWork(config, ledger, option('--operation'),
+          option('--file') ? input() : {},
+          { runId: action === 'app-rsi-work' ? option('--run') : null });
+        break;
+      }
+      case 'filter-local-preflight':
+        result = localFilterPreflight(config); break;
+      case 'filter-local-run':
+        requireThat(option('--manifest') && option('--batch') && option('--output'),
+          'Local FILTER requires --manifest, --batch and --output');
+        requireThat(!existsSync(resolve(option('--output'))),
+          'Local FILTER output already exists; reconcile the original attempt');
+        result = await executeLocalFilterBatch(config, ledger, readJson(option('--manifest')), option('--batch'));
+        if (result.state === 'complete-held') writeFileSync(resolve(option('--output')),
+          `${JSON.stringify(result.result, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        break;
       case 'replay-evidence': result = await replayRecordedEvidence(config, ledger, input()); break;
       case 'replay-review': result = await replayRecordedReview(config, ledger, input()); break;
       case 'continue-local-validation':
@@ -309,7 +463,7 @@ try {
           'Title materialization requires --file, --index and --output');
         result = materializeTitleScreen(config, option('--index'), option('--file'), option('--output')); break;
       case 'icm-replay':
-        requireThat(!args.includes('--collect'), 'IcM replay is offline only; live timestamp contract is unresolved');
+        requireThat(!args.includes('--collect'), 'IcM replay is offline only; it does not launch a live connector');
         result = persistIcmReplay(config, input()); break;
       case 'stage2-handoff':
         requireThat(option('--output'), 'Stage2 requires an explicit private output path');
@@ -321,12 +475,21 @@ try {
       case 'app-runs': result = listAppRuns(config); break;
       case 'app-import-parent': result = await importParentReceipts(config, ledger, option('--run'), input()); break;
       case 'app-append': result = await appendApp(config, ledger, option('--run'), input()); break;
-      case 'app-block': result = blockApp(config, ledger, option('--run'), input()); break;
+      case 'app-block': {
+        result = blockApp(config, ledger, option('--run'), input());
+        if (config.rsi?.enabled) result = await finishApp(config, ledger, option('--run'));
+        break;
+      }
       case 'app-unavailable': result = unavailableApp(ledger, option('--run'), input()); break;
       case 'app-status': result = appStatus(ledger, option('--run')); break;
       case 'app-review': result = appReview(config, ledger, option('--run'), input()); break;
       case 'app-plan-improvement': result = appPlanImprovement(config, ledger, option('--run'), input()); break;
-      case 'app-worker': result = appWorker(config, ledger, option('--run'), option('--operation'), input()); break;
+      case 'app-worker': {
+        result = appWorker(config, ledger, option('--run'), option('--operation'), input());
+        if (config.rsi?.enabled && ['result', 'agency-result'].includes(option('--operation')))
+          result = { ...result, rsi: (await finishApp(config, ledger, option('--run'))).rsi };
+        break;
+      }
       case 'app-ado':
         requireThat(args.includes('--collect'), 'Live ADO reads require explicit --collect');
         result = await collectAppAdo(config, ledger, option('--run'), option('--pass')); break;
@@ -353,7 +516,7 @@ try {
             readinessVerified: false
           })),
           reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
-          icm: 'Offline connector receipt replay and owner export supported. Live connector execution is not enabled; exact timestamp/saved-query scope contract required.',
+          icm: 'Explicit incident-created mode supports app-append receipt ingestion. Offline icm-replay remains audit-only. Legacy owner exports require saved-query verification; no helper launches an IcM connector.',
           validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',
           liveAccessVerified: false
         };
@@ -417,7 +580,7 @@ try {
         } catch (error) { result.push({ source: 'ado', state: 'blocked', error: safeError(error) }); }
         if (!option('--source') || option('--source') === 'icm')
           result.push({ source: 'icm', state: 'blocked', error: { code: 'blocked-scope',
-            message: 'No IcM authentication call made. Live connector execution is not enabled; timestamp/saved-query scope contract required.' } });
+            message: 'No IcM authentication call made. Helpers do not launch the connector; incident-created app-append requires captured identity and exact scoped receipts.' } });
         break;
       }
       case 'status': result = ledger.status(); break;
@@ -483,6 +646,12 @@ try {
           execute: args.includes('--execute')
         });
         break;
+      case 'reconcile-remote-authoring':
+        requireThat(option('--assignment') && /^\d+$/.test(option('--round') ?? ''),
+          'Remote reconciliation requires --assignment ID and --round N');
+        result = await reconcileAgencyRemoteJob(config, ledger,
+          option('--assignment'), Number(option('--round')));
+        break;
       case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
       case 'report': result = report(ledger); break;
       case 'reconcile': result = reconcile(ledger); break;
@@ -519,6 +688,8 @@ try {
   }
 } catch (error) {
   const failure = safeError(error);
+  const rsi = rsiErrorHandoff(error);
+  if (rsi) failure.rsi = rsi;
   console.error(JSON.stringify(agent ? agentOperationError(agent, failure) : failure, null, 2));
   process.exitCode = 1;
 } finally {

@@ -34,6 +34,22 @@ export function nonNegative(value, name) {
   requireThat(Number.isInteger(value) && value >= 0, `${name} must be a nonnegative integer`);
   return value;
 }
+export function repositorySourceRef(repo, assignmentId) {
+  const branchPrefix = repo.pr?.sourceBranchPrefix;
+  const prefix = repo.pr?.sourceRefPrefix ?? `refs/heads/${branchPrefix ?? 'pilot'}/`;
+  requireThat(branchPrefix === undefined || repo.pr?.sourceRefPrefix === undefined ||
+    prefix === `refs/heads/${branchPrefix}/`,
+  'Repository PR source branch prefixes disagree');
+  requireThat(typeof prefix === 'string' && prefix.startsWith('refs/heads/') &&
+    prefix.endsWith('/') && prefix.slice(11, -1).split('/').every(part =>
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part) &&
+      !part.includes('..') && !part.endsWith('.') && !part.endsWith('.lock')),
+  'Invalid repository PR sourceRefPrefix');
+  requireThat(typeof assignmentId === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(assignmentId),
+  'Invalid assignment branch ID');
+  return `${prefix}${assignmentId}`;
+}
 export function safeError(error) {
   if (error instanceof PilotError) return { code: error.code, message: error.message };
   // Library errors can contain request headers, source payloads or credentials.
@@ -101,17 +117,30 @@ export function validationLfsPaths(gate) {
   'Validation lfsPaths must contain unique exact repository-relative files, not patterns');
   return [...gate.lfsPaths];
 }
+function repositoryRelativePath(value, label) {
+  requireThat(typeof value === 'string' && value.length > 0 &&
+    !isAbsolute(value) && !value.includes(':') && !value.includes('\0') &&
+    !value.includes('*') && !value.includes('!'), `${label} must be repository-relative`);
+  const parts = value.replaceAll('\\', '/').split('/');
+  requireThat(parts.every(part => part && part !== '.' && part !== '..'),
+    `${label} must not escape its repository`);
+  return parts.join('/');
+}
 export function configAt(path) {
   const config = readJson(path);
   requireThat(config.version === 1, 'Unsupported configuration version');
   windowCheck(config.window);
   requireThat(config.activation && ['collect', 'review', 'dispatch'].every(k => typeof config.activation[k] === 'boolean'),
     'Explicit collect/review/dispatch activation booleans are required');
+  requireThat(config.sources?.icm?.timestampContract == null ||
+    config.sources.icm.timestampContract === 'incident-created',
+  'IcM timestampContract must be null (legacy saved query) or incident-created');
   requireThat(config.statePolicy?.retention === 'bounded-local' &&
     Number.isInteger(config.statePolicy.rawEvidenceDays) &&
     config.statePolicy.rawEvidenceDays >= 1 && config.statePolicy.rawEvidenceDays <= 7,
   'State retention must be bounded-local with rawEvidenceDays from 1 through 7');
   workspaceCleanupPolicy(config);
+  if (config.rsi !== undefined) validateRecord(config.rsi, 'rsiPolicy');
   requireThat([0, 1].includes(config.followUp.maxDepth), 'Follow-up is limited to zero or one level');
   if (config.followUp.maxDepth === 1) {
     positive(config.followUp.maxItems, 'followUp.maxItems'); positive(config.followUp.maxToolCalls, 'followUp.maxToolCalls');
@@ -182,6 +211,7 @@ export function configAt(path) {
     'maxWorkersPerRepository must not exceed maxWorkers');
   for (const repo of config.repositories) {
     proposerExecutorFlight(repo);
+    repositorySourceRef(repo, 'configuration-check');
     repo.qualificationRefresh ??= 'local';
     repo.validationContractVersion ??= '1.0';
     requireThat(['local', 'fetch'].includes(repo.qualificationRefresh),
@@ -189,6 +219,51 @@ export function configAt(path) {
     requireThat(typeof repo.validationContractVersion === 'string' &&
       repo.validationContractVersion.length > 0,
     `Repository ${repo.id} validationContractVersion is required`);
+    if (repo.sparseCheckout !== undefined) {
+      const sparse = repo.sparseCheckout;
+      requireThat(sparse?.mode === 'workspace-closure',
+        `Repository ${repo.id} sparseCheckout mode must be workspace-closure`);
+      sparse.workspacePackages = repositoryRelativePath(sparse.workspacePackages,
+        `Repository ${repo.id} sparseCheckout workspacePackages`);
+      requireThat(Array.isArray(sparse.targetWorkspaces) &&
+        sparse.targetWorkspaces.length > 0 &&
+        sparse.targetWorkspaces.every(name => typeof name === 'string' && name.length > 0),
+      `Repository ${repo.id} sparseCheckout targetWorkspaces are required`);
+      requireThat(Array.isArray(sparse.bootstrapPaths) &&
+        sparse.bootstrapPaths.length > 0,
+      `Repository ${repo.id} sparseCheckout bootstrapPaths are required`);
+      sparse.bootstrapPaths = sparse.bootstrapPaths.map((entry, index) =>
+        repositoryRelativePath(entry,
+          `Repository ${repo.id} sparseCheckout bootstrapPaths[${index}]`));
+      sparse.additionalWorkspacePaths ??= [];
+      requireThat(Array.isArray(sparse.additionalWorkspacePaths),
+        `Repository ${repo.id} sparseCheckout additionalWorkspacePaths must be an array`);
+      sparse.additionalWorkspacePaths = sparse.additionalWorkspacePaths.map((entry, index) =>
+        repositoryRelativePath(entry,
+          `Repository ${repo.id} sparseCheckout additionalWorkspacePaths[${index}]`));
+      requireThat(sparse.additionalWorkspacePaths.every(entry =>
+        entry.startsWith(`${sparse.workspacePackages}/`)),
+      `Repository ${repo.id} sparseCheckout additional workspaces must be under workspacePackages`);
+    }
+    if (repo.changeFile !== undefined) {
+      const change = repo.changeFile;
+      requireThat(change?.kind === 'beachball' && change.changeType === 'none',
+        `Repository ${repo.id} changeFile must be a none-type beachball change`);
+      requireThat(['yarn', 'yarn.cmd'].includes(change.executable) &&
+        typeof change.packageName === 'string' && /^@[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(change.packageName),
+      `Repository ${repo.id} changeFile executable or package is invalid`);
+      change.cwd = repositoryRelativePath(change.cwd,
+        `Repository ${repo.id} changeFile cwd`);
+      change.outputPrefix = repositoryRelativePath(change.outputPrefix,
+        `Repository ${repo.id} changeFile outputPrefix`);
+      requireThat((repo.allowedWritePrefixes ?? []).some(prefix =>
+        change.outputPrefix === prefix.replaceAll('\\', '/').replace(/\/$/, '')),
+      `Repository ${repo.id} changeFile outputPrefix must be an approved write prefix`);
+    }
+    if (repo.toolchain !== undefined)
+      requireThat(repo.toolchain?.provider === 'nvm-windows' &&
+        /^\d+\.\d+\.\d+$/.test(repo.toolchain.nodeVersion ?? ''),
+      `Repository ${repo.id} toolchain must pin an nvm-windows Node version`);
     requireThat(Array.isArray(repo.skillBindings ?? []), `Repository ${repo.id} skillBindings must be an array`);
     if (repo.draftBuild !== undefined) {
       const build = repo.draftBuild;
@@ -210,6 +285,10 @@ export function configAt(path) {
         typeof repo.pr.project === 'string' && repo.pr.project.length > 0 &&
         typeof repo.pr.targetRef === 'string' && repo.pr.targetRef.startsWith('refs/heads/')),
         `Repository ${repo.id} Draft build requires an ADO Draft PR provider`);
+      requireThat(repo.id !== '1js' ||
+        !['newCaseSelection', 'newCaseGroups'].some(key =>
+          Object.hasOwn(build.templateParameters ?? {}, key)),
+      '1JS new-case build parameters are controller-owned');
     }
     if (repo.pr?.sourceBranchPrefix !== undefined) {
       requireThat(typeof repo.pr.sourceBranchPrefix === 'string' &&

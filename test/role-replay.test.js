@@ -46,10 +46,12 @@ function setup(t) {
     writeFileSync(path, json(value));
     return { path, sha256: hash(readFileSync(path)) };
   };
-  const payload = { id: 42, rev: 1, fields: { 'System.Title': 'Fixture behavior' } };
+  const payload = { id: 42, rev: 1, fields: { 'System.Title': 'Fixture behavior',
+    'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed' } };
   const envelope = evidenceEnvelope('ado', 'example/project', '42', '1',
     'https://example.invalid/item/42', 'fixture', now());
   envelope.source.provenance = 'authenticated-source';
+  envelope.sourceStatus = 'Resolved'; envelope.fields = payload.fields;
   const runId = prior.startRun('ado:created', config.window);
   const evidence = prior.evidence(envelope, payload, runId);
   prior.finishRun(runId, 'complete');

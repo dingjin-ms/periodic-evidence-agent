@@ -102,6 +102,9 @@ export function resolveSkillBinding(config, repoId, capability, bindingId = null
   repositorySkillWriteFiles(repo, binding);
   requireThat(typeof binding.requiresBehaviorCard === 'boolean',
     `Repository skill binding ${binding.id} must declare behavior-card policy`, 'blocked-config');
+  requireThat(binding.requiresCoverageReview === undefined ||
+    typeof binding.requiresCoverageReview === 'boolean',
+  `Repository skill binding ${binding.id} has an invalid coverage-review policy`, 'blocked-config');
   requireThat(binding.sideEffects && ['commit', 'push', 'createDraftPR'].every(key =>
     typeof binding.sideEffects[key] === 'boolean'), `Repository skill binding ${binding.id} lacks explicit side effects`);
   return { repo, binding };
@@ -165,7 +168,7 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
   let source = readFileSync(path);
   if (existsSync(join(workspace, '.git'))) {
     try {
-      execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true',
+      execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
         'cat-file', '-e', `${sourceRevision}^{commit}`], {
         cwd: workspace, windowsHide: true, stdio: 'pipe'
       });
@@ -173,7 +176,7 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
       failSkillGit('cat-file', error);
     }
     try {
-      execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true',
+      execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true',
         'diff', '--quiet', sourceRevision,
         '--', binding.skillPath.replaceAll('\\', '/')], {
         cwd: workspace, windowsHide: true, stdio: 'pipe'
@@ -184,7 +187,7 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
       failSkillGit('diff', error);
     }
     try {
-      source = execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true', 'show',
+      source = execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true', 'show',
         `${sourceRevision}:${binding.skillPath.replaceAll('\\', '/')}`], {
         cwd: workspace, windowsHide: true, stdio: 'pipe', maxBuffer: config.limits.maxFileBytes
       });
@@ -215,7 +218,7 @@ export function verifyRepositorySkillWorkspace(config, assignment, workspace, so
   try {
     requireThat(statSync(workspace).isDirectory(), 'Repository skill workspace is not a directory',
       'blocked-reconciliation');
-    const git = args => execFileSync('git', ['-c', 'core.hooksPath=', '-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
+    const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
       '-c', 'core.safecrlf=false', ...args], {
       cwd: workspace, windowsHide: true, encoding: 'utf8', timeout: 30000
     }).trim();
@@ -275,7 +278,40 @@ export function normalizeSkillResult(loaded, result) {
       `Behavior-card updates must be included in changedFiles: ${unreportedCards.join(', ')}`,
       'blocked-result');
   }
+  if (loaded.binding.requiresCoverageReview && normalized.status === 'succeeded' &&
+      normalized.changedFiles.length > 0)
+    requireThat(result.coverageReview !== undefined,
+      'Repository skill changes require a seam coverage review', 'blocked-result');
+  if (result.coverageReview !== undefined) {
+    validateRecord(result.coverageReview, 'coverageReview');
+    normalized.coverageReview = result.coverageReview.map(row => ({
+      ...structuredClone(row),
+      testFiles: [...new Set(row.testFiles.map(path => path.replaceAll('\\', '/')))].sort()
+    }));
+    const reviewed = new Set(normalized.coverageReview.flatMap(row => row.testFiles));
+    requireThat([...reviewed].every(path => normalized.changedFiles.includes(path) &&
+      /\.tests?\.[cm]?[jt]sx?$/.test(path)),
+    'Coverage review must name changed test files, not helpers or unrelated files', 'blocked-result');
+    requireThat(normalized.changedFiles.filter(path => /\.tests?\.[cm]?[jt]sx?$/.test(path))
+      .every(path => reviewed.has(path)),
+    'Coverage review must account for every changed test file', 'blocked-result');
+    normalized.coverageReviewAssurance = 'author-reported-not-independently-verified';
+  }
   return normalized;
+}
+
+export function renderCoverageReview(skillExecution) {
+  if (!skillExecution?.coverageReview) return '';
+  const cell = value => String(value).replaceAll('|', '\\|').replace(/[\r\n]+/g, ' ');
+  const evidence = rows => rows.length ? rows.map(cell).join('; ') : 'None reported';
+  return '\n\n### Test coverage review (author-reported)\n\n' +
+    'This inventory is not an independent semantic quality grade. Native validation proves execution, not coverage value.\n\n' +
+    '| Seam / evidence basis | Existing unit / integration evidence | Changed tests / defect detected | Residuals |\n' +
+    '|---|---|---|---|\n' +
+    skillExecution.coverageReview.map(row =>
+      `| ${cell(row.seam)}; ${cell(row.evidenceBasis)} | Unit: ${evidence(row.unitEvidence)}; ` +
+      `integration: ${evidence(row.integrationEvidence)} | ${evidence(row.testFiles)}; ` +
+      `${cell(row.defectDetected)} | ${evidence(row.residuals)} |`).join('\n');
 }
 
 export async function qualifyRepositorySkill(config, repoId, capability, bindingId = null,
@@ -284,7 +320,7 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
     { requireQualified: false, requireEnabled: false, requireRouted: false });
   requireThat(isAbsolute(repo.referenceCheckout) && repo.baseRef && repo.remote,
     `Repository ${repoId} reference checkout, base and remote are required for qualification`);
-  const run = args => runCommand('git', ['-c', 'core.hooksPath=', ...args], repo.referenceCheckout);
+  const run = args => runCommand('git', ['-c', 'core.hooksPath=.git/no-hooks', ...args], repo.referenceCheckout);
   const remote = (await run(['remote', 'get-url', 'origin'])).stdout.trim().replace(/\/$/, '');
   requireThat(remote.toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
     `Repository ${repoId} origin does not match its configured remote`, 'blocked-scope');
@@ -293,7 +329,7 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
     const fetchRef = repo.baseRef.startsWith('origin/')
       ? repo.baseRef.slice('origin/'.length)
       : repo.baseRef;
-    const args = ['-c', 'core.hooksPath=', 'fetch', '--no-tags', '--prune', 'origin', fetchRef];
+    const args = ['-c', 'core.hooksPath=.git/no-hooks', 'fetch', '--no-tags', '--prune', 'origin', fetchRef];
     const adoRemote = /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(remote);
     const env = adoRemote
       ? adoGitEnvironment(await getToken(config, 'ADO repository skill qualification'))

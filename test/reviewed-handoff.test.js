@@ -1,21 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { connect } from 'node:net';
 import { configAt, hash, json, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
-import { dispatch, dispatchReviewedHandoff, command, provision } from '../src/workers.js';
+import {
+  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation
+} from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
 import { dispatchRuntimeContinuation } from '../src/workers.js';
 import { prepareAuthoringToolContinuation, claimAuthoringToolWorkspace } from '../src/authoring-tool-continuation.js';
 import { dispatchAuthoringToolContinuation } from '../src/workers.js';
-import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
+import {
+  normalizeSkillInput, repositoryValidationContract, skillQualificationId
+} from '../src/repository-skills.js';
+import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
+import { pruneState } from '../src/state-retention.js';
+
+const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/onenote-bootstrap-progress.reviewed-handoff.json', import.meta.url),
@@ -35,6 +44,15 @@ const oneJsDualSuiteFixture = JSON.parse(readFileSync(
 const dualSkillBundle = JSON.parse(readFileSync(
   new URL('./fixtures/reviewed-handoff/oa-and-1js.reviewed-handoff-bundle.json', import.meta.url),
   'utf8'));
+const oneJsQualification = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-fixture-qualification.mini-spec-batch.json', import.meta.url),
+  'utf8'));
+const oneJsRepairDrill = JSON.parse(readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.json', import.meta.url),
+  'utf8'));
+const oneJsRepairRunner = readFileSync(
+  new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
+  'utf8');
 
 async function setup(t, { inputFormat = null, capabilitySources = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
@@ -128,11 +146,14 @@ async function setup(t, { inputFormat = null, capabilitySources = false } = {}) 
   return { root, remote, config, ledger, baseRevision, additionalLedgers };
 }
 
-async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
+async function addOneJsRepository(ctx, {
+  enableDraftBuild = false, validationScript = null
+} = {}) {
   const reference = join(ctx.root, '1js-reference');
   const remote = join(ctx.root, '1js-remote.git');
   const skillPath = '.github/skills/author-declarative-e2e-test/SKILL.md';
   const scenarioPrefix = 'ooui/apps/cross-office-client-e2e/scenarios';
+  const scenarioPath = `${scenarioPrefix}/bizchat-create-canary-excel${enableDraftBuild ? '/scenario' : ''}.yaml`;
   mkdirSync(join(reference, '.github', 'skills', 'author-declarative-e2e-test'), { recursive: true });
   mkdirSync(join(reference, scenarioPrefix), { recursive: true });
   mkdirSync(join(reference, 'scripts'), { recursive: true });
@@ -140,9 +161,9 @@ async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
   writeFileSync(join(reference, skillPath), skill);
   writeFileSync(join(reference, scenarioPrefix, 'existing.yaml'), 'name: existing\n');
   writeFileSync(join(reference, 'scripts', 'validate-generated.mjs'),
-    "import { readFileSync } from 'node:fs';\n" +
-    "const text = readFileSync('ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml', 'utf8');\n" +
-    "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n");
+    validationScript ?? ("import { readFileSync } from 'node:fs';\n" +
+    `const text = readFileSync('${scenarioPath}', 'utf8');\n` +
+    "if (!text.includes('Canary') || !text.includes('4x3')) process.exit(1);\n"));
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
   await git(['init', '--quiet']);
@@ -167,7 +188,7 @@ async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
       approved: true,
       isolationVerified: true,
       executable: process.execPath,
-      args: ['scripts/validate-generated.mjs'],
+      args: ['scripts/validate-generated.mjs', scenarioPath],
       timeoutMs: 10000
     }],
     skillBindings: [{
@@ -217,7 +238,7 @@ async function addOneJsRepository(ctx, { enableDraftBuild = false } = {}) {
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: true, push: true, createDraftPR: true }
   });
-  return { repo, reference, remote, baseRevision };
+  return { repo, reference, remote, baseRevision, scenarioPath };
 }
 
 async function blockedPreModelFixture(t, mutateResult = () => {},
@@ -764,7 +785,7 @@ for (const condition of ['missing-authorization', 'wrong-attempt', 'config-drift
     if (condition === 'dirty-workspace')
       writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
     if (condition === 'source-drift')
-      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+      await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'user.name=Fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
         '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
     if (condition === 'superseded-evidence') {
@@ -976,10 +997,38 @@ test('production reviewed-handoff controller is repository and scenario neutral'
   assert.doesNotMatch(source, /office-agent|oa-integration|onenote/i);
 });
 
-test('authorized reviewed handoff reuses real dispatch with external boundaries injected', async t => {
+for (const automaticRsi of [false, true]) test(
+  `authorized reviewed handoff reuses real dispatch with external boundaries injected${automaticRsi ? ' and automatic RSI' : ''}`, async t => {
   const { root, remote, config, ledger } = await setup(t);
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
+  config.rsi = structuredClone(rsiPolicy);
+  let rsiLaunches = 0;
+  if (automaticRsi) {
+    const reference = join(root, 'rsi-reference');
+    mkdirSync(reference);
+    writeFileSync(join(reference, 'README.txt'), 'Separate synthetic agent-system reference.\n');
+    const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], reference);
+    await git(['init', '-b', 'main', '--quiet']);
+    await git(['remote', 'add', 'origin', `https://github.com/${config.rsi.targetRepository}.git`]);
+    await git(['add', '.']); await git(['commit', '--quiet', '-m', 'Synthetic RSI reference']);
+    const driverPath = join(root, 'rsi-driver.mjs');
+    const driver = "export function runFlow() { throw new Error('No-change must not evaluate'); }\n";
+    writeFileSync(driverPath, driver);
+    config.authoringProviders ??= {};
+    config.authoringProviders['rsi-fixture'] = { type: 'agency-local', executable: process.execPath, profile: 'fixture' };
+    config.rsi.automation = {
+      authoringApproved: true, localCommitApproved: true, authoringProvider: 'rsi-fixture',
+      referenceCheckout: reference, baselineRevision: (await git(['rev-parse', 'HEAD'])).stdout.trim(),
+      targetBranch: 'main', gitAuthor: { name: 'Fixture', email: 'fixture@example.invalid' },
+      timeoutMs: 60000, maxToolCalls: 4, maxFileBytes: 65536, maxWorkspaceBytes: 8388608, maxAiCredits: 30,
+      evaluation: { driverPath, driverSha256: hash(driver), dependencies: [], timeoutMs: 2000,
+        cases: ['recovery', 'healthy', 'guard'].map(population => ({
+          id: population, population, assertions: ['intended-work']
+        })) }
+    };
+  }
   await command('git', ['init', '--bare', '--quiet', remote], root);
   const executed = await acceptReviewedHandoff(config, ledger, fixture, {
     execute: true,
@@ -988,6 +1037,38 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
     authorizePush: true,
     authorizeDraftPR: true,
     dispatchDependencies: {
+      rsi: automaticRsi ? {
+        launch: async (_executable, _args, options) => {
+          rsiLaunches++;
+          assert.match(options.prompt, /draft-pr-validated/);
+          const call = (tool, args) => new Promise((resolve, reject) => {
+            const socket = connect(options.env.PILOT_MCP_ENDPOINT);
+            let output = '';
+            socket.setEncoding('utf8');
+            socket.on('connect', () => socket.write(JSON.stringify({
+              id: 'native-rsi-fixture', token: options.env.PILOT_MCP_TOKEN, tool, args
+            }) + '\n'));
+            socket.on('data', chunk => { output += chunk; });
+            socket.on('error', reject);
+            socket.on('close', () => {
+              try {
+                const result = JSON.parse(output);
+                assert.equal(result.ok, true, output);
+                resolve(result.result);
+              } catch (error) { reject(error); }
+            });
+          });
+          const trace = await call('pilot_read', { path: 'rsi-artifacts/0' });
+          assert.equal(typeof trace, 'string');
+          assert.equal(await call('pilot_read', { path: 'rsi-artifacts/0', startLine: 1, endLine: 1 }),
+            trace.split(/\r?\n/)[0]);
+          await call('pilot_finish', {
+            outcome: 'not-actionable',
+            findings: 'The captured native synthetic flow completed; no agent-system deficit is demonstrated.'
+          });
+          return { stdout: '', stderr: '' };
+        }
+      } : undefined,
       runModel: async (currentConfig, currentLedger, current, assignment, investigation, toolkit, skill) => {
         assert.equal(investigation.review.reviewer, 'synthetic-reviewed-handoff-fixture');
         assert.equal(assignment.skillBindingId, 'oa-integration-test-core');
@@ -1025,6 +1106,46 @@ test('authorized reviewed handoff reuses real dispatch with external boundaries 
   assert.equal(executed.result.toolUsage.used, 3);
   assert.equal(executed.result.toolUsage.byTool.pilot_write, 2);
   assert.equal(executed.result.toolUsage.byTool.pilot_finish, 1);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  const delivery = executed.rsi.handoffs[0];
+  const inspected = rsiWork(config, ledger, 'inspect', { observationId: delivery.observationId });
+  assert.deepEqual(inspected.observation.payload.data.workerResult, ledger.get('workerResult', executed.result.id));
+  assert.equal(inspected.binding.upstream.kind, 'reviewed-handoff');
+  assert.equal(inspected.observation.payload.data.artifacts.state, 'referenced');
+  assert.ok(inspected.observation.payload.data.artifacts.files.length > 0);
+  assert.ok(inspected.observation.payload.data.artifacts.files.every(entry => !Object.hasOwn(entry, 'contentBase64')));
+  assert.equal(inspected.rawArtifacts.state, 'available');
+  assert.equal(hash(readRsiArtifact(config, inspected.observation, 0)),
+    inspected.observation.payload.data.artifacts.files[0].sha256);
+  assert.equal(inspected.observation.payload.data.workerResult.validation[0].status, 'passed');
+  assert.equal(inspected.observation.payload.data.evidence[0].source.provenance, 'synthetic');
+  assert.deepEqual(captureWorkerRsiOutcome(config, ledger, executed.result.id), delivery);
+  const claim = { observationId: delivery.observationId, claimId: 'native-outcome-review', executorId: 'fixture-host' };
+  let finished;
+  if (automaticRsi) {
+    assert.equal(rsiLaunches, 1);
+    assert.equal(executed.rsi.execution.state, 'finished', JSON.stringify(executed.rsi));
+    assert.equal(delivery.nextRole, null);
+    finished = ledger.latest('rsiWorkItem')[0];
+  } else {
+    rsiWork(config, ledger, 'claim', claim);
+    finished = rsiWork(config, ledger, 'result', {
+      ...claim, outcome: 'no-change', rationale: 'This synthetic flow completed; it does not demonstrate an agent-system defect.'
+    });
+  }
+  assert.equal(finished.state, 'finished');
+  assert.equal(ledger.all('rsiFlowObservation').length, 1);
+  assert.equal(ledger.latest('rsiWorkItem').length, 1);
+  const original = json(inspected.observation);
+  const afterRetention = Date.parse(inspected.observation.payload.data.artifacts.expiresAt) + 1000;
+  assert.equal(inspectRsiArtifacts(config, inspected.observation, afterRetention).state, 'expired');
+  pruneState(config, { nowMs: afterRetention });
+  assert.equal(rsiWork(config, ledger, 'inspect', { observationId: delivery.observationId }).rawArtifacts.state, 'unavailable');
+  assert.throws(() => readRsiArtifact(config, inspected.observation, 0), /unavailable/);
+  assert.deepEqual(captureWorkerRsiOutcome(config, ledger, executed.result.id), {
+    ...delivery, state: 'finished', taskVersion: finished.version, nextRole: null
+  });
+  assert.equal(json(ledger.get('rsiFlowObservation', delivery.observationId)), original);
 });
 
 test('authorized 1JS handoff runs the controller end to end and links one non-blocking build', async t => {
@@ -1049,7 +1170,7 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
         assert.equal(assignment.skillInput.items[0].inputItemId, 'bizchat-create-canary-excel');
         assert.match(skill.instructions, /Fixture declarative E2E skill/);
         toolkit.write(
-          'ooui\\apps\\cross-office-client-e2e\\scenarios\\bizchat-create-canary-excel.yaml',
+          oneJs.scenarioPath.replaceAll('/', '\\'),
           'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
         );
         toolkit.finish({
@@ -1060,9 +1181,7 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
           skillResult: {
             status: 'succeeded',
             classification: 'missing-test-coverage',
-            changedFiles: [
-              'ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-canary-excel.yaml'
-            ],
+            changedFiles: [oneJs.scenarioPath],
             testsAddedOrUpdated: ['bizchat-create-canary-excel'],
             behaviorCardsAddedOrUpdated: [],
             unknowns: [],
@@ -1071,19 +1190,20 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
         });
       },
       queueDraftBuild: async (currentConfig, currentLedger, current, repo, revision) => {
-        buildQueueCalls++;
-        return {
-          id: repo.draftBuild.id,
-          provider: 'ado',
-          definitionId: repo.draftBuild.definitionId,
-          buildId: 57329999,
-          url: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999',
-          status: 'queued',
-          sourceRevision: revision,
-          sourceRef: `refs/heads/user/fixture/periodic-evidence-agent/${current.id}`,
-          queuedAt: now(),
-          blocking: false
-        };
+        return queueAdoDraftBuild(currentConfig, currentLedger, current, repo, revision, async body => {
+          buildQueueCalls++;
+          assert.deepEqual(JSON.parse(body.templateParameters.newCaseSelection), {
+            format: '1js-new-case-selection-v1',
+            baseRevision: oneJs.baseRevision,
+            sourceRevision: revision,
+            scenarioPaths: [oneJs.scenarioPath]
+          });
+          assert.equal(body.templateParameters.newCaseGroups, 'crossOfficeCowork');
+          return {
+            id: 57329999,
+            _links: { web: { href: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999' } }
+          };
+        });
       },
       createDraft: async (currentConfig, currentLedger, current, repo, revision, proposal) => {
         draftDescription = proposal.description;
@@ -1101,9 +1221,67 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
   assert.equal(executed.result.remoteValidation[0].status, 'queued');
   assert.equal(executed.result.remoteValidation[0].blocking, false);
   assert.equal(executed.result.remoteValidation[0].sourceRevision, executed.result.sourceRevision);
+  assert.deepEqual(executed.result.remoteValidation[0].caseSelection.scenarioPaths, [oneJs.scenarioPath]);
   assert.match(draftDescription, /Remote validation/);
   assert.match(draftDescription, /buildId=57329999/);
   assert.match(draftDescription, /does not wait for completion/);
+  assert.match(draftDescription, /new cases only/);
+  assert.ok(draftDescription.includes(oneJs.scenarioPath));
+});
+
+test('1JS publication blocks before push when the authored diff has no added cases', async t => {
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx, { enableDraftBuild: true });
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  let pushed = false;
+  let queued = false;
+  let drafted = false;
+  await assert.rejects(acceptReviewedHandoff(ctx.config, ctx.ledger, oneJsFixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runModel: async (currentConfig, currentLedger, current, assignment, investigation, toolkit) => {
+        const path = 'ooui/apps/cross-office-client-e2e/scenarios/existing.yaml';
+        toolkit.write(path, 'name: Existing scenario updated\n');
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: 'Updated existing coverage only.',
+          title: 'Update existing coverage',
+          description: 'No new scenario.',
+          skillResult: {
+            status: 'succeeded',
+            classification: 'missing-test-coverage',
+            changedFiles: [path],
+            testsAddedOrUpdated: ['existing'],
+            behaviorCardsAddedOrUpdated: [],
+            unknowns: [],
+            needsHumanDecision: false
+          }
+        });
+      },
+      runValidation: async (currentConfig, currentLedger, current, repo, revision) => [{
+        gateId: 'fixture-1js-local-five',
+        sourceRevision: revision,
+        commandOrRunUrl: 'fixture-local-validation',
+        status: 'passed',
+        artifactRefs: ['fixture-validation.json'],
+        owner: repo.owner,
+        nextCheckAt: null,
+        attemptCount: 1,
+        blockedReason: null
+      }],
+      pushBranch: async () => { pushed = true; },
+      queueDraftBuild: async () => { queued = true; },
+      createDraft: async () => { drafted = true; }
+    }
+  }), /no full-suite fallback/);
+  assert.equal(pushed, false);
+  assert.equal(queued, false);
+  assert.equal(drafted, false);
 });
 
 test('OA and 1JS bundle executes as two isolated assignments in one controller ledger', async t => {
@@ -1197,6 +1375,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   config.limits.maxValidationRepairRounds = 2;
+  config.rsi = structuredClone(rsiPolicy);
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
   const executed = await acceptReviewedHandoff(config, ledger, fixture, {
@@ -1245,6 +1424,270 @@ test('controller validation failures feed a bounded repository-skill repair loop
     executed.result.validation[0].sourceRevision);
   assert.deepEqual(executed.result.toolUsage.rounds.map(round => round.used), [3, 2]);
   assert.equal(executed.result.toolUsage.used, 5);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  const inspected = rsiWork(config, ledger, 'inspect', {
+    observationId: executed.rsi.handoffs[0].observationId
+  });
+  assert.deepEqual(inspected.observation.payload.data.workerResult.validationAttempts
+    .map(attempt => attempt.validation[0].status), ['failed', 'passed']);
+});
+
+test('1JS qualification specs preserve separate fixture cohorts and cleanup contracts', () => {
+  const normalized = normalizeSkillInput({
+    id: '1js-declarative-e2e-authoring',
+    inputFormat: 'declarative-e2e-mini-spec-batch-v1'
+  }, oneJsQualification);
+  assert.deepEqual(normalized.items.map(item => [item.inputItemId, item.account]), [
+    ['excel-agent-omni-seeded-workbook', 'AAD'],
+    ['excel-agent-omni-msa-conversation-isolation', 'MSA'],
+    ['excel-agent-omni-restore-web-source', 'AAD'],
+    ['excel-agent-arcadia-local-file-upload', 'AAD'],
+    ['excel-agent-arcadia-custom-skill-cleanup', 'AAD'],
+    ['excel-agent-dedicated-sensitivity', 'AAD']
+  ]);
+  for (const item of normalized.items) {
+    assert.ok(item.cleanup.length > 0);
+    assert.match(item.preconditions.join('\n'), /five consecutive.*final.*SHA/);
+    assert.match(item.preconditions.join('\n'), /retries=0/);
+    assert.match(item.cleanup.join('\n'), /only.*owned/);
+  }
+  assert.match(normalized.items[0].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /A1.*15/);
+  assert.match(normalized.items[0].preconditions.join('\n'),
+    /Select Omni.*actual visible experience/);
+  assert.match(normalized.items[0].orderedTestSteps.join('\n'), /confirm Omni/);
+  assert.doesNotMatch(normalized.items[0].orderedTestSteps.join('\n'), /Arcadia/);
+  assert.match(normalized.items[0].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /B1.*FIXTURE-SEEDED-GUARD.*protected unchanged/);
+  assert.match(normalized.items[1].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /must not contain/);
+  assert.match(normalized.items[2].cleanup.join('\n'), /even.*fails/);
+  assert.match(normalized.items[3].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /E1.*2600/);
+  assert.match(normalized.items[4].preconditions.join('\n'),
+    /EXCELAGENT_CUSTOM_SKILL_E2E_ENABLED.*blocked/);
+  assert.match(normalized.items[4].cleanup.join('\n'),
+    /only.*owned.*even.*fails/);
+  assert.match(normalized.items[5].preconditions.join('\n'),
+    /dedicated-enterprise.*not.*ordinary AAD/);
+  assert.match(normalized.items[5].preconditions.join('\n'),
+    /Select Omni.*actual visible experience/);
+  assert.match(normalized.items[5].orderedTestSteps.join('\n'),
+    /confirm Omni/);
+  assert.doesNotMatch(normalized.items[5].orderedTestSteps.join('\n'),
+    /Arcadia/);
+  assert.match(normalized.items[5].expectedUserVisibleAndDataOutcomes.join('\n'),
+    /not mutated/);
+  normalized.items[0].title = 'Changed copy';
+  assert.notEqual(normalized.items[0].title, oneJsQualification.items[0].title);
+});
+
+test('1JS qualification reference assets preserve their separate catalog and protected contracts', () => {
+  const root = new URL('./fixtures/1js-qualification/', import.meta.url);
+  const catalog = JSON.parse(readFileSync(new URL('catalog.json', root), 'utf8'));
+  const matrix = JSON.parse(readFileSync(new URL('capability-matrix.json', root), 'utf8'));
+  const files = new Map([
+    ['excel-agent.aad.fixture-seeded-workbook', 'fixture-seeded-workbook.yaml'],
+    ['excel-agent.msa.fixture-conversation-isolation', 'msa-fixture-conversation-isolation.yaml'],
+    ['excel-agent.aad.fixture-web-source-restoration', 'fixture-web-source-restoration.yaml'],
+    ['excel-agent.aad.fixture-local-file-upload', 'fixture-local-file-upload.yaml'],
+    ['excel-agent.dedicated.fixture-sensitivity', 'fixture-dedicated-sensitivity.yaml']
+  ]);
+  assert.deepEqual(catalog.cases.map(item => item.semanticId), [...files.keys()]);
+  assert.deepEqual(matrix.cases.map(item => item.semanticId), [...files.keys()]);
+  for (const entry of catalog.cases) {
+    const contract = matrix.cases.find(item => item.semanticId === entry.semanticId);
+    const source = readFileSync(new URL(`scenarios/${files.get(entry.semanticId)}`, root), 'utf8')
+      .replace(/\r\n/g, '\n');
+    assert.equal(contract.title, entry.title);
+    assert.ok(source.includes(`\nid: ${entry.semanticId}\n`));
+    assert.ok(source.includes(`\nname: ${entry.title}\n`));
+    assert.ok(source.includes(`\n  lane: ${contract.accountLane}\n`));
+    assert.match(source, /protected: true/);
+    if (entry.semanticId.endsWith('fixture-seeded-workbook') ||
+        entry.semanticId.endsWith('fixture-sensitivity')) {
+      assert.match(source, /^  experience: omni$/m);
+    }
+  }
+  const seeded = matrix.cases.find(item =>
+    item.semanticId === 'excel-agent.aad.fixture-seeded-workbook');
+  assert.ok(seeded.assertions.some(item => item.provider === 'workbook' &&
+    item.assertion === 'exact' && item.parameters.cell === 'A1' &&
+    item.parameters.expected === '15'));
+  assert.ok(seeded.assertions.some(item => item.provider === 'workbook' &&
+    item.assertion === 'unchanged' && item.parameters.cell === 'B1'));
+  const dedicated = matrix.cases.find(item =>
+    item.semanticId === 'excel-agent.dedicated.fixture-sensitivity');
+  assert.equal(dedicated.accountLane, 'dedicated-enterprise');
+  assert.ok(dedicated.assertions.some(item =>
+    item.provider === 'sensitivity' && item.assertion === 'visible'));
+});
+
+for (const repairBudget of [0, 1, 2])
+test(`1JS edited-commit repair budget ${repairBudget} preserves failures and validation isolation`, async t => {
+  const ctx = await setup(t);
+  const oneJs = await addOneJsRepository(ctx, {
+    enableDraftBuild: true, validationScript: oneJsRepairRunner
+  });
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  ctx.config.limits.maxValidationRepairRounds = repairBudget;
+  ctx.config.limits.maxValidationInfrastructureRetries = 0;
+  await command('git', ['init', '--bare', '--quiet', oneJs.remote], ctx.root);
+  const scenarioPath = oneJs.scenarioPath;
+  const referenceSkill = readFileSync(join(oneJs.reference, oneJs.repo.skillBindings[0].skillPath));
+  const publicationCalls = [];
+  const reports = [];
+  const revisions = [];
+  let modelCalls = 0;
+
+  function assertPriorValidationCleaned(currentLedger, jobId) {
+    const operations = currentLedger.status().operations.filter(operation =>
+      operation.job_id === jobId && operation.kind === 'validation');
+    for (const operation of operations) {
+      const artifact = JSON.parse(readFileSync(JSON.parse(operation.detail).artifact, 'utf8'));
+      const report = JSON.parse(artifact.output.stdout);
+      assert.equal(report.provenance, 'synthetic');
+      assert.equal(report.sourceRevision, artifact.revision);
+      assert.equal(report.retries, 0);
+      assert.equal(report.requiredConsecutivePasses, 5);
+      assert.equal(report.ownedResourcesRemoved, true);
+      assert.equal(report.unownedResourcePreserved, true);
+      assert.equal(existsSync(report.scratchRoot), false);
+      assert.equal(existsSync(report.validationWorkspace), false);
+    }
+  }
+
+  const executed = await acceptReviewedHandoff(ctx.config, ctx.ledger, oneJsFixture, {
+    execute: true,
+    authorizeSynthetic: true,
+    authorizeCommit: true,
+    authorizePush: true,
+    authorizeDraftPR: true,
+    dispatchDependencies: {
+      runModel: async (_config, currentLedger, current, assignment, _investigation,
+        toolkit, skill, authoring) => {
+        assert.equal(assignment.repoId, '1js');
+        assert.equal(authoring.round, modelCalls++);
+        assert.match(skill.instructions, /Fixture declarative E2E skill/);
+        assertPriorValidationCleaned(currentLedger, current.id);
+        const round = oneJsRepairDrill.rounds[authoring.round];
+        if (authoring.round === 0) {
+          assert.deepEqual(authoring.validationFeedback, []);
+        } else {
+          const feedback = authoring.validationFeedback[0];
+          assert.equal(feedback.status, 'failed');
+          assert.equal(feedback.exitCode, 1);
+          const report = JSON.parse(feedback.stdoutTail);
+          assert.equal(report.failure, round.expectedFeedbackFailure);
+          assert.equal(report.sourceRevision, feedback.sourceRevision);
+          assert.equal(report.expectedValue, 15);
+          assert.equal(report.consecutivePasses, 0);
+          assert.deepEqual(report.runs.map(run => run.status), ['failed']);
+        }
+        toolkit.write(scenarioPath.replaceAll('/', '\\'), json(round.scenario));
+        toolkit.finish({
+          outcome: 'propose-change',
+          findings: round.findings,
+          title: round.title,
+          description: 'Synthetic 1JS edited-commit qualification drill, not live product proof.',
+          skillResult: {
+            status: 'succeeded',
+            classification: 'missing-test-coverage',
+            changedFiles: [scenarioPath],
+            testsAddedOrUpdated: ['bizchat-create-canary-excel'],
+            behaviorCardsAddedOrUpdated: [],
+            unknowns: [],
+            needsHumanDecision: false
+          }
+        });
+      },
+      queueDraftBuild: async (currentConfig, currentLedger, current, repo, revision) => {
+        assert.equal(repairBudget, 2);
+        assertPriorValidationCleaned(currentLedger, current.id);
+        assert.equal(revision, revisions.at(-1));
+        return queueAdoDraftBuild(currentConfig, currentLedger, current, repo, revision, async body => {
+          assert.deepEqual(JSON.parse(body.templateParameters.newCaseSelection), {
+            format: '1js-new-case-selection-v1',
+            baseRevision: oneJs.baseRevision,
+            sourceRevision: revision,
+            scenarioPaths: [scenarioPath]
+          });
+          assert.equal(body.templateParameters.newCaseGroups, 'crossOfficeCowork');
+          publicationCalls.push({ kind: 'build', revision });
+          return {
+            id: 57329999,
+            _links: { web: { href: 'https://office.visualstudio.com/Office/_build/results?buildId=57329999' } }
+          };
+        });
+      },
+      createDraft: async (_config, _ledger, _current, _repo, revision, proposal) => {
+        assert.equal(repairBudget, 2);
+        assert.equal(revision, revisions.at(-1));
+        assert.match(proposal.description, /57329999/);
+        publicationCalls.push({ kind: 'draft', revision });
+        return {
+          url: 'https://example.invalid/1js/draft/repair',
+          isDraft: true, headRevision: revision
+        };
+      },
+      runValidation: async (...args) => {
+        const result = await runValidation(...args);
+        const report = JSON.parse(JSON.parse(readFileSync(result[0].artifactRefs[0], 'utf8'))
+          .output.stdout);
+        reports.push(report);
+        revisions.push(args[4]);
+        return result;
+      }
+    }
+  });
+
+  const attempts = executed.result.validationAttempts;
+  assert.equal(modelCalls, repairBudget + 1);
+  assert.deepEqual(attempts.map(attempt => attempt.validation[0].status),
+    oneJsRepairDrill.expectedValidationStatuses.slice(0, repairBudget + 1));
+  assert.equal(new Set(revisions).size, repairBudget + 1);
+  assert.deepEqual(attempts.map(attempt => attempt.sourceRevision), revisions);
+  assert.deepEqual(reports.map(report => report.sourceRevision), revisions);
+  assert.deepEqual(reports.map(report => report.consecutivePasses),
+    [0, 0, 5].slice(0, repairBudget + 1));
+  const job = ctx.ledger.job(executed.result.assignmentId);
+  assertPriorValidationCleaned(ctx.ledger, job.id);
+  for (let index = 0; index < revisions.length; index++) {
+    const parent = (await command('git', ['rev-parse', `${revisions[index]}^`], job.workspace))
+      .stdout.trim();
+    assert.equal(parent, index === 0 ? oneJs.baseRevision : revisions[index - 1]);
+    const scenario = JSON.parse((await command('git',
+      ['show', `${revisions[index]}:${scenarioPath}`], job.workspace)).stdout);
+    assert.deepEqual(scenario, oneJsRepairDrill.rounds[index].scenario);
+    const validator = (await command('git', ['show',
+      `${revisions[index]}:scripts/validate-generated.mjs`], job.workspace)).stdout;
+    assert.equal(validator, oneJsRepairRunner);
+  }
+  assert.deepEqual(readFileSync(join(oneJs.reference, oneJs.repo.skillBindings[0].skillPath)),
+    referenceSkill);
+  assert.equal((await command('git', ['rev-parse', 'HEAD'], oneJs.reference)).stdout.trim(),
+    oneJs.baseRevision);
+  assert.equal((await command('git', ['status', '--porcelain'], oneJs.reference)).stdout.trim(), '');
+  assert.equal(executed.result.sourceRevision, revisions.at(-1));
+  assert.ok(executed.result.validation.every(gate => gate.sourceRevision === revisions.at(-1)));
+  const remoteRefs = (await command('git', ['--git-dir', oneJs.remote,
+    'for-each-ref', '--format=%(objectname)'], ctx.root)).stdout.trim();
+  if (repairBudget < 2) {
+    assert.equal(executed.result.outcome, 'blocked');
+    assert.equal(executed.result.draftPR, null);
+    assert.deepEqual(publicationCalls, []);
+    assert.equal(remoteRefs, '');
+  } else {
+    assert.equal(executed.result.outcome, 'draft-pr-validated');
+    assert.equal(executed.result.draftPR.headRevision, revisions[2]);
+    assert.deepEqual(publicationCalls, [
+      { kind: 'build', revision: revisions[2] }, { kind: 'draft', revision: revisions[2] }
+    ]);
+    assert.equal(remoteRefs, revisions[2]);
+    assert.deepEqual(reports[2].runs.map(run => run.status), Array(5).fill('passed'));
+    assert.equal(executed.result.remoteValidation[0].sourceRevision, revisions[2]);
+  }
 });
 
 test('Agency authoring provider uses the same local repair loop and exact session', async t => {
@@ -1431,6 +1874,7 @@ test(`exhausted test-only repair budget ${repairBudget} blocks without push or D
   config.activation.dispatch = true;
   config.limits.maxAiCreditsPerSession = 1;
   config.limits.maxValidationRepairRounds = repairBudget;
+  config.rsi = structuredClone(rsiPolicy);
   await command('git', ['init', '--bare', '--quiet', remote], root);
   let modelCalls = 0;
   let draftCreated = false;
@@ -1478,6 +1922,9 @@ test(`exhausted test-only repair budget ${repairBudget} blocks without push or D
   assert.match(executed.result.blocker.reason, /production-code repair is prohibited/);
   assert.deepEqual(executed.result.validation.map(item => item.status), ['failed']);
   assert.equal(executed.result.validationAttempts.length, repairBudget + 1);
+  assert.equal(executed.rsi.state, 'delivered', JSON.stringify(executed.rsi));
+  assert.equal(ledger.all('rsiFlowObservation')[0].payload.outcome, 'blocked');
+  assert.equal(ledger.all('rsiFlowObservation')[0].payload.data.workerResult.validation[0].status, 'failed');
   assert.equal((await command('git', ['--git-dir', remote, 'for-each-ref', '--format=%(refname)'], root))
     .stdout.trim(), '');
 });

@@ -1,5 +1,5 @@
 import { hash, json, now, requireThat, validateRecord } from './common.js';
-import { requireEligibleImprovementInvestigation } from './review-decisions.js';
+import { requireEligibleImprovementInvestigation, validateExistingFixesReview } from './review-decisions.js';
 
 function texts(values, name) {
   requireThat(Array.isArray(values) && values.length > 0 &&
@@ -87,11 +87,18 @@ export function recordTestCoveragePlan(ledger, input) {
     coverageGaps, unknowns, rationale: input.rationale,
     ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
     ...(input.skillInput ? { skillInput: structuredClone(input.skillInput) } : {}),
+    ...(input.existingFixesReview !== undefined ? { existingFixesReview: structuredClone(input.existingFixesReview) } : {}),
     createdAt: now()
   };
   validateRecord(record);
-  if (previous && comparable(previous) === comparable(record)) return previous;
-  return ledger.put(record);
+  const result = previous && comparable(previous) === comparable(record) ? previous : record;
+  if (result.existingFixesReview) {
+    const investigation = ledger.get('investigation', result.existingFixesReview.investigationId);
+    requireThat(investigation && improvement.investigationIds.includes(investigation.id),
+      'Existing fix review does not reference an investigation in this improvement', 'blocked-reconciliation');
+    validateExistingFixesReview(investigation, result);
+  }
+  return result === previous ? previous : ledger.put(result);
 }
 
 export function planImprovement(ledger, input) {

@@ -178,6 +178,7 @@ test('real stdio process verifies handshake, allows only scoped fetch and suppre
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');
     });
   `;
+  config.runtime.workiqCli.minReadIntervalMs = 80;
   const client = await workiqCli(config, { spawnProcess: (exe, args, options) => {
     assert.equal(exe, config.runtime.workiqCli.executable);
     assert.deepEqual(args, ['--account', config.identity.designatedUser, 'mcp']);
@@ -185,9 +186,17 @@ test('real stdio process verifies handshake, allows only scoped fetch and suppre
   } });
   try {
     assert.equal(cliEnvelope(await client.read(principalPath)).results[0].data.fixture, true);
+    const completedAt = Date.now();
+    assert.equal(cliEnvelope(await client.read(principalPath)).results[0].data.fixture, true);
+    assert.ok(Date.now() - completedAt >= 70, 'configured pacing applies before the next read');
     await assert.rejects(client.read('/me/messages?$select=id'), /scope|outside|approved/i);
     assert.equal(client.rpc, undefined);
   } finally { await client.close(); }
+});
+
+test('CLI reports explicit throttling and its server delay without disguising it as authentication', () => {
+  assert.deepEqual(cliFailure({ results: [{ statusCode: 429, retryAfterSeconds: 60 }] }),
+    { code: 'blocked-throttled', statusCode: 429, retryAfterSeconds: 60 });
 });
 
 test('CLI startup timeout closes child and does not retry', async t => {

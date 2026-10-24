@@ -7,6 +7,14 @@ $request = $env:PILOT_NATIVE_COMMAND | ConvertFrom-Json
 Remove-Item Env:\PILOT_NATIVE_COMMAND
 if ($request.jobName -notmatch '^Local\\PilotNative-[a-f0-9-]{36}$') { throw 'Invalid native job identity' }
 if ($request.action -ne 'drain' -and (!$request.executable -or $request.args -isnot [Array])) { throw 'Invalid native command request' }
+if ($request.action -ne 'drain') {
+    if (($env:PATHEXT -split ';') -notcontains '.EXE') {
+        throw 'Native validation requires PATHEXT including .EXE; command was not launched'
+    }
+    $native = $ExecutionContext.SessionState.InvokeCommand.GetCommand(
+        [string]$request.executable, [System.Management.Automation.CommandTypes]::Application)
+    if ($null -eq $native) { throw 'Native validation executable did not resolve to an application; command was not launched' }
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -100,5 +108,7 @@ if ($request.action -eq 'drain') {
 }
 [NativeValidationJob]::Enter([string]$request.jobName)
 $arguments = @($request.args | ForEach-Object { [string]$_ })
-& ([string]$request.executable) @arguments
+$global:LASTEXITCODE = $null
+& $native @arguments
+if ($null -eq $LASTEXITCODE) { throw 'Native validation did not produce a process exit code' }
 exit $LASTEXITCODE

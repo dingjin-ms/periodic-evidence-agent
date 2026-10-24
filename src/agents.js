@@ -13,7 +13,8 @@ const definitions = {
       'app-begin', 'app-append', 'app-import-parent', 'replay-evidence',
       'app-unavailable', 'app-block', 'app-ado', 'app-ado-reconcile',
       'app-workiq-cli', 'app-workiq-cli-reconcile', 'app-workiq-continue',
-      'app-thread-context', 'icm-replay', 'collect'
+      'app-thread-context', 'icm-replay', 'collect', 'app-end',
+      'one-shot-begin', 'one-shot-collect', 'one-shot-status', 'one-shot-stop'
     ]
   },
   filter: {
@@ -21,12 +22,14 @@ const definitions = {
     procedures: ['evidence-coordinator', 'evidence-improvement-planner'],
     inputs: ['Exact source-ledger/capture inventory and versions', 'Configured exclusions, review method and coverage skill pins'],
     outputs: ['Source-bound review and analysis results', 'Explicit batch/cohort acceptance, held proposals and blockers'],
-    authority: 'Review and planning only; no new source collection, worker execution or publication.',
+    authority: 'Review and planning only; explicitly selected read-only FILTER execution is allowed, but no new source collection, proposer execution or publication.',
     operations: [
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
+      'filter-local-preflight', 'filter-local-run',
       'stage2-handoff', 'stage2-proposal-check', 'app-review', 'app-plan-improvement',
-      'review', 'review-pending', 'plan-improvement', 'report', 'replay-review'
+      'review', 'review-pending', 'plan-improvement', 'report', 'replay-review', 'app-end',
+      'one-shot-filter-prepare', 'one-shot-filter-reserve'
     ]
   },
   proposer: {
@@ -42,14 +45,24 @@ const definitions = {
       'app-worker', 'qualify-skill', 'submit-filter-handoff', 'submit-reviewed-handoff',
       'dispatch', 'reconcile', 'continue-local-validation', 'diagnose-local-validation',
       'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
-      'continue-native-preparation', 'continue-native-source'
+      'continue-native-preparation', 'continue-native-source', 'app-end', 'one-shot-handoff'
     ]
+  },
+  rsi: {
+    skill: 'evidence-rsi',
+    procedures: [],
+    inputs: ['Immutable flow outcome with exact source, configuration and skill pins',
+      'Enabled RSI policy, durable claim and configured agent-repository write scope'],
+    outputs: ['One evidence-backed fix or improvement proposal, or explicit no-change/blocked outcome',
+      'Draft receipt when authorized; qualification is never inferred from a PR'],
+    authority: 'Agent-system improvements only; no product dispatch, collection, permission expansion or merge.',
+    operations: ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run']
   }
 };
 
 function definition(role) {
   requireThat(typeof role === 'string' && Object.hasOwn(definitions, role),
-    'Unknown agent role; expected collector, filter or proposer', 'blocked-agent');
+    'Unknown agent role; expected collector, filter, proposer or rsi', 'blocked-agent');
   return definitions[role];
 }
 function skillReference(name) {

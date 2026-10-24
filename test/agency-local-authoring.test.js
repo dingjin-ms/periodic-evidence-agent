@@ -18,7 +18,7 @@ function rpc(endpoint, token, tool, args = {}) {
     let output = '';
     socket.setEncoding('utf8');
     socket.on('connect', () =>
-      socket.end(`${JSON.stringify({ id: 'test-request', token, tool, args })}\n`));
+      socket.write(`${JSON.stringify({ id: 'test-request', token, tool, args })}\n`));
     socket.on('data', chunk => { output += chunk; });
     socket.on('error', reject);
     socket.on('close', () => {

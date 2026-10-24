@@ -1,0 +1,40 @@
+{
+  "format": "validation-repair-drill-v1",
+  "provenance": "synthetic",
+  "rounds": [
+    {
+      "expectedFeedbackFailure": null,
+      "title": "Add synthetic 1JS seeded-workbook qualification",
+      "findings": "The first implementation seeds the wrong input; the protected expected result remains 15.",
+      "scenario": {
+        "name": "Synthetic seeded-workbook qualification",
+        "seedValue": 6,
+        "increment": 10,
+        "restoreSetting": false
+      }
+    },
+    {
+      "expectedFeedbackFailure": "workbook-value-mismatch",
+      "title": "Correct the synthetic 1JS workbook seed",
+      "findings": "Corrected the setup after exact-value feedback, but this revision exposes a missing setting restoration.",
+      "scenario": {
+        "name": "Synthetic seeded-workbook qualification",
+        "seedValue": 5,
+        "increment": 10,
+        "restoreSetting": false
+      }
+    },
+    {
+      "expectedFeedbackFailure": "setting-not-restored",
+      "title": "Restore the synthetic 1JS setting after validation",
+      "findings": "Restored the original setting without changing the protected workbook assertion; qualify this new commit from zero.",
+      "scenario": {
+        "name": "Synthetic seeded-workbook qualification",
+        "seedValue": 5,
+        "increment": 10,
+        "restoreSetting": true
+      }
+    }
+  ],
+  "expectedValidationStatuses": ["failed", "failed", "passed"]
+}

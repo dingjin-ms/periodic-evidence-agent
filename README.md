@@ -9,16 +9,29 @@ An explicitly configured official local WorkIQ CLI transport is also available
 for authorized collection-only runs. It is not a fallback from failed app auth;
 see [the CLI contract](APP-NATIVE.md#explicit-local-workiq-cli-collection).
 Token-renewal and unattended qualification remain deferred.
+For a finite operator-driven Collector -> FILTER -> Proposer -> RSI attempt,
+see [Running the agentic loop with RSI enabled](scaffold/RSI-RUNBOOK.md).
+It separates capture-only opt-in, app-hosted continuations, paired evaluation
+and optional draft publication; it does not promise a one-command live loop.
 Budget-stopped channel scans can prepare a distinct, explicitly authorized
 continuation run without refetching captured pages or losing buffered rows.
 Root/reply context and an opt-in modified-time lane are documented in
 [the continuation contract](APP-NATIVE.md#budget-stopped-continuation). Neither
 feature authorizes additional live reads, automatic schedules or a delta feed.
-IcM connector receipts can be replayed **offline** into a separate audit store;
-live connector execution stays blocked pending an explicit timestamp/scope
-contract. [Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
+IcM connector receipts can be replayed **offline** into a separate audit store.
+An explicitly approved [incident-created cohort](APP-NATIVE.md#explicit-incident-created-icm-receipts)
+can ingest captured identity/search receipts through `app-append`; helpers do
+not launch its live connector. Default saved-query scope remains fail-closed.
+[Held Stage2 handoffs](APP-NATIVE.md#held-stage2-coverage-handoff) require
 the installed coverage-analysis skill and pinned reference, read source ledgers
 read-only, and cannot authorize product dispatch.
+
+[Bounded one-shot controls](ONE-SHOT.md) add coordinator-callable aggregate
+collection/FILTER reservations, offline recovery and complete accepted-cohort
+release to the existing helpers. They preserve authenticated WorkIQ provenance
+in collection-only storage and keep saved replay distinct. The coordinating host
+still supplies the authorized external FILTER executor; this is not a standalone
+service or qualified unattended end-to-end run.
 
 ## Account-free quick start
 
@@ -46,6 +59,36 @@ The lockfile uses canonical npm registry URLs and pinned integrity hashes. On
 networks that block the public registry, configure your organization's approved
 npm mirror (for example with `npm_config_registry`) before `npm ci`; do not
 disable TLS verification or copy another user's npm credentials.
+
+The explicitly invoked `npm run benchmark:fingerprint -- --output <absolute-new-file>`
+measures local synthetic controller/fingerprint workloads, including event-heavy
+warm verification and independent full-fresh equivalence. It is not part of
+setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
+See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
+and the `local-fingerprint-benchmark` skill before running it.
+
+## Offline self-improvement qualification
+
+The opt-in `self-improvement` command qualifies one recovery harness and renders
+a source-bound before/after scorecard. It is **not autonomous self-modification**:
+both arms execute the same reviewed current controller, retaining its existing
+recovery capabilities. Equal correct results mean `harness-qualified` and
+`no-demonstrated-benefit`, not an improvement in live recovery or agent behavior.
+
+The fixed `validation-continuation-v1` fixture exercises the existing
+`prepareLocalValidationContinuation` and `dispatchLocalValidationContinuation`
+helpers against disposable local Git repositories and controller stores. The
+independent parent observes two real native assertion cases and simulated
+publication boundaries. No model, provider, credentials, product repository,
+installed skill, real push or PR is involved.
+
+Start from the inert [policy example](scaffold/self-improvement.example.json).
+It requires explicit finite execution/output/storage limits, a retained state
+owner, and a named child of this checkout's ignored `.state/rsi`. Execution
+approval is false by default. See the [command and ownership contract](APP-NATIVE.md#offline-self-improvement-qualification)
+and the [comparison review requirements](CONTRIBUTING.md#self-improvement-review-evidence).
+This checkout must retain authoritative state through review and follow-up;
+there is no automatic cleanup, archive transfer, candidate promotion or rollout.
 
 ## Devbox repository setup
 
@@ -118,7 +161,152 @@ exact base revisions, repository skill paths and skill content fingerprints.
 It does not install product-repository dependencies, authenticate accounts,
 enable routing/write permissions or create PRs.
 
-The demo prints JSON with these stable results (paths/timestamps vary):
+### Azure CLI sign-in recovery
+
+`blocked-auth` during ADO repository qualification or collection requires a
+usable local Azure CLI session for the configured tenant and designated user.
+Windows sign-in, login on another machine, or working package-feed access does
+not establish that session. Setup does not log in automatically or change the
+configured identity.
+
+Outside a managed Codespaces authentication environment, first check
+`Get-Command az` and `az version`. If an existing Azure CLI installation is
+absent from this process PATH, open a new shell or add its verified directory
+to this shell's PATH only. Do not reinstall it or change machine-wide settings
+solely because command lookup failed. In Codespaces, follow the repository's
+broker recovery instructions rather than replacing its shim or running login.
+
+For Windows WAM login that waits indefinitely or reaches unrelated subscription
+selection, use an Azure CLI whose `az login --help` lists
+`--skip-subscription-discovery`. In a new PowerShell session, run the following
+manually from this controller checkout and complete any sign-in/MFA:
+
+```powershell
+$config = Get-Content .\pilot.local.json -Raw | ConvertFrom-Json
+$tenant = $config.identity.tenantId
+if (!$tenant) { throw 'An approved configured tenant is required' }
+$env:AZURE_CORE_ENABLE_BROKER_ON_WINDOWS = 'true'
+$env:AZURE_CORE_LOGIN_EXPERIENCE_V2 = 'off'
+az login --tenant $tenant --scope https://graph.microsoft.com/.default `
+  --skip-subscription-discovery --output none
+if ($LASTEXITCODE -ne 0) { throw 'Interactive sign-in did not succeed' }
+az account show --output none
+if ($LASTEXITCODE -ne 0) { throw 'Azure CLI account is unavailable' }
+az ad signed-in-user show --output none
+if ($LASTEXITCODE -ne 0) { throw 'Signed-in Graph user is unavailable' }
+```
+
+These settings affect only this shell and its children. On Linux/macOS, use the
+supported browser or device-code flow with the same tenant/scope/discovery
+arguments, omitting the Windows WAM setting. Skipping subscription discovery
+does not skip sign-in, MFA, conditional access, ADO authorization, or the
+controller's tenant/user checks. A successful Graph check alone is not an ADO
+access receipt. Never change the configured identity to accept the wrong
+account, print tokens, copy credential caches, or clear shared caches.
+
+After manual sign-in, retry the selected setup once. If this controller's
+locked dependencies are already installed:
+
+```powershell
+npm run setup -- --repo 1js --skip-install
+```
+
+`--skip-install` skips only controller dependency installation, not repository
+qualification, diagnostics, offline checks or the synthetic demo. If access
+still fails, preserve the safe failure and stop rather than cycling through
+login modes. This sequence recovered a Windows session; it does not establish
+the cause of an earlier timeout.
+
+If qualification instead reports `The empty string is not a valid path` after
+fetch, inspect the Git invocation: Windows Git can reject
+`-c core.hooksPath=`. Preserve and report that compatibility failure rather than
+reauthenticating or changing global Git configuration. This documentation-only
+change does not modify the controller's Git wrapper.
+
+### 1JS local setup and validation
+
+These notes apply only after an authorized assignment has supplied the exact
+isolated product checkout, base revision and validation bounds. They do not
+activate the optional 1JS authoring binding or authorize product execution.
+Keep local paths, identities and credentials in ignored machine-local
+configuration, not in this repository's documentation or PRs.
+
+Read the active checkout's root/OOUI instructions, workspace-configuration skill
+and selected application's README first. Use the active branch's paths rather
+than copying paths from another revision. The controller requires Node 24;
+the product checkout's own runtime requirements remain independent.
+
+Run product package-management commands with its repository Yarn, not this
+controller's npm. Before installation or building, inspect the active tasks
+and obtain confirmation for exact existing dependency/generated directories
+they will replace. Build dependencies can regenerate tracked sources in
+addition to cleaning compiled outputs. Approval in another worktree does not
+cover this checkout or newly discovered cleanup paths.
+
+When the selected checkout supports these standard commands, run from its
+OOUI root, with the package name validated against its manifest:
+
+```powershell
+$package = "<approved-package-name>"
+yarn fast "$package" --skip-prestart
+yarn build --to "$package"
+```
+
+Omit `--skip-prestart` when the next step needs development-server prestart.
+Use the selected application's actual scripts for typecheck, static validation
+and local unit tests; do not invent script names or replace the standard build.
+
+- **Separate authentication chains.** Azure CLI/ADO qualification, Yarn
+  package-feed access and the product browser account are independent checks.
+  On an actual package-feed `E401`, including one from a build dependency's npm
+  subprocess, run the repository's `yarn auth` in the same checkout/profile and
+  retry the failed command once. Do not use another npm login, copy credentials
+  from another machine or repeatedly reinstall for a later-stage failure.
+  `yarn auth --skip-check` can reuse a cached token; it does not guarantee a
+  new token or sufficient lifetime for a long installation. Timed experiments
+  retain their own declared validity checks; do not weaken them or omit auth time.
+- **Missing build outputs.** Missing workspace `lib` entrypoints or type
+  definitions can mean installation succeeded but compilation is incomplete.
+  Build the normal dependency closure, not hand-made links, source aliases or
+  another checkout's outputs. If root repository tooling itself cannot resolve
+  a required configuration package, diagnose root tooling separately. A root
+  restore can replace dependencies and change scope/project references; do not
+  run it without inspecting its effects and obtaining required approval.
+- **Windows generated-file staging.** For `CRLF would be replaced by LF`,
+  inspect the affected paths' Git attributes and effective line-ending
+  settings. Only after verifying that every affected normalized Git blob equals
+  HEAD, use a narrowly process-local `core.safecrlf=warn` override if needed
+  for the standard staging step. Preserve existing process Git configuration
+  entries. Do not alter global/repository settings, bypass hooks, set CI to
+  skip checks or ignore actual generated-source differences.
+- **Missing local test browser.** Local Playwright DOM fixtures can need
+  Chromium headless shell without being product E2E. Only after an actual
+  missing-executable failure, use the selected package's installed Playwright
+  and the same profile/browser-cache environment as the test. When that
+  application's tooling supports it, run the following from OOUI, then retry
+  its documented unit command:
+
+```powershell
+$env:PLAYWRIGHT_SKIP_BROWSER_GC = "1"
+yarn workspace "$package" playwright install chromium --only-shell
+```
+
+The browser setting affects this shell and prevents install-time garbage
+collection of other browser versions. Do not clear shared caches or pin a
+revision copied from another checkout. A headless-shell install does not set
+up the full product browser or CDP session.
+
+Record the exact checkout revision, command, exit status and pending/failed
+stages. Installation, build, typecheck, static validation, unit tests and test
+discovery are not proof of a real product E2E pass or installation-performance
+target. Product E2E still needs its approved deployment, accounts, secrets,
+flights and browser/CDP prerequisites. Neither another checkout's results nor
+an offline controller demo qualifies this checkout or a new native experiment.
+
+### Offline demo coverage
+
+The demo prints JSON with these stable collection fields (excerpt; paths,
+timestamps and generated fixture commits vary):
 
 ```json
 {
@@ -132,7 +320,7 @@ The demo prints JSON with these stable results (paths/timestamps vary):
   ],
   "uniqueEvidence": 3,
   "overallCollectionState": "partial-or-blocked",
-  "workers": 0,
+  "collectionWorkers": 0,
   "scheduleEnabled": false
 }
 ```
@@ -141,16 +329,113 @@ The demo prints JSON with these stable results (paths/timestamps vary):
 dry run. IcM deliberately stays unavailable; unknown coverage is not zero.
 The demo imports a root and an in-window reply to an older root, replays a batch
 without duplicates, then closes/reopens the ledger. It checks synthetic provenance,
-cursor completeness and absence of dispatch. Each invocation creates only its
-own disposable `.state\demo-*\` directory inside the checkout and returns that
-exact directory and summary path. To clean up, remove only the specific demo
-directory printed by that invocation, never the whole `.state` tree.
+cursor completeness and absence of dispatch **from that incomplete collection**.
+It then exercises FILTER and a separately authorized synthetic proposer fixture:
+
+| Stage | Required assertions before the demo can pass |
+|---|---|
+| FILTER | Pack all three records into two complete-context batches; reject missing sharing approval and insufficient batch budget; validate exact payload and detail membership; consolidate duplicate candidates across batches and select the higher-ranked gap. |
+| FILTER negative cases | Missing, partial or conflicting results cannot select a candidate; stale payloads and omitted details are rejected; complete no-candidate results remain unselected. No provider execution or semantic-analysis qualification is claimed. |
+| Synthetic handoff | Direct production handoff of synthetic collection evidence is rejected. A new, explicitly synthetic `reviewed-handoff-v1` fixture pins the selected candidate and original manifest/result hashes without changing the collection ledger. Missing synthetic/commit/push/draft authorization is rejected before preparing a job. |
+| Local proposer | Load a qualified skill from a disposable Git repository, enforce edit bounds, deterministically author a test of the fixture's real selection function, commit locally and execute real behavior and syntax gates in isolated validation checkouts. |
+| Publication guards and recovery | An intentionally failing assertion and a separately injected stale-head result must both block before publication. Only the passing exact-head case reaches mocked push/draft callbacks. Reopening each ledger must still reject duplicate dispatch. |
+
+`workflow.filter` reports the held structural result, not a qualified fresh
+execution cohort: the original source coverage remains incomplete.
+`workflow.proposer` reports three isolated fixture attempts (failed validation,
+stale head, success), their real gate artifacts and simulated publication counts.
+The successful controller outcome is `draft-pr-validated`, but its draft URL is
+`example.invalid`: **no model, source service, product repository, real push or
+real PR is used**. Deterministic FILTER analysis/token counting and model authoring
+are fixtures; existing controller, ledger, skill, Git and validation APIs run.
+This is not unattended live E2E qualification or a bypass of the fresh-cohort guard.
+
+Each invocation writes only its own disposable `.state\demo-*\` directory inside
+the checkout, including the original collection summary, FILTER artifacts,
+fixture checkouts and `workflow-summary.json`. The example and saved collection
+config remain inert; synthetic dispatch is enabled only in an in-memory fixture
+configuration. Node.js 24+, Git and (on Windows) PowerShell 7.3+ are required.
+Windows must retain `PATHEXT` including `.EXE`; the demo rejects its absence and
+also requires actual behavior-test output, not merely a zero process exit.
+The production Windows native runner likewise fails closed on missing/empty or
+unusable `PATHEXT`, requires application resolution and a process exit code,
+and preserves legitimate silent successful commands. It does not invent
+environment defaults or treat nonempty output as proof of success.
+To clean up, remove only the specific demo directory printed by that invocation,
+never the whole `.state` tree.
+
+## Explicit Teams notifications
+
+Use the **`send-teams-notification`** project skill for an explicitly authorized
+channel message from any task or agent, not only an evidence workflow. It wraps
+the sender below, accepts approved text/links and an optional user mention, and
+uses stable shared receipt paths to prevent blind repeat sends. For example:
+"Use send-teams-notification to post this task's result to the configured
+channel and mention me." See
+[the skill](.github/skills/send-teams-notification/SKILL.md) for inputs,
+reconciliation and use from another project. Skill availability does not grant
+the caller Azure permissions or enable automatic notifications.
+
+`scaffold/teams-notification.workflow.json` defines a dedicated Consumption
+Logic App that posts Adaptive Cards as Flow bot to one configured standard
+channel. Deploy it separately with an approved Teams API connection, explicit
+`teamId`/`channelId` parameters, narrow Entra OAuth trigger policies and SAS
+authentication disabled. Do not replace an existing Sherlock workflow or its
+notification routes. The caller needs an authorized Azure CLI identity and
+permission to read the workflow and its callback URL.
+
+Keep deployment identifiers in a gitignored `teams.local.json`:
+
+```json
+{
+  "enabled": true,
+  "workflowResourceId": "/subscriptions/SUBSCRIPTION/resourceGroups/GROUP/providers/Microsoft.Logic/workflows/WORKFLOW",
+  "identity": { "tenantId": "TENANT_GUID", "objectId": "USER_GUID" },
+  "teamId": "TEAM_GUID",
+  "channelId": "19:CHANNEL@thread.tacv2"
+}
+```
+
+This is repository-local configuration, not a Copilot session artifact. The
+repository command defaults to `teams.local.json` next to `package.json`, even
+when its script is invoked from another working directory. Receipts default to
+`.state\teams-notifications\<notification-id>.receipt.json` relative to that
+configuration. If multiple worktrees share one live deployment, explicitly set
+`stateDirectory` in each private configuration to the same approved absolute
+directory so all callers consult the same receipts. Never reset that directory
+when starting a new agent session or preparing a new task checkout.
+
+An explicitly authorized notification is a JSON file with a stable `id`,
+`text`, optional `test: true`, and optional `mention: { "id": "USER_GUID",
+"name": "Display name" }`. Send it once with:
+
+```powershell
+npm run notify:teams -- --message .state\notification.json
+```
+
+Use `--config <approved-path>.local.json` to select another deployment.
+The lower-level `--receipt` override remains available for an existing recorded
+integration, but ordinary skill callers must use the canonical shared default;
+changing paths does not make an uncertain send safe to repeat.
+
+The sender checks the designated identity and deployed destination, authenticates
+with an ARM bearer token and never writes tokens or callback URLs to receipts.
+Connector retries are disabled. A receipt is reserved before the single
+outbound POST; an existing receipt blocks another attempt. Missing message IDs,
+timeouts and failed responses are **unconfirmed**, not successful delivery.
+Reconcile the workflow run and channel before considering another send, and
+reuse each notification ID with the same receipt path. This command does not
+enable scheduling or automatically publish evidence, PR or validation events.
+The skill, command and generic workflow template are versioned together in this
+repository. A fresh checkout discovers the skill from `.github\skills` after
+loading this project; no path to a previous Copilot session is needed.
 
 ## Independent agents and contracts
 
-The three top-level entrypoints are `evidence-collector`, `evidence-filter` and
-`evidence-proposer`. FILTER delegates to the coordinator/planner procedures;
-Proposer selects the configured repository-owner procedure. These packages do
+The four top-level entrypoints are `evidence-collector`, `evidence-filter`,
+`evidence-proposer` and `evidence-rsi`. FILTER delegates to the coordinator/planner procedures;
+Proposer selects the configured repository-owner procedure. RSI inspects flow
+artifacts and proposes changes to the agent system itself. These packages do
 not create additional agents, daemons, permissions or execution budgets.
 
 ```powershell
@@ -158,6 +443,7 @@ npm run pilot -- agents
 npm run pilot -- agent collector help
 npm run pilot -- agent filter help
 npm run pilot -- agent proposer help
+npm run pilot -- agent rsi help
 npm run pilot -- agent collector app-status --run RUN_ID --config pilot.local.json
 ```
 
@@ -166,7 +452,7 @@ existing helper with unchanged arguments, input schemas, defaults and guards.
 Discovery returns versioned definitions with skill/procedure hashes, input and
 output expectations, supported operations and resumption policy. Unknown roles
 or cross-role operations fail before configuration/state access.
-All three roles can inspect the same app-native run with `app-runs` and
+All four roles can inspect the same app-native run with `app-runs` and
 `app-status --run RUN_ID`; the legacy `reconcile` helper inspects the standalone
 SDK ledger, not an app-native run.
 
@@ -184,6 +470,29 @@ exact-clean-HEAD publication guard. A blocked/uncertain attempt is preserved,
 never reset or blindly redispatched. Source/provider transports, held review,
 dispatch permissions and continuation authorization remain separate gates.
 
+With an explicitly enabled `rsi` policy, proposer controllers capture immutable
+success/failure outcomes and return a post-flow `evidence-rsi` handoff.
+App-native flow owners use `app-end`, including partial and no-candidate runs.
+An approved host invokes the skill; opt-in `rsi.automation` uses either the
+existing restricted native host or providerless continuations in the current
+Copilot App (`executionMode: app-hosted`), commits an isolated candidate and
+independently compares baseline/candidate executions. A pinned app-role plan
+composes the existing role commands and durable assertions; it does not need a
+separate whole-flow executor. Actual app-host continuation remains unqualified
+until exercised operationally; offline simulated responses are not a live run.
+See [app-hosted RSI](APP-NATIVE.md#app-hosted-rsi-continuations). Without that policy,
+the handoff remains capture-only. RSI has durable claim/proposal/result and draft-reservation operations,
+with no duplicate PR creation authorized after an uncertain response. See the
+[end-of-flow RSI contract](APP-NATIVE.md#end-of-flow-rsi-skill).
+The existing offline current/current evaluator is a separate qualification
+building block, not evidence that a proposed change improves the complete flow.
+Large app transport receipts use hash-bound references to the original producer
+events when an inline observation would exceed its bound. Receipts are available
+through bounded, expiring pages without copying or truncating the original data.
+The observation cap remains 1 MiB; metadata that exceeds it still blocks handoff.
+This repairs the oversized-event handoff mechanism, not historical runs or live
+qualification. Local ingestion gains do not establish full-loop productivity.
+
 For an already-authored candidate, the roles can consume genuine saved evidence
 and decisions before a separately authorized validation-only continuation:
 `agent collector replay-evidence`, `agent filter replay-review`, then
@@ -196,6 +505,7 @@ help/status output cannot substitute. See
 | Procedure / project skill | Responsibility | Durable handoff |
 |---|---|---|
 | `evidence-collector` | Scoped reads, receipt imports, coverage and auth failures | Evidence versions, captures, runs, cursors |
+| `evidence-rsi` | Inspect flow outcomes and propose agent-system fixes/improvements | Pinned observations, claims, proposals and draft receipts |
 | `evidence-coordinator` | All exclusions, review, explicit repo ownership and atomic claims | Investigations and assignments |
 | `evidence-improvement-planner` | Aggregate eligible evidence, discover/link coverage and select a qualified repository skill | Versioned areas-to-improve and test-coverage plans |
 | `evidence-1js-owner` | Claimed 1JS RCA, authorized fixes and source-bound validation | Assignment-linked results and draft PR evidence |
@@ -297,10 +607,21 @@ proof of independent local authentication. Run configuration hashes are strict:
 do not change an existing run's config. Use its original config to inspect it.
 
 **Intentional product-specific selectors:** the current ADO adapter is fixed to
-`office/OC`, non-Removed Bugs under
-`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. IcM export
+`office/OC`, Bugs with state **Resolved or Closed** and
+`Microsoft.VSTS.Common.ResolvedReason` **Fixed or Duplicate**, under
+`OC\Excel\Intelligence\Copilot\Excel Agent`, including descendants. Both created
+and changed lanes retain their half-open UTC windows, snapshots and budgets.
+Missing or other resolutions are ineligible; `System.Reason` is not a fallback.
+This is regression-coverage input, not a request to fix unresolved product bugs.
+Duplicate records keep their exact identities and canonical links even when the
+linked bug is outside the area; no extra source reads or canonical merging are
+implied. Genuine scanner exclusions remain independent of resolution.
+IcM export
 validation is fixed to query `599514`; saved-query timestamp equivalence remains
 unverified even when connector identity and team/severity mappings are qualified.
+The opt-in incident-created receipt path uses its separately approved team,
+S1/S2/S2.5 (API 1/2/25, excluding S0) and UTC window. It is not that saved query,
+does not require its timestamp equivalence and never changes an old run's scope.
 These selectors, the 1JS/Office repo URLs and the field names in
 `scaffold` are integration constraints, not anonymous generic examples or access
 grants. A different deployment needs a reviewed adapter/config change, not a
@@ -341,22 +662,49 @@ write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
 
-A resolved production bug can still justify missing regression coverage. Set
-`testCoveragePlan.purpose` to `"regression-coverage"` for this explicitly
-reviewed, test-only path. It requires complete coverage discovery at the
-qualified repository revision, at least one remaining coverage gap, no
-unresolved unknowns, an integration/declarative E2E authoring skill and the
-`add-or-update-tests` (integration) or `add-declarative-e2e-tests` (declarative
-E2E) outcome. ADO sources in `Resolved` or `Closed` with
-`Microsoft.VSTS.Common.ResolvedReason: Fixed` (or `System.Reason: Fixed`
-when no dedicated resolution field exists) can then be assigned; reviewed existing-fix URLs are
-retained as context rather than treated as a request to fix production again.
-The qualified skill's pinned write bounds and all validation/publication
-permissions still apply. Unplanned/product-fix work, removed or non-fixed
-sources, superseded evidence/plans and tracked items awaiting reconciliation
-remain blocked. Reconcile a tracked source before preparing a regression plan;
-the plan does not clear its recorded reconciliation state. These same source
-rules apply to initial dispatch and explicitly authorized local continuations.
+A resolved production bug can still justify missing regression coverage.
+`testCoveragePlan.purpose: "regression-coverage"` explicitly records that intent
+for the integration/declarative test-only path. It does not replace the
+current cohort or existing-fix review requirements below. The same source
+eligibility rules apply to initial dispatch and explicitly authorized local
+continuations; neither a plan nor a continuation clears tracked reconciliation.
+
+Resolved/Closed ADO sources may execute only as otherwise eligible,
+source-bound test-coverage improvements in the Fixed/Duplicate cohort.
+They require a current complete coverage plan with a remaining gap and no
+unknowns, a qualified test-authoring binding and its pinned test-only write
+bounds. Generic RCA/product-fix assignments retain terminal-source protection.
+Unchanged terminal-cohort revisits do not themselves invalidate a review;
+changed source captures, superseded plans/qualifications and existing
+reconciliation blockers still block execution across standalone, native and
+continuation paths.
+
+Known product fixes remain in `investigation.existingFixes` and original source
+links. They are not permission to dispatch, nor must they be deleted to propose
+regression coverage. `testCoveragePlan.existingFixesReview` optionally records
+the existing review policy's source-bound reconciliation:
+
+| Field | Required binding |
+|---|---|
+| `investigationId`, `investigationVersion`, `evidenceIds` | Exact current investigation/version and complete evidence set |
+| `planId`, `planVersion`, `sourceRevision` | Exact coverage-plan version and inspected repository revision |
+| `review` | Existing review method, nonblank reviewer and UTC review time at/after the investigation review |
+| `fixes` | Every original fix URL exactly once, each with `url`, `disposition`, `rationale` |
+
+Only all-`product-fix-with-remaining-coverage-gap` entries can pass the qualified
+test-only gate. `coverage-already-satisfied`, `coverage-in-flight` and
+`unresolved` remain durable blocking outcomes. Missing, duplicate, stale or
+mismatched bindings fail closed. This is an agent-evidence review under the
+existing policy, not a new per-finding human approval gate.
+
+Use the existing `plan-improvement` / `app-plan-improvement` input's
+`testCoverage.existingFixesReview` to persist the record. When adding it to an
+existing plan, bind its next version; unchanged replay remains idempotent.
+Changing the plan/source or investigation requires a new bound review. FILTER
+candidates may carry `existingFixes`; handoffs preserve these and previously
+recorded fix URLs and accept the review as `routing.existingFixesReview`.
+Neither fix reconciliation nor retained duplicate relations authorize extra
+source reads or prove canonical duplicate-work merging.
 
 For OfficeAgent, the qualified router entry is
 `.github/skills/integration-test-authoring/SKILL.md`; it resolves an exact
@@ -914,6 +1262,19 @@ an enabled `draftBuild` queues exactly one Pipeline 36540 build for the pushed
 Draft branch and exact revision, records the returned build URL in the Draft PR
 description, and returns immediately without polling the build.
 
+For 1JS, that build validates **new cases only**, not the existing catalog.
+The controller derives newly added, discoverable scenario paths from the exact
+assignment-base-to-authored-commit diff and supplies `newCaseSelection` and
+`newCaseGroups` to the qualified pipeline revision. These parameters are
+controller-owned; do not put them in `draftBuild.templateParameters`. Empty
+selections block before push rather than falling back to the full suite.
+The build receipt and Draft description preserve the paths and both revisions.
+The 1JS pipeline must support this contract: it verifies the Git additions,
+narrows its snapshot execution policy and manifest, applies an exact-title
+filter, and skips unaffected suites. Its ordinary scheduled full regression
+remains unchanged. An older pipeline that rejects these parameters must be
+updated, not retried without the scope.
+
 This mirrors the OfficeAgent authoring contract: deterministic local validation
 blocks publication; longer remote validation is transparent asynchronous review
 evidence. A queued build does not make the Draft remotely qualified, and a later
@@ -939,9 +1300,13 @@ cleanup separates source restore, prepared-output verification and source
 cleanliness. Yarn resolution/fetch/link subphase timings are included when
 available.
 
-Version 3 staged plans may bind an `azure-artifacts-npm` authentication
-contract. Before a local worker launches, a controller-owned preflight checks
-authentication only when the matching dependency receipt is absent. If the
+Version 3 staged plans may bind an `azure-artifacts-npm` or approved
+`repository-broker` authentication
+contract. Before a local or Remote Agency author launches, a controller-owned
+preflight checks authentication only when the matching dependency receipt is
+absent. Version-3 authentication profiles also finish exact-base preparation
+before authoring, so a subsequently rejected cache cannot strand a new authored
+commit behind an undiscovered authentication requirement. If the
 pinned provider is missing or the current user must sign in, dispatch returns
 `action-required-auth` while the assignment remains `prepared`; no workspace,
 worker session or tool budget is created. The result contains a non-secret,
@@ -949,7 +1314,10 @@ structured remediation command bound to a controller-owned `.yarnrc.yml`
 snapshot extracted from the exact base revision. After the user approves any
 required pinned provider installation and completes Microsoft sign-in/MFA, the
 agent retries the original controller command once and resumes the same
-assignment.
+assignment. If preparation reports `blocked-auth` after a receipt-only preflight
+skipped the check, both providers run one forced non-interactive preflight and
+return the same remediation action. This check neither deletes a trusted receipt
+nor automatically retries preparation.
 
 The exact-revision dependency preparation still performs a final non-interactive
 authentication validation before the locked restore. It never emits a token or
@@ -958,6 +1326,11 @@ Unexpected provider drift, anonymous requests, expired credentials or feed
 denials after preflight become `blocked-auth` and are not treated as
 infrastructure retries. Dependency and compile cache hits do not run either the
 authentication check or the authentication stage.
+Failure artifacts retain only the stage, a typed safe reason, a numeric process
+exit code when available and `tokenRecorded: false`; raw credential-provider
+diagnostics are not retained. Missing providers, version mismatch, invalid feed
+configuration, explicit refresh requests and credential-validation failures are
+distinct. A validation failure alone does not establish that a login expired.
 
 On a new Windows machine, the agent may prepare the approved provider and
 current user's feed authentication explicitly:
@@ -974,6 +1347,23 @@ The general `npm run setup` command intentionally remains offline with respect
 to product-repository authentication. Agents must never ask users to paste
 tokens; the approved setup command delegates credential acquisition to the
 pinned provider and the Microsoft sign-in flow.
+
+The 1JS SDX profile uses the repository's documented
+`@1js/node-azure-auth` broker. Its preflight runs only `yarn auth --skip-auth`
+from an attested exact-revision checkout and suppresses broker diagnostics; it
+does not acquire or persist credentials. If the check fails, the controller
+returns an explicit `action-required-auth` remediation to run `yarn.cmd auth`
+from the checkout's `midgard` directory. That interactive command is never run
+automatically, and no token or credential value is included in controller
+evidence.
+
+For real 1JS publication, configure `commitIdentity` with the authorized
+corporate author and `pr.sourceBranchPrefix` with a repository-approved user
+namespace, for example `user/<alias>/periodic-evidence-agent`.
+The controller appends the assignment ID and uses the same ref for provisioning,
+push, Draft PR discovery/creation, and cleanup verification. Omitted prefixes
+retain `refs/heads/pilot/` for compatibility; that namespace and a bot author
+email may be rejected by repository policy even when local validation passes.
 
 Receipt reuse is deterministic and fail closed. Each compile preparation starts
 from a fresh exact-revision source clone and receives a controller-made copy of
@@ -998,10 +1388,20 @@ only when a fresh content hash still matches the verified process-local baseline
 additions, removals, renames and actual content changes invalidate the cache.
 Directory `change` events require recursive content verification, including when
 only an ancestor event is delivered. Overlapping paths coalesce into bounded
-worker tasks without dropping descendant coverage. Settlements serialize per
-guard and wait for queued events after hashing; unknown filenames and watcher
-errors invalidate trust even during initial verification. Artifacts record
-changed-path, rehashed-entry, task and settlement-pass counts alongside wall time.
+worker tasks without dropping descendant coverage. Incremental dependency-subtree
+checks use the same recursive partitioner
+as complete snapshots, with at most 2,048 filesystem entries per leaf task and
+the existing five-minute task deadline; parent directory manifests are rebuilt
+from every child result. Settlements serialize per
+guard and wait for queued events after hashing. A `change` notification without a
+filename requires complete-root content/link and membership revalidation against
+the baseline; it never means that changes are ignored. This handles Windows
+access-time notifications caused by reading unchanged files. Unknown `rename`
+notifications and watcher errors still invalidate trust, including during initial
+verification. Repeated events must settle within four passes or trust is rejected.
+Artifacts record changed-path, rehashed-entry, incremental worker-task,
+full-root revalidation and settlement-pass counts alongside wall time.
+Preparation failures preserve the exact verification reason and event details.
 Large output sets calculate independent output roots
 through a bounded controller-owned worker pool. Test-only reuse validates the
 active compile workspace and stable dependency inputs; regeneration of an
@@ -1234,14 +1634,20 @@ npm run pilot -- dispatch-ready --config .\pilot.local.json --execute `
   --authorize-commit --authorize-push --authorize-draft-pr
 ```
 
-The scheduler selects jobs deterministically, rotates across configured
-repositories, respects active hosted and local workers, and launches only jobs
+The scheduler selects jobs deterministically, visits repositories in order of
+their oldest waiting job, respects active hosted and local workers, and launches only jobs
 that are still `prepared`. Each selected assignment is atomically admitted
 again by normal `dispatch`; an overlapping scheduler can therefore observe an
 `overlap` result but cannot submit a duplicate remote job. Scheduler batches
 and per-assignment outcomes are durable ledger operations. This supports
 concurrent repositories on one Controller machine; the SQLite ledger is not a
 multi-machine lease service.
+
+Authentication actions are retained in each scheduler result while the affected
+job remains `prepared`; other selected repositories may continue. A batch with
+authentication actions, blocked/uncertain jobs or failed outcomes is recorded as
+`partial`, not successful delivery. Follow the returned authentication recovery
+procedure rather than resubmitting the batch blindly.
 
 The ordinary live `dispatch` entrypoint continues to reject synthetic evidence.
 Only the controller's non-forgeable reviewed-handoff dispatch path accepts the
@@ -1375,8 +1781,9 @@ and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
 
-The input contains only the immutable FILTER binding and the repository
-capability used for routing:
+The input contains the immutable FILTER binding and the repository capability
+used for routing, plus optional structured skill input and a source-bound
+`routing.existingFixesReview` when known product fixes require reconciliation:
 
 ```json
 {
@@ -1503,7 +1910,9 @@ Before adding a remote or pushing:
    email. Removing a file from HEAD does not remove it from history; do not
    publish unsuitable history or rewrite it without explicit authorization.
 
-No remote is created and nothing is pushed by installation, tests, demo or CI.
+No live publication remote is created and nothing is pushed to a live remote by
+installation, tests, demo or CI. The demo uses disposable local Git checkouts and
+mocked publication; some controller tests push only to temporary local bare repos.
 Do not send the entire working directory as a zip. After review, use Git's
 committed tree/export so ignored personal files cannot be included accidentally.
 Colleagues must configure their own approved identity/scopes/authentication.

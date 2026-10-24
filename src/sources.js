@@ -1,6 +1,7 @@
 import { AzureCliCredential } from '@azure/identity';
 import { Budget, PilotError, hash, json, now, requireThat, readJson, utc, validateRecord, windowCheck } from './common.js';
 import { withWorkiq, validateSeed, principalPath, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage } from './runtime.js';
+import { adoCohortWiql, requireAdoCohort } from './ado-cohort.js';
 
 export const area = 'OC\\Excel\\Intelligence\\Copilot\\Excel Agent';
 export const adoFields = [
@@ -15,7 +16,7 @@ export function wiql(window, lane = 'created', asOf = null) {
   windowCheck(window);
   requireThat(['created', 'changed'].includes(lane), 'Unknown query lane');
   const field = lane === 'created' ? 'System.CreatedDate' : 'System.ChangedDate';
-  return `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND [System.State] <> 'Removed' AND [${field}] >= '${window.start}' AND [${field}] < '${window.end}' ORDER BY [System.Id]${asOf ? ` ASOF '${utc(asOf)}'` : ''}`;
+  return `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND ${adoCohortWiql} AND [${field}] >= '${window.start}' AND [${field}] < '${window.end}' ORDER BY [System.Id]${asOf ? ` ASOF '${utc(asOf)}'` : ''}`;
 }
 export function evidenceEnvelope(kind, namespace, id, revision, url, query, snapshot = null) {
   const time = now();
@@ -30,6 +31,9 @@ export function evidenceEnvelope(kind, namespace, id, revision, url, query, snap
     fields: {}, missingFields: [], links: [], discoveredFrom: null, discoveryReason: 'Configured exact seed',
     capture: { artifactRef: null, sha256: null, unavailableReason: 'Not yet persisted' }
   };
+}
+export function workiqTitle(subject) {
+  return subject === '' ? null : subject ?? null;
 }
 export async function adoTransport(config) {
   const { tenantId, objectId } = config.identity;
@@ -60,8 +64,9 @@ export async function adoTransport(config) {
 export function adoRecord(item, query, snapshot) {
   const f = item.fields;
   requireThat(f && Number.isInteger(item.rev) && f['System.WorkItemType'] === 'Bug' &&
-    f['System.State'] !== 'Removed' && (f['System.AreaPath'] === area || f['System.AreaPath']?.startsWith(`${area}\\`)),
+    (f['System.AreaPath'] === area || f['System.AreaPath']?.startsWith(`${area}\\`)),
   'ADO returned out-of-scope or unversioned record', 'blocked-scope');
+  requireAdoCohort(f);
   const record = evidenceEnvelope('ado', 'office/OC', item.id, String(item.rev),
     `https://dev.azure.com/office/OC/_workitems/edit/${item.id}`, query, snapshot);
   record.title = f['System.Title'] ?? null; record.createdAt = f['System.CreatedDate'] ?? null;
@@ -76,7 +81,7 @@ export function adoRecord(item, query, snapshot) {
 export async function readRelatedAdo(config, id, budget, request = null) {
   requireThat(config.sources.ado.scopeApproved && /^\d+$/.test(id), 'Related ADO scope is not approved', 'blocked-scope');
   request ??= await adoTransport(config);
-  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND [System.State] <> 'Removed' AND [System.Id] = ${id}`;
+  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.WorkItemType] = 'Bug' AND [System.AreaPath] UNDER '${area}' AND ${adoCohortWiql} AND [System.Id] = ${id}`;
   budget.call();
   const candidate = await request('wiql', { query });
   utc(candidate.asOf);
@@ -121,9 +126,10 @@ export async function collectAdo(config, window, emit, lane = 'created', transpo
     }
     const ids = [...new Set(candidates.workItems.map(item => item.id))].filter(id => !seen.has(id));
     requireThat(ids.every(id => Number.isSafeInteger(id) && id > 0), 'Invalid ADO candidate IDs', 'failed-source');
-    budget.item(ids.length);
-    for (let offset = 0; offset < ids.length; offset += 200) {
-      const batch = ids.slice(offset, offset + 200);
+    const selected = ids.slice(0, budget.items);
+    budget.item(selected.length);
+    for (let offset = 0; offset < selected.length; offset += 200) {
+      const batch = selected.slice(offset, offset + 200);
       budget.call();
       const result = await request('workitemsbatch', { ids: batch, asOf: snapshot, errorPolicy: 'Fail', $expand: 'Relations' });
       requireThat(Array.isArray(result.value) && result.value.length === batch.length &&
@@ -139,6 +145,7 @@ export async function collectAdo(config, window, emit, lane = 'created', transpo
         seen.add(item.id);
       }
     }
+    requireThat(selected.length === ids.length, 'Item budget exhausted; coverage is partial', 'partial');
   }
   // A zero-result seed establishes one snapshot before potentially splitting a large interval.
   budget.call();
@@ -210,7 +217,7 @@ export async function collectWorkiq(config, window, emit, retrieve = null, lane 
           record.queriedAt = observation.observedAt; record.observedAt = observation.observedAt;
           record.source.provenance = observation.provenance;
           record.scopeId = `workiq:${seed.id}`;
-          record.title = message.subject ?? null; record.createdAt = message.createdDateTime ?? null;
+          record.title = workiqTitle(message.subject); record.createdAt = message.createdDateTime ?? null;
           record.source.versionBasis = revision ? 'source-etag' : 'captured-payload-hash';
           record.fields = { message, parentContext: parent, sourceObservation: observation, parentObservation,
             thread: { teamId: seed.teamId, channelId: seed.channelId, rootId: parent?.id ?? message.id,
@@ -269,6 +276,8 @@ export async function collectWorkiq(config, window, emit, retrieve = null, lane 
 }
 export async function collectIcm(config, window, emit) {
   const source = config.sources.icm;
+  requireThat(source.timestampContract == null,
+    'Incident-created IcM receipts use app-append; owner exports remain saved-query only', 'blocked-source');
   requireThat(source.scopeApproved && source.filtersVerified && source.queryId === '599514',
     'IcM query 599514 filters and scope are not verified', 'blocked-source');
   requireThat(source.ownerExport, 'No supported authenticated IcM connector is configured; supply an approved owner export', 'blocked-source');

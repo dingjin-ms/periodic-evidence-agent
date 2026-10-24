@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { hash, requireThat } from './common.js';
+import { hash, requireThat, PilotError } from './common.js';
 
 const exec = promisify(execFile);
 const supervisor = fileURLToPath(new URL('./native-command.ps1', import.meta.url));
@@ -16,29 +16,38 @@ export function nativeTemporaryDirectory(stateDirectory, key) {
   return path;
 }
 
-export async function nativeCommand(executable, args, cwd, timeout, env) {
-  const options = { cwd, env, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' };
+export function nativeCommand(executable, args, cwd, timeout, env, { signal } = {}) {
+  const options = { cwd, env, signal, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' };
   if (process.platform !== 'win32') return exec(executable, args, options);
+  const pathExt = Object.entries(env ?? {}).find(([key]) => key.toUpperCase() === 'PATHEXT')?.[1];
+  if (!(typeof pathExt === 'string' && pathExt.split(';').some(value => value.toUpperCase() === '.EXE')))
+    return Promise.reject(new PilotError('blocked-native-environment',
+      'Native validation requires PATHEXT including .EXE; restore the host environment before retrying'));
   const host = /^pwsh(?:\.exe)?$/i.test(basename(executable)) ? executable : 'pwsh.exe';
   const jobName = `Local\\PilotNative-${randomUUID()}`;
   const invoke = request => exec(host,
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', supervisor], {
       ...options,
-      ...(request.action === 'drain' ? { timeout: 20000 } : {}),
+      ...(request.action === 'drain' ? { timeout: 20000, signal: undefined } : {}),
       env: { ...env, PILOT_NATIVE_COMMAND: JSON.stringify(request) }
     });
-  let result, failure;
-  try { result = await invoke({ executable, args, jobName }); }
-  catch (error) { failure = error; }
-  try { await invoke({ action: 'drain', jobName }); }
-  catch {
-    const error = failure ?? new Error('Native command process-tree exit was not confirmed');
-    error.containmentFailure = true;
-    throw error;
-  }
-  if (failure) {
-    failure.ownedProcessesExited = true;
-    throw failure;
-  }
-  return { ...result, ownedProcessesExited: true };
+  const launched = invoke({ executable, args, jobName });
+  const completed = (async () => {
+    let result, failure;
+    try { result = await launched; }
+    catch (error) { failure = error; }
+    try { await invoke({ action: 'drain', jobName }); }
+    catch {
+      const error = failure ?? new Error('Native command process-tree exit was not confirmed');
+      error.containmentFailure = true;
+      throw error;
+    }
+    if (failure) {
+      failure.ownedProcessesExited = true;
+      throw failure;
+    }
+    return { ...result, ownedProcessesExited: true };
+  })();
+  completed.child = launched.child;
+  return completed;
 }

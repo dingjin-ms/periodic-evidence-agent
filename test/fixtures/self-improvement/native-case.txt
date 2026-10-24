@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+
+const expected = Buffer.from('synthetic native input\n');
+test('native-input-content', () => {
+  assert.deepEqual(readFileSync(new URL('../fixtures/native.xlsx', import.meta.url)), expected);
+});
+test('native-input-integrity', () => {
+  const actual = readFileSync(new URL('../fixtures/native.xlsx', import.meta.url));
+  assert.equal(actual.byteLength, expected.byteLength);
+  assert.equal(createHash('sha256').update(actual).digest('hex'),
+    createHash('sha256').update(expected).digest('hex'));
+});

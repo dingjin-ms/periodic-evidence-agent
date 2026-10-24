@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { PilotError, requireThat, positive } from './common.js';
 import { principalPath, validateWorkiqPath } from './runtime.js';
 
@@ -25,9 +26,12 @@ export function cliFailure(envelope) {
   const entry = envelope?.results?.[0] ?? envelope;
   const auth = entry?.statusCode === 401 || /AuthenticationRequired|InteractionRequired|Unauthenticated/i.test(entry?.errorCode ?? '');
   const policy = entry?.statusCode === 403 || /AccessDenied|PolicyDenied|Forbidden/i.test(entry?.errorCode ?? '');
-  const code = auth ? 'blocked-auth' : policy ? 'blocked-permission' : 'failed-source';
+  const code = auth ? 'blocked-auth' : policy ? 'blocked-permission'
+    : entry?.statusCode === 429 ? 'blocked-throttled' : 'failed-source';
   const result = { code };
   if (Number.isInteger(entry?.statusCode)) result.statusCode = entry.statusCode;
+  if (Number.isSafeInteger(entry?.retryAfterSeconds) && entry.retryAfterSeconds >= 0)
+    result.retryAfterSeconds = entry.retryAfterSeconds;
   for (const key of ['errorCode', 'recoveryAction']) {
     if (typeof entry?.[key] === 'string' && /^[\w.-]{1,128}$/.test(entry[key])) result[key] = entry[key];
   }
@@ -44,6 +48,9 @@ export async function workiqCli(config, { spawnProcess = spawn } = {}) {
   requireThat(typeof config.identity.designatedUser === 'string' && config.identity.designatedUser.includes('@'),
     'An explicit delegated account is required');
   const timeoutMs = positive(settings.timeoutMs, 'workiqCli.timeoutMs');
+  const minReadIntervalMs = settings.minReadIntervalMs ?? 0;
+  requireThat(Number.isSafeInteger(minReadIntervalMs) && minReadIntervalMs >= 0 && minReadIntervalMs <= 60000,
+    'workiqCli.minReadIntervalMs must be an integer from 0 to 60000');
   const child = spawnProcess(settings.executable, ['--account', config.identity.designatedUser, 'mcp'],
     { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false });
   child.stdout.setEncoding('utf8');
@@ -127,11 +134,16 @@ export async function workiqCli(config, { spawnProcess = spawn } = {}) {
       requireThat(cursors.size <= 10, 'CLI discovery exceeded page bound', 'blocked-protocol');
     } while (cursor);
     requireThat(found, 'WorkIQ CLI fetch tool is unavailable', 'blocked-runtime');
+    let lastReadFinishedAt = 0;
     return {
       read: async path => {
         validateWorkiqPath(config, path);
         requireThat(path === principalPath || path.startsWith('/teams/'), 'CLI pilot permits Teams reads only', 'blocked-scope');
-        return rpc('tools/call', { name: 'fetch', arguments: { entityUrls: [path] } });
+        // Pace sequential reads without hiding retries or changing receipt/call budgets.
+        const remaining = minReadIntervalMs - (Date.now() - lastReadFinishedAt);
+        if (remaining > 0) await delay(remaining);
+        try { return await rpc('tools/call', { name: 'fetch', arguments: { entityUrls: [path] } }); }
+        finally { lastReadFinishedAt = Date.now(); }
       },
       close
     };

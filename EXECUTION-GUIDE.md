@@ -1,5 +1,10 @@
 # End-to-end execution guide
 
+To include post-flow agent-system improvement, follow the
+[RSI operator runbook](scaffold/RSI-RUNBOOK.md) alongside this product execution
+guide. RSI opt-in, app-host continuations, independent comparison and draft
+publication are separate from product authoring/validation permissions.
+
 This guide covers the gated path from devbox setup to a source-bound draft PR:
 
 ```text
@@ -61,6 +66,14 @@ helpers and their permission gates; they do not automatically advance stages.
 An operation-result envelope is not proof of role completion, complete-cohort
 acceptance or native validation. See [README.md](./README.md) for the interface.
 
+For the stricter fresh-cohort path, use the
+[bounded one-shot controls](ONE-SHOT.md). They coordinate the existing local
+collectors, reserve whole-cohort FILTER budgets before task reservation and
+gate one proposer on complete source plus accepted execution evidence. The
+existing Copilot session/host remains the orchestrator; external FILTER
+submission/observation, approvals and runtime qualification remain its
+responsibility. Legacy selected-case replay below keeps its original scope.
+
 ## 1. Clone and initialize the devbox
 
 Prerequisites are **Node.js 24+, npm and Git**. Windows native validation and
@@ -100,8 +113,15 @@ executes the offline checks and runs the synthetic demo. Omit the `--repo`
 selection only when setup of every configured skill-backed repository is intended.
 
 **Setup does not authenticate product feeds, install product dependencies,
-enable dispatch or create PRs.** `synthetic-demo-passed` means fixture
-assertions passed, not a live integration-test pass.
+enable production dispatch or create PRs.** `synthetic-demo-passed` means fixture
+assertions passed, not a live integration-test pass. The demo now includes real
+FILTER validation/consolidation and isolated local proposer fixture execution,
+with real Node test gates and failed-validation/stale-head/duplicate-dispatch
+checks. Model authoring and push/draft publication are deterministic mocks.
+The original partial synthetic collection is never promoted; proposer execution
+uses the existing explicitly authorized synthetic reviewed-handoff interface.
+See the [demo stage assertions](README.md#offline-demo-coverage) for the exact
+scope and output artifacts.
 
 Use `npm run setup:repos -- --repo office-agent` only when intentionally
 rerunning the repository layer without repeating dependency installation and
@@ -237,6 +257,13 @@ these reusable corrections when authoring that profile:
   Do not replace this with an uncontained shell or increase timeouts to mask
   leftover descendants. Model launchers use `localProposerEnvironment()`; native
   runners use their narrow environment and separate approved package auth.
+- Preserve the host's `PATHEXT` including `.EXE`. Missing, empty or unusable
+  values fail before native launch with `blocked-native-environment`; the runner
+  does not synthesize defaults. The supervisor resolves an application and
+  requires its process exit code, without requiring output from silent commands.
+  Restore the host environment and follow the existing explicit reconciliation
+  or continuation procedure; do not reset an attempted validation or retry it
+  just because the environment was corrected.
 - When invoking the native wrapper through a PowerShell function, pass the
   separator as the literal string `'--'`. Launch the wrapper with the pinned
   root Yarn tool environment, not plain `node`, so child root tools resolve:
@@ -315,6 +342,168 @@ Missing bodies, incomplete paging and unavailable sources remain explicit;
 unknown coverage is not zero.
 
 ### Prepare, execute and reconcile complete-record batches
+
+#### Explicit local SDK execution
+
+The opt-in local route does not impersonate a hosted Agency job. Select
+`filterExecutor: "local-sdk"` in a separate private configuration, enable
+`activation.review`, and configure `localFilter` explicitly:
+
+```json
+{
+  "enabled": false,
+  "maxRequests": 1,
+  "maxToolCalls": 24,
+  "timeoutMs": 600000,
+  "maxSourceBytes": 65536,
+  "maxRequestBytes": 524288,
+  "useExistingLogin": false,
+  "acceptSoftCreditLimit": false,
+  "sources": [{ "repoId": "1js", "revision": "<exact-40-character-commit>" }]
+}
+```
+
+Enable it only for the approved run. Source pins must refer to configured
+reference checkouts. The existing full-cohort manifest, sharing and model/token
+budget checks still apply. The installed CLI requires at least 30 AI credits
+per session; `filter-local-preflight` returns `action-required-budget` for a
+smaller ceiling without launching or automatically increasing it.
+
+**Credit limits are soft, not hard spending guarantees.** In-flight calls can
+exceed the configured limit. Preflight therefore also requires explicit
+`localFilter.acceptSoftCreditLimit: true` after informed
+approval of that behavior; approval of a hard ceiling alone is insufficient.
+Do not automatically retry a failed attempt or repurpose conditional Proposer
+authorization for another FILTER run.
+
+A separately authorized retry stays in the same ledger and uses the original
+manifest and batch. In a new private configuration, set `localFilter.retry` to
+`{ "batchId": "<batch>", "previousAttemptId": "<failed-attempt>",
+"previousTerminalSha256": "<canonical-terminal-sha256>",
+"authorizationRef": "<new-explicit-approval-receipt>" }`. The terminal hash is
+SHA-256 of the predecessor terminal serialized with two-space JSON indentation
+and a trailing newline. Approve the total `maxRequests` separately and retain
+the original configuration unchanged. By default, only an immutable blocked predecessor
+with matching manifest, payload, model and source pins can have a successor.
+The successor has its own receipt identity; repeated submission, retry forks,
+active predecessors and exhausted request budgets are rejected.
+Reconcile using that retry configuration and a new result-export path.
+
+Reassessing an already completed result requires an explicit
+`retry.reassessment` with `resultSha256`, `reviewRef` and `reason`. This binds the
+rejected result and quality review; it does not silently promote or overwrite
+the prior decisions. A model or context-tier change requires a newly prepared
+verified manifest and `retry.requalification` with `previousManifestSha256`,
+`previousModel` and `reason`. Evidence payload and source pins must remain exact.
+Set `localFilter.contextTier: "long_context"` only when that tier is available
+and its distinct input limits and prices have been qualified.
+
+A retry applies only to its named batch. Other unstarted batches can use the
+same configuration. When another batch subsequently needs a retry, preserve
+the base configuration and append its explicit retry object to
+`localFilter.cohortRetries`. Each batch selects its own retry without changing
+already completed batches' configuration binding. Reconcile with the full
+selection; duplicate selections, unknown batches, mismatched predecessor
+hashes and forks still reject. This is not permission for automatic retry:
+each successor must remain within the user's explicit iteration authorization.
+An explicit retry can also carry `execution` overrides limited to `maxRequests`,
+`maxToolCalls`, `timeoutMs` and `compactDecisions`. They apply only to that retry's batch and
+remain part of its request/configuration hash. Request ceilings count the
+entire ledger, including historical attempts; an increased ceiling must still
+fit the user's total authorized session budget.
+
+A retry may carry an optional `review` containing `reviewRef`, `reviewSha256`
+and a bounded `reason`. The referenced JSON is checked using the canonical
+two-space-indented JSON plus newline hash before execution and reconciliation.
+This preserves source follow-up observations when retrying a blocked predecessor;
+it does not permit `reassessment` against an incomplete result, create semantic
+decisions, or allow a fork. Review text is explicitly untrusted, independently
+verifiable context. Configurations without this field keep their prior instruction
+bytes. Invalid title-exclusion feedback identifies the affected source/evidence
+record; it never corrects the model's quote or exclusion automatically.
+
+The default isolated SDK home does not inherit keychain-backed login. For an
+explicitly approved single-user run, `localFilter.useExistingLogin: true` uses
+the existing CLI login/home without copying credentials. FILTER still sets a
+custom-tool allowlist and denies permission requests, disables custom
+instructions, skills, file hooks, host Git operations, memory, scheduling and
+session-store indexing, and removes installed plugins before sending evidence.
+The runtime can retain session artifacts under the user's existing private
+Copilot home; controller receipts remain in the configured state directory.
+Do not describe this opt-in as empty-home isolation or an OS sandbox. The
+default remains isolated, and authentication failure never selects this mode
+automatically.
+
+```powershell
+node src\cli.js agent filter filter-local-preflight --config local-filter.local.json
+node src\cli.js agent filter filter-local-run --config local-filter.local.json `
+  --manifest private-batches.json --batch <batch-id> --output private-result.json `
+  --execution-mode standalone-sdk
+```
+
+Only bounded Git reads at the pinned commits and a structured finish callback
+are exposed. Read/list/literal-search responses are UTF-8 byte pages, each at most 12 KiB
+including metadata, to avoid the runtime's inaccessible large-output files.
+Page sizing searches for the largest fitting UTF-8 boundary rather than
+halving a response that narrowly exceeds the limit. This reduces source tool
+calls without increasing the response ceiling or relaxing complete-file reads.
+Follow `nextOffset` while `hasMore` is true. Each receipt binds both the complete
+source hash and exact page bytes; a first page is not a complete file review.
+The `complete-opened-source-files-v1` policy rejects finish until every opened
+file has contiguous delivery from byte zero through EOF, including when the
+result has zero candidates. Feedback identifies a pending file and its first
+missing offset, so the same session can finish reading and resubmit. Reading
+the last page or another complete file cannot hide a missing middle page.
+Partial directory listings remain discovery only, not proof of exhaustive
+coverage. The `search` action uses a bounded literal query at the pinned commit;
+its matching lines locate files but do not count as complete reads.
+Malformed source argument shapes reject before source access and can be
+corrected in the same session. Actual out-of-pin/path requests and exhausted
+budgets remain permanent violations. Reconciliation independently checks the same immutable page receipts;
+older receipts without this policy are historical evidence, not newly qualified
+results. Complete delivery still does not independently prove semantic reading
+or that reasoning belongs to the correct evidence record.
+Working-tree edits are not read; no shell, write or publication
+tool is exposed. Complete per-record output and actually inspected source for
+candidates are required. This is SDK permission enforcement, not an OS sandbox
+or independent verification of semantic reasoning.
+
+Policy `incremental-complete-cohort-v1` accepts nonempty `status: "partial"`
+decision chunks. Each chunk includes finished title/detail decisions for its
+records; no manually synthesized reasoning is added. Accepted inputs and their
+hashes are immutable, exact repeats are idempotent, and conflicting duplicates
+reject. A final `status: "complete"` can have empty decision/detail arrays and
+refer to previously reviewed records in its candidates. Completion still
+requires every cohort member and every opened source file. Reconciliation
+rebuilds the result from all accepted inputs and hashes, rather than comparing
+only the final callback arguments with the assembled result.
+
+For large batches, opt into `localFilter.compactDecisions: true` (or the
+retry-scoped execution override). The finish tool then accepts `status`,
+`decisions` and `candidates` directly. A `progress` request with empty arrays
+returns up to 20 unresolved indexes, record IDs and titles without accepting
+any decisions. Each compact decision must identify both its index and exact
+record ID and supply all title/detail dispositions, exclusions, quotes and
+reasons. Only immutable metadata (source identity, hashes, batch identifiers)
+is populated from the verified manifest. Reviewer/session identity and receipt
+time are controller metadata, not model reasoning.
+
+Policy `compact-incremental-complete-cohort-v1` retains both the original
+compact submission and expanded canonical input with their hashes. Independent
+reconciliation repeats expansion from the exact manifest and receipt metadata
+and verifies semantic fields byte-for-byte. It cannot invent reasoning, repair
+conflicting decisions or promote an unknown/blocked candidate to an eligible
+gap. Legacy full-result requests keep their original schema and policy binding.
+
+The local ledger retains immutable request, session, event, source-inspection,
+analysis and terminal receipts. A failed or interrupted attempt cannot be
+automatically retried or switched to Agency. Run `filter-execution-check` below
+with the **same local configuration** and its execution ledger; it explicitly
+grades local receipts rather than requiring or inventing Agency job IDs.
+Structural consolidation alone remains insufficient. CLI result export does
+not overwrite existing files; the canonical result also remains in the ledger.
+
+#### Shared batch preparation and hosted execution
 
 Use `evidence-coordinator` to prepare the private source-ledger manifest,
 complete context groups, sharing approvals and approved token budget under the
@@ -473,6 +662,117 @@ authorization to its successor configuration and controller revision. Check the
 selected runtime's accepted budget limits before launch; do not silently raise a
 ceiling to meet a runtime minimum.
 
+For an interrupted installation, the programmatic `prepareValidation` option
+`resumeDependencyWorkspaces` maps gate IDs to their exact unfinished dependency
+workspaces. It rejects source/remote drift and unrelated cache paths, preserves
+partial dependencies, and reruns the native installer before issuing any receipt.
+Partial files are not a successful cache. Keep explicit recovery authorization
+and stage diagnostics; do not modify the original assignment's validation contract.
+
+For receipt-only reconciliation, `requireExistingDependencySnapshots: true`
+rejects a missing or unverifiable dependency cache before quarantine or
+reinstallation. This preserves the candidate receipt and workspace as evidence;
+it does not promote an unverified receipt to a successful cache.
+`requireExistingCompileSnapshots: true` also forbids rebuilding an unqualified
+compile snapshot and implies existing-only dependencies. These cache failures
+use the recorded validation reason `prepared-cache-corrupt`.
+
+Prepared-output capture establishes partitioned observation before hashing.
+When observation remains healthy, one complete content scan establishes the
+baseline; events during that scan are settled against the captured contents.
+Anonymous change notifications require complete-root content revalidation;
+unknown rename events, changed contents and watcher errors invalidate reuse.
+Platforms without recursive observation retain the full comparison fallback.
+Existing receipt formats and content fingerprints remain compatible.
+
+On Windows, a controller-owned PowerShell/.NET observer excludes last-access
+notifications: reading dependencies must not flood the notification queue.
+Content writes, names, sizes, attributes, security and creation changes remain
+observed, including replacement of a watched root through its parent directory.
+The observer must acknowledge setup before hashing starts. Lost notifications,
+observer errors or unexpected process exit still invalidate reuse; they are not
+treated as harmless access events.
+
+Keep preparation, validation and test-only repairs in the same controller
+process when possible. The observation guards are process-local: a disk cache
+hit after restarting the process still requires a complete content scan.
+Calling `prepareValidation` and then `resumePrecommitProposal` in one process
+retains those guards without skipping the normal source, profile, toolchain,
+change-scope or native validation checks. A successful synthetic benchmark is
+not a measured product-E2E latency claim.
+
+If the model already submitted a successful skill result but preparation failed
+before any commit, `resumePrecommitProposal` can resume that preserved proposal.
+It requires the blocked result ID, the original proposal and per-file hashes,
+checks the original base revision and file bounds, and records a one-shot recovery
+operation. It retains the failed result and original model tool usage; it does not
+repeat initial authoring. Native changefile generation, hooks, validation, push
+and Draft gates still run normally. Any subsequent model repair needs its own
+authorized reservation. A committed, validated or published attempt is not
+eligible for this entrypoint.
+
+For an already committed proposal stopped before tests by a missing native
+revision input, `resumeCommittedValidation` binds the latest blocked model result,
+the exact failed validation artifact and every committed file hash. It requires
+a clean, unpublished single commit on the original base. Preparation uses that
+base; normal test-only compatibility checks qualify reuse for the candidate.
+The generated changefile is checked against the actual commit title, not wording
+from a later no-change proposal. Recovery neither authors nor recommits, preserves
+model accounting, and namespaces new validation artifacts without replacing the
+original failure. Native gates and exact-head Draft publication remain required.
+
+For a proven native module-resolution failure, `prepareNativeTestProfileContinuation`
+can qualify a separate ledger with only the final test-runner block corrected.
+Its authorization binds the original failure, source, configurations and controller,
+and permits zero model attempts. Authentication, preparation, policy and the
+validation plan must remain identical. `rebindPreparedTestProfile` verifies the
+original compiled outputs and writes a separate integrity-bound receipt; it never
+rewrites the old receipt or treats a disk receipt as current observation.
+Dispatch through `dispatchLocalValidationContinuation` retains the authored commit,
+historical model usage and ordinary native/publication gates. This narrow recovery
+does not make derived snapshots automatically discoverable by future cache lookup.
+
+The SDX profile runs the selected integration tests through the repository's native
+source resolver and SWC transformer, retaining ts-jest for test-file mock ordering.
+This avoids requiring built exports from every workspace dependency. It inherits
+the package integration configuration and requires actual nonzero passing Jest
+results for every selected absolute path; a zero-test exit code is not acceptance.
+
+Selection comes from native Jest discovery, including `.tests.ts` and `.test.tsx`,
+not a single filename suffix. Added tests (and new private helpers) run only the
+changed tests. Modified existing helpers, fixture data, snapshots, or removed
+tests select the integration lane conservatively: dynamic/mock consumers cannot
+always be bounded by a static dependency graph. Changed existing tests still run
+precisely. Tests excluded by native discovery block instead of disappearing from
+the expected set. Policy runs native root lint and package lint on changed JS/TS
+files without `--fix`. The package's source-only tsconfig is not claimed as
+integration-test typechecking.
+
+The controller supplies a fresh `PILOT_VALIDATION_ARTIFACT_DIRECTORY` per native
+stage outside the disposable workspace. The SDX test stage retains its runtime
+configuration, discovery, selection, raw Jest JSON and run manifest there, even
+when Jest fails. The controller records bounded ordinary-file hashes in the
+validation artifact's `nativeArtifacts`; raw results are not replaced by a
+success-only summary. Direct diagnostic profile invocations must also supply a
+fresh absolute directory. Retention and access rules for private run evidence
+apply to these files. Primary validation failure and cleanup failure remain
+separate, while a corrupt or unconfirmed cache still blocks acceptance.
+
+The SDX example opts into `requiresCoverageReview`. Successful changed-test
+proposals must include `skillResult.coverageReview`, recording the seam, original
+evidence basis, existing unit and integration evidence, changed test files,
+the realistic defect each assertion detects, and residuals. Every changed test
+must be accounted for; the normalized inventory is retained and rendered in the
+Draft description as **author-reported, not independently verified**. Other
+bindings remain unchanged unless they opt in. A coverage inventory or passing
+test count is not a substitute for held-out independent evaluation. For a
+helper-only change, `testFiles` is empty and `integrationEvidence` identifies
+the existing consumer suites; this does not require inventing a new test.
+Use the
+existing pinned RSI evaluator with separately reviewed cases for such claims;
+do not label author-written cases as held-out or invent reviewer acceptance,
+credit savings or real-product performance from synthetic contract tests.
+
 The existing proposer role also exposes
 `continue-local-validation`, `diagnose-local-validation` and
 `continue-local-authoring`, each with explicit `--prepare` or `--execute` and
@@ -514,6 +814,203 @@ Synthetic input remains synthetic even when real repository operations execute.
 This path does not prove source collection, complete FILTER execution or a new
 coverage gap. The native skill must still inspect the selected source rather
 than assume the fixture's historical gap remains open.
+
+### 1JS fixture qualification and edited-commit repair
+
+The existing Cross-App creation/verification case and Omni AAD blank-workbook
+case remain the two baseline shapes; they are not missing fixtures.
+`test/fixtures/reviewed-handoff/1js-fixture-qualification.mini-spec-batch.json`
+adds six authoring inputs for other execution mechanisms:
+
+| Input | Mechanism to qualify |
+|---|---|
+| `excel-agent-omni-seeded-workbook` | AAD Omni, deterministic input setup and protected workbook readback |
+| `excel-agent-omni-msa-conversation-isolation` | Consumer MSA Omni, exact conversation canary and unchanged workbook |
+| `excel-agent-omni-restore-web-source` | Mutable account state, persisted change and original-value restoration |
+| `excel-agent-arcadia-local-file-upload` | Registered local CSV fixture, workbook input and exact combined result |
+| `excel-agent-arcadia-custom-skill-cleanup` | Authorized, uniquely owned persistent skill resource with paired removal |
+| `excel-agent-dedicated-sensitivity` | Dedicated AAD login, Omni, named labeled workbook and read-only assertion |
+
+These are mini-specs, not generated product scenarios, reviewed evidence,
+authorization or passed validation receipts. Use them as the qualified
+repository skill's input only after the normal routing, registration, account
+and side-effect prerequisites are satisfied. Keep incompatible account,
+experience and shared-state cohorts serial and independently attributable.
+An existing helper or a schema-valid input is not live fixture qualification.
+The skill-resource and dedicated-workbook inputs retain their existing
+authorization gates. A missing approved profile, principal or resource blocks
+that input independently; it must not disappear from the reported inventory.
+
+**Ownership boundary, clarified on 2026-10-20:** controller E2E input JSON and
+qualification assets live in this Periodic repository. The five native
+qualification reference scenarios and their catalog/capability contracts are
+under `test/fixtures/1js-qualification/`. Seeded workbook and dedicated
+sensitivity both declare Omni. These references are test source assets, not
+runtime evidence or proof that the controller authored or passed a case.
+
+Before a local replay, read the
+[fixture account and credential prerequisites](test/fixtures/1js-qualification/README.md).
+The consumer MSA conversation fixture requires the approved MSA pair in
+`excelendtoendkv` and explicit `--msa-vault excelendtoendkv` selection. Do not
+omit that argument, read the CloudTest default vault or request access to it as
+a workaround for this fixture. The fixture README lists each account lane,
+Omni/Arcadia experience, secret names and the full local MSA command.
+It also describes the temporary PUS1/Debug Info experiment and its canonical
+1JS recipe, startup-triage evidence, cleanup boundaries and local regression
+commands. These are diagnostic options, not permanent fixture or pipeline
+defaults, assertion bypasses or substitutes for native business validation.
+
+Do not merge controller-test Draft PRs into 1JS or enable auto-completion.
+Generated cases are disposable controller-test outputs. Reusable 1JS runner,
+authentication, upload, recovery and evidence-emission fixes are a separate
+mergeable 1JS change, without the five qualification cases or their default
+catalog, lifecycle and package-command registrations. Controller tests must
+still exercise their normal authoring and publication flow rather than copy
+these reference scenarios and claim successful model authoring.
+
+The historical native results below were captured before this separation.
+Keep their exact revisions and evidence; moving assets does not create new
+passes or qualify the final implementation. Future native replays must stage
+the reference declarations in an isolated test workspace or a complete external
+declaration bundle, including its matching selection/catalog dependencies,
+instead of re-registering them in the mergeable 1JS checkout.
+
+Real screenshots, traces, profiles and execution-result JSON belong in local
+or CI artifact storage, outside Git tracking. An ignored `test-results`
+directory inside a checkout is artifact storage, not repository source.
+Retain useful failure evidence for investigation; temporary does not mean
+delete it immediately. Only sanitized authored inputs and expected contracts
+belong in `test/fixtures`.
+
+The explicit local MSA vault option is not a pipeline credential-source change.
+Without that option, retain environment-pair precedence, the original
+`ct-onejs-user-prod` fallback, missing-secret behavior and default cache
+semantics. Explicit local selection has a separate cache and is rejected under
+`CI`, `TF_BUILD` or `BUILD_BUILDID`. Keep the product pipeline definitions,
+named-secret declarations, central selection policy and default case inventory
+unchanged. Offline credential regressions do not substitute for an actual
+feature-branch pipeline run.
+
+**Separation validation (2026-10-20):** the 1JS build, package lint,
+85 targeted credential/launcher/interruption regressions and strict product
+catalog parity passed. Both focused Periodic qualification tests passed.
+All five moved reference scenarios also loaded through the native 1JS
+declaration loader and passed capability-matrix validation. The default
+product registries and `testConfigurability` match the pre-qualification
+baseline; pipeline definitions and central execution policy were not changed.
+These are offline checks, not new live fixture or controller qualification
+results; no feature-branch pipeline was queued.
+
+**MSA / Omni status as of 2026-10-20: initial account setup verified; fixture
+deferred until the Copilot entry is restored.**
+
+This applies to input `excel-agent-omni-msa-conversation-isolation` and generated
+1JS scenario `excel-agent.msa.fixture-conversation-isolation`. The real local
+setup replay established the following:
+
+- The approved MSA pair from `excelendtoendkv` worked with the existing
+  credential provider and login helper. A new isolated browser context had
+  zero cookies before login; no enterprise AAD session was reused.
+- Authentication through `login.live.com` succeeded. The actual signed-in
+  identity shown in the account menu exactly matched the configured MSA user
+  in an in-memory comparison. The account-management link pointed to
+  `account.microsoft.com`. No account or credential values were recorded;
+  avatar initials or photos alone are not evidence of account type.
+- A new workbook loaded and FUS1 routing was confirmed. With Omni requested,
+  the original 120-second entry probe still returned
+  `COPILOT_ENTRY_UNAVAILABLE`. Conversation-isolation and protected workbook
+  assertions did not run. A common root cause with pipeline failures,
+  including any licensing cause, has not been established.
+
+No account-selection fix is currently required. By agreement, postpone this
+fixture until the entry becomes available; retain its Periodic-owned reference
+declaration, catalog entry and original business assertions. Then resume normal
+live qualification, including five
+consecutive retry-disabled passes. This setup replay is not a fixture pass,
+a qualified controller binding or proof of the full live evidence-to-delivery
+path. The deferral does not add a skip to the generated scenario.
+
+Local evidence is not checked into this repository. Under
+`%USERPROFILE%\.copilot\session-state\90092c27-6dea-41b2-a3c4-b4ddccb19208\files`,
+see `msa-consumer-replay-20261020-result.json` and
+`msa-consumer-replay-20261020-retained.png`. The screenshot shows the loaded
+workbook and missing entry, not an expanded account-menu identity proof.
+
+**Dedicated sensitivity / Omni status as of 2026-10-20: migrated and replayed;
+blocked before the protected sensitivity assertion.**
+
+Input `excel-agent-dedicated-sensitivity` and generated 1JS scenario
+`excel-agent.dedicated.fixture-sensitivity` now select Omni. Dedicated identifies
+the `dedicated-enterprise` account lane, not a separate Copilot experience.
+The scenario, reviewed catalogs, capability matrix, mini-spec and associated
+regression checks agree on Omni. The approved external-service login, original
+`clp-labeled` resource, `ENTERPRISE_E2E_ENABLED` authorization gate, 180-second
+scenario timeout and protected `sensitivity.visible` contract remain unchanged.
+
+| Check | Actual result |
+|---|---|
+| Standard native execution | One attempt, workers=1, retries=0; failed after 126818 ms with `COPILOT_ENTRY_UNAVAILABLE` from the original 90-second entry probe |
+| Approved identity | A separate retained Chromium replay started with zero cookies; an authenticated SharePoint current-user read returned HTTP 200 and exactly matched the approved dedicated principal in memory |
+| Original workbook and deployment | The existing `clp-labeled` workbook opened; the original cluster helper reported actual FUS1 |
+| Active flights | The WAC runtime feature dictionary reported `DefaultExcelAgentOmni=true` and `EnableSharedAgentShell=true`, not merely requested URL flags |
+| Entry diagnosis | No Copilot-affordance DOM matches were present in the inspected frames; selecting the Home tab did not restore the entry |
+| Actual pane experience and protected assertion | Not verified/executed because no Copilot pane opened; active flights alone do not prove a visible Omni experience or a sensitivity pass |
+| Five-pass qualification | Not started; no fixture pass, qualified controller binding or full live controller result is claimed |
+
+Build, package lint, configuration formatting, two focused 1JS foundation tests,
+strict catalog parity and the focused Periodic mini-spec regression passed.
+No credential, fixture URL, workbook content or sensitivity label was changed.
+No assertion was weakened, timeout increased or product skip introduced.
+The migration does not fix the remaining host-entry problem.
+
+The retained WAC log also contains HTTP 500 for `RoamingServiceHandler.ashx`
+and HTTP 404 for `people.ashx`. Neither is established as the cause of the
+missing entry. Licensing, tenant policy and a common cause with MSA/pipeline
+failures remain unproven. Earlier Edge retention diagnostics ended during
+sign-in and are not identity or qualification evidence; the successful
+retained identity proof uses the same Playwright Chromium engine as native.
+Keep this fixture blocked, rather than treating the MSA deferral agreement as
+authorization to defer it or counting this diagnostic as a passing test.
+
+Local evidence remains outside this repository. Under the same session
+`files` directory noted above, see `dedicated-omni-final-status-20261020.json`,
+`dedicated-omni-retained-chromium-20261020-result.json`,
+`dedicated-omni-retained-chromium-20261020.png` and
+`dedicated-omni-inspection-20261020.json`. The standard native evidence is in
+the 1JS task worktree at
+`ooui/apps/excel-agent-declarative-e2e/test-results/excel-agent-local-83e4dce639421f2e`.
+The owned Chromium target is retained on local CDP port 9226; the separate
+MSA browser on port 9225 is not reused or closed. Resume the original protected
+scenario once the entry can be opened for this same account/resource, then
+require five consecutive retry-disabled passes on the final implementation.
+
+The local controller regression uses
+`1js-validation-repair-drill.json` and its adjacent `.runner.mjs.txt` fixture.
+The runner text is copied into a disposable synthetic repository, outside the
+model's write allowlist; it is not a product runner or a new supported provider.
+The first commit has an incorrect workbook seed and missing state restoration.
+The first repair fixes only the seed, so a second commit still fails cleanup.
+The second repair restores state, and its new SHA starts a fresh five-pass,
+retry-disabled qualification. The protected expected result remains 15 in all
+rounds. Each earlier failed commit and its diagnostics remain recorded.
+
+The regression runs real local Git commits, isolated validation processes and
+scratch-resource cleanup, but injects model, build and Draft PR boundaries.
+Budgets of zero or one repair must leave the remote empty and create neither
+build nor Draft PR. Two repairs must publish only the final passing SHA, queue
+one non-blocking synthetic build and link it to one synthetic Draft PR.
+Owned scratch resources and validation clones must be removed before the next
+round, while an unrelated-session sentinel remains unchanged during execution.
+This proves controller isolation, not real browser cleanup or product behavior.
+
+For a live edited-commit qualification, diagnose each genuine failure before
+editing only the allowed declarations. Do not deliberately corrupt a shared
+account or weaken an assertion to manufacture a pass. Preserve the initial and
+intermediate failures, derive each repair from its actual native feedback,
+and reset per-case consecutive counters whenever implementation changes.
+Require five consecutive real passes with workers=1 and retries=0 on the final
+implementation SHA, including actual owned-browser cleanup and original-state
+restoration. No failed or earlier-revision evidence may authorize publication.
 
 ## 8. Reconcile terminal evidence
 

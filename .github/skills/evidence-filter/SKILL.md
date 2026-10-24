@@ -8,7 +8,7 @@ description: >-
 
 # FILTER agent entrypoint
 
-This is one of the three top-level roles: Collector, FILTER and Proposer.
+This is one of the four top-level roles: Collector, FILTER, Proposer and RSI.
 The coordinator and improvement-planner procedures are internal procedures of
 this role, not additional agents to spawn. A session is an executor; the local
 ledger and immutable artifacts are durable state.
@@ -28,6 +28,25 @@ npm run pilot -- agent filter filter-batch-check --file result.json --manifest b
 Selecting this role does not launch a model or grant execution permission. Qualified
 hosted FILTER execution still requires the existing private transport and its
 explicit authorization; it is not a public CLI capability.
+
+ADO inputs must be Resolved or Closed with
+`Microsoft.VSTS.Common.ResolvedReason` Fixed or Duplicate. Missing/other
+resolutions block the input; `System.Reason` is not a fallback. A resolved
+duplicate is not categorically excluded because its canonical bug is outside
+the area. Preserve exact identities and relation references without fetching
+the target or claiming cross-record canonical reconciliation. Apply genuine
+scanner exclusions independently. Older noncohort ledgers remain immutable;
+do not relabel them as an accepted regression cohort.
+Retain known product-fix URLs in candidate `existingFixes` rather than omitting
+them to pass dispatch. The test-only handoff can carry the exact-source
+`routing.existingFixesReview`; see the coverage-reconciliation contract in
+README.md. Remaining coverage must be established independently of the fix.
+
+The fresh [one-shot controls](../../../ONE-SHOT.md) expose
+`one-shot-filter-prepare` and `one-shot-filter-reserve` for separately approved
+local aggregate/task reservations **before** the host submits any FILTER work.
+They do not submit or observe provider jobs. Retain original reservations on
+uncertain outcomes and never turn historical execution into fresh authorization.
 
 ## Procedure
 
@@ -63,9 +82,17 @@ Resume from persisted evidence and decisions, not chat recollection. A changed
 source/result/configuration requires the existing reconciliation procedure, not
 overwriting a sealed handoff.
 
+If the flow ends here with no candidate, a partial cohort or a blocker and
+the original run has RSI enabled, return through the coordinator's `app-end`
+completion path. Preserve unknown phases; do not label the flow successful to
+produce an RSI handoff. The coordinator invokes `evidence-rsi`; this FILTER
+procedure does not gain repository-write or publication authority.
+
 ## Authority
 
 Do not collect new sources, prepare or claim product workers, modify product
-code, run product validation, publish, change activation or consume new provider
-budget. A held review remains held until the separate dispatch gates are met.
+code, run product validation, publish, change activation or consume unapproved
+provider budget. Local one-shot reservations require explicit approved limits;
+they grant no provider submission permission beyond the configured contract.
+A held review remains held until the separate dispatch gates are met.
 Instructions and facade operation routing are not OS permission boundaries.

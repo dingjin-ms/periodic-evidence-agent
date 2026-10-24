@@ -80,6 +80,24 @@ export const workerToolDefinitions = Object.freeze([
             changedFiles: { type: 'array', items: { type: 'string' } },
             testsAddedOrUpdated: { type: 'array', items: { type: 'string' } },
             behaviorCardsAddedOrUpdated: { type: 'array', items: { type: 'string' } },
+            coverageReview: {
+              type: 'array', minItems: 1, maxItems: 50,
+              description: 'Author-reported seam inventory, not an independent quality grade.',
+              items: {
+                type: 'object', additionalProperties: false,
+                required: ['seam', 'evidenceBasis', 'unitEvidence', 'integrationEvidence',
+                  'testFiles', 'defectDetected', 'residuals'],
+                properties: {
+                  seam: { type: 'string', minLength: 1 },
+                  evidenceBasis: { type: 'string', minLength: 1 },
+                  unitEvidence: { type: 'array', items: { type: 'string' } },
+                  integrationEvidence: { type: 'array', items: { type: 'string' } },
+                  testFiles: { type: 'array', uniqueItems: true, items: { type: 'string' } },
+                  defectDetected: { type: 'string', minLength: 1 },
+                  residuals: { type: 'array', items: { type: 'string' } }
+                }
+              }
+            },
             unknowns: { type: 'array', items: { type: 'string' } },
             needsHumanDecision: { type: 'boolean' }
           },

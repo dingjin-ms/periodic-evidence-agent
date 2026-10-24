@@ -39,3 +39,19 @@ When a controller command returns `state: "action-required-auth"`:
 
 Dependency-cache hits do not require authentication preflight. Never delete a
 trusted dependency receipt merely to force authentication.
+
+## Controller E2E test ownership
+
+Keep controller E2E input JSON, qualification scenarios and their expected
+contracts in this repository. Generated product test changes belong only in
+the controller-owned disposable product checkout and its test Draft PR.
+These Draft PRs are test outputs and must never be merged or auto-completed.
+Reusable product runner, authentication, upload, recovery and diagnostic
+mechanism fixes require a separate product-repository PR that excludes the
+controller's qualification scenarios.
+
+Screenshots, traces, browser profiles, execution logs and credential-bearing
+runtime files are local or CI artifacts, not source-controlled fixtures.
+Preserve failed-run evidence until investigation is complete; do not delete
+it merely because it is temporary. Commit only intentional sanitized synthetic
+inputs and expected contracts, never real accounts, secrets or workbook data.

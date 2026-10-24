@@ -46,7 +46,11 @@ export async function startWorkerRpcServer(toolkit, options = {}) {
     ? `\\\\.\\pipe\\periodic-evidence-${uuid()}`
     : join(tmpdir(), `periodic-evidence-${uuid()}.sock`));
   const tools = new Map(workerToolDefinitions.map(tool => [tool.name, tool]));
+  const sockets = new Set();
   const server = createServer({ allowHalfOpen: true }, socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    if (options.idleTimeoutMs) socket.setTimeout(options.idleTimeoutMs, () => socket.destroy());
     socket.setEncoding('utf8');
     let input = '';
     let handled = false;
@@ -94,8 +98,13 @@ export async function startWorkerRpcServer(toolkit, options = {}) {
     endpoint,
     token,
     close: async () => {
-      await new Promise((resolveClose, rejectClose) =>
-        server.close(error => error ? rejectClose(error) : resolveClose()));
+      const timer = options.drainTimeoutMs ? setTimeout(() => {
+        for (const socket of sockets) socket.destroy();
+      }, options.drainTimeoutMs) : null;
+      try {
+        await new Promise((resolveClose, rejectClose) =>
+          server.close(error => error ? rejectClose(error) : resolveClose()));
+      } finally { clearTimeout(timer); }
       if (process.platform !== 'win32') rmSync(endpoint, { force: true });
     }
   };

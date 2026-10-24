@@ -1,6 +1,7 @@
 import { Budget, json, now, requireThat, safeError } from './common.js';
-import { readRelatedAdo, evidenceEnvelope } from './sources.js';
+import { readRelatedAdo, evidenceEnvelope, workiqTitle } from './sources.js';
 import { withWorkiq, principalPath, verifyPrincipal, channelRoot, messageSelect } from './runtime.js';
+import { isAdoCohort } from './ado-cohort.js';
 
 export function trackedOpenEvidence(ledger) {
   const ids = new Set(ledger.latest('investigation').filter(i => i.state !== 'closed').flatMap(i => i.evidenceIds));
@@ -43,15 +44,20 @@ export async function revisitTracked(config, ledger, readers = {}) {
             const record = evidenceEnvelope('workiq', old.source.namespace, message.id, message.etag ?? null,
               message.webUrl ?? old.url, json({ entityUrls: [path], purpose: 'tracked-open-revisit' }));
             record.scopeId = old.scopeId; record.createdAt = message.createdDateTime ?? null;
-            record.title = message.subject ?? null; record.sourceStatus = message.deletedDateTime ? 'Removed' : null;
+            record.title = workiqTitle(message.subject); record.sourceStatus = message.deletedDateTime ? 'Removed' : null;
             record.fields = { message }; update = { record, payload: { message } };
           } else {
             requireThat(false, 'Authenticated tracked IcM revisits are unavailable; obtain an updated confirmed owner export', 'blocked-source');
           }
-          ledger.evidence(update.record, update.payload, runId);
+          const stored = ledger.evidence(update.record, update.payload, runId);
           const fixed = ['Removed', 'Resolved', 'Closed'].includes(update.record.sourceStatus);
-          ledger.setTrackedState(old, fixed ? 'reconciliation-required' : 'current',
-            fixed ? 'Tracked item is removed/fixed/closed; review existing fix and assignment before further work'
+          const unchangedCohort = kind === 'ado' && isAdoCohort(old.fields) &&
+            stored.id === old.id && update.record.sourceStatus === old.sourceStatus;
+          const needsReconciliation = (fixed && !unchangedCohort) ||
+            (kind === 'ado' && isAdoCohort(old.fields) && stored.id !== old.id) ||
+            ledger.trackedState(old)?.state === 'reconciliation-required';
+          ledger.setTrackedState(old, needsReconciliation ? 'reconciliation-required' : 'current',
+            needsReconciliation ? 'Tracked source changed, left the cohort or requires existing fix/assignment reconciliation'
               : 'Tracked identity still appears in the approved source boundary; current evidence captured');
         } catch (error) {
           if (['blocked-scope', 'unavailable'].includes(error.code)) {

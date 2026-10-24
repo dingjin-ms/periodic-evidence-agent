@@ -459,7 +459,7 @@ test('validation preserves native receipts outside the clean final-SHA clone', a
       mkdirSync(request.outputRoot, { recursive: true });
       writeFileSync(join(request.outputRoot, 'receipt.json'), json(receipt));
       return { stdout: `PILOT_DECLARATIVE_RECEIPT:${json(receipt)}`, stderr: '' };
-    }, undefined, null, execution);
+    }, undefined, null, { skillExecution: execution });
   assert.equal(calls, 1);
   assert.equal(results[0].status, 'passed');
   const artifact = JSON.parse(readFileSync(results[0].artifactRefs[0], 'utf8'));
@@ -478,7 +478,7 @@ test('an exit-zero runner without native five-pass proof is blocked without auto
   let calls = 0;
   const results = await runValidation(ctx.config, ctx.ledger, ctx.job, ctx.repo, revision,
     async () => { calls++; return { stdout: 'exit zero is not proof', stderr: '' }; },
-    undefined, null, execution);
+    undefined, null, { skillExecution: execution });
   assert.equal(calls, 1);
   assert.equal(results[0].status, 'blocked');
 });
@@ -521,7 +521,7 @@ for (const condition of ['valid', 'tampered', 'proof-drift']) {
         mkdirSync(request.outputRoot, { recursive: true });
         writeFileSync(join(request.outputRoot, 'receipt.json'), json(receipt));
         return { stdout: `PILOT_DECLARATIVE_RECEIPT:${json(receipt)}`, stderr: '' };
-      }, undefined, { [ctx.gate.id]: { preflight } }, execution);
+      }, undefined, { [ctx.gate.id]: { preflight } }, { skillExecution: execution });
     if (condition === 'proof-drift') await assert.rejects(run(), /evidence changed/);
     else {
       const result = await run();

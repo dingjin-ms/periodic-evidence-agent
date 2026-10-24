@@ -1,0 +1,17 @@
+{
+  "format": "self-improvement-policy-v1",
+  "mode": "offline-qualification",
+  "executionApproved": false,
+  "stateDirectory": ".state/rsi/qualification",
+  "stateOwner": "retained-controller-session",
+  "retainState": true,
+  "limits": {
+    "maxEpisodes": 8,
+    "caseTimeoutMs": 60000,
+    "maxRuntimeMs": 600000,
+    "maxOutputBytes": 262144,
+    "maxArtifactBytes": 16777216,
+    "maxFixtureBytes": 16777216,
+    "maxCandidateVersions": 2
+  }
+}

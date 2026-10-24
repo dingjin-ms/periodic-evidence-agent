@@ -31,6 +31,14 @@ A role selection, prepared assignment or `--production` flag is not permission
 to execute. Synthetic reviewed-handoff support cannot substitute for real
 source ingestion or an accepted real FILTER handoff.
 
+For a fresh bounded cohort, use
+[`one-shot-handoff --check|--execute`](../../../ONE-SHOT.md) instead of
+inferring acceptance from structural consolidation alone. It requires the exact
+complete collection receipt, pre-reserved cohort budgets and accepted immutable
+FILTER executions. Real authenticated collection-only WorkIQ captures keep
+their provenance through the separately authorized handoff. No-candidate ends
+without dispatch; partial coverage never counts as no-candidate success.
+
 ## Repository procedure
 
 Select only the configured assignment's owner procedure:
@@ -45,6 +53,14 @@ An unknown repository or missing qualification is blocked, not guessed.
 These are internal implementations of Proposer, not additional top-level roles.
 Follow the selected procedure and source-pinned native skill in the isolated
 workspace. Never execute in the reference checkout.
+
+Resolved/Closed ADO evidence is regression input only when its captured
+`Microsoft.VSTS.Common.ResolvedReason` is Fixed or Duplicate and the controller
+admits a current, qualified, bounded test-only coverage assignment. A terminal
+status or product-fix link alone is not authority to execute. Preserve
+`existingFixes` and its source-bound coverage reconciliation; satisfied,
+in-flight, unknown or changed work stays blocked. Do not fetch an out-of-area
+canonical duplicate or infer that its work has been reconciled.
 
 Keep the existing backend in charge. The restricted SDK model submits through
 `pilot_finish`; the controller owns validation and publication. App-native work
@@ -65,6 +81,16 @@ qualification on another source revision is not changed-case validation.
 Preserve failed and pre-model blocked attempts. Resume only through the existing
 reconciliation path and concrete continuation authorization. Never reset the
 ledger or blindly redispatch because no model call was recorded.
+The one-shot path permits one explicit `--resume-auth` only after a positively
+recorded pre-dispatch authentication block and supported remediation, while the
+same local assignment has no workspace, result or worker/provider operation.
+Unknown dispatch outcomes or a second auth failure remain blocked.
+
+When RSI is enabled, return the normal controller's `rsi` handoff to the flow
+owner even if authoring or validation failed. In app-native flows, the terminal
+worker CLI action captures it; otherwise the owner calls `app-end`. The owner
+invokes `evidence-rsi` in the approved host. Do not treat a queued task as a
+completed RSI invocation or rerun product work to reconstruct its artifacts.
 
 For the exact CLI-not-on-PATH rejection before authoring,
 `agent proposer continue-runtime-launch --prepare|--execute` accepts a fresh

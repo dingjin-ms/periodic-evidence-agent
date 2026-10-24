@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { nativeCommand } from '../src/native-command.js';
 import { minimalEnvironment, command } from '../src/workers.js';
 
@@ -27,7 +29,74 @@ test('contained native command preserves arguments, cwd, output and environment 
     assert.equal(result.stderr, '');
   });
 
-for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) test(`native ${mode} drains owned descendants`,
+for (const pathExt of [undefined, '', ' ', '.CMD;.BAT']) {
+  test(`native launch rejects unusable PATHEXT (${JSON.stringify(pathExt)}) before execution`,
+    { skip: process.platform !== 'win32' }, async t => {
+      const root = fixture(t), marker = join(root, 'unexpected-launch');
+      const env = minimalEnvironment();
+      delete env.PATHEXT;
+      if (pathExt !== undefined) env.PATHEXT = pathExt;
+      await assert.rejects(nativeCommand(process.execPath,
+        ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`],
+        root, 15000, env), { code: 'blocked-native-environment' });
+      assert.equal(existsSync(marker), false);
+      assert.equal(env.PATHEXT, pathExt, 'The runner must not manufacture environment defaults');
+    });
+}
+
+test('direct supervisor also rejects missing PATHEXT without a success-shaped exit',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = fixture(t), marker = join(root, 'unexpected-launch');
+    const env = { ...minimalEnvironment(), PILOT_NATIVE_COMMAND: JSON.stringify({
+      jobName: `Local\\PilotNative-${randomUUID()}`,
+      executable: process.execPath,
+      args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`]
+    }) };
+    delete env.PATHEXT;
+    await assert.rejects(command('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      fileURLToPath(new URL('../src/native-command.ps1', import.meta.url))], root, 15000, env),
+    error => error.code !== 0 && /requires PATHEXT including .EXE/.test(error.stderr));
+    assert.equal(existsSync(marker), false);
+  });
+
+for (const exitCode of [0, 23]) test(`native silent exit ${exitCode} requires actual execution`,
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = fixture(t), marker = join(root, 'launched');
+    const env = { ...minimalEnvironment(), PATHEXT: '.com;.exe;.bat;.cmd' };
+    const run = nativeCommand(process.execPath,
+      ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched');process.exit(${exitCode})`],
+      root, 15000, env);
+    assert.ok(run.child && Number.isInteger(run.child.pid), 'Expose the supervisor handle for cancellation and drain');
+    if (exitCode === 0) {
+      const output = await run;
+      assert.equal(output.stdout, ''); assert.equal(output.stderr, '');
+    } else {
+      await assert.rejects(run, error => error.code === exitCode && error.stdout === '' && error.stderr === '');
+    }
+    assert.equal(readFileSync(marker, 'utf8'), 'launched');
+  });
+
+for (const mode of ['missing', 'cmdlet', 'script', 'invalid-binary']) {
+  test(`native ${mode} resolution cannot substitute for an application launch`,
+    { skip: process.platform !== 'win32' }, async t => {
+      const root = fixture(t), marker = join(root, 'unexpected-script-launch');
+      let executable = join(root, 'missing.exe');
+      if (mode === 'cmdlet') executable = 'Write-Output';
+      if (mode === 'script') {
+        executable = join(root, 'not-native.ps1');
+        writeFileSync(executable, `Set-Content -LiteralPath '${marker.replaceAll("'", "''")}' -Value 'launched'; exit 0`);
+      }
+      if (mode === 'invalid-binary') {
+        executable = join(root, 'invalid.exe');
+        writeFileSync(executable, 'Not an executable image');
+      }
+      await assert.rejects(nativeCommand(executable, [], root, 15000, minimalEnvironment()),
+        error => error.code !== 0 && Boolean(error.stderr));
+      assert.equal(existsSync(marker), false);
+    });
+}
+
+for (const mode of ['timeout', 'abort', 'nonzero-exit', 'success', 'output-overflow']) test(`native ${mode} drains owned descendants`,
   { skip: process.platform !== 'win32' }, async t => {
     const root = fixture(t, false), leaf = join(root, 'leaf.mjs'), parent = join(root, 'parent.mjs');
     const idsPath = join(root, 'pids.json'), grandchildPath = join(root, 'grandchild.json');
@@ -41,7 +110,7 @@ for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) te
       writeFileSync(${JSON.stringify(idsPath)},JSON.stringify({parent:process.pid,child:child.pid}));
       while(!existsSync(${JSON.stringify(grandchildPath)}))await new Promise(resolve=>setTimeout(resolve,10));
       console.log('synthetic-started');
-      ${mode === 'timeout' ? 'setInterval(()=>{},1000);' :
+      ${mode === 'timeout' || mode === 'abort' ? 'setInterval(()=>{},1000);' :
         mode === 'output-overflow' ? "process.stdout.write('x'.repeat(5*1024*1024));setInterval(()=>{},1000);" :
         mode === 'success' ? 'process.exit(0);' : "console.error('synthetic-failure');process.exit(23);"}
     `);
@@ -56,15 +125,22 @@ for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) te
         root, 10000, minimalEnvironment());
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
+    const controller = new AbortController();
+    const abortTimer = mode === 'abort' ? setTimeout(() => controller.abort(), 5000) : null;
+    t.after(() => clearTimeout(abortTimer));
     let failure, output;
     try { output = await nativeCommand(process.execPath, [parent], root, mode === 'timeout' ? 5000 : 15000,
-      minimalEnvironment()); }
+      minimalEnvironment(), { signal: controller.signal }); }
     catch (error) { failure = error; }
     assert.match((failure ?? output).stdout, /synthetic-started/);
     if (mode === 'success') assert.equal(failure, undefined);
     else {
       assert.ok(failure, 'The failed command must not look successful');
       if (mode === 'timeout') assert.equal(failure.killed, true);
+      else if (mode === 'abort') {
+        assert.equal(failure.code, 'ABORT_ERR');
+        assert.equal(failure.ownedProcessesExited, true);
+      }
       else if (mode === 'output-overflow') assert.equal(failure.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
       else { assert.equal(failure.code, 23); assert.match(failure.stderr, /synthetic-failure/); }
     }

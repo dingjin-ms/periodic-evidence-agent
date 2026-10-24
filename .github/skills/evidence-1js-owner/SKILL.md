@@ -37,3 +37,17 @@ passed with retry 0, cleanup passed, and Draft PR 5895602 was created. Aurora
 57965896 was triggered but failed case-tag validation before configuration
 snapshot creation; cloud validation remains an open follow-up. This historical
 proof is not authorization for new collection, authoring, validation or writes.
+
+## Setup and validation troubleshooting
+
+After the required handoff is verified, read the controller's
+[1JS local setup and validation notes](../../../README.md#1js-local-setup-and-validation)
+alongside the active product checkout's own instructions and application README.
+The notes distinguish Azure CLI, package-feed and browser authentication;
+installation from compilation; and local checks from real product E2E.
+
+Inspect the actual tasks before replacement of dependency/generated directories,
+and obtain the exact cleanup approval required by that checkout. Do not borrow
+another worktree's tools or outputs, clear shared caches, bypass build checks or
+treat an earlier checkout's success as validation of this assignment.
+These troubleshooting notes grant no additional execution or publication authority.

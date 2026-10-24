@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { exclusions, hash, json, readJson, requireThat, utc, validateRecord } from './common.js';
+import { adoResolutionField, requireAdoEvidenceCohort } from './ado-cohort.js';
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
 function immutable(path, value) {
@@ -21,20 +22,27 @@ function sourceRead(source, retained = null, expected = null) {
     const run = db.prepare('SELECT body FROM app_runs WHERE id=?').get(source.runId);
     requireThat(run, 'Filter source run missing', 'invalid-record');
     const passes = db.prepare('SELECT pass,body FROM app_passes WHERE run_id=? ORDER BY pass').all(source.runId);
-    // Project only title/identity/provenance. No description, RCA, or capture body enters the title packet.
+    // Project title/identity/provenance and cohort selectors, never description/RCA/capture bodies.
     const entries = db.prepare(`SELECT DISTINCT r.id AS evidenceId,
       json_extract(r.body,'$.title') AS title, json_extract(r.body,'$.source') AS source,
-      json_extract(r.body,'$.capture') AS capture
+      json_extract(r.body,'$.capture') AS capture,
+      json_extract(r.body,'$.sourceStatus') AS sourceStatus,
+      json_extract(r.body,'$.fields."System.State"') AS state,
+      json_extract(r.body,'$.fields."${adoResolutionField}"') AS resolution
       FROM records r JOIN observations o ON o.evidence_id=r.id
       WHERE r.kind='evidence' AND substr(o.run_id,1,length(?)+1)=?||':' ORDER BY r.id`)
       .all(source.runId, source.runId).map(row => {
         const origin = JSON.parse(row.source), capture = JSON.parse(row.capture);
+        requireAdoEvidenceCohort({ source: origin, sourceStatus: row.sourceStatus,
+          fields: { 'System.State': row.state, [adoResolutionField]: row.resolution } });
         requireThat((row.title === null || typeof row.title === 'string') &&
           /^[a-f0-9]{64}$/.test(capture.sha256 ?? ''),
         'Title index requires a valid title and captured source version', 'invalid-record');
         return { evidenceId: row.evidenceId, title: row.title,
           source: Object.fromEntries(['kind', 'namespace', 'recordId', 'revision', 'versionBasis'].map(k => [k, origin[k]])),
-          provenance: origin.provenance, captureSha256: capture.sha256, artifactRef: capture.artifactRef };
+          provenance: origin.provenance, captureSha256: capture.sha256, artifactRef: capture.artifactRef,
+          ...(origin.kind === 'ado' ? { cohort: { state: row.state,
+            resolutionField: adoResolutionField, resolution: row.resolution } } : {}) };
       });
     const snapshotSha256 = hash(json([run.body, passes, entries]));
     if (expected) requireThat(snapshotSha256 === expected,
@@ -44,6 +52,7 @@ function sourceRead(source, retained = null, expected = null) {
       const row = db.prepare("SELECT body FROM records WHERE kind='evidence' AND id=?").get(entry.evidenceId);
       const record = JSON.parse(row.body);
       validateRecord(record);
+      requireAdoEvidenceCohort(record);
       const capture = db.prepare('SELECT body FROM captures WHERE hash=?').get(entry.captureSha256);
       requireThat(capture && hash(capture.body) === entry.captureSha256 &&
         record.capture.sha256 === entry.captureSha256,
@@ -84,6 +93,8 @@ function buildIndex(config, input) {
         'Screen out only confidently excluded titles with a typed exclusion, reason and exact title quote.',
         'Ambiguous and absent titles retain details. Never infer a defect or missing test from a title.',
         'No broad keyword rejection, including reliability, security, performance or Voice Access.',
+        'ADO inputs require Resolved or Closed with Microsoft.VSTS.Common.ResolvedReason Fixed or Duplicate; no System.Reason fallback.',
+        'Duplicate resolution is not an exclusion. Preserve source identities and canonical links even when the target is outside scope; do not fetch it.',
         'A validated decision is not semantic qualification. Retained bodies must be read before RCA/coverage.',
         'Apply all exclusions to both defect and improvement handoffs; later source/coverage gates are unchanged.'
       ] },
@@ -130,7 +141,7 @@ export function validateTitleDecisions(index, decisions, indexSha256) {
     else requireThat(decision.disposition !== 'no-title', 'Present title cannot be classified no-title', 'invalid-record');
     if (decision.disposition === 'screen-out') requireThat(exclusions.includes(decision.exclusionType) &&
       text(decision.titleQuote) && entry.title.includes(decision.titleQuote),
-    'Title exclusion requires an existing typed reason and exact title quote', 'invalid-record');
+    `Title exclusion requires an existing typed reason and exact title quote (${entry.source.recordId}/${decision.evidenceId})`, 'invalid-record');
     else requireThat(decision.exclusionType === null && decision.titleQuote === null,
       'Retained decisions cannot assert title exclusions', 'invalid-record');
   }

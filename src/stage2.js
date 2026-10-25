@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { hash, json, now, readJson, requireThat, windowCheck } from './common.js';
-import { validateTitleScreen } from './filter.js';
+import { validateTitleScreen, selectedSourceKinds } from './filter.js';
 import { bindFilterConsolidation } from './filter-batches.js';
 import { requireAdoEvidenceCohort } from './ado-cohort.js';
 
@@ -62,11 +62,13 @@ function sourceSnapshot(source, retainedIds = null) {
     requireThat(run, 'Stage2 source run missing', 'invalid-record');
     const data = JSON.parse(run.body);
     const passes = db.prepare('SELECT pass,body FROM app_passes WHERE run_id=? ORDER BY pass').all(source.runId);
+    const sourceKinds = selectedSourceKinds(source, passes);
     const observations = db.prepare(`SELECT DISTINCT r.body FROM records r JOIN observations o ON o.evidence_id=r.id
       WHERE r.kind='evidence' AND substr(o.run_id,1,length(?)+1)=?||':'
       AND (? IS NULL OR r.id IN (SELECT value FROM json_each(?))) ORDER BY r.id`)
       .all(source.runId, source.runId, retainedIds === null ? null : json(retainedIds),
-        retainedIds === null ? null : json(retainedIds));
+        retainedIds === null ? null : json(retainedIds))
+      .filter(row => !sourceKinds || sourceKinds.includes(JSON.parse(row.body).source.kind));
     const evidenceRefs = observations.map(row => {
       const e = JSON.parse(row.body);
       requireAdoEvidenceCohort(e);
@@ -76,8 +78,10 @@ function sourceSnapshot(source, retainedIds = null) {
         artifactRef: e.capture.artifactRef, sha256: e.capture.sha256 };
     });
     return { ledgerPath: path, runId: source.runId, window: data.window,
-      coverage: passes.map(p => JSON.parse(p.body)), evidenceRefs,
-      snapshotSha256: hash(json([run.body, passes, observations])) };
+      ...(sourceKinds ? { sourceKinds } : {}),
+      coverage: passes.filter(p => !sourceKinds || sourceKinds.includes(p.pass.split(':')[0]))
+        .map(p => JSON.parse(p.body)), evidenceRefs,
+      snapshotSha256: hash(json([run.body, passes, observations, ...(sourceKinds ? [sourceKinds] : [])])) };
   } finally { db.close(); }
 }
 function writeImmutable(path, value) {
@@ -97,8 +101,8 @@ export function prepareStage2(config, input, outputPath) {
     'Stage2 sources differ from FILTER batch sources', 'invalid-record');
   const screening = input.titleScreen ? validateTitleScreen(config, input.titleScreen.indexPath,
     input.titleScreen.decisionsPath) : null;
-  if (screening) requireThat(json(input.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
-    json(screening.index.sources.map(s => [s.ledgerPath, s.runId])),
+  if (screening) requireThat(json(input.sources.map(s => [realpathSync(s.ledgerPath), s.runId, s.sourceKinds ?? null])) ===
+    json(screening.index.sources.map(s => [s.ledgerPath, s.runId, s.sourceKinds ?? null])),
   'Stage2 sources differ from title-screen sources', 'invalid-record');
   const skill = installedCoverageSkill(config),
     sources = input.sources.map(source => sourceSnapshot(source, batchReview?.retainedIds ?? screening?.retainedIds ?? null));
@@ -140,16 +144,16 @@ export function checkStage2Proposal(config, proposal, handoff) {
   const batchReview = handoff.batchReview ? bindFilterConsolidation(config, handoff.batchReview) : null;
   if (batchReview) requireThat(json(batchReview) === json(handoff.batchReview),
     'FILTER batch consolidation changed', 'blocked-reconciliation');
-  if (batchReview) requireThat(json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
-    json(batchReview.sources.map(s => [realpathSync(s.ledgerPath), s.runId])),
+  if (batchReview) requireThat(json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId, s.sourceKinds ?? null])) ===
+    json(batchReview.sources.map(s => [realpathSync(s.ledgerPath), s.runId, s.sourceKinds ?? null])),
   'Stage2 sources differ from FILTER batch sources', 'blocked-reconciliation');
   const screening = handoff.titleScreen ? validateTitleScreen(config, handoff.titleScreen.indexPath,
     handoff.titleScreen.decisionsPath) : null;
   if (screening) requireThat(screening.indexSha256 === handoff.titleScreen.indexSha256 &&
     screening.decisionsSha256 === handoff.titleScreen.decisionsSha256 &&
     json(screening.retainedIds) === json(handoff.titleScreen.retainedIds) &&
-    json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId])) ===
-      json(screening.index.sources.map(s => [s.ledgerPath, s.runId])),
+    json(handoff.sources.map(s => [realpathSync(s.ledgerPath), s.runId, s.sourceKinds ?? null])) ===
+      json(screening.index.sources.map(s => [s.ledgerPath, s.runId, s.sourceKinds ?? null])),
   'Stage2 title screening changed', 'blocked-reconciliation');
   const sources = handoff.sources.map(source => {
     const current = sourceSnapshot(source, batchReview?.retainedIds ?? screening?.retainedIds ?? null);

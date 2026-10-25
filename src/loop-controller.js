@@ -111,8 +111,10 @@ export async function runEvidenceLoop(input, ledger, adapters) {
   const releases = [];
   const receipts = [];
   let activeRole = null;
+  let coverage = null, sourceFailureReview = null;
   const report = (state, extra = {}) => ({ format: 'evidence-loop-report-v1', runId, state,
-    window: pins.window, plan, pinsSha256: digest(pins), ...extra });
+    window: pins.window, plan, pinsSha256: digest(pins),
+    ...(coverage ? { coverage } : {}), ...(sourceFailureReview ? { sourceFailureReview } : {}), ...extra });
   const failureReview = async value => {
     if (!activeRole || activeRole.stage === 'rsi') return value;
     try {
@@ -120,6 +122,17 @@ export async function runEvidenceLoop(input, ledger, adapters) {
       value.failureReview = reviewLoopFailure(ledger, pins, value, evidence);
     } catch (error) { value.failureReview = { state: 'blocked', ...safeError(error) }; }
     return value;
+  };
+  const summarizeCollection = async (role, receipt) => {
+    if (role.stage !== 'collect' || !adapters.collect.collectionSummary) return;
+    coverage = await adapters.collect.collectionSummary(receipt, ledger);
+    if (coverage.sourceCoverageComplete === false && coverage.filterReady === true) {
+      activeRole = role;
+      const observation = report('degraded', { stage: 'collect', code: 'partial-source-coverage',
+        action: 'Proceed only with complete source cohorts; excluded sources remain unavailable.', receipts });
+      await failureReview(observation);
+      sourceFailureReview = observation.failureReview;
+    }
   };
   try {
     const slot = 'loop-occurrence:' + digest({ workflowId: pins.workflowId, timeZone: pins.timeZone, window: pins.window });
@@ -176,6 +189,7 @@ export async function runEvidenceLoop(input, ledger, adapters) {
         validateReceipt(ledger, role, operation.detail.receipt);
         if (!skipped) await adapters[stage].verify(role, operation.detail.receipt, ledger);
         receipts.push(operation.detail.receipt);
+        await summarizeCollection(role, operation.detail.receipt);
         continue;
       }
       if (!operation) {
@@ -199,6 +213,7 @@ export async function runEvidenceLoop(input, ledger, adapters) {
       if (!skipped) await adapters[stage].verify(role, result.receipt, ledger);
       ledger.finishOperation(operationId, 'recorded', { request: role, receipt: result.receipt });
       receipts.push(result.receipt);
+      await summarizeCollection(role, result.receipt);
     }
     const value = report('complete', { proposer: receipts[2].outcome, rsi: receipts[3].outcome, receipts });
     ledger.finishOperation(runId, 'recorded', { pins, report: value });

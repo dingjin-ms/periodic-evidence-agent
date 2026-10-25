@@ -15,6 +15,7 @@ export function createMailboxLoopAdapter(backend) {
   };
   return { binding, capabilities: backend.capabilities, qualification: backend.qualification,
     failureEvidence: backend.failureEvidence?.bind(backend),
+    collectionSummary: backend.collectionSummary?.bind(backend),
     preflight: context => backend.preflight(context),
     execute(request, ledger) {
       ledger.operation(key(request), request.runId, 'loop-mailbox', { request, backend: backend.binding });

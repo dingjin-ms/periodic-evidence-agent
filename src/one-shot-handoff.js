@@ -56,7 +56,8 @@ function readOnly(path, fn) {
 function collectedManifest(config, input) {
   const collected = readOnly(join(input.collection.stateDirectory, 'ledger.sqlite'), ledger =>
     readOneShotCollectionReceipt(config, ledger, input.collection.runId, input.collection.receiptSha256));
-  requireThat(collected.mode === 'fresh-local-collection' && collected.sourceCoverageComplete === true &&
+  requireThat(collected.mode === 'fresh-local-collection' && (collected.sourceCoverageComplete === true ||
+    collected.sourceFailurePolicy === 'complete-source-kinds' && collected.filterReady === true) &&
     collected.snapshot.sourceSnapshots.every(source => json(source.window) === json(config.window)),
   'Fresh source coverage and exact collection window are required', 'blocked-reconciliation');
   requireThat(existsSync(input.filter.manifestPath), 'FILTER manifest is missing; prepare it with explicit sharing/tokenizer approval',
@@ -230,7 +231,10 @@ function acceptedCohort(config, input) {
         receiptSha256: hash(json(request)), jobId: request.submission?.jobId })),
       reserved: { filterRequests: requests.length, filterExecutionSeconds: seconds, filterReservedTokens: tokens },
       aggregateReservationSha256: hash(json(budget)),
-      sourceCoverageComplete: true, semanticAnalysisVerifiedByHelper: false, cohort };
+      sourceCoverageComplete: collected.sourceCoverageComplete,
+      ...(collected.sourceFailurePolicy ? { eligibleSourceKinds: collected.eligibleSourceKinds,
+        missingSources: collected.missingSources, selectedSourceCoverageComplete: true } : {}),
+      semanticAnalysisVerifiedByHelper: false, cohort };
   });
 }
 function operation(ledger, id) {

@@ -84,7 +84,10 @@ export function acceptLocalOneShotCohort(config, ledger, input, manifest, collec
       receiptSha256: hash(json(rows.filter(r => r.task_id === row.task_id))),
       sessionId: rows.find(r => r.task_id === row.task_id && r.kind === 'session')?.value.sessionId })),
     reserved: budget.reserved, aggregateReservationSha256: hash(json(budget)),
-    sourceCoverageComplete: true, semanticAnalysisVerifiedByHelper: false, cohort };
+    sourceCoverageComplete: collected.sourceCoverageComplete,
+    ...(collected.sourceFailurePolicy ? { eligibleSourceKinds: collected.eligibleSourceKinds,
+      missingSources: collected.missingSources, selectedSourceCoverageComplete: true } : {}),
+    semanticAnalysisVerifiedByHelper: false, cohort };
 }
 
 export async function executeLocalOneShotCohort(config, ledger, input, manifest, budget, dependencies = {}) {

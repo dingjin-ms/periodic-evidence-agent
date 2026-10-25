@@ -15,7 +15,7 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'native-mixed-throttled', 'mailbox-mixed-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'native-mixed-throttled', 'mailbox-mixed-throttled', 'local-mixed-partial-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-reconcile-partial', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
@@ -58,6 +58,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
   }
   const throttled = mode.endsWith('-throttled');
   const mixed = mode.includes('-mixed-');
+  const partial = mode.includes('-partial-') || mode.endsWith('-partial');
   if (mixed) c.dryRun.limits = { maxItems: 5, maxCalls: 5 };
   if (throttled) {
     c.sources.ado.enabled = mixed;
@@ -75,6 +76,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
       approvalRef: 'synthetic-only', deadlineAt, maxItems: 10, maxCalls: 10 } },
     filterHost: { id: 'synthetic-host', approvalRef: 'synthetic-only', qualificationRef: verificationRef,
       maxRequests: 1, maxExecutionSeconds: 600, maxReservedTokens: 1000 } };
+  if (partial) bundle.collection.sourceFailurePolicy = 'complete-source-kinds';
   if (mode.startsWith('local-')) bundle.localFilterPlan = {
     instructions: 'Synthetic complete corpus review',
     groupingReview: { reviewer: 'test', reviewedAt: now(), rationale: 'Exact singleton membership only' },
@@ -87,7 +89,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
   };
   const bundlePath = join(root, 'bundle.local.json'); writeFileSync(bundlePath, json(bundle));
   let calls = 0, workiqCalls = 0;
-  let failPreparation = mode === 'local-reconcile';
+  let failPreparation = mode.startsWith('local-reconcile');
   const native = createNativeLoopAdapter({ collectionDependencies: {
     workiqFactory: async () => ({ read: async () => {
       calls++;
@@ -117,7 +119,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   const adapters = Object.fromEntries(loopStages.map(stage => [stage, adapter]));
   let waiting = await runEvidenceLoop(request, ledger, adapters);
-  if (throttled) {
+  if (throttled && !partial) {
     if (mode.startsWith('mailbox')) {
       await adapter.drain(loopOperation(ledger, waiting.runId + ':collect').detail.request, ledger);
       waiting = await runEvidenceLoop(request, ledger, adapters);
@@ -167,7 +169,7 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
     assert.equal(completed.rsi, 'captured'); assert.equal(calls, originalCalls);
     return;
   }
-  if (mode === 'local-reconcile') {
+  if (mode.startsWith('local-reconcile')) {
     assert.equal(waiting.state, 'blocked');
     const originalCalls = calls, original = normalizeLoopRequest(request);
     const originalPath = join(root, 'original-request.json'); writeFileSync(originalPath, json(request));
@@ -179,6 +181,21 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
     const nextPath = join(root, 'successor-settings.json'); writeFileSync(nextPath, json(nextBundle));
     const next = { ...request, workflowId: 'successor', configuration: [fileArtifact(nextPath), ...configuration.slice(1)] };
     failPreparation = false;
+    const changedPolicyBundle = structuredClone(nextBundle);
+    if (partial) delete changedPolicyBundle.collection.sourceFailurePolicy;
+    else changedPolicyBundle.collection.sourceFailurePolicy = 'complete-source-kinds';
+    const changedPolicyPath = join(root, 'changed-policy-settings.json');
+    writeFileSync(changedPolicyPath, json(changedPolicyBundle));
+    const changedPolicy = { ...next, workflowId: 'changed-policy-successor',
+      configuration: [fileArtifact(changedPolicyPath), ...configuration.slice(1)] };
+    const refusedPolicy = await runEvidenceLoop(changedPolicy, ledger, adapters);
+    assert.equal(refusedPolicy.state, 'blocked', json(refusedPolicy));
+    assert.equal(refusedPolicy.code, 'blocked-reconciliation');
+    assert.match(refusedPolicy.message, /exact original source policy/);
+    assert.equal(calls, originalCalls, 'Cross-policy reuse must not repeat collection');
+    assert.equal(loopOperation(ledger, refusedPolicy.runId + ':collect'), null,
+      'Cross-policy reuse must fail before admitting a collection effect');
+    assert.equal(loopOperation(ledger, original.runId + ':collection-successor'), null);
     const predecessorLock = 'evidence-loop:' + original.runId, predecessorOwner = ledger.acquire(predecessorLock);
     try {
       const refused = await runEvidenceLoop(next, ledger, adapters);
@@ -199,9 +216,19 @@ for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled'
     assert.equal(waiting.code, 'action-required-budget', json(waiting));
     assert.equal(calls, 0); return;
   }
-  if (mode === 'local-sdk') {
+  if (mode === 'local-sdk' || partial) {
     assert.equal(waiting.state, 'complete', json(waiting));
     assert.equal(waiting.proposer, 'no-candidate'); assert.equal(waiting.rsi, 'captured');
+    if (partial) {
+      assert.equal(waiting.sourceFailureReview.state, 'diagnosed-and-proposed');
+      assert.equal(waiting.coverage.sourceCoverageComplete, false);
+      assert.equal(waiting.coverage.filterReady, true);
+      assert.deepEqual(waiting.coverage.eligibleSourceKinds, ['ado']);
+      assert.equal(waiting.coverage.missingSources[0].kind, 'workiq');
+      const accepted = JSON.parse(readLoopArtifact(ledger, waiting.receipts[1].artifacts[0]));
+      assert.equal(accepted.sourceCoverageComplete, false);
+      assert.equal(accepted.selectedSourceCoverageComplete, true);
+    }
     const firstCalls = calls;
     assert.deepEqual(await runEvidenceLoop({ ...request, origin: 'scheduled' }, ledger, adapters), waiting);
     assert.equal(calls, firstCalls); return;

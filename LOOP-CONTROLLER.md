@@ -1,5 +1,27 @@
 # Shared daily controller
 
+## Continuing when a source is unavailable
+
+For a newly admitted run, set `collection.sourceFailurePolicy` to
+`complete-source-kinds` in its private native settings. This policy is pinned
+before collection; existing admitted runs retain their original contract.
+The default remains strict when the field is absent.
+
+Collection attempts independent source kinds even if another fails. Only kinds
+whose selected passes all completed with authenticated, bounded, verified
+receipts enter FILTER. For example, failed Teams enumeration excludes all
+WorkIQ evidence while complete ADO created/changed evidence can continue through
+FILTER, eligible Proposer and RSI. If one selected ADO pass fails, the entire
+ADO cohort is excluded. No partial evidence is promoted or failed read retried.
+
+The report distinguishes `coverage.filterReady` from
+`coverage.sourceCoverageComplete`, lists missing sources, and records a
+`sourceFailureReview` independently of downstream completion. A completed loop
+with missing sources means successful processing of the available complete
+cohorts, not complete coverage of every requested source. All sources missing,
+changed artifacts, invalid provenance and unresolved integrity failures remain
+blockers. RSI capture/diagnosis is not evaluated improvement or adoption.
+
 Manual and scheduled callers now use one versioned controller. It owns admission,
 stage order, aggregate reservations, receipt propagation and terminal reporting in
 the existing Ledger's operations/captures/locks. The control journal references the

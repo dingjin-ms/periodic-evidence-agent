@@ -68,6 +68,7 @@ export function nativeLoopSettings(pins, runId) {
     const old = normalizeLoopRequest(JSON.parse(bytes));
     const oldBundle = JSON.parse(readFileSync(old.pins.configuration[0].path));
     requireThat(!oldBundle.collectionReuse && old.runId !== runId &&
+      oldBundle.collection.sourceFailurePolicy === bundle.collection.sourceFailurePolicy &&
       digest(old.pins.stateOwner) === digest(pins.stateOwner) &&
       digest(old.pins.window) === digest(pins.window) && old.pins.sourcePolicySha256 === pins.sourcePolicySha256 &&
       digest(old.pins.configuration[1]) === digest(pins.configuration[1]) && old.pins.rsiMode === pins.rsiMode,
@@ -237,7 +238,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
           return blocked('blocked-reconciliation', 'Collection intent has no helper journal; inspect original owner. Do not relaunch.');
         if (!resume) beginOneShotCollection(s.collector, collector, collectionInput(s, request));
         const status = await advanceOneShotCollection(s.collector, collector, request.runId, collectionDependencies);
-        if (!status.sourceCoverageComplete) return blocked(status.blocker?.code ?? 'partial-collection',
+        if (!(status.filterReady ?? status.sourceCoverageComplete)) return blocked(status.blocker?.code ?? 'partial-collection',
           status.blocker?.action ?? 'Selected source coverage is incomplete; reconcile original collection passes.', status.blocker);
         return complete('collected', readOneShotCollectionReceipt(s.collector, collector, request.runId), [request.runId]);
       } finally { collector.close(); }
@@ -355,6 +356,13 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
     }
   }
   return { binding, capabilities: ['collect', 'filter', 'proposer', 'rsi'],
+    collectionSummary(receipt, ledger) {
+      const value = JSON.parse(readLoopArtifact(ledger, receipt.artifacts[0]));
+      return { sourceCoverageComplete: value.sourceCoverageComplete,
+        filterReady: value.filterReady ?? value.sourceCoverageComplete,
+        eligibleSourceKinds: value.eligibleSourceKinds ?? [],
+        missingSources: value.missingSources ?? [] };
+    },
     failureEvidence(request, ledger) {
       const s = nativeLoopSettings(request.pins, request.runId);
       const path = join(s.collector.stateDirectory, 'app-native', 'dry-runs', s.collectionRunId, 'ledger.sqlite');

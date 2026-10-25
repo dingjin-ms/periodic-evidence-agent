@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cliError } from '../scripts/test-support/cli-error.mjs';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -373,7 +374,7 @@ test('CLI one-shot role requires explicit scope and collection flag and resumes 
   assert.equal(JSON.parse(begin.stdout).result.state, 'collecting');
   const noPermission = invoke('one-shot-collect', ['--run', input.runId]);
   assert.equal(noPermission.status, 1);
-  assert.equal(JSON.parse(noPermission.stderr).error.code, 'blocked-authorization');
+  assert.equal(cliError(noPermission.stderr).error.code, 'blocked-authorization');
   const stopped = invoke('one-shot-stop', ['--run', input.runId]);
   assert.equal(stopped.status, 0, stopped.stderr);
   const read = invoke('one-shot-status', ['--run', input.runId]);

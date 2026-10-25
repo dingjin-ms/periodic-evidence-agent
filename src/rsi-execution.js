@@ -6,7 +6,7 @@ import { WorkerTools, command, minimalEnvironment } from './workers.js';
 import { runAgencyLocal, launchAgency } from './agency-local-authoring.js';
 import { nativeCommand } from './native-command.js';
 import { describeAgent } from './agents.js';
-import { pinRsiController, readRsiArtifact, readRsiEvent, rsiAutomationPolicy, rsiWork } from './rsi-flow.js';
+import { isCleanRsiHead, pinRsiController, readRsiArtifact, readRsiEvent, rsiAutomationPolicy, rsiWork } from './rsi-flow.js';
 import { compareRsiFlows, pinRsiEvaluation, renderRsiFlowComparison } from './rsi-evaluation.js';
 import { runAppRoleFlow } from './rsi-app-flow.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
@@ -58,8 +58,8 @@ async function git(execution, args, cwd, env = execution.env, signal = undefined
   cwd, remaining(execution, 120000), env, signal)).stdout.trim();
 }
 async function cleanHead(execution, workspace, revision) {
-  requireThat(await git(execution, ['rev-parse', 'HEAD'], workspace) === revision &&
-    await git(execution, ['status', '--porcelain', '--untracked-files=all'], workspace) === '',
+  requireThat(isCleanRsiHead(await git(execution,
+    ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], workspace), revision),
   'RSI workspace is not clean at its pinned revision', 'blocked-reconciliation');
 }
 

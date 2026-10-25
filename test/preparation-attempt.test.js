@@ -6,13 +6,43 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { command } from '../src/workers.js';
 import { Ledger } from '../src/ledger.js';
 import { hash, json, PilotError } from '../src/common.js';
 import { runPreparationAttempt, preparationStageNames } from '../src/preparation-attempt.js';
-import { withPreparationProgress, preparationStage } from '../src/preparation-progress.js';
+import {
+  withPreparationProgress, preparationStage, preparationFailureDiagnostic
+} from '../src/preparation-progress.js';
+
+test('preparation diagnostics allowlist structured fields without reading raw error text', () => {
+  const marker = 'fixture-sensitive-command-environment-and-output';
+  const error = { code: 128, signal: 'SIGTERM', killed: true };
+  for (const field of ['message', 'stack', 'stdout', 'stderr', 'cmd', 'path', 'env'])
+    Object.defineProperty(error, field, { get() { throw new Error(marker); } });
+  assert.deepEqual(preparationFailureDiagnostic(error), {
+    exitCode: 128, systemCode: null, signal: 'SIGTERM', killed: true
+  });
+  assert.deepEqual(preparationFailureDiagnostic({ code: 'ENOENT' }), {
+    exitCode: null, systemCode: 'ENOENT', signal: null, killed: false
+  });
+  const unknown = preparationFailureDiagnostic({ code: marker, signal: marker, killed: marker });
+  assert.deepEqual(unknown, { exitCode: null, systemCode: null, signal: null, killed: false });
+  const broken = Object.defineProperty({}, 'code', { get() { throw new Error(marker); } });
+  assert.deepEqual(preparationFailureDiagnostic(broken), {
+    secondaryError: { code: 'preparation-diagnostic-unavailable',
+      message: 'Secondary preparation failure details could not be inspected.' }
+  });
+});
+
+test('shared command re-export preserves the caller abort signal', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(command(process.execPath, ['-e', 'process.exit(0)'],
+    process.cwd(), undefined, undefined, controller.signal),
+  { name: 'AbortError', code: 'ABORT_ERR' });
+});
 
 test('controller progress failure preserves an already raised primary rejection', async () => {
   const primary = new PilotError('blocked-validation', 'original content rejection');
@@ -87,7 +117,8 @@ async function fixture(t) {
 import {writeFileSync,readFileSync,mkdirSync,renameSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 const stage=process.env.PILOT_VALIDATION_STAGE;
-const [target,ready,leaf]=process.argv.slice(2);
+const [target,ready,leaf,startupDelay='0']=process.argv.slice(2);
+if(stage===target)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Number(startupDelay));
 console.log('{"kind":"stage","stage":"forged-product-stage","phase":"start"}');
 if(stage==='fingerprint')console.log('PILOT_VALIDATION_FINGERPRINT:'+JSON.stringify({
   node:process.version,corepack:'fixture',yarn:'fixture',platform:process.platform,architecture:process.arch}));
@@ -172,6 +203,174 @@ async function assertRollback(outcome, ctx) {
   for (const pid of [outcome.controllerPid, outcome.supervisorPid].filter(Boolean))
     await assertExited(pid, outcome.processExitCheckStartedMs, ctx.root);
 }
+
+function validationImportFault(ctx, marker) {
+  const preload = join(ctx.root, 'validation-import-fault.mjs');
+  writeFileSync(preload, `
+import {registerHooks} from 'node:module';
+registerHooks({load(url,context,nextLoad){
+  if(url===${json(new URL('../src/workers.js', import.meta.url).href)})
+    throw Object.assign(new Error(${json(marker)}),{code:'ENOENT'});
+  return nextLoad(url,context);
+}});
+`);
+  return pathToFileURL(preload).href;
+}
+
+test('preparation overlap refusal does not load worker execution before admission',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    const ledger = new Ledger(join(ctx.parent, 'controller'));
+    const name = `preparation-attempt:${hash(realpathSync.native(ctx.source))}`;
+    const owner = ledger.acquire(name);
+    const before = readdirSync(ctx.parent);
+    const marker = 'fixture-worker-execution-import-before-admission';
+    const preload = validationImportFault(ctx, marker);
+    const api = new URL('../src/preparation-attempt.js', import.meta.url).href;
+    try {
+      await assert.rejects(command(process.execPath, ['--import', preload, '--input-type=module', '-e', `
+import {runPreparationAttempt} from ${json(api)};
+try {
+  await runPreparationAttempt(${json(ctx.options)});
+  process.exitCode=1;
+} catch(error) {
+  console.log(JSON.stringify({code:error.code}));
+  process.exitCode=2;
+}
+`], ctx.root, 10000), error => {
+        assert.equal(error.code, 2);
+        assert.deepEqual(JSON.parse(error.stdout), { code: 'overlap' });
+        assert.equal(error.stderr.includes(marker), false);
+        return true;
+      });
+      assert.equal(ledger.db.prepare('SELECT owner FROM locks WHERE name=?').get(name).owner, owner);
+      assert.deepEqual(readdirSync(ctx.parent), before);
+      assertSource(ctx);
+    } finally {
+      ledger.release(name, owner);
+      ledger.close();
+    }
+  });
+
+for (const step of ['clone', 'checkout']) {
+  test(`real Git ${step} failure retains only its substep and safe diagnostic without preparing receipts`,
+    async t => {
+      const ctx = await fixture(t);
+      const root = join(ctx.parent, 'child');
+      mkdirSync(join(root, 'data'), { recursive: true });
+      const marker = `fixture-sensitive-${step}-argument`;
+      writeFileSync(join(root, 'request.json'), json({
+        ...ctx.options,
+        job: { ...ctx.options.job, workspace: step === 'clone' ? join(ctx.root, marker) : ctx.source },
+        revision: step === 'checkout' ? marker : ctx.options.revision
+      }));
+      const child = fileURLToPath(new URL('../src/preparation-attempt-child.js', import.meta.url));
+      const preload = validationImportFault(ctx, marker);
+      await assert.rejects(command(process.execPath, ['--import', preload, child, root], root, 60000),
+        error => error.code === 1);
+      const text = readFileSync(join(root, 'progress.jsonl'), 'utf8');
+      const events = text.trim().split('\n').map(JSON.parse);
+      const steps = events.filter(event => event.kind === 'materialization-step')
+        .map(({ step, phase }) => [step, phase]);
+      assert.deepEqual(steps, step === 'clone' ? [['clone', 'start']] :
+        [['clone', 'start'], ['clone', 'finish'], ['checkout', 'start']]);
+      const failed = events.at(-1);
+      assert.equal(failed.kind, 'infrastructure-failed');
+      assert.equal(failed.operation, `source-${step}`);
+      assert.deepEqual(failed.diagnostic, {
+        exitCode: 128, systemCode: null, signal: null, killed: false
+      });
+      assert.equal(text.includes(marker), false);
+      assert.equal(events.some(event => event.stage === 'preparation' ||
+        event.kind === 'complete'), false);
+      assert.equal(existsSync(join(root, 'child-result.json')), false);
+      assert.equal(receipts(join(root, 'data')).length, 0);
+      assert.equal(existsSync(join(root, 'request.json')), false);
+      assertSource(ctx);
+    });
+}
+
+for (const brokenDiagnostic of [false, true]) {
+  test(`a native ${brokenDiagnostic ? 'diagnostic exception' : 'clone refusal'} keeps controller-incomplete classification through cleanup`,
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    const marker = 'fixture-sensitive-infrastructure-exception';
+    const preload = join(ctx.root, 'diagnostic-fault.mjs');
+    const previousOptions = process.env.NODE_OPTIONS;
+    if (brokenDiagnostic) {
+      writeFileSync(preload, `
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+childProcess.execFile=(executable,args,options,callback)=>{
+  const error=new Error(${json(marker)});
+  Object.defineProperty(error,'code',{get(){throw new Error(${json(marker)})}});
+  callback(error,${json(marker)},${json(marker)});
+};
+syncBuiltinESMExports();
+`);
+    } else {
+      writeFileSync(join(ctx.source, '.git', 'refs', 'heads', 'missing-object'), 'a'.repeat(40) + '\n');
+    }
+    let outcome;
+    try {
+      if (brokenDiagnostic)
+        process.env.NODE_OPTIONS = `${previousOptions ?? ''} --import=${pathToFileURL(preload).href}`;
+      outcome = await runPreparationAttempt(ctx.options);
+    } finally {
+      if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousOptions;
+    }
+    assert.equal(outcome.status, 'incomplete', json(outcome));
+    assert.equal(outcome.reason, 'controller-incomplete');
+    assert.equal(outcome.controllerRejection, null);
+    assert.deepEqual(outcome.infrastructureFailure, {
+      operation: 'source-clone',
+      diagnostic: brokenDiagnostic ? {
+        secondaryError: { code: 'preparation-diagnostic-unavailable',
+          message: 'Secondary preparation failure details could not be inspected.' }
+      } : { exitCode: 128, systemCode: null, signal: null, killed: false }
+    });
+    await assertRollback(outcome, ctx);
+    const retained = ['progress.jsonl', 'journal.jsonl', 'outcome.json']
+      .map(path => readFileSync(join(outcome.attemptRoot, path), 'utf8')).join('\n');
+    assert.equal(retained.includes('missing-object'), false);
+    assert.equal(retained.includes(marker), false);
+    const persisted = JSON.parse(readFileSync(join(outcome.attemptRoot, 'outcome.json')));
+    assert.deepEqual(persisted.infrastructureFailure, outcome.infrastructureFailure);
+  });
+}
+
+test('validation runtime import failure retains its diagnostic after source materialization',
+  { skip: process.platform !== 'win32' }, async t => {
+    const ctx = await fixture(t);
+    const marker = 'fixture-sensitive-validation-import';
+    const preload = validationImportFault(ctx, marker);
+    const previousOptions = process.env.NODE_OPTIONS;
+    let outcome;
+    try {
+      process.env.NODE_OPTIONS = [previousOptions, `--import=${json(preload)}`]
+        .filter(Boolean).join(' ');
+      outcome = await runPreparationAttempt(ctx.options);
+    } finally {
+      if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previousOptions;
+    }
+    assert.equal(outcome.status, 'incomplete', json(outcome));
+    assert.equal(outcome.reason, 'controller-incomplete');
+    assert.deepEqual(outcome.infrastructureFailure, {
+      operation: 'validation-preparation',
+      diagnostic: { exitCode: null, systemCode: 'ENOENT', signal: null, killed: false }
+    });
+    await assertRollback(outcome, ctx);
+    const retained = ['progress.jsonl', 'journal.jsonl', 'outcome.json']
+      .map(path => readFileSync(join(outcome.attemptRoot, path), 'utf8')).join('\n');
+    assert.equal(retained.includes(marker), false);
+    const events = readFileSync(join(outcome.attemptRoot, 'progress.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    assert.equal(events.some(event => event.stage === 'source-materialization' &&
+      event.phase === 'finish'), true);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+  });
 
 for (const stage of ['dependencies', 'compile']) {
   test(`cancelling active ${stage} drains descendants, discards partial state and releases ownership`,
@@ -315,6 +514,7 @@ test('a stage budget cancels the attempt and a fresh attempt can acquire the rel
   { skip: process.platform !== 'win32' }, async t => {
     const ctx = await fixture(t);
     ctx.gate.args[1] = 'dependencies';
+    ctx.gate.args.push('6000');
     const { outcome: failed, ready } = await expireReadyStage(t, ctx, 'dependencies', 5000);
     assert.equal(failed.reason, 'stage-budget', json(failed));
     assert.equal(failed.stage, 'dependencies');

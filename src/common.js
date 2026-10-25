@@ -79,7 +79,8 @@ export function boundedPath(root, name, { write = false } = {}) {
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 addFormats(ajv);
 const contracts = readJson(new URL('../scaffold/contracts.schema.json', import.meta.url));
-ajv.addSchema(contracts, 'contracts');
+// Named records need the definitions, not eager compilation of the document's root union.
+ajv.addSchema({ $defs: contracts.$defs }, 'contracts');
 export function validateRecord(value, type = value.recordType) {
   const validate = ajv.getSchema(`contracts#/$defs/${type}`);
   requireThat(validate && validate(value), `Invalid ${type} record: ${ajv.errorsText(validate?.errors)}`, 'invalid-record');

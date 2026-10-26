@@ -2191,6 +2191,7 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
     format: 'dependency-verification-progress-v1', sourceRevision: revision,
     source, workspace, startedAt: now(),
     scope: 'complete-byte-scans; hashedBytes are logical bytes, not physical disk throughput',
+    verificationMode: expectedSeed ? 'pinned-byte-digest-reverification' : 'initial-byte-seed',
     cpuScope: 'controller process including worker threads; concurrent scan CPU intervals overlap',
     percentage: null, eta: null
   })}\n`, { flag: 'wx', mode: 0o600, flush: true });
@@ -2229,15 +2230,82 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
   requireThat(!expectedSeed || !retainedCopy,
     'A prepared seed and an unqualified retained copy cannot be combined', 'blocked-validation');
   const seedGit = (cwd, args) => preparationGit(cwd, args, Math.min(timeoutMs, defaultGitTimeoutMs));
-  const paths = (await seedGit(source,
-    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']))
+  const ignoredArgs = ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'];
+  const dependencyPaths = output => output
     .split(/\r?\n/).filter(Boolean).map(path => path.replace(/\/$/, ''))
     .filter(path => path.startsWith('ooui/') && (path === 'ooui/.store' ||
       /(^|\/)node_modules$/.test(path) || /(^|\/)(lib|dist|out)(\/|$)/.test(path))).sort();
-  if (!paths.length) return null;
+  const paths = dependencyPaths(await seedGit(source, ignoredArgs));
+  if (!paths.length) {
+    requireThat(!expectedSeed,
+      'Prepared dependency receipt does not match the current exact source bytes',
+      'blocked-validation');
+    return null;
+  }
   requireThat(paths.length <= 2048 && (expectedSeed ||
     paths.every(path => !existsSync(join(workspace, path)))),
     'Declarative dependency seed overlaps clone files or exceeds its path bound', 'blocked-validation');
+  const expandPaths = root => paths.flatMap(path => path === 'ooui/.store'
+    ? readdirSync(join(root, path)).sort().map(name => `${path}/${name}`)
+    : [path]);
+  if (expectedSeed) {
+    const sha256 = expectedSeed.sha256;
+    await stage('dependency-seed-check', () => requireThat(
+      expectedSeed.format === 'declarative-dependency-seed-v1' &&
+      expectedSeed.sourceRevision === revision &&
+      typeof sha256 === 'string' && /^[a-f0-9]{64}$/.test(sha256) &&
+      json(expectedSeed.paths) === json(paths),
+    'Prepared dependency receipt does not match the current exact source bytes',
+    'blocked-validation'));
+    let fingerprintPaths = null;
+    const verifyInventory = async () => {
+      // Drain every read-only Git job before a caller can clean up a rejection.
+      const states = await Promise.allSettled([source, workspace].flatMap(root => [
+        seedGit(root, ['rev-parse', 'HEAD']),
+        seedGit(root, ['status', '--porcelain']),
+        seedGit(root, ignoredArgs)
+      ]));
+      const rejected = states.find(result => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+      const values = states.map(result => result.value);
+      for (const [index, root] of [source, workspace].entries()) {
+        const [head, status, ignored] = values.slice(index * 3, index * 3 + 3);
+        const message = index === 0
+          ? 'Prepared dependency receipt does not match the current exact source bytes or inventory'
+          : 'Declarative dependency seed changed tracked files, copied output bytes or inventory';
+        requireThat(head === revision && !status &&
+          json(dependencyPaths(ignored)) === json(paths), message, 'blocked-validation');
+        const physicalRoot = realpathSync(root);
+        for (const path of paths) {
+          const bounded = relative(physicalRoot, realpathSync(join(root, path)));
+          requireThat(!bounded.startsWith('..') && !isAbsolute(bounded),
+            'Prepared dependency inventory link escapes its workspace', 'blocked-validation');
+        }
+        const current = expandPaths(root);
+        requireThat(current.length <= 20000, 'Declarative dependency seed is too large',
+          'blocked-validation');
+        fingerprintPaths ??= current;
+        requireThat(json(current) === json(fingerprintPaths), message, 'blocked-validation');
+      }
+    };
+    await stage('prepared-dependency-inventory', verifyInventory);
+    await stage('dependency-byte-verification', async () => {
+      const verified = await Promise.allSettled([
+        scan(source, 'retainedSource', fingerprintPaths),
+        scan(workspace, 'copiedWorkspace', fingerprintPaths)
+      ]);
+      const rejected = verified.find(result => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+      const [retained, copied] = verified.map(result => result.value);
+      requireThat(retained === sha256,
+        'Prepared dependency receipt does not match the current exact source bytes',
+        'blocked-validation');
+      requireThat(copied === sha256,
+        'Declarative dependency seed changed copied output bytes', 'blocked-validation');
+      await verifyInventory();
+    });
+    return { format: 'declarative-dependency-seed-v1', sourceRevision: revision, paths, sha256 };
+  }
   requireThat(
     await seedGit(source, ['rev-parse', 'HEAD']) === revision &&
     !await seedGit(source, ['status', '--porcelain']),
@@ -2251,23 +2319,14 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
     await stage('retained-copy-check', () => verifyRetainedDependencyCopy(retainedCopy,
       source, workspace, revision, paths,
       hash(readFileSync(fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url))))));
-  const fingerprintPaths = paths.flatMap(path => path === 'ooui/.store'
-    ? readdirSync(join(source, path)).sort().map(name => `${path}/${name}`)
-    : [path]);
+  const fingerprintPaths = expandPaths(source);
   requireThat(fingerprintPaths.length <= 20000, 'Declarative dependency seed is too large',
     'blocked-validation');
   const sha256 = await stage('dependency-source-fingerprint',
     () => scan(source, 'initialSource', fingerprintPaths));
   requireThat(sha256, 'Declarative dependency seed has missing or unsafe outputs',
     'blocked-validation');
-  if (expectedSeed) {
-    await stage('dependency-seed-check', () => requireThat(
-      expectedSeed.format === 'declarative-dependency-seed-v1' &&
-      expectedSeed.sourceRevision === revision && expectedSeed.sha256 === sha256 &&
-      json(expectedSeed.paths) === json(paths),
-    'Prepared dependency receipt does not match the current exact source bytes',
-    'blocked-validation'));
-  } else if (retainedCopy) {
+  if (retainedCopy) {
     await stage('dependency-copy', () => {
       const copy = verifyRetainedDependencyCopy(retainedCopy, source, workspace, revision, paths,
         hash(readFileSync(fileURLToPath(new URL('./dependency-snapshot-copy.cjs', import.meta.url)))));

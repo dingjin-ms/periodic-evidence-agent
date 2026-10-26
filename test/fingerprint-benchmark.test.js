@@ -50,7 +50,8 @@ test('dependency benchmarks reject aliased frozen evidence before creating direc
     process.platform === 'win32' ? 'junction' : 'dir');
   for (const [script, prefix] of [
     ['benchmark-dependency-scan.mjs', []],
-    ['benchmark-file-hash.mjs', ['--baseline', '0'.repeat(40)]]
+    ['benchmark-file-hash.mjs', ['--baseline', '0'.repeat(40)]],
+    ['benchmark-prepared-reverification.mjs', ['--baseline', '0'.repeat(40)]]
   ]) {
     const child = spawnSync(process.execPath, [
       fileURLToPath(new URL(`../scripts/${script}`, import.meta.url)),

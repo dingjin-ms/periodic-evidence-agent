@@ -3204,8 +3204,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     let status = 'blocked', blockedReason = null, commandOrRunUrl = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const id = `${job.id}:validation:${gate.id}:${revision}${attemptSuffix}:attempt:${attempt}`;
-      const validationRoot = join(config.stateDirectory, 'validation-workspaces');
-      const validationWorkspace = join(validationRoot, hash(id));
+      // Git for Windows can fail to discover .git beyond MAX_PATH even with core.longpaths.
+      const validationRoot = join(config.stateDirectory, 'vw');
+      const validationWorkspace = join(validationRoot, hash(id).slice(0, 24));
       const privateProfile = profile
         ? join(config.stateDirectory, 'validation-profiles',
           `${hash(id)}${extname(profile.path)}`)

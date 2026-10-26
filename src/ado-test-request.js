@@ -74,8 +74,11 @@ function rowsFromHtml(description) {
 export function parseTestRequest(description) {
   requireThat(typeof description === 'string' && Buffer.byteLength(description) <= 262144,
     'Test-request description is missing or exceeds the size bound', 'invalid-record');
+  // ADO's rich-text editor can wrap a plain Markdown template in div/p elements.
+  const markdown = /^\s*<(?:div|p)[\s>]/i.test(description)
+    ? plain(parseFragment(description)) : description;
   const rows = /<table[\s>]/i.test(description) ? rowsFromHtml(description)
-    : description.split(/\r?\n/).filter(line => /^\s*\|/.test(line)).map(line =>
+    : markdown.split(/\r?\n/).filter(line => /^\s*\|/.test(line)).map(line =>
       line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(value =>
         clean(value.replaceAll('\\|', '|').replace(/<br\s*\/?>/gi, '\n'))));
   const fields = {};

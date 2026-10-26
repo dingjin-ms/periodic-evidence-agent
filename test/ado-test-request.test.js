@@ -7,10 +7,33 @@ import { spawnSync } from 'node:child_process';
 import { Ledger } from '../src/ledger.js';
 import { configAt } from '../src/common.js';
 import { adoRecord, wiql } from '../src/sources.js';
+import { testRequestLink, testRequestRows } from '../src/ado-request-link.js';
 import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest } from '../src/ado-test-request.js';
 
 const sample = readFileSync(new URL('../scaffold/ado-test-request.sample.md', import.meta.url), 'utf8');
 const policy = JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url)));
+test('creation link includes all five fields without HTML or lost area separators', () => {
+  const url = new URL(testRequestLink(policy));
+  assert.equal(url.origin, 'https://dev.azure.com');
+  assert.equal(url.pathname, '/office/OC/_workitems/create/Bug');
+  assert.equal(url.searchParams.get('[System.AreaPath]'), policy.areaPath);
+  assert.equal(url.searchParams.get('[System.Tags]'), policy.tag);
+  assert.ok(url.href.length < 2000);
+  const description = url.searchParams.get('[System.Description]');
+  assert.doesNotMatch(description, /[<>]/);
+  assert.deepEqual(parseTestRequest(description).missing, testRequestRows.map(([label]) => label));
+  assert.throws(() => testRequestLink({ ...policy, areaPath: 'x'.repeat(2000) }), /sharing length/);
+});
+
+test('ADO rich-text wrappers preserve a filled plain-text template', () => {
+  const url = new URL(testRequestLink(policy));
+  const description = url.searchParams.get('[System.Description]')
+    .replace(/\[[^\]]+\]/g, 'Filled example');
+  const richText = description.split('\n').map(line => `<div>${line}</div>`).join('');
+  assert.deepEqual(parseTestRequest(richText), parseTestRequest(description));
+  assert.equal(parseTestRequest(richText).missing.length, 0);
+});
+
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'test-request-'));
   const ledger = new Ledger(root);

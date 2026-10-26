@@ -52,9 +52,11 @@ export async function runCiTests(group, directory = join('.state', `ci-tests-${g
   const summaryPath = join(output, 'summary.json');
   const tapPath = join(output, 'tests.tap');
   const started = performance.now();
+  // Windows native containment tests have wall-clock deadlines and launch nested PowerShell hosts.
+  const fileConcurrency = process.platform === 'win32' ? 1 : 4;
   const summary = {
     group, sourceRevision: process.env.GITHUB_SHA ?? null,
-    nodeVersion: process.version, fileConcurrency: 4, catalogue,
+    nodeVersion: process.version, fileConcurrency, catalogue,
     selectedFiles: catalogue.groups[group],
     startedAt: new Date().toISOString(), status: 'running',
     exitCode: null, signal: null, counts: null, resourcesBefore: resources()
@@ -65,7 +67,7 @@ export async function runCiTests(group, directory = join('.state', `ci-tests-${g
     discoveredFiles: catalogue.files.length, selectedFiles: summary.selectedFiles.length }));
   try {
     const child = spawn(process.execPath, [
-      '--test', '--test-concurrency=4',
+      '--test', `--test-concurrency=${fileConcurrency}`,
       '--test-reporter=tap', '--test-reporter-destination=stdout',
       '--test-reporter=tap', `--test-reporter-destination=${tapPath}`,
       ...summary.selectedFiles

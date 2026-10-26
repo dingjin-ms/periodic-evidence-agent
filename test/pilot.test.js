@@ -1024,6 +1024,27 @@ test('validation records real terminal command execution at exact fixture HEAD a
   assert.ok(existsSync(result[0].artifactRefs[0]));
   await assert.rejects(runValidation(config, ledger, current, repo, isolated.baseRevision), /already started/);
 });
+test('Windows validation keeps Git metadata below MAX_PATH in nested task state',
+  { skip: process.platform !== 'win32' }, async t => {
+    const { root, config, ledger, job, repo } = await fixture(t);
+    const isolated = await provision(config, job, repo);
+    const statePrefix = join(realpathSync.native(root), 'nested-state');
+    assert.ok(statePrefix.length < 192, 'Fixture temp root needs room for a nested task path');
+    config.stateDirectory = join(statePrefix, 's'.repeat(192 - statePrefix.length - 1));
+    assert.equal(config.stateDirectory.length, 192);
+    assert.ok(join(config.stateDirectory, 'validation-workspaces', 'a'.repeat(64), '.git').length > 260);
+    repo.validationGates = [{ id: 'nested-path', approved: true, isolationVerified: true,
+      executable: process.execPath, args: ['--input-type=module', '-e',
+        "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,1); console.log('nested-validation-ran')"], timeoutMs: 15000 }];
+    const result = await runValidation(config, ledger, { ...job, workspace: isolated.workspace }, repo,
+      isolated.baseRevision);
+    assert.equal(result[0].status, 'passed', json(result));
+    const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+    assert.match(artifact.output.stdout, /nested-validation-ran/);
+    assert.equal(result[0].sourceRevision, isolated.baseRevision);
+    assert.equal(result[0].attemptCount, 1);
+  });
+
 test('failed validation is terminal evidence, not a success-shaped result', async t => {
   const { config, ledger, job, repo } = await fixture(t), isolated = await provision(config, job, repo);
   repo.validationGates = [{ id: 'fail', approved: true, isolationVerified: true,

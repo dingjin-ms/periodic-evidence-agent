@@ -8,8 +8,18 @@ confirmed defect or synthetic reviewed-handoff fixture.
 
 ### Crew workflow
 
-Copy [the five-field template](ado-test-request.template.md) into a work-item
-description. The owner-selected area is
+Generate a shareable **new Bug link with the five-field template prefilled**:
+
+```powershell
+node scripts/create-ado-request-link.mjs
+```
+
+The link uses plain-text Markdown in `System.Description`, not HTML in the URL.
+It includes the title prefix, area and tag. Replace the bracketed guidance in the
+new form before saving. This generates a link only; it never creates a work item
+or changes intake activation. ADO rich-text wrappers around the Markdown are
+accepted by intake. The [copyable table](ado-test-request.template.md) remains
+available as a fallback. The owner-selected area is
 `OC\Excel\Intelligence\Copilot\Excel Agent\Automation` in `office/OC`.
 The initial policy example selects Bug, New/Active, and exact tag
 `AgenticTestRequest`; these are explicit rollout settings, not auto-created ADO

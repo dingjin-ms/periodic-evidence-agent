@@ -79,6 +79,7 @@ test('CI groups preserve failures and write complete reports for both outcomes',
   assert.equal(demo.counts.pass, 1);
   assert.deepEqual(demo.selectedFiles, [join('test', 'demo.test.js')]);
   for (const report of [passed, failed, demo]) {
+    assert.equal(report.fileConcurrency, process.platform === 'win32' ? 1 : 4);
     assert.ok(report.elapsedMs > 0);
     assert.ok(report.finishedAt);
     assert.ok(report.resourcesBefore.totalMemoryBytes > 0);

@@ -1337,8 +1337,9 @@ test(`1JS edited-commit repair budget ${repairBudget} preserves failures and val
       },
       runValidation: async (...args) => {
         const result = await runValidation(...args);
-        const report = JSON.parse(JSON.parse(readFileSync(result[0].artifactRefs[0], 'utf8'))
-          .output.stdout);
+        const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0], 'utf8'));
+        assert.ok(artifact.output.stdout, json({ validation: result[0], output: artifact.output }));
+        const report = JSON.parse(artifact.output.stdout);
         reports.push(report);
         revisions.push(args[4]);
         return result;

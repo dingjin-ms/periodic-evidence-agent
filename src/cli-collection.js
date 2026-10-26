@@ -37,6 +37,17 @@ function capture(ledger, runId, raw) {
     .run(runId, `sqlite:capture:${digest}`, 'workiq-cli-mcp-response');
   return digest;
 }
+async function appendReceived(config, ledger, runId, pass, calls) {
+  const append = batch => appendApp(config, ledger, runId,
+    { eventId: `cli-batch-${batch.at(-1).id}`, pass, calls: batch }, { directWorkiqVerified: true });
+  try { return await append(calls); }
+  catch (error) {
+    // Preserve the valid prefix if the final response fails semantic validation.
+    // This verifies stored receipts only and never repeats a source read.
+    if (calls.length > 1) await append(calls.slice(0, -1));
+    throw error;
+  }
+}
 
 export async function collectCliWorkiq(config, ledger, runId, factory = workiqCli, pass = 'workiq:created') {
   requireThat(['workiq:created', 'workiq:changed'].includes(pass), 'Unsupported CLI WorkIQ pass');
@@ -120,17 +131,7 @@ export async function collectCliWorkiq(config, ledger, runId, factory = workiqCl
       } catch (error) { failure = error; }
       // A single independent receipt replay remains the authority for evidence,
       // budgets and coverage. Transport intent/response survives an interruption.
-      const appendReceived = calls => appendApp(config, ledger, runId,
-        { eventId: `cli-batch-${calls.at(-1).id}`, pass, calls }, { directWorkiqVerified: true });
-      if (received.length) {
-        try { status = await appendReceived(received); }
-        catch (error) {
-          // A malformed final response must not erase earlier validated evidence.
-          // This is offline prefix verification only; never repeat a source read.
-          if (received.length > 1) await appendReceived(received.slice(0, -1));
-          throw error;
-        }
-      }
+      if (received.length) status = await appendReceived(config, ledger, runId, pass, received);
       if (failure && failure.code !== 'partial') throw failure;
       pendingRequest = status?.collection.find(p => p.pass === pass)?.nextRequest ?? null;
     } else while (pendingRequest) {
@@ -184,12 +185,15 @@ export async function reconcileCliWorkiq(config, ledger, runId, pass = 'workiq:c
         'Accepted transport receipt changed', 'blocked-reconciliation');
       else pending.push(row.call);
     }
-    if (pending.length) await appendApp(config, ledger, runId,
-      { eventId: `cli-batch-${pending.at(-1).id}`, pass, calls: pending }, { directWorkiqVerified: true });
+    let replayFailure;
+    if (pending.length) {
+      try { await appendReceived(config, ledger, runId, pass, pending); }
+      catch (error) { replayFailure = error; }
+    }
     const prior = appStatus(ledger, runId).collection.find(p => p.pass === pass);
-    const result = rows.every(r => r.state === 'received') && (prior?.state === 'complete' || prior?.continuation)
+    const result = !replayFailure && rows.every(r => r.state === 'received') && (prior?.state === 'complete' || prior?.continuation)
       ? appStatus(ledger, runId)
-      : terminal(ledger, runId, new PilotError('blocked-reconciliation', 'Interrupted collection; no reads retried'),
+      : terminal(ledger, runId, replayFailure ?? new PilotError('blocked-reconciliation', 'Interrupted collection; no reads retried'),
         rows.at(-1)?.call.request ?? null, rows.length, pass);
     ledger.finishOperation(key, 'reconciled-offline', { newSourceReads: 0, renewalQualification: 'deferred' });
     return result;

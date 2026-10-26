@@ -68,15 +68,18 @@ test('fresh collection materializes evidence once and reconciles an accepted bat
   assert.equal(writes, 80);
 });
 
-test('offline recovery imports an unmaterialized transport prefix in one batch', async t => {
+for (const malformed of [false, true]) test(`offline recovery retains an unmaterialized prefix, malformed tail=${malformed}`, async t => {
   const { config, ledger } = setup(t);
   ledger.operation('cli-workiq:cli-test', 'cli-test', 'local-workiq-cli-collection', {});
   const root = config.sources.workiq.seeds[0];
   const path = `/teams/${encodeURIComponent(root.teamId)}/channels/${encodeURIComponent(root.channelId)}/messages` +
     `?$select=${config.sources.workiq.projection}&$top=50`;
-  for (const [i, request, data] of [[0, principalPath,
+  const pages = [[0, principalPath,
     { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }],
-  [1, path, { value: [message('retained')] }]]) {
+  [1, path, { value: [message('retained')] }]];
+  if (malformed) pages.push([2, path.replace('/messages?', '/messages/retained/replies?'),
+    { unexpected: 'malformed collection' }]);
+  for (const [i, request, data] of pages) {
     const call = { id: `receipt-${i}`, tool: 'workiq-fetch', observedAt: '2026-10-09T01:00:00Z',
       request: { entityUrls: [request] }, response: { results: [{ statusCode: 200, data }] } };
     ledger.db.prepare('INSERT INTO app_transport VALUES(?,?,?,?)').run(call.id, 'cli-test', 'workiq:created',
@@ -84,9 +87,13 @@ test('offline recovery imports an unmaterialized transport prefix in one batch',
   }
   const recovered = await reconcileCliWorkiq(config, ledger, 'cli-test');
   const result = recovered.collection.find(p => p.pass === 'workiq:created');
-  assert.equal(result.state, 'blocked-reconciliation');
+  assert.equal(result.state, malformed ? 'blocked-protocol' : 'blocked-reconciliation');
   assert.equal(result.evidenceCount, 1);
+  assert.equal(result.nextRequest, null);
   assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.equal(ledger.db.prepare('SELECT state FROM operations WHERE id=?').get('cli-workiq:cli-test').state,
+    'reconciled-offline');
+  await assert.rejects(reconcileCliWorkiq(config, ledger, 'cli-test'), /Only an interrupted/);
 });
 
 test('plain-text HTTP failure keeps status without retry or body leakage', async t => {

@@ -110,8 +110,11 @@ The receipt persists each preparation phase, exact source/profile/controller
 hashes, dependency byte verification and native loading, typecheck and case
 selection. Optional repeated `--sparse-path <directory>` arguments evaluate a
 bounded checkout closure; they do not change the formal live configuration.
-Preflight retains its detached worktree and evidence for inspection, and cannot
-count toward the five native product passes or authorize publication. Git objects
+New preflights require a fresh direct child of
+`<stateDirectory>\preflight-workspaces`. A passed preflight retains its exact
+detached worktree through a persistent validation-handoff reference; passing is
+not permission to release it. It cannot count toward the five native product
+passes or authorize publication. Git objects
 are shared, while the validation worktree has its own HEAD/index and independently
 copied, link-rebased dependency outputs. Windows preparation commands use the
 owned Job Object boundary and confirm process-tree exit before cleanup; failures
@@ -121,6 +124,61 @@ with `--prepared-receipt <previous-receipt.json>`, the same `--workspace` and a
 fresh `--output`. This rereads source and isolated dependency bytes, checks the
 unchanged sealed assignment, and reruns native preparation checks; no previous
 pass or byte hash is trusted without revalidation.
+
+### Owned resource lifecycle
+
+New detached declarative validation worktrees and preflights carry durable
+assignment/attempt ownership, namespace/directory/Git-owner identities, references
+and a phase journal under `<stateDirectory>\resource-lifecycle`. Validation
+claims the exact preflight once and releases it only after the complete native
+batch, runner-tree exit and external execution evidence. Failed preflights release
+only their own unconsumed handoff. To explicitly abandon a successful unused
+handoff, use `resource-abandon-preflight --resource <receipt-resource-id> --config
+pilot.local.json`. Legacy receipts without lifecycle ownership remain usable but
+their workspaces are retained, never automatically adopted.
+
+CLI startup and each coordinator tick reconcile the declared namespaces, including
+owned residual directories without `.git` or Git registration. Unknown ownership,
+live references, unconfirmed process exit, replacement directories, linked parents
+and wrong Git owners remain blocked with a separate reconciliation/cleanup record.
+Interrupted moves, exact Git deregistration and cache deletion resume by directory
+identity; no global Git prune or recursive workspace-root deletion is used.
+The primary execution error is retained separately from cleanup failures.
+
+Retirement first preserves hashed evidence outside the workspace, moves the
+directory into a private same-volume `resource-archives\<resource-id>\snapshot`,
+and unregisters only the original secondary worktree. Only explicitly declared,
+ignored, untracked regenerable cache directories are removed without following
+links. Validation declarations come from the verified dependency seed; other
+files, including undeclared cache-shaped directories, remain in the snapshot.
+The archive has an independent recovery manifest; coding tasks additionally
+retain a verified `history.bundle`. Nonterminal lifecycle references protect
+ordinary run evidence from retention pruning. Existing sealed/native receipts
+are not rewritten or adopted.
+
+The repository previously had no callback for arbitrary host CLI task completion:
+worker `finally` and the author-clone `workspace-gc` are not such callbacks.
+For **Controller-owned coding tasks**, `task-run --file task.local.json --config
+pilot.local.json` creates a fresh task worktree and runs the requested coding
+command under native process containment. The request provides absolute `source`
+and `executable`, exact `revision`, new `branch`, `args`, `timeoutMs`, and optionally
+explicit relative `cachePaths`. Choose a state directory outside that source
+checkout. The runner receives `PILOT_TASK_RESOURCE_ID` and an external
+`PILOT_TASK_CLOSE_REQUEST` path. A handoff written there is consumed automatically
+after process-tree exit; a later host close can instead call
+`task-close --file task-close.local.json --config pilot.local.json`.
+
+Task close binds `resourceId`, GitHub `repository`, PR `number`, delivered
+`revision`, and external `{ path, sha256 }` validation/handover receipts. These
+receipts respectively use formats `coding-task-validation-v1` (`status: passed`)
+and `coding-task-handover-v1` (`status: complete`), with matching repository,
+number and revision. Close retains a merge reference while the PR remains open
+or Draft. Startup/tick monitors perform **read-only** `gh pr view`; only a merged,
+same-head PR with successful checks, completed handoff, confirmed runner exit and
+clean exact-revision task worktree can be archived/unregistered automatically.
+No command publishes, merges or enables auto-complete. Unregistered host CLI
+sessions, pre-existing task worktrees, product test Draft PRs, shared seeds and
+other tasks remain outside this lifecycle's authority.
 
 This optional full product-development setup is not a prerequisite for the
 local controller's existing-Agency FILTER path. Account-free pilot checks above

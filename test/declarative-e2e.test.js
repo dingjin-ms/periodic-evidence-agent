@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync,
-  realpathSync, symlinkSync } from 'node:fs';
+  realpathSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { configAt, hash, json, validateRecord } from '../src/common.js';
@@ -19,6 +19,7 @@ import {
   seedDeclarativeDependencies
 } from '../src/workers.js';
 import { prepareValidationWorkspace } from '../src/validation-workspace.js';
+import { updateResource, resourceRecord } from '../src/resource-lifecycle.js';
 
 const require = createRequire(import.meta.url);
 const native = require('../scripts/validation/1js-declarative-e2e.cjs');
@@ -483,7 +484,7 @@ test('an exit-zero runner without native five-pass proof is blocked without auto
   assert.equal(results[0].status, 'blocked');
 });
 
-for (const condition of ['valid', 'tampered', 'proof-drift']) {
+for (const condition of ['valid', 'tampered', 'proof-drift', 'managed', 'managed-cleanup-failure']) {
   test(`validation reuses accepted detached dependencies ${condition}`, async t => {
     const ctx = await fixture(t);
     const execution = await finalize(ctx);
@@ -495,25 +496,43 @@ for (const condition of ['valid', 'tampered', 'proof-drift']) {
     const output = 'ooui/node_modules/synthetic/index.js';
     mkdirSync(dirname(join(ctx.workspace, output)), { recursive: true });
     writeFileSync(join(ctx.workspace, output), 'Synthetic dependency\n');
-    const workspace = join(ctx.root, 'accepted');
+    const managed = condition.startsWith('managed'), cleanupFailure = condition === 'managed-cleanup-failure';
+    const passed = condition === 'valid' || condition === 'managed';
+    const workspace = managed
+      ? join(ctx.config.stateDirectory, 'preflight-workspaces', 'accepted') : join(ctx.root, 'accepted');
     const preparation = await prepareValidationWorkspace({
       source: ctx.workspace, workspace, revision, timeoutMs: 30000,
-      seed: (source, target) => seedDeclarativeDependencies(source, target, revision, 30000)
+      seed: (source, target) => seedDeclarativeDependencies(source, target, revision, 30000),
+      lifecycle: managed ? { stateDirectory: ctx.config.stateDirectory, kind: 'preflight',
+        assignmentId: ctx.job.id, attemptId: 'managed-preflight', references: ['validation-handoff'],
+        created: () => {} } : null
     });
     const proof = { format: 'validation-preflight-v1', status: 'passed',
       sourceRevision: revision, profileSha256: ctx.gate.profileSha256, workspace, preparation };
     const proofPath = join(ctx.root, 'preflight.json');
     writeFileSync(proofPath, json(proof));
     const preflight = { path: proofPath, sha256: hash(readFileSync(proofPath)) };
+    if (managed) await updateResource(ctx.config.stateDirectory, preparation.resourceId, {
+      processesExited: true, evidence: [preflight]
+    });
     if (condition === 'tampered') writeFileSync(join(workspace, output), 'Changed dependency');
     if (condition === 'proof-drift') writeFileSync(proofPath, '{}');
     let calls = 0;
+    let artifactPath;
     const run = () => runValidation(ctx.config, ctx.ledger, ctx.job, ctx.repo, revision,
       async (_exe, _args, cwd, _timeout, env) => {
         calls++;
         assert.equal(cwd, workspace);
         const request = JSON.parse(env.PILOT_DECLARATIVE_REQUEST);
         assert.equal(request.options.installDependencies, false);
+        if (cleanupFailure) {
+          renameSync(workspace, `${workspace}-original`);
+          mkdirSync(workspace);
+          writeFileSync(join(workspace, 'canary'), 'replacement must survive');
+          throw Object.assign(new Error('Synthetic primary runner failure'), {
+            code: 1, stderr: 'Synthetic primary runner failure', stdout: ''
+          });
+        }
         const receipt = { format: declarativeProfile, assignmentId: ctx.job.id,
           sourceRevision: revision, baseRevision: ctx.base, status: 'passed',
           repeats: 5, retries: 0, workers: 1, browserCleanup: 'verified',
@@ -525,9 +544,28 @@ for (const condition of ['valid', 'tampered', 'proof-drift']) {
     if (condition === 'proof-drift') await assert.rejects(run(), /evidence changed/);
     else {
       const result = await run();
-      assert.equal(result[0].status, condition === 'valid' ? 'passed' : 'blocked');
+      assert.equal(result[0].status, passed ? 'passed' : 'blocked');
+      artifactPath = result[0].artifactRefs.at(-1);
     }
-    assert.equal(calls, condition === 'valid' ? 1 : 0);
+    assert.equal(calls, passed || cleanupFailure ? 1 : 0);
+    if (managed) {
+      const resource = resourceRecord(ctx.config.stateDirectory, preparation.resourceId);
+      if (cleanupFailure) {
+        assert.notEqual(resource.stage, 'complete');
+        assert.equal(resource.primaryError.status, 'blocked');
+        assert.match(resource.cleanupError.message, /identity changed/);
+        assert.equal(readFileSync(join(workspace, 'canary'), 'utf8'), 'replacement must survive');
+        const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'));
+        assert.match(artifact.output.stderr, /Synthetic primary runner failure/);
+        assert.match(artifact.output.cleanupError, /identity changed/);
+      } else {
+        assert.equal(resource.stage, 'complete', resource.cleanupError?.message);
+        assert(!existsSync(workspace));
+      }
+      assert.equal(hash(readFileSync(proofPath)), preflight.sha256);
+      assert(resource.archivedEvidence.some(ref => ref.sha256 === preflight.sha256));
+      assert.equal(readFileSync(join(ctx.workspace, output), 'utf8'), 'Synthetic dependency\n');
+    }
     assert.equal(await ctx.g(['status', '--porcelain']), '');
   });
 }

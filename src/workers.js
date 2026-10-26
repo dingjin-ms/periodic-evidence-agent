@@ -42,7 +42,7 @@ import {
   validationAuthFailure
 } from './validation-auth.js';
 import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
-import { prepareValidationWorkspace, removeValidationWorktree,
+import { prepareValidationWorkspace,
   preparationFailure as workspacePreparationFailure, preparationStage as workspacePreparationStage,
   preparationGit, requireCleanRevision, readDependencyCopyProgress } from './validation-workspace.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
@@ -53,6 +53,7 @@ import {
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
 import { command } from './command.js';
 import { createPreparedOutputObserver } from './prepared-output-observer.js';
+import { claimPreflight, updateResource, retireResource } from './resource-lifecycle.js';
 
 export { command };
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
@@ -3486,12 +3487,20 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       blockedReason = null;
       let cleanupError = null;
       let unsafeCleanup = false;
+      let resourceId = null;
+      let resourceEvidence = [];
       const preparationTimings = [];
       const residualPaths = [];
       try {
         const timeout = repo.provisionTimeoutMs ?? defaultGitTimeoutMs;
         let dependencySeed = null;
         if (preflight) {
+          if (preflight.preparation.resourceId) {
+            const resource = await claimPreflight(config.stateDirectory,
+              preflight.preparation.resourceId, validationWorkspace, revision, id);
+            resourceId = resource.id;
+            resourceEvidence = resource.evidence;
+          }
           await workspacePreparationStage(preparationTimings, 'prepared-head-clean',
             () => requireCleanRevision(validationWorkspace, revision, timeout));
           dependencySeed = await seedDeclarativeDependencies(job.workspace, validationWorkspace,
@@ -3503,6 +3512,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
             source: job.workspace, workspace: validationWorkspace, revision, timeoutMs: timeout,
             sparseCheckoutPaths: repo.sparseCheckout
               ? repositorySparseCheckout(repo) : repo.sparseCheckoutPaths ?? [], timings: preparationTimings,
+            lifecycle: { stateDirectory: config.stateDirectory, kind: 'validation',
+              assignmentId: job.id, attemptId: id, references: [id],
+              created: resource => { resourceId = resource.id; } },
             hydrate: () => hydrateValidationLfs(config, repo, gate, validationWorkspace, revision),
             seed: (source, workspace) =>
               seedDeclarativeDependencies(source, workspace, revision, gate.timeoutMs,
@@ -3598,16 +3610,46 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           ...workspacePreparationFailure(error)
         };
       } finally {
+        // Seal execution evidence outside the resource before any lifecycle transition.
+        const beforeCleanup = persistRunArtifact(config, job.id,
+          join('validation', `${hash(id)}.pre-cleanup.json`), json({
+            gateId: gate.id, revision, attempt, status, blockedReason,
+            preparationTimings, output, resourceId, observedAt: now()
+          }));
+        if (resourceId) {
+          try {
+            await updateResource(config.stateDirectory, resourceId, {
+              references: [], releaseRequested: true, processesExited: !unsafeCleanup,
+              primaryError: blockedReason ? { status, blockedReason } : null,
+              evidence: [...resourceEvidence,
+                { path: beforeCleanup.path, sha256: hash(readFileSync(beforeCleanup.path)) }]
+            });
+          } catch (error) {
+            cleanupError = safeError(error).message;
+            output.cleanupFailures = [{ targetRole: 'resource-journal', ...safeError(error) }];
+          }
+        }
         for (const target of [validationWorkspace, privateProfile].filter(Boolean)) {
           if (unsafeCleanup) { residualPaths.push(target); continue; }
           const cleanupStarted = Date.now();
           try {
-            if (declarative && target === validationWorkspace && existsSync(target)) {
-              const details = await removeValidationWorktree(job.workspace, target,
-                Math.max(repo.provisionTimeoutMs ?? defaultGitTimeoutMs, 30 * 60 * 1000));
+            if (declarative && target === validationWorkspace) {
+              if (!resourceId) {
+                output.cleanupDetails ??= [];
+                output.cleanupDetails.push({ targetRole: 'validation-workspace',
+                  status: 'retained', reason: 'Legacy preflight has no persistent ownership; not adopted' });
+                continue;
+              }
+              const details = await retireResource(config.stateDirectory, resourceId, {
+                timeoutMs: Math.max(repo.provisionTimeoutMs ?? defaultGitTimeoutMs, 30 * 60 * 1000)
+              });
+              requireThat(details.stage === 'complete' && details.status !== 'blocked',
+                details.cleanupError?.message ?? 'Owned validation resource retirement is blocked',
+                'blocked-resource-cleanup');
               output.cleanupDetails ??= [];
               output.cleanupDetails.push({ targetRole: 'validation-workspace',
-                durationMs: Date.now() - cleanupStarted, ...details });
+                durationMs: Date.now() - cleanupStarted, resourceId,
+                status: 'complete', archive: details.archive });
             }
             else cleanup(target, { recursive: true, force: true });
           }

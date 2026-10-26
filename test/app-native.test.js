@@ -546,7 +546,7 @@ test('app status includes only workers owned by the requested run', t => {
     ['worker-two']);
 });
 
-test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
+async function nativeCoveragePlanning(t, sourceStatus) {
   const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool', configure: config => {
     config.repositories[0].allowedWritePrefixes = ['test'];
     config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
@@ -582,7 +582,10 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  await adoBatch(config, ledger);
+  await adoBatch(config, ledger, 'created', 'ado-event', {
+    'System.State': sourceStatus, 'System.Reason': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed'
+  });
   const evidence = ledger.all('evidence')[0];
   const investigation = {
     recordType: 'investigation', schemaVersion: '1.0',
@@ -595,6 +598,9 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     repoIds: ['fixture'], existingFixes: [], nextAction: 'Add focused OA integration coverage.'
   };
   appReview(config, ledger, 'test-run', { investigation, exclusionsChecked: exclusions });
+  assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
+  }), error => error.code === 'blocked-reconciliation');
   const planned = appPlanImprovement(config, ledger, 'test-run', {
     improvement: {
       investigationIds: [investigation.id], category: 'missing-test-coverage',
@@ -604,6 +610,7 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     },
     testCoverage: {
       repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: baseRevision,
+      purpose: 'regression-coverage',
       searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
@@ -634,7 +641,12 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     workspace, baseRevision
   });
   assert.equal(bound.baseRevision, baseRevision);
-});
+}
+
+for (const sourceStatus of ['Closed', 'Resolved']) {
+  test(`app native ${sourceStatus} OA planning pins coverage and qualification before claim`,
+    t => nativeCoveragePlanning(t, sourceStatus));
+}
 
 test('app successful run A cursor survives blocked run B in the shared live ledger', async t => {
   const { config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });

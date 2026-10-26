@@ -14,6 +14,10 @@ import {
   dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
+import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
+import { dispatchRuntimeContinuation } from '../src/workers.js';
+import { prepareAuthoringToolContinuation, claimAuthoringToolWorkspace } from '../src/authoring-tool-continuation.js';
+import { dispatchAuthoringToolContinuation } from '../src/workers.js';
 import {
   normalizeSkillInput, repositoryValidationContract, skillQualificationId
 } from '../src/repository-skills.js';
@@ -50,7 +54,7 @@ const oneJsRepairRunner = readFileSync(
   new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
   'utf8');
 
-async function setup(t, { inputFormat = null } = {}) {
+async function setup(t, { inputFormat = null, capabilitySources = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
@@ -60,6 +64,11 @@ async function setup(t, { inputFormat = null } = {}) {
   mkdirSync(join(reference, 'src'), { recursive: true });
   writeFileSync(join(reference, skillPath), '# Fixture integration-test skill\nAdd focused tests.\n');
   writeFileSync(join(reference, 'src', 'value.js'), 'export const value = 1;\n');
+  if (capabilitySources) {
+    mkdirSync(join(reference, 'ooui'));
+    for (const name of ['schema', 'runner', 'ui-map'])
+      writeFileSync(join(reference, 'ooui', `${name}.txt`), `Synthetic ${name} source\n`);
+  }
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
   await git(['init', '--quiet']);
@@ -232,15 +241,15 @@ async function addOneJsRepository(ctx, {
   return { repo, reference, remote, baseRevision, scenarioPath };
 }
 
-async function blockedPreModelFixture(t, mutateResult = () => {}) {
-  const ctx = await setup(t);
+async function blockedPreModelFixture(t, mutateResult = () => {},
+  error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' }, options = {}) {
+  const ctx = await setup(t, options);
   ctx.config.executionMode = 'standalone-sdk';
   ctx.config.limits.maxAiCreditsPerSession = 10;
   const prepared = prepareReviewedHandoff(ctx.config, ctx.ledger, fixture);
   const repo = ctx.config.repositories[0];
   await command('git', ['remote', 'add', 'origin', repo.remote], repo.referenceCheckout);
   const isolated = await provision(ctx.config, prepared.job, repo, prepared.assignment.skillQualification);
-  const error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' };
   ctx.ledger.moveJob(prepared.job.id, 'prepared', 'running', isolated);
   ctx.ledger.moveJob(prepared.job.id, 'running', 'blocked', { error });
   const limit = prepared.assignment.bounds.maxToolCalls;
@@ -252,10 +261,11 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
     validation: [], validationAttempts: [], skillExecution: null,
     toolUsage: { limit, used: 0, remaining: limit,
       byTool: { pilot_list: 0, pilot_search: 0, pilot_read: 0, pilot_write: 0, pilot_finish: 0 }, rounds: [] },
-    blocker: { owner: repo.owner, reason: error.message, unblockCondition: 'Explicit user authorization after fix' },
+    blocker: { owner: repo.owner, reason: error?.message ?? 'Fixture missing bounded edit tool',
+      unblockCondition: 'Explicit user authorization after fix' },
     nextAction: 'Reconcile without replay'
   };
-  mutateResult(result);
+  mutateResult(result, ctx);
   ctx.ledger.put(result);
   const nextConfig = { ...structuredClone(ctx.config), stateDirectory: join(ctx.root, 'continuation') };
   const nextLedger = new Ledger(nextConfig.stateDirectory);
@@ -269,6 +279,458 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
   };
   return { ...ctx, prepared, isolated, result, nextConfig, nextLedger, authorization };
 }
+
+async function runtimeFixture(t, mutateResult = () => {},
+  failure = { code: 'blocked-runtime', message: 'Copilot executable not found on PATH' }, options = {}) {
+  const ctx = await blockedPreModelFixture(t, (result, fixture) => {
+    result.sourceRevision = fixture.baseRevision;
+    result.remoteValidation = [];
+    result.toolUsage.rounds = [{ round: 0, used: 0, cumulativeUsed: 0, status: 'failed' }];
+    mutateResult(result, fixture);
+  }, failure, options);
+  ctx.config.runtime.cliPath = process.execPath;
+  ctx.nextConfig.runtime.cliPath = process.execPath;
+  const path = join(ctx.root, 'synthetic-runtime-smoke.json');
+  const smoke = {
+    checkedAt: now(), cliPath: process.execPath, cliSha256: hash(readFileSync(process.execPath)),
+    customTool: 'executed',
+    unavailableShell: 'rejected', modelInvoked: false, workplaceRead: false
+  };
+  writeFileSync(path, json(smoke));
+  Object.assign(ctx.authorization, {
+    kind: 'runtime-launch-path',
+    nextConfigSha256: hash(json(ctx.nextConfig)),
+    cliSha256: hash(readFileSync(process.execPath)),
+    runtimeSmoke: { path, sha256: hash(readFileSync(path)) }
+  });
+  return ctx;
+}
+
+function toolBlockedResult(result, assignment) {
+  result.toolUsage.used = 4;
+  result.toolUsage.remaining = result.toolUsage.limit - 4;
+  result.toolUsage.byTool = {
+    pilot_list: 1, pilot_search: 1, pilot_read: 1,
+    pilot_write: 0, pilot_replace_lines: 0, pilot_finish: 1
+  };
+  result.toolUsage.rounds = [{ round: 0, used: 4, cumulativeUsed: 4, status: 'completed' }];
+  result.skillExecution = {
+    bindingId: assignment.skillBindingId, capability: assignment.capability,
+    skillPath: assignment.skillQualification.skillPath, skillRevision: result.sourceRevision,
+    status: 'blocked', classification: 'bounded-edit-capability-unavailable',
+    changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
+    unknowns: [], needsHumanDecision: false
+  };
+  return result;
+}
+
+async function toolFixture(t, options = {}) {
+  const ctx = await runtimeFixture(t, (result, fixture) => {
+    toolBlockedResult(result, fixture.ledger.get('assignment', result.assignmentId));
+    if (options.capabilitySources) {
+      result.skillExecution.classification = 'missing-mid-flow-protected-assertion-capability';
+      result.skillExecution.unknowns = ['Synthetic missing intermediate assertion'];
+      result.skillExecution.needsHumanDecision = true;
+    }
+    if (options.registrationRecovery) {
+      Object.assign(result.skillExecution, {
+        status: 'succeeded', classification: 'regression-coverage',
+        changedFiles: ['test/authored.test.js'], testsAddedOrUpdated: ['test/authored.test.js']
+      });
+      result.toolUsage.byTool.pilot_read = 0;
+      result.toolUsage.byTool.pilot_write = 1;
+    }
+  }, options.registrationRecovery ? { code: 'failed', message: 'Fixture registration setup failure' } : null,
+  options);
+  ctx.nextConfig.limits.workerMaxToolCalls = 180;
+  ctx.nextConfig.limits.maxValidationRepairRounds = 2;
+  Object.assign(ctx.authorization, {
+    kind: 'bounded-authoring-tool', nextConfigSha256: hash(json(ctx.nextConfig)),
+    executionBounds: {
+      workerMaxToolCalls: { before: ctx.config.limits.workerMaxToolCalls, after: 180 },
+      maxValidationRepairRounds: { before: ctx.config.limits.maxValidationRepairRounds, after: 2 }
+    }
+  });
+  if (options.capabilitySources) {
+    const path = join(ctx.root, 'synthetic-capability-review.json');
+    writeFileSync(path, json({
+      format: 'existing-declarative-capability-v1', sourceRevision: ctx.baseRevision,
+      primitive: 'assert', property: 'visible', nativeLoaderVerified: true,
+      explanation: 'Synthetic source-bound capability review; no product execution.',
+      sourceFiles: ['schema', 'runner', 'ui-map'].map(name => ({
+        path: `ooui/${name}.txt`, sha256: hash(`Synthetic ${name} source`)
+      }))
+    }));
+    ctx.authorization.capabilityResolution = { path, sha256: hash(readFileSync(path)) };
+  }
+  if (options.registrationRecovery) {
+    mkdirSync(join(ctx.isolated.workspace, 'test'));
+    writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Synthetic authored proposal\n');
+    const path = join(ctx.root, 'synthetic-registration-recovery.json');
+    writeFileSync(path, json({
+      format: 'uncommitted-registration-recovery-v1', assignmentId: ctx.prepared.job.id,
+      attemptId: ctx.prepared.job.session_id, workerResultSha256: hash(json(ctx.result)),
+      sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+      productInvocations: 0, unknownsResolved: true,
+      fileSha256: { 'test/authored.test.js': hash('// Synthetic authored proposal\n') },
+      explanation: 'Synthetic recovered setup. No product test or publication.'
+    }));
+    ctx.authorization.registrationRecovery = { path, sha256: hash(readFileSync(path)) };
+    const operation = `${ctx.prepared.job.id}:declarative-registration:0`;
+    ctx.ledger.operation(operation, ctx.prepared.job.id, 'declarative-registration', {});
+    ctx.ledger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  }
+  return ctx;
+}
+
+async function retainedRecoveryFixture(t, registeredAncestor) {
+  const ctx = await toolFixture(t, { registrationRecovery: registeredAncestor }), id = ctx.prepared.job.id;
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked', {
+    error: { code: 'failed', message: 'Synthetic registration failure' }
+  });
+  mkdirSync(join(isolated.workspace, 'test'), { recursive: true });
+  writeFileSync(join(isolated.workspace, 'test', 'retained.js'), 'Synthetic retained source\n');
+  const result = toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'retained-proposal-result',
+    attemptId: prepared.job.session_id, reportedAt: now(),
+    toolUsage: { ...ctx.result.toolUsage, limit: prepared.assignment.bounds.maxToolCalls }
+  }, prepared.assignment);
+  Object.assign(result.skillExecution, {
+    status: 'succeeded', classification: 'regression-coverage',
+    changedFiles: [...(registeredAncestor ? ['test/authored.test.js'] : []), 'test/retained.js'],
+    testsAddedOrUpdated: ['test/retained.js'],
+    needsHumanDecision: false
+  });
+  result.toolUsage.byTool.pilot_read = 0;
+  result.toolUsage.byTool.pilot_write = 1;
+  ctx.nextLedger.put(result);
+  const operation = `${id}:declarative-registration:0`;
+  ctx.nextLedger.operation(operation, id, 'declarative-registration', {});
+  ctx.nextLedger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  const path = join(ctx.root, 'retained-recovery.json');
+  writeFileSync(path, json({
+    format: 'uncommitted-registration-recovery-v1', assignmentId: id,
+    attemptId: prepared.job.session_id, workerResultSha256: hash(json(result)),
+    sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+    productInvocations: 0, unknownsResolved: true,
+    fileSha256: {
+      ...(registeredAncestor ? { 'test/authored.test.js': hash('// Synthetic authored proposal\n') } : {}),
+      'test/retained.js': hash('Synthetic retained source\n')
+    },
+    explanation: 'Synthetic descendant-only source; no product invocation.'
+  }));
+  const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'registration') };
+  const ledger = new Ledger(next.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = {
+    ...ctx.authorization, scope: 'until-native-validation',
+    priorAuthorizationSha256: hash(json(ctx.authorization)),
+    previousAttemptId: prepared.job.session_id, nextConfigSha256: hash(json(next)),
+    registrationRecovery: { path, sha256: hash(readFileSync(path)) }
+  };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id, next, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(next, ledger, id), isolated);
+  assert.equal(readFileSync(join(isolated.workspace, 'test', 'retained.js'), 'utf8'),
+    'Synthetic retained source\n');
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+}
+for (const registeredAncestor of [false, true])
+  test(`reviewed uncommitted recovery preserves consumed ancestors (registration=${registeredAncestor})`,
+    t => retainedRecoveryFixture(t, registeredAncestor));
+
+for (const condition of ['valid', 'file-drift', 'result-drift', 'unexpected-file', 'validation-started']) {
+  test(`uncommitted owner registration recovery ${condition}`, async t => {
+    const ctx = await toolFixture(t, { registrationRecovery: true }), id = ctx.prepared.job.id;
+    if (condition === 'file-drift')
+      writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Changed after review\n');
+    if (condition === 'unexpected-file')
+      writeFileSync(join(ctx.isolated.workspace, 'unexpected.txt'), 'Not skill-authored');
+    if (condition === 'result-drift') {
+      const reference = ctx.authorization.registrationRecovery;
+      const review = JSON.parse(readFileSync(reference.path, 'utf8'));
+      review.workerResultSha256 = 'f'.repeat(64);
+      writeFileSync(reference.path, json(review));
+      reference.sha256 = hash(readFileSync(reference.path));
+    }
+    if (condition === 'validation-started')
+      ctx.ledger.operation('unexpected-validation', id, 'validation', {});
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+      assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+      assert.equal(ctx.ledger.job(id).state, 'blocked');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+  });
+}
+
+test('existing capability reconciliation requires a reviewed source-bound proof and rechecks it at claim', async t => {
+  const ctx = await toolFixture(t, { capabilitySources: true }), id = ctx.prepared.job.id;
+  const proof = ctx.authorization.capabilityResolution;
+  ctx.authorization.capabilityResolution = null;
+  await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /source-bound existing-capability/);
+  ctx.authorization.capabilityResolution = proof;
+  await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  writeFileSync(proof.path, '{}');
+  await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id),
+    /Capability review changed/);
+  assert.equal(ctx.ledger.job(id).state, 'blocked');
+});
+
+for (const condition of ['valid', 'stale-source', 'different-primitive', 'changed-source']) {
+  test(`existing mid-flow capability reconciliation ${condition}`, async t => {
+    const ctx = await toolFixture(t, { capabilitySources: true }), id = ctx.prepared.job.id;
+    const reference = ctx.authorization.capabilityResolution;
+    const proof = JSON.parse(readFileSync(reference.path, 'utf8'));
+    if (condition === 'stale-source') proof.sourceRevision = 'f'.repeat(40);
+    if (condition === 'different-primitive') proof.primitive = 'assert-provider';
+    if (condition === 'changed-source') proof.sourceFiles[0].sha256 = 'f'.repeat(64);
+    writeFileSync(reference.path, json(proof));
+    reference.sha256 = hash(readFileSync(reference.path));
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+      error => error.code === 'blocked-reconciliation');
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+  });
+}
+
+for (const condition of ['valid', 'unlinked-grant', 'missing-scope']) {
+  test(`continued user validation grant ${condition} preserves the consumed authoring lineage`, async t => {
+    const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+    const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+    const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+    ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+    ctx.nextLedger.moveJob(id, 'running', 'blocked');
+    ctx.nextLedger.put(toolBlockedResult({
+      ...structuredClone(ctx.result), id: 'read-only-successor-result',
+      attemptId: prepared.job.session_id, reportedAt: new Date(Date.now() + 30000).toISOString(),
+      toolUsage: { ...ctx.result.toolUsage, limit: prepared.assignment.bounds.maxToolCalls }
+    }, prepared.assignment));
+    const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'successor') };
+    const ledger = new Ledger(next.stateDirectory);
+    ctx.additionalLedgers.push(ledger);
+    const authorization = {
+      ...ctx.authorization, scope: 'until-native-validation',
+      priorAuthorizationSha256: hash(json(ctx.authorization)),
+      previousAttemptId: prepared.job.session_id, nextConfigSha256: hash(json(next))
+    };
+    if (condition === 'unlinked-grant') authorization.priorAuthorizationSha256 = 'f'.repeat(64);
+    if (condition === 'missing-scope') delete authorization.scope;
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id, next, ledger, authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(next, ledger, id), isolated);
+      assert.equal(ctx.ledger.job(id).state, 'blocked');
+      assert.equal(ctx.nextLedger.job(id).state, 'blocked');
+    } else await assert.rejects(prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id,
+      next, ledger, authorization), /must follow the blocked/);
+  });
+}
+
+test('tool recovery preserves read-only terminal receipts and claims one unchanged checkout', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  const before = ctx.ledger.job(id);
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.equal(prepared.assignment.bounds.maxToolCalls, 180);
+  assert.equal(prepared.assignment.id, id);
+  assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+  assert.deepEqual(ctx.ledger.job(id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), /already consumed/);
+  await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /already reserved/);
+});
+
+test('tool recovery verifies the previously consumed runtime workspace lineage', async t => {
+  const ctx = await runtimeFixture(t), id = ctx.prepared.job.id;
+  const runtime = await prepareRuntimeContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked');
+  ctx.nextLedger.put(toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'read-only-tool-result',
+    attemptId: runtime.job.session_id, reportedAt: now()
+  }, runtime.assignment));
+  const destination = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'tools') };
+  const ledger = new Ledger(destination.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = { ...ctx.authorization, kind: 'bounded-authoring-tool',
+    authorizedAt: now(), previousAttemptId: runtime.job.session_id,
+    nextConfigSha256: hash(json(destination)) };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id,
+    destination, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(destination, ledger, id), isolated);
+});
+
+for (const condition of ['authorization', 'old-authorization', 'attempt', 'controller', 'bounds',
+  'source-permission', 'workspace', 'publication', 'claim-drift']) {
+  test(`tool recovery refuses ${condition}`, async t => {
+    const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+    if (condition === 'authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'attempt') ctx.authorization.previousAttemptId = 'unrelated-attempt';
+    if (condition === 'controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'bounds') delete ctx.authorization.executionBounds;
+    if (condition === 'source-permission') ctx.nextConfig.repositories[0].routingApproved = false;
+    if (condition === 'workspace') writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'bad');
+    if (condition === 'publication') ctx.ledger.operation('unexpected-push', id, 'push', {});
+    if (condition === 'claim-drift') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+      await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id),
+        error => error.code === 'blocked-reconciliation');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+      error => ['blocked-authorization', 'blocked-reconciliation'].includes(error.code));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+    assert.equal(ctx.ledger.job(id).state, 'blocked');
+  });
+}
+
+test('tool recovery cannot use ordinary dispatch or bypass synthetic source guards', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, id),
+    /tool continuation requires its explicit/);
+  await assert.rejects(dispatchAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id),
+    /Synthetic evidence cannot launch/);
+});
+
+test('runtime continuation reuses the unchanged task checkout once and preserves terminal receipts', async t => {
+  const ctx = await runtimeFixture(t);
+  const before = ctx.ledger.job(ctx.prepared.job.id);
+  const continued = await prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  assert.notEqual(continued.job.session_id, before.session_id);
+  assert.deepEqual(continued.assignment, ctx.prepared.assignment);
+  assert.deepEqual(ctx.nextLedger.get('evidence', ctx.prepared.evidence.id), ctx.prepared.evidence);
+  assert.equal(ctx.nextLedger.all('workerResult').length, 0);
+  const reused = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id);
+  assert.deepEqual(reused, ctx.isolated);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'claimed');
+  assert.equal(ctx.ledger.status().operations[0].state, 'claimed');
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id),
+    /absent or already consumed/);
+  await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /Prior operations/);
+});
+
+for (const condition of ['missing-authorization', 'old-authorization', 'wrong-attempt',
+  'wrong-controller', 'config-drift', 'launcher-drift', 'smoke-drift', 'model-started',
+  'validation-started', 'remote-validation', 'publication-started', 'dirty-workspace',
+  'source-drift', 'superseded-evidence', 'other-runtime-error', 'smoke-used-model',
+  'binary-not-smoked']) {
+  test(`runtime continuation refuses ${condition}`, async t => {
+    const ctx = await runtimeFixture(t, result => {
+      if (condition === 'model-started') result.toolUsage.used = 1;
+      if (condition === 'validation-started') result.validationAttempts.push({
+        round: 0, sourceRevision: result.sourceRevision, validation: [{
+          gateId: 'fixture-test', sourceRevision: result.sourceRevision,
+          commandOrRunUrl: 'synthetic command', status: 'blocked', artifactRefs: [],
+          owner: 'fixture-owner', nextCheckAt: null, attemptCount: 1,
+          blockedReason: 'runner-unavailable'
+        }]
+      });
+      if (condition === 'remote-validation') result.remoteValidation.push({
+        id: 'synthetic-build', provider: 'ado', definitionId: 1, buildId: 1,
+        url: 'https://example.invalid/build/1', status: 'queued',
+        sourceRevision: result.sourceRevision, sourceRef: 'refs/heads/synthetic',
+        queuedAt: now(), blocking: false
+      });
+    }, condition === 'other-runtime-error'
+      ? { code: 'blocked-runtime', message: 'Unrelated runtime error' } : undefined);
+    if (condition === 'missing-authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'wrong-attempt') ctx.authorization.previousAttemptId = 'wrong-attempt';
+    if (condition === 'wrong-controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'config-drift') ctx.nextConfig.limits.workerMaxToolCalls++;
+    if (condition === 'launcher-drift') ctx.authorization.cliSha256 = 'f'.repeat(64);
+    if (condition === 'smoke-drift') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (['smoke-used-model', 'binary-not-smoked'].includes(condition)) {
+      const proof = JSON.parse(readFileSync(ctx.authorization.runtimeSmoke.path));
+      if (condition === 'smoke-used-model') proof.modelInvoked = true;
+      else proof.cliSha256 = 'f'.repeat(64);
+      writeFileSync(ctx.authorization.runtimeSmoke.path, json(proof));
+      ctx.authorization.runtimeSmoke.sha256 = hash(readFileSync(ctx.authorization.runtimeSmoke.path));
+    }
+    if (condition === 'publication-started')
+      ctx.ledger.operation('synthetic-push', ctx.prepared.job.id, 'push', {});
+    if (condition === 'dirty-workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'source-drift')
+      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+        '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
+    if (condition === 'superseded-evidence') {
+      const evidence = structuredClone(ctx.prepared.evidence);
+      evidence.source.revision = 'superseded-fixture';
+      evidence.queriedAt = '2099-01-01T00:00:00Z';
+      ctx.ledger.evidence(evidence, { changed: true }, 'changed-fixture');
+    }
+    await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+    error => ['blocked-authorization', 'blocked-reconciliation', 'invalid-record'].includes(error.code));
+    assert.equal(ctx.ledger.job(ctx.prepared.job.id).state, 'blocked');
+    assert.equal(ctx.nextLedger.status().jobs.length, 0);
+  });
+}
+
+for (const condition of ['config', 'smoke', 'workspace', 'predecessor-result', 'prior-operation']) {
+  test(`runtime claim rechecks ${condition} after preparation`, async t => {
+    const ctx = await runtimeFixture(t);
+    await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+    if (condition === 'config') ctx.nextConfig.runtime.timeoutMs++;
+    if (condition === 'smoke') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (condition === 'workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'predecessor-result')
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+    if (condition === 'prior-operation')
+      ctx.ledger.operation('unexpected-push', ctx.prepared.job.id, 'push', {});
+    await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+      error => error.code === 'blocked-reconciliation');
+    assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+  });
+}
+
+test('runtime continuation cannot use ordinary dispatch or bypass synthetic-evidence protection', async t => {
+  const ctx = await runtimeFixture(t);
+  await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /runtime continuation requires its explicit/);
+  await assert.rejects(dispatchRuntimeContinuation(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /Synthetic evidence cannot launch/);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+});
 
 test('authorized pre-model continuation preserves the blocked attempt and reserves exactly one fresh preparation', async t => {
   const ctx = await blockedPreModelFixture(t);
@@ -547,6 +1009,7 @@ for (const automaticRsi of [false, true]) test(
     mkdirSync(reference);
     writeFileSync(join(reference, 'README.txt'), 'Separate synthetic agent-system reference.\n');
     const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
       '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], reference);
     await git(['init', '-b', 'main', '--quiet']);
     await git(['remote', 'add', 'origin', `https://github.com/${config.rsi.targetRepository}.git`]);

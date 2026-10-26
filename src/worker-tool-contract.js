@@ -44,6 +44,22 @@ export const workerToolDefinitions = Object.freeze([
     }
   },
   {
+    name: 'pilot_replace_lines',
+    description: 'Surgically replace at most 500 existing lines within approved edit bounds; expected text must match',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        startLine: { type: 'integer', minimum: 1 },
+        endLine: { type: 'integer', minimum: 1 },
+        expected: { type: 'string' },
+        replacement: { type: 'string' }
+      },
+      required: ['path', 'startLine', 'endLine', 'expected', 'replacement'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'pilot_finish',
     description: 'Submit findings and optionally a draft change proposal, never claim validation',
     inputSchema: {

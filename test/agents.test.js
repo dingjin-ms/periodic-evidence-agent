@@ -50,6 +50,8 @@ test('four role packages expose pinned procedures and detached descriptors', () 
     ['evidence-1js-owner', 'evidence-office-owner', 'evidence-oa-owner']);
   assert.ok(describeAgent('proposer').operations.includes('diagnose-local-validation'));
   assert.ok(describeAgent('proposer').operations.includes('continue-local-authoring'));
+  assert.ok(describeAgent('proposer').operations.includes('continue-runtime-launch'));
+  assert.ok(describeAgent('proposer').operations.includes('continue-authoring-tools'));
   for (const operation of ['filter-local-preflight', 'filter-local-run'])
     assert.ok(describeAgent('filter').operations.includes(operation));
 });
@@ -63,6 +65,8 @@ test('role routing rejects unknown and cross-role operations without echoing unt
     ['proposer', 'serve'], ['proposer', 'secret-value'],
     ['collector', 'diagnose-local-validation'], ['filter', 'diagnose-local-validation'],
     ['collector', 'continue-local-authoring'], ['filter', 'continue-local-authoring'],
+    ['collector', 'continue-runtime-launch'], ['filter', 'continue-runtime-launch'],
+    ['collector', 'continue-authoring-tools'], ['filter', 'continue-authoring-tools'],
     ['rsi', 'dispatch'], ['rsi', 'collect'], ['rsi', 'self-improvement'],
     ['collector', 'rsi-work'], ['proposer', 'app-rsi-work'],
     ['collector', 'filter-local-run'], ['proposer', 'filter-local-run']
@@ -70,6 +74,27 @@ test('role routing rejects unknown and cross-role operations without echoing unt
     assert.throws(() => agentInvocation(role, command), error =>
       error.code === 'blocked-agent' && !error.message.includes(command));
   }
+});
+
+test('runtime continuation role CLI requires explicit mode and exact execution input', t => {
+  const ctx = fixture(t);
+  const request = ctx.file('runtime-request', { assignmentId: 'unknown', unexpected: true });
+  const invoke = (...flags) => ctx.invoke('agent', 'proposer', 'continue-runtime-launch',
+    '--execution-mode', 'standalone-sdk', '--file', request, ...flags);
+  for (const flags of [[], ['--prepare', '--execute'], ['--execute']]) {
+    const child = invoke(...flags);
+    assert.equal(child.status, 1, child.stderr);
+    const response = JSON.parse(child.stderr);
+    assert.equal(response.operation, 'continue-runtime-launch');
+    assert.equal(response.kind, 'error');
+    assert.match(response.error.message, flags.length === 1
+      ? /only its prepared assignmentId/ : /exactly one/);
+  }
+  const ledger = new Ledger(ctx.config.stateDirectory);
+  try {
+    assert.equal(ledger.status().jobs.length, 0);
+    assert.equal(ledger.status().operations.length, 0);
+  } finally { ledger.close(); }
 });
 
 test('result envelope preserves exact references, pending states and acceptance scope', () => {

@@ -1,0 +1,23 @@
+{
+  "window": {
+    "start": "2026-09-21T00:00:00Z",
+    "endExclusive": "2026-09-22T00:00:00Z"
+  },
+  "originalRunId": "21668197-3118-4297-a3d6-c2ea540d5c26",
+  "source": "ado:created",
+  "status": "complete",
+  "evidenceCount": 29,
+  "selected": {
+    "evidenceId": "ev-b07ea543f22313243869ea3b6c2e5ad08457ef4b79eda8c0c14dd30ec9eebc29",
+    "source": "ado",
+    "recordId": "12403919",
+    "revision": "7",
+    "observedAt": "2026-10-16T04:48:46.725Z",
+    "recordSha256": "ffd623aceccd06f8ecd85fae4a0e96730865974e6e9c2ef9386ee42f4f192c35",
+    "captureSha256": "2c14a96b0613dd7fadcd38953ec8a1ce580eae197b8df68c215ec207e4fa8667"
+  },
+  "originalSnapshotSha256": "cba584dc5caf8cb8ea87ec2dbee26ddd0a5f60033d511cbb9aa697d142091db5",
+  "candidateCaptureReverified": true,
+  "continuationRecollected": false,
+  "limitation": "Authenticated later capture for the declared window, not a historical-state reconstruction or an all-source coverage claim."
+}

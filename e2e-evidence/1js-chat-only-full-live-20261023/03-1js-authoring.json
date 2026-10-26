@@ -1,0 +1,39 @@
+{
+  "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+  "baseline": "1351fd3b7ce29582f0f859ffdcd266cdf90d1699",
+  "qualification": {
+    "bindingId": "1js-declarative-e2e-authoring",
+    "skillPath": ".github/skills/author-declarative-e2e-test/SKILL.md",
+    "skillSha256": "f15d9dfbb9b9756632ce6a4ebff6a3f9e3cda4281974b7eaf5424df0e43b3051",
+    "validationContractSha256": "a670f3fbb63690391b4922996400c53da44213db6a6fb360a901d29089d7cc51"
+  },
+  "skill": {
+    "bindingId": "1js-declarative-e2e-authoring",
+    "capability": "declarative-e2e-authoring",
+    "skillRevision": "1351fd3b7ce29582f0f859ffdcd266cdf90d1699",
+    "status": "succeeded",
+    "classification": "regression-coverage",
+    "authoredFiles": [
+      "ooui/apps/excel-agent-declarative-e2e/declarative/composites/excel-agent.yaml",
+      "ooui/apps/excel-agent-declarative-e2e/declarative/scenarios/chat-only-plan-approval-read.yaml",
+      "ooui/apps/excel-agent-declarative-e2e/declarative/ui-map.yaml"
+    ],
+    "registeredFiles": [
+      "ooui/apps/excel-agent-declarative-e2e/declarative/catalog/reviewed-cases.json",
+      "ooui/apps/excel-agent-declarative-e2e/declarative/excel-agent-capability-matrix.json",
+      "ooui/apps/excel-agent-declarative-e2e/lifecycle/catalog.json",
+      "ooui/apps/excel-agent-declarative-e2e/package.json"
+    ],
+    "registeredFileSha256": {
+      "ooui/apps/excel-agent-declarative-e2e/declarative/catalog/reviewed-cases.json": "110034f99c66473efde6672b374a9c9818518d30098b8db6d2f6e0aec5cdee59",
+      "ooui/apps/excel-agent-declarative-e2e/declarative/excel-agent-capability-matrix.json": "4b485a174eed364a9b0a377efbc471a627b7821e37ffd9060312fa459d6e20bb",
+      "ooui/apps/excel-agent-declarative-e2e/lifecycle/catalog.json": "110034f99c66473efde6672b374a9c9818518d30098b8db6d2f6e0aec5cdee59",
+      "ooui/apps/excel-agent-declarative-e2e/package.json": "dc58be6f714fdf9021a8162a5cda93dcd35ccb175618421b5517942dce2710e1"
+    },
+    "testsAddedOrUpdated": [
+      "excel-agent.aad.chat-only-plan-approval-read"
+    ]
+  },
+  "archiveModelInvocations": 0,
+  "retainedResultSha256": "870af14759f44d43c9bac611ec247a06865c2d1aae5420c31b640000b8031d3e"
+}

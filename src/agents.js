@@ -44,7 +44,8 @@ const definitions = {
     operations: [
       'app-worker', 'qualify-skill', 'submit-filter-handoff', 'submit-reviewed-handoff',
       'dispatch', 'reconcile', 'continue-local-validation', 'diagnose-local-validation',
-      'continue-local-authoring', 'app-end', 'one-shot-handoff'
+      'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
+      'continue-native-preparation', 'continue-native-source', 'app-end', 'one-shot-handoff'
     ]
   },
   rsi: {

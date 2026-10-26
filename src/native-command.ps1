@@ -5,18 +5,23 @@ $PSNativeCommandArgumentPassing = 'Standard'
 $OutputEncoding = [Console]::OutputEncoding
 $request = $env:PILOT_NATIVE_COMMAND | ConvertFrom-Json
 Remove-Item Env:\PILOT_NATIVE_COMMAND
-if (!$request.executable -or $request.args -isnot [Array]) { throw 'Invalid native command request' }
-if (($env:PATHEXT -split ';') -notcontains '.EXE') {
-    throw 'Native validation requires PATHEXT including .EXE; command was not launched'
+if ($request.jobName -notmatch '^Local\\PilotNative-[a-f0-9-]{36}$') { throw 'Invalid native job identity' }
+if ($request.action -ne 'drain' -and (!$request.executable -or $request.args -isnot [Array])) { throw 'Invalid native command request' }
+if ($request.action -ne 'drain') {
+    if (($env:PATHEXT -split ';') -notcontains '.EXE') {
+        throw 'Native validation requires PATHEXT including .EXE; command was not launched'
+    }
+    $native = $ExecutionContext.SessionState.InvokeCommand.GetCommand(
+        [string]$request.executable, [System.Management.Automation.CommandTypes]::Application)
+    if ($null -eq $native) { throw 'Native validation executable did not resolve to an application; command was not launched' }
 }
-$native = $ExecutionContext.SessionState.InvokeCommand.GetCommand(
-    [string]$request.executable, [System.Management.Automation.CommandTypes]::Application)
-if ($null -eq $native) { throw 'Native validation executable did not resolve to an application; command was not launched' }
 
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.Threading;
 
 public static class NativeValidationJob {
     [StructLayout(LayoutKind.Sequential)]
@@ -45,6 +50,15 @@ public static class NativeValidationJob {
     static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits limits, uint size);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr OpenJobObject(uint access, bool inherit, string name);
+    [StructLayout(LayoutKind.Sequential)]
+    struct Accounting {
+        public long ProcessTime, JobTime, PeriodProcessTime, PeriodJobTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting info, uint size, IntPtr returned);
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")]
@@ -53,8 +67,8 @@ public static class NativeValidationJob {
     // The supervisor alone owns this non-inheritable handle. Its exit, including
     // execFile timeout/overflow termination, closes the job and all descendants.
     static IntPtr ownedJob;
-    public static void Enter() {
-        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+    public static void Enter(string name) {
+        IntPtr job = CreateJobObject(IntPtr.Zero, name);
         if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
         var limits = new ExtendedLimits();
         limits.Basic.Flags = 0x2000;
@@ -66,9 +80,33 @@ public static class NativeValidationJob {
         }
         ownedJob = job;
     }
+    public static void Drain(string name) {
+        IntPtr job = OpenJobObject(4, false, name);
+        if (job == IntPtr.Zero) {
+            int error = Marshal.GetLastWin32Error();
+            if (error == 2) return;
+            throw new Win32Exception(error, "Cannot inspect owned native job");
+        }
+        try {
+            var timer = Stopwatch.StartNew();
+            while (true) {
+                Accounting info;
+                if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (info.ActiveProcesses == 0) return;
+                if (timer.ElapsedMilliseconds >= 10000)
+                    throw new TimeoutException("Owned native processes did not exit");
+                Thread.Sleep(25);
+            }
+        } finally { CloseHandle(job); }
+    }
 }
 '@
-[NativeValidationJob]::Enter()
+if ($request.action -eq 'drain') {
+    [NativeValidationJob]::Drain([string]$request.jobName)
+    exit 0
+}
+[NativeValidationJob]::Enter([string]$request.jobName)
 $arguments = @($request.args | ForEach-Object { [string]$_ })
 $global:LASTEXITCODE = $null
 & $native @arguments

@@ -17,7 +17,7 @@ import { dryRun } from '../src/dry-run.js';
 import { followRelated, readRelatedWorkiq } from '../src/followup.js';
 import { revisitTracked } from '../src/revisit.js';
 import { collect, acceptReview, report, latestEvidence, reconcile, tick, previousUtcDay, nextDailyWake, readinessFingerprint } from '../src/coordinator.js';
-import { validateSeed, restrictedSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
+import { validateSeed, restrictedSession, authoringSession, principalPath, unwrapWorkiq, verifyPrincipal, channelRoot, messageSelect, nextWorkiqPage, validateWorkiqPath, workiqRuntimeError, prepareWorkiq } from '../src/runtime.js';
 import { makeAssignment, makePlannedImprovementAssignment, WorkerTools, provision, checkoutEnvironment, hydrateValidationLfs, prepareValidation, preflightValidationAuthentication, runValidation, pushDraftBranch, newCaseBuildSelection, newCaseBuildGroups, queueAdoDraftBuild, createAdoDraft, command, minimalEnvironment, dispatch, repoFor, requireAllowedSkillChanges, verifyPreparedOutputs, verifyTestOnlyProfileChange, rebindPreparedTestProfile } from '../src/workers.js';
 import { recordAreaToImprove, recordTestCoveragePlan } from '../src/improvements.js';
 import { repositoryValidationContract, skillQualificationId } from '../src/repository-skills.js';
@@ -62,10 +62,11 @@ function transport(items = [adoItem()], capture = []) {
     return { value: items.filter(i => body.ids.includes(i.id)) };
   };
 }
-function addEvidence(ledger, id = '1', revision = '1', payload = { text: 'synthetic' }, provenance = 'synthetic') {
+function addEvidence(ledger, id = '1', revision = '1', payload = { text: 'synthetic' }, provenance = 'synthetic', overrides = {}) {
   const record = evidenceEnvelope('ado', 'office/OC', id, revision,
     `https://dev.azure.com/office/OC/_workitems/edit/${id}`, 'synthetic query', '2026-10-09T01:00:00Z');
   record.source.provenance = provenance;
+  Object.assign(record, overrides);
   return ledger.evidence(record, payload, `run-${revision}-${id}`);
 }
 function review(evidence, version = 1) {
@@ -996,11 +997,45 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   assert.equal((await tools.search('value = 1', 'src')).some(match =>
     match.includes('src/value.js')), false);
 });
+test('model-visible worker contract exposes bounded surgical edits', async t => {
+  const { config, job, repo, assignment } = await fixture(t);
+  const { workspace } = await provision(config, job, repo);
+  const editable = structuredClone(assignment);
+  editable.permissions.editCode = true;
+  const tools = new WorkerTools(config, editable, workspace);
+  const exposedPatch = tools.tools().find(tool => tool.name === 'pilot_replace_lines');
+  assert.ok(exposedPatch, 'The model-visible tool contract must expose surgical edits');
+  assert.equal(exposedPatch.parameters.additionalProperties, false);
+  assert.deepEqual(exposedPatch.parameters.required,
+    ['path', 'startLine', 'endLine', 'expected', 'replacement']);
+  await exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 1,
+    expected: 'export const value = 1;', replacement: 'export const value = 2;'
+  });
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 2;');
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'other\\value.js', startLine: 1, endLine: 1, expected: '', replacement: 'bad'
+  }), /edit bounds/);
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 1,
+    expected: 'export const value = 1;', replacement: 'bad'
+  }), /does not match/);
+  await assert.rejects(async () => exposedPatch.handler({
+    path: 'src\\value.js', startLine: 1, endLine: 501, expected: '', replacement: 'bad'
+  }), /at most 500 lines/);
+  assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 2;');
+  assert.equal(tools.usage.byTool.pilot_replace_lines, 4);
+});
 test('RCA-only workers cannot write and submitted workers cannot keep editing', async t => {
   const { config, assignment, job, repo } = await fixture(t);
   const { workspace } = await provision(config, job, repo);
   const tools = new WorkerTools(config, assignment, workspace);
   assert.throws(() => tools.write('src\\value.js', 'bad'), /not permitted/);
+  await assert.rejects(async () =>
+    tools.tools().find(tool => tool.name === 'pilot_replace_lines').handler({
+      path: 'src\\value.js', startLine: 1, endLine: 1,
+      expected: 'export const value = 1;', replacement: 'bad'
+    }), /not permitted/);
   tools.finish({ outcome: 'investigated', findings: 'Synthetic findings' });
   assert.throws(() => tools.finish({ outcome: 'investigated', findings: 'again' }), /already submitted/);
 });
@@ -1009,6 +1044,22 @@ test('SDK configuration exposes no built-in tools and denies unrelated permissio
   assert.deepEqual(config.availableTools.toArray(), ['custom:pilot_read']);
   assert.equal(config.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
   assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+});
+test('SDK authoring repairs resume the same persisted session with only bounded tools', async () => {
+  const calls = [];
+  const client = {
+    createSession: async config => { calls.push({ kind: 'create', config }); return 'created'; },
+    resumeSession: async (id, config) => { calls.push({ kind: 'resume', id, config }); return 'resumed'; }
+  };
+  const tools = [{ name: 'pilot_replace_lines' }];
+  const options = { sessionId: 'same-attempt', workingDirectory: 'fixture', prompt: 'bounded' };
+  assert.equal(await authoringSession(client, tools, options, 0), 'created');
+  assert.equal(await authoringSession(client, tools, options, 1), 'resumed');
+  assert.equal(calls[1].id, options.sessionId);
+  for (const call of calls) {
+    assert.deepEqual(call.config.availableTools.toArray(), ['custom:pilot_replace_lines']);
+    assert.equal(call.config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
+  }
 });
 test('validation records real terminal command execution at exact fixture HEAD and forbids duplicates', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -1416,12 +1467,20 @@ test('validation cleanup failures still finalize blocked evidence and operations
   const result = await runValidation(config, ledger,
     { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
     async () => ({ stdout: '', stderr: '' }),
-    () => { throw new Error('synthetic cleanup failure'); });
+    () => { throw Object.assign(new Error('synthetic cleanup failure'), {
+      code: 'ETIMEDOUT', killed: true, ownedProcessesExited: true,
+      stderr: 'synthetic-private-native-output'
+    }); });
   assert.equal(result[0].status, 'blocked');
   assert.equal(result[0].blockedReason, 'validation-cleanup-failed');
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.match(artifact.output.cleanupError, /Operation failed/);
   assert.ok(artifact.output.residualPaths.length > 0);
+  assert.equal(artifact.output.cleanupFailures[0].targetRole, 'validation-workspace');
+  assert.equal(artifact.output.cleanupFailures[0].reason, 'command-timeout');
+  assert.equal(artifact.output.cleanupFailures[0].ownedProcessesExited, true);
+  assert.ok(artifact.output.cleanupFailures[0].durationMs >= 0);
+  assert(!JSON.stringify(artifact).includes('synthetic-private-native-output'));
   const operations = ledger.status().operations;
   assert.equal(operations.length, 1);
   assert.equal(operations[0].state, 'blocked');
@@ -1450,6 +1509,46 @@ test('post-run inspection failures preserve runner diagnostics in blocked eviden
   assert.equal(artifact.output.stdout, 'runner stdout');
   assert.equal(artifact.output.stderr, 'runner stderr');
   assert.match(artifact.output.inspectionError, /Operation failed/);
+});
+test('validation retains its primary timeout when cleanup also fails', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'timeout-cleanup', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async () => { throw Object.assign(new Error('synthetic timeout'),
+      { killed: true, ownedProcessesExited: true, stdout: '', stderr: '' }); },
+    () => { throw new Error('synthetic cleanup failure'); });
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.notEqual(result[0].blockedReason, 'validation-cleanup-failed');
+  assert.equal(artifact.output.primaryBlockedReason, result[0].blockedReason);
+  assert.equal(artifact.output.timeout, true);
+  assert.ok(artifact.output.cleanupError);
+});
+test('unconfirmed native process exit retains the workspace without inspection or cleanup', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  const isolated = await provision(config, job, repo);
+  repo.validationGates = [{
+    id: 'containment', approved: true, isolationVerified: true,
+    executable: process.execPath, args: [], timeoutMs: 10000
+  }];
+  let cleanupCalls = 0, retained;
+  const result = await runValidation(config, ledger,
+    { ...job, workspace: isolated.workspace }, repo, isolated.baseRevision,
+    async (_executable, _args, cwd) => {
+      retained = cwd;
+      rmSync(join(cwd, '.git'), { recursive: true, force: true });
+      throw Object.assign(new Error('synthetic containment failure'),
+        { killed: true, containmentFailure: true, stdout: '', stderr: '' });
+    }, () => { cleanupCalls++; });
+  assert.equal(result[0].blockedReason, 'process-tree-exit-unconfirmed');
+  assert.equal(cleanupCalls, 0);
+  assert(existsSync(retained));
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.deepEqual(artifact.output.residualPaths, [retained]);
 });
 test('test-only repair reuses dependency and compile receipts with phase telemetry', async t => {
   const ctx = await stagedValidationFixture(t);
@@ -2643,6 +2742,45 @@ test('ADO Draft build queues the exact pushed revision once without polling', as
   assert.equal(ledger.status().operations.find(operation =>
     operation.id === `${job.id}:draft-build:1js-pipeline-36540`).state, 'queued');
 });
+test('ADO Draft build accepts the matching response project GUID without requeueing', async t => {
+  const { config, ledger, job, repo } = await fixture(t);
+  repo.pr = { provider: 'ado', organization: 'office', project: 'Office' };
+  repo.draftBuild = { enabled: true, provider: 'ado', id: 'aurora', definitionId: 36540 };
+  const projectId = 'a4aa557b-7dca-453d-9d83-2fe9271852b9';
+  const url = `https://dev.azure.com/office/${projectId}/_build/results?buildId=57965896`;
+  let calls = 0;
+  const receipt = await queueAdoDraftBuild(config, ledger, job, repo, 'd'.repeat(40), async () => {
+    calls++;
+    return { id: 57965896, project: { id: projectId, name: 'Office' }, _links: { web: { href: url } } };
+  });
+  assert.equal(calls, 1);
+  assert.equal(receipt.url, url);
+  assert.equal(receipt.buildId, 57965896);
+  assert.equal(ledger.status().operations.find(row => row.kind === 'draft-build').state, 'queued');
+});
+test('ADO Draft build rejects unrelated GUIDs, projects and hosts', async t => {
+  const projectId = 'a4aa557b-7dca-453d-9d83-2fe9271852b9';
+  const approved = `https://dev.azure.com/office/${projectId}/_build/results?buildId=5`;
+  for (const response of [
+    { project: { id: projectId, name: 'AnotherProject' }, url: approved },
+    { project: { id: projectId, name: 'Office' }, url: approved.replace(projectId, 'b'.repeat(36)) },
+    { project: { id: projectId, name: 'Office' }, url: approved.replace('dev.azure.com', 'example.com') },
+    { project: undefined, url: approved }
+  ]) {
+    await t.test(response.url + ':' + response.project?.name, async sub => {
+      const { config, ledger, job, repo } = await fixture(sub);
+      repo.pr = { provider: 'ado', organization: 'office', project: 'Office' };
+      repo.draftBuild = { enabled: true, provider: 'ado', id: 'aurora', definitionId: 36540 };
+      let calls = 0;
+      await assert.rejects(queueAdoDraftBuild(config, ledger, job, repo, 'd'.repeat(40), async () => {
+        calls++;
+        return { id: 5, project: response.project, _links: { web: { href: response.url } } };
+      }), /approved build URL/);
+      assert.equal(calls, 1);
+      assert.equal(ledger.status().operations.find(row => row.kind === 'draft-build').state, 'started');
+    });
+  }
+});
 test('ADO Draft build URLs accept only configured or response-bound project paths', async t => {
   const { config, ledger, job, repo } = await fixture(t);
   repo.pr = {
@@ -3050,6 +3188,7 @@ test('simultaneous dispatches atomically admit only one worker across ledger con
   });
 test('planned OA skill path reconciles a landed product fix and creates a source-bound test-only draft result', async t => {
   const ctx = setup(t), repo = repoConfig(ctx.config, ctx.root);
+  repo.commitTrailers = ['Copilot-Session: synthetic-session'];
   repo.allowedWritePrefixes = ['test'];
   repo.skillBindings = [{
     id: 'oa-integration-test-core', capability: 'integration-test-authoring',
@@ -3105,6 +3244,7 @@ test('planned OA skill path reconciles a landed product fix and creates a source
   let plan = recordTestCoveragePlan(ctx.ledger, {
     improvementId: improvement.id, improvementVersion: improvement.version,
     repoId: repo.id, capability: 'integration-test-authoring', sourceRevision: baseRevision,
+    purpose: 'regression-coverage',
     searchStatus: 'complete', existingTests: [], coverageGaps: ['No focused regression test exists.'],
     unknowns: [], rationale: 'Synthetic complete search confirms the gap.'
   });
@@ -3162,6 +3302,8 @@ test('planned OA skill path reconciles a landed product fix and creates a source
     runModel: async (config, ledger, current, currentAssignment, currentInvestigation, toolkit, loadedSkill) => {
       assert.match(loadedSkill.instructions, /Synthetic OA skill/);
       assert.equal(loadedSkill.skillRevision, baseRevision);
+      writeFileSync(join(current.workspace, '.git', 'hooks', 'pre-commit'),
+        '#!/bin/sh\nprintf invoked > .git/synthetic-hook-receipt\n', { mode: 0o755 });
       assert.throws(() => toolkit.write('src\\value.js', 'export const value = 2;\n'),
         /outside approved edit bounds/);
       toolkit.write('test\\behavior.test.js',
@@ -3190,6 +3332,11 @@ test('planned OA skill path reconciles a landed product fix and creates a source
     ['test/behavior.behavior-card.md', 'test/behavior.test.js']);
   assert.equal(result.validation[0].sourceRevision, result.sourceRevision);
   assert.equal(result.draftPR.headRevision, result.sourceRevision);
+  const workspace = ctx.ledger.job(job.id).workspace;
+  assert.equal(readFileSync(join(workspace, '.git', 'synthetic-hook-receipt'), 'utf8'), 'invoked');
+  const message = (await command('git', ['log', '-1', '--format=%B'], workspace)).stdout;
+  assert.match(message, /Co-authored-by: Copilot <223556219\+Copilot@users\.noreply\.github\.com>/);
+  assert.match(message, /Copilot-Session: synthetic-session/);
 });
 test('workspace GC previews delivery, reports deletion failure and safely retries without deleting caches or evidence', async t => {
   const ctx = await deliveredWorkspace(t);

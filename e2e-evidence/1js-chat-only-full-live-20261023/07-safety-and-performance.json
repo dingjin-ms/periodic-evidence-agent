@@ -1,0 +1,94 @@
+{
+  "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+  "workspaceAbsent": true,
+  "cleanup": [
+    {
+      "targetRole": "validation-workspace",
+      "durationMs": 774427,
+      "unlinkedLinks": 41971,
+      "rootRemoved": true,
+      "timings": [
+        {
+          "id": "cleanup-ownership-check",
+          "startedAt": "2026-10-23T14:06:29.008Z",
+          "status": "passed",
+          "completedAt": "2026-10-23T14:06:31.596Z",
+          "durationMs": 2588
+        },
+        {
+          "id": "cleanup-link-scan",
+          "startedAt": "2026-10-23T14:06:31.596Z",
+          "status": "passed",
+          "completedAt": "2026-10-23T14:08:05.439Z",
+          "durationMs": 93843
+        },
+        {
+          "id": "cleanup-git-remove",
+          "startedAt": "2026-10-23T14:08:05.439Z",
+          "status": "passed",
+          "completedAt": "2026-10-23T14:19:23.435Z",
+          "durationMs": 677996
+        },
+        {
+          "id": "cleanup-root-check",
+          "startedAt": "2026-10-23T14:19:23.435Z",
+          "status": "passed",
+          "completedAt": "2026-10-23T14:19:23.435Z",
+          "durationMs": 0
+        }
+      ]
+    }
+  ],
+  "originalOwnedPages": 1,
+  "finalOwnedPages": 1,
+  "ownedBrowserClosed": true,
+  "ownedProcessesExited": true,
+  "originalBrowserContacted": false,
+  "formalPreparation": [
+    {
+      "id": "prepared-head-clean",
+      "startedAt": "2026-10-23T12:27:30.232Z",
+      "status": "passed",
+      "completedAt": "2026-10-23T12:27:37.189Z",
+      "durationMs": 6957
+    },
+    {
+      "id": "dependency-source-fingerprint",
+      "startedAt": "2026-10-23T12:28:25.498Z",
+      "status": "passed",
+      "completedAt": "2026-10-23T12:57:12.772Z",
+      "durationMs": 1727274
+    },
+    {
+      "id": "dependency-byte-verification",
+      "startedAt": "2026-10-23T12:57:12.773Z",
+      "status": "passed",
+      "completedAt": "2026-10-23T13:36:29.476Z",
+      "durationMs": 2356703
+    }
+  ],
+  "formalJob": {
+    "startedAt": "2026-10-23T12:24:03.243Z",
+    "completedAt": "2026-10-23T14:21:40.794Z",
+    "exitCode": 1,
+    "timedOut": false
+  },
+  "limitations": [
+    "Preparation/scan/cleanup performance is measured but not optimized",
+    "Formal Job timing excludes independent preflight and later publication recovery",
+    "Original errors, frozen assertions, observation intervals and failed attempts retained"
+  ],
+  "archiveInvocations": {
+    "native": 0,
+    "model": 0,
+    "sourceWrites": 0,
+    "remoteWrites": 0
+  },
+  "report": {
+    "sha256": "e0488d51675b1d72d26f9df95930f054a8a83dbc4b5203cb86ba7af29c8b0afa",
+    "checksPassed": 117,
+    "pageErrors": 0,
+    "ownedReportBrowserClosed": true,
+    "businessTests": false
+  }
+}

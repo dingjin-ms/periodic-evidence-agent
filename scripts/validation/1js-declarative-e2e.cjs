@@ -71,6 +71,16 @@ function validateRequest(request) {
   check(path.isAbsolute(request.options.yarnEntryPoint ?? '') &&
     /\.c?js$/.test(request.options.yarnEntryPoint),
   'Configure the installed Yarn/Corepack JavaScript entry point once for this repository.');
+  check(request.options.commandTimeoutMs === undefined ||
+    (Number.isSafeInteger(request.options.commandTimeoutMs) && request.options.commandTimeoutMs > 0),
+  'The native command timeout must be a positive integer.');
+  check(request.attemptId === undefined || /^[a-f0-9]{64}$/.test(request.attemptId),
+    'The Controller attempt must be SHA-256 bound.');
+  check(request.profileSha256 === undefined || /^[a-f0-9]{64}$/.test(request.profileSha256),
+    'The Controller profile must be SHA-256 bound.');
+  check(request.controllerTimeoutMs === undefined ||
+    (Number.isSafeInteger(request.controllerTimeoutMs) && request.controllerTimeoutMs > 0),
+  'The Controller timeout must be a positive integer.');
   const cdp = new URL(request.options.cdpEndpoint);
   check(cdp.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(cdp.hostname) &&
     !cdp.username && !cdp.password && !cdp.search && !cdp.hash && cdp.pathname === '/',
@@ -89,7 +99,7 @@ function runYarn(root, request, args, cwd = root, environment = process.env) {
     'The configured Yarn/Corepack entry point is unavailable.');
   return execFileSync(process.execPath, [request.options.yarnEntryPoint, ...args], {
     cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true, timeout: request.options.commandTimeoutMs ?? 1800000,
+    windowsHide: true, timeout: commandBudget(request),
     maxBuffer: 16 * 1024 * 1024,
     env: { ...environment, PATH: `${path.dirname(process.execPath)}${path.delimiter}${environment.PATH ?? environment.Path ?? ''}` }
   });
@@ -105,7 +115,8 @@ function nativeApi(root) {
   return {
     loader: appRequire(path.join(app, 'declarative', 'src', 'excelAgentDeclaration.ts')),
     catalog: appRequire(path.join(app, 'declarative', 'src', 'catalogParity.ts')),
-    parseYaml: appRequire('yaml').parse
+    parseYaml: appRequire('yaml').parse,
+    sanitizeDiagnosticText: appRequire('@1js/declarative-e2e-runtime').sanitizeDiagnosticText
   };
 }
 
@@ -312,8 +323,226 @@ function assertBrowserCleanup(before, after) {
   }
 }
 
+const DIAGNOSTIC_LIMIT = 8192;
+const SUMMARY_LIMIT = 4 * 1024 * 1024;
+const commandBudget = request => request.options.commandTimeoutMs ?? 1800000;
+const attemptBinding = request => ({
+  attemptId: request.attemptId ?? digest(Buffer.from(request.outputRoot)),
+  assignmentId: request.assignmentId, sourceRevision: request.sourceRevision,
+  profileSha256: request.profileSha256 ?? null
+});
+
+function diagnosticError(error, stage, sanitize = () => '[diagnostic text omitted]') {
+  const text = value => {
+    const raw = String(value ?? '');
+    const safe = sanitize(raw);
+    return { text: safe.slice(0, DIAGNOSTIC_LIMIT), truncated: safe.length > DIAGNOSTIC_LIMIT,
+      bytes: Buffer.byteLength(raw), sha256: digest(Buffer.from(raw)) };
+  };
+  return {
+    stage, message: text(error.message),
+    code: typeof error.code === 'number' ? error.code :
+      /^(?:ETIMEDOUT|ENOENT|EACCES|EPERM|EIO|ENOSPC|ENOBUFS|ABORT_ERR|ERR_[A-Z_]+)$/.test(error.code ?? '')
+        ? error.code : null,
+    exitCode: Number.isInteger(error.status) ? error.status :
+      Number.isInteger(error.code) ? error.code : null,
+    signal: /^SIG[A-Z0-9]+$/.test(error.signal ?? '') ? error.signal : null,
+    timeout: error.code === 'ETIMEDOUT',
+    cancelled: error.code === 'ABORT_ERR' || error.name === 'AbortError',
+    killed: error.killed === true, stdout: text(error.stdout), stderr: text(error.stderr)
+  };
+}
+
+function interruptionType(error) {
+  if (error.timeout) return 'timeout';
+  if (error.cancelled) return 'cancelled';
+  if (error.signal) return 'signal';
+  return 'command-failure';
+}
+
+function writeDiagnostic(file, value, exclusive = true) {
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  check(Buffer.byteLength(bytes) <= 1024 * 1024, 'Controller diagnostic exceeded its size bound.');
+  fs.writeFileSync(file, bytes,
+    { flag: exclusive ? 'wx' : 'w', mode: 0o600, flush: true });
+}
+
+function nativeProgress(outputRoot) {
+  const result = { summaryRef: null, nativeStatus: null, completedRounds: [],
+    lastCompletedRound: null, error: null };
+  try {
+    const directories = fs.readdirSync(outputRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory());
+    check(directories.length === 1, 'Native batch is missing or ambiguous.');
+    const file = path.join(outputRoot, directories[0].name, 'summary.json');
+    const info = fs.lstatSync(file);
+    check(info.isFile() && !info.isSymbolicLink() && info.size <= SUMMARY_LIMIT,
+      'Native summary is not a bounded ordinary file.');
+    const bytes = fs.readFileSync(file);
+    check(bytes.length <= SUMMARY_LIMIT, 'Native summary exceeded its bound.');
+    result.summaryRef = { path: file, sha256: digest(bytes), bytes: bytes.length };
+    const summary = JSON.parse(bytes);
+    check(Array.isArray(summary.cases) && summary.cases.length <= 50,
+      'Native summary has an invalid case population.');
+    result.nativeStatus = ['running', 'passed', 'failed', 'timedout', 'interrupted']
+      .includes(summary.status) ? summary.status : null;
+    result.completedRounds = summary.cases.filter(item =>
+      ['passed', 'failed', 'timedOut', 'skipped'].includes(item.status) &&
+      Number.isInteger(item.repeatEachIndex) && item.repeatEachIndex >= 0 &&
+      item.repeatEachIndex < 5 && Number.isInteger(item.retry) && item.retry >= 0 &&
+      typeof item.title === 'string').map(item => ({
+      titleSha256: digest(Buffer.from(item.title)), repeatEachIndex: item.repeatEachIndex,
+      retry: item.retry, status: item.status
+    }));
+    result.lastCompletedRound = result.completedRounds.at(-1) ?? null;
+  } catch (error) {
+    result.error = diagnosticError(error, 'native-summary');
+  }
+  return result;
+}
+
+function pageEvidence(pages) {
+  check(Array.isArray(pages) && pages.length <= 256 && pages.every(item =>
+    typeof item.id === 'string' && item.id.length <= 256 &&
+    typeof item.url === 'string'), 'Browser inventory exceeded its diagnostic bound.');
+  return pages.map(item => ({ id: item.id, urlSha256: digest(Buffer.from(item.url)) }));
+}
+
+function ownedPageEvidence(output, before, after) {
+  const pages = [];
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    if (pages.length >= 50) break;
+    if (!line.startsWith('[local-owned-page] ') || line.length > DIAGNOSTIC_LIMIT) continue;
+    try {
+      const item = JSON.parse(line.slice('[local-owned-page] '.length));
+      if (typeof item.targetId !== 'string' || item.targetId.length > 256 ||
+          typeof item.testTitle !== 'string') continue;
+      pages.push({
+        targetId: item.targetId, titleSha256: digest(Buffer.from(item.testTitle)),
+        preExisting: before.some(page => page.id === item.targetId),
+        presentAfter: after ? after.some(page => page.id === item.targetId) : null,
+        roundAttribution: 'not-reported-by-native-harness'
+      });
+    } catch (error) {
+      pages.push({ observationError: diagnosticError(error, 'owned-page-log') });
+    }
+  }
+  return pages;
+}
+
+async function runNativeAttempt(request, {
+  run, targets = () => browserTargets(request.options.cdpEndpoint),
+  sanitize = () => '[diagnostic text omitted]', write = writeDiagnostic
+}) {
+  const binding = attemptBinding(request);
+  const root = request.outputRoot;
+  const primaryRef = path.join(root, 'primary-command.json');
+  const cleanupRef = path.join(root, 'browser-cleanup.json');
+  const diagnosticRef = path.join(root, 'controller-diagnostic.json');
+  const before = await targets();
+  const primary = { format: '1js-native-command-v1', ...binding,
+    status: 'running', startedAt: new Date().toISOString(),
+    finishedAt: null, budgetMs: commandBudget(request), error: null };
+  write(primaryRef, primary);
+  write(cleanupRef, { format: '1js-browser-cleanup-v1', ...binding,
+    status: 'pending', before: pageEvidence(before), after: null });
+  let output, primaryError;
+  try {
+    output = await run();
+    primary.status = 'passed';
+    primary.exitCode = 0;
+    const captured = diagnosticError({ stdout: output }, 'native-command', sanitize);
+    primary.output = { stdout: captured.stdout, stderr: captured.stderr };
+  } catch (error) {
+    primaryError = error;
+    primary.status = 'failed';
+    primary.error = diagnosticError(error, 'native-command', sanitize);
+    primary.exitCode = primary.error.exitCode;
+  }
+  primary.finishedAt = new Date().toISOString();
+  const secondary = [];
+  const save = (file, body, exclusive = true) => {
+    try { write(file, body, exclusive); }
+    catch (error) { secondary.push(diagnosticError(error, `persist-${path.basename(file)}`, sanitize)); }
+  };
+  // Persist the command outcome before any network query or cleanup assertion.
+  save(primaryRef, primary, false);
+  const cleanup = { format: '1js-browser-cleanup-v1', ...binding,
+    startedAt: new Date().toISOString(), finishedAt: null,
+    status: 'failed', before: pageEvidence(before), after: null, errors: [] };
+  let after;
+  try {
+    after = await targets();
+    cleanup.after = pageEvidence(after);
+    assertBrowserCleanup(before, after);
+    cleanup.status = 'verified';
+  } catch (error) {
+    cleanup.errors.push(diagnosticError(error, 'browser-restoration', sanitize));
+  }
+  cleanup.finishedAt = new Date().toISOString();
+  save(cleanupRef, cleanup, false);
+  const diagnostic = {
+    format: '1js-controller-diagnostic-v1', ...binding,
+    startedAt: primary.startedAt, finishedAt: cleanup.finishedAt,
+    effectiveBudgets: { nativeCommandMs: primary.budgetMs,
+      controllerMs: request.controllerTimeoutMs ?? null, browserQueryMs: 10000 },
+    interruption: primary.error ? interruptionType(primary.error) : null,
+    primaryErrorRef: primary.error ? primaryRef : null, primaryCommandRef: primaryRef,
+    primary, cleanupRef, cleanup,
+    native: nativeProgress(root),
+    ownedPages: ownedPageEvidence(primaryError?.stdout ?? output, before, after),
+    secondaryErrors: secondary
+  };
+  save(diagnosticRef, diagnostic);
+  if (primaryError || cleanup.status !== 'verified' || secondary.length) {
+    const reasons = [
+      ...(primary.error ? [`native command: ${interruptionType(primary.error)} (exit=${primary.error.exitCode}, signal=${primary.error.signal})`] : []),
+      ...(cleanup.status !== 'verified' ? ['browser restoration failed'] : []),
+      ...secondary.map(error => error.stage)
+    ];
+    const failure = new Error(`Native attempt failed: ${reasons.join('; ')}. Diagnostics: ${diagnosticRef}`);
+    failure.diagnostic = diagnostic;
+    throw failure;
+  }
+  return diagnosticRef;
+}
+
+function recordControllerInterruption(request, error, startedAt) {
+  const file = path.join(request.outputRoot, 'controller-interruption.json');
+  const primary = diagnosticError(error, 'controller-process');
+  const diagnostic = {
+    format: '1js-controller-interruption-v1', ...attemptBinding(request),
+    scope: 'controller-profile-process',
+    startedAt, finishedAt: new Date().toISOString(),
+    interruption: primary.cancelled || primary.timeout ? interruptionType(primary) :
+      error.killed ? 'controller-termination' : interruptionType(primary),
+    effectiveBudgets: { nativeCommandMs: commandBudget(request),
+      controllerMs: request.controllerTimeoutMs ?? null },
+    primary, primaryErrorRef: file, timeoutConfirmed: primary.timeout,
+    native: nativeProgress(request.outputRoot),
+    profileCommandRef: path.join(request.outputRoot, 'primary-command.json'),
+    profileCleanupRef: path.join(request.outputRoot, 'browser-cleanup.json'),
+    browserRestoration: 'unverified'
+  };
+  fs.mkdirSync(request.outputRoot, { recursive: true });
+  writeDiagnostic(file, diagnostic);
+  return file;
+}
+
+let profileSanitizer;
+function profileFailure(error, sanitize = profileSanitizer) {
+  if (error.diagnostic) return error.message;
+  const diagnostic = diagnosticError(error, 'profile', sanitize);
+  if (/Your token is invalid|Authentication to package feed failed/i
+    .test(`${error.stdout ?? ''}\n${error.stderr ?? ''}`))
+    diagnostic.prerequisite = 'Authentication to package feed failed';
+  return JSON.stringify(diagnostic);
+}
+
 async function main() {
   const request = validateRequest(JSON.parse(process.env.PILOT_DECLARATIVE_REQUEST ?? 'null'));
+  check(!request.profileSha256 || digest(fs.readFileSync(__filename)) === request.profileSha256,
+    'The Controller profile bytes do not match this attempt.');
   const action = process.env.PILOT_DECLARATIVE_ACTION ?? 'validate';
   check(['register', 'validate'].includes(action), 'Unsupported declarative Controller action.');
   const root = fs.realpathSync(process.cwd());
@@ -327,6 +556,7 @@ async function main() {
     EXCELAGENT_CDP_ENDPOINT: request.options.cdpEndpoint
   });
   const api = loadNative(root, request);
+  profileSanitizer = api.sanitizeDiagnosticText;
   const selected = selectCases(root, request, api);
   if (action === 'register') {
     const documents = REGISTRATION_FILES.map(file => readJson(inside(root, file)));
@@ -363,23 +593,15 @@ async function main() {
   const selection = api.loader.loadExcelAgentExecutionSelection();
   check(selected.every(item => selection.enabledCaseKeys.includes(item.scenario.id)),
     'The selected case is not enabled by the native execution-selection policy.');
-  const before = await browserTargets(request.options.cdpEndpoint);
-  const cleanupReceipt = path.join(request.outputRoot, 'browser-cleanup.json');
-  fs.writeFileSync(cleanupReceipt, JSON.stringify({ before, after: null }, null, 2),
-    { flag: 'wx' });
   Object.assign(process.env, { EXCEL_AGENT_LOCAL_OUTPUT_ROOT: request.outputRoot });
-  let failure;
-  try {
-    runYarn(root, request, [
+  await runNativeAttempt(request, {
+    sanitize: api.sanitizeDiagnosticText,
+    run: () => runYarn(root, request, [
       '--silent', 'declarative:local', '--lane', 'aad-enterprise',
       ...selected.flatMap(item => ['--case', item.scenario.id]),
       '--repeat', '5', '--max-failures', '1'
-    ], app);
-  } catch (error) { failure = error; }
-  const after = await browserTargets(request.options.cdpEndpoint);
-  fs.writeFileSync(cleanupReceipt, JSON.stringify({ before, after }, null, 2));
-  assertBrowserCleanup(before, after);
-  if (failure) throw failure;
+    ], app)
+  });
   const outputs = fs.readdirSync(request.outputRoot, { withFileTypes: true })
     .filter(entry => entry.isDirectory());
   check(outputs.length === 1, 'Native launcher must produce exactly one bounded batch.');
@@ -418,13 +640,12 @@ async function main() {
 module.exports = {
   APP, SCENARIOS, REGISTRATION_FILES, FORMAT, changedScenarios, validateRequest,
   registrationUpdates, assertExecution, assertBrowserCleanup, selectCases, nativeApi,
-  assertAdditiveShared, nativeUnitEnvironment
+  assertAdditiveShared, nativeUnitEnvironment, runNativeAttempt, nativeProgress,
+  recordControllerInterruption, main, profileFailure
 };
 if (require.main === module) {
   main().catch(error => {
-    console.error(`PILOT_VALIDATION_PROFILE_ERROR: ${error.message}`);
-    if (error.stdout) console.error(String(error.stdout));
-    if (error.stderr) console.error(String(error.stderr));
+    console.error(`PILOT_VALIDATION_PROFILE_ERROR: ${profileFailure(error)}`);
     process.exitCode = 1;
   });
 }

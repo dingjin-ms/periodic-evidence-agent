@@ -48,7 +48,8 @@ import { prepareValidationWorkspace, removeValidationWorktree,
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
 import {
   declarativeGate, declarativeProfile, declarativeRegistrationFiles, declarativeRequest,
-  parseDeclarativeOutput, skillChangePopulation, verifyDeclarativeRegistration
+  parseDeclarativeOutput, skillChangePopulation, verifyDeclarativeRegistration,
+  recordDeclarativeInterruption
 } from './declarative-e2e.js';
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
 import { command } from './command.js';
@@ -3473,6 +3474,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
       const request = declarative ? declarativeRequest(gate,
         ledger.get('assignment', job.id), job, revision, skillExecution,
         join(config.stateDirectory, 'native-validation', hash(id))) : null;
+      if (request) Object.assign(request, {
+        attemptId: hash(id), controllerTimeoutMs: gate.timeoutMs, profileSha256: profile.sha256
+      });
       requireThat(preflight || !existsSync(validationWorkspace),
         `Validation attempt workspace already exists for ${gate.id}`, 'blocked-reconciliation');
       mkdirSync(validationRoot, { recursive: true });
@@ -3526,9 +3530,12 @@ export async function runValidation(config, ledger, job, repo, revision, execute
         }
         const diagnostics = declarative ? captureUnitDiagnostics(validationWorkspace,
           join(config.stateDirectory, 'runs', job.id, 'unit-diagnostics', hash(id)), revision) : null;
+        const executionStartedAt = now();
+        let profileReturned = false;
         try {
           output = await executeValidation(gate, args, validationWorkspace, null, execute, null,
             request ? { PILOT_DECLARATIVE_REQUEST: json(request) } : {});
+          profileReturned = true;
           if (dependencySeed) output.dependencySeed = dependencySeed;
           if (request) {
             const receipt = parseDeclarativeOutput(output, 'PILOT_DECLARATIVE_RECEIPT:');
@@ -3553,12 +3560,25 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           status = failure.status;
           blockedReason = failure.blockedReason;
           output = failure.output;
+          if (request && !profileReturned) {
+            try {
+              output.nativeInterruption = recordDeclarativeInterruption(request, error, executionStartedAt);
+            } catch (diagnosticError) {
+              output.interruptionPersistenceError = {
+                message: 'Controller interruption diagnostic could not be persisted',
+                code: ['EACCES', 'EPERM', 'EIO', 'ENOSPC', 'EEXIST'].includes(diagnosticError.code)
+                  ? diagnosticError.code : null
+              };
+            }
+          }
           if (error.containmentFailure) {
             unsafeCleanup = true;
             status = 'blocked';
             blockedReason = 'process-tree-exit-unconfirmed';
           }
         } finally {
+          if (request && existsSync(join(request.outputRoot, 'controller-diagnostic.json')))
+            output.nativeDiagnostic = join(request.outputRoot, 'controller-diagnostic.json');
           if (diagnostics) output.unitDiagnostics = diagnostics.finish();
         }
         if (unsafeCleanup)

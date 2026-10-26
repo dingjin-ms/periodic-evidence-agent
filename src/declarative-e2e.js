@@ -127,3 +127,5 @@ export function parseDeclarativeOutput(output, prefix) {
   try { return JSON.parse(lines[0].slice(prefix.length)); }
   catch { requireThat(false, 'Malformed native declarative receipt', 'blocked-validation'); }
 }
+
+export const recordDeclarativeInterruption = native.recordControllerInterruption;

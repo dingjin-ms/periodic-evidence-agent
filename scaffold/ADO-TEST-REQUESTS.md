@@ -14,12 +14,14 @@ Generate a shareable **new Bug link with the five-field template prefilled**:
 node scripts/create-ado-request-link.mjs
 ```
 
-The link uses plain-text Markdown in `System.Description`, not HTML in the URL.
+The link selects the saved **Agentic test request - Automation** template owned
+by the Excel Agent team. Its `System.Description` contains a formatted HTML table
+stored in ADO, not HTML or Markdown embedded in the URL. The checked-in
+`ado-test-request.template-ref.json` pins the real template and owning team IDs.
 It includes the title prefix, area and tag. Replace the bracketed guidance in the
-new form before saving. This generates a link only; it never creates a work item
-or changes intake activation. ADO rich-text wrappers around the Markdown are
-accepted by intake. The [copyable table](ado-test-request.template.md) remains
-available as a fallback. The owner-selected area is
+new form before saving. Generating or opening the link does not create a work
+item or change intake activation. The [copyable table](ado-test-request.template.md)
+remains available as a fallback. The owner-selected area is
 `OC\Excel\Intelligence\Copilot\Excel Agent\Automation` in `office/OC`.
 The initial policy example selects Bug, New/Active, and exact tag
 `AgenticTestRequest`; these are explicit rollout settings, not auto-created ADO

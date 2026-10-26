@@ -7,11 +7,25 @@ import { spawnSync } from 'node:child_process';
 import { Ledger } from '../src/ledger.js';
 import { configAt } from '../src/common.js';
 import { adoRecord, wiql } from '../src/sources.js';
-import { testRequestLink, testRequestRows } from '../src/ado-request-link.js';
+import { savedTestRequestLink, testRequestLink, testRequestRows } from '../src/ado-request-link.js';
 import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest } from '../src/ado-test-request.js';
 
 const sample = readFileSync(new URL('../scaffold/ado-test-request.sample.md', import.meta.url), 'utf8');
 const policy = JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url)));
+test('saved template link references its owning team without putting rich text in the URL', () => {
+  const template = JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.template-ref.json', import.meta.url)));
+  const url = new URL(savedTestRequestLink(template));
+  assert.equal(url.pathname, '/office/OC/_workitems/create/Bug');
+  assert.deepEqual([...url.searchParams.keys()], ['templateId', 'ownerId']);
+  assert.equal(url.searchParams.get('templateId'), template.templateId);
+  assert.equal(url.searchParams.get('ownerId'), template.teamId);
+  assert.ok(url.href.length < 200);
+  assert.throws(() => savedTestRequestLink({ ...template, templateId: 'not-a-template' }), /real template/);
+  const generated = spawnSync(process.execPath, ['scripts/create-ado-request-link.mjs'], { encoding: 'utf8' });
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.equal(generated.stdout.trim(), url.href);
+});
+
 test('creation link includes all five fields without HTML or lost area separators', () => {
   const url = new URL(testRequestLink(policy));
   assert.equal(url.origin, 'https://dev.azure.com');

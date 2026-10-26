@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -248,6 +249,228 @@ test('native units do not inherit the live experience, CDP or output settings', 
   assert.equal(environment.XLO_OMNI_FLIGHT, 'true');
 });
 
+for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover', 'passed-restored',
+  'cancelled-restored', 'query-failed', 'receipt-failed', 'passed-receipt-failed']) {
+  test(`native attempt independently persists command and restoration: ${condition}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'native-attempt-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const batch = join(root, 'native-batch');
+    mkdirSync(batch);
+    const { summary } = nativeSummary();
+    const failed = ['timeout-leftover', 'failed-restored', 'cancelled-restored',
+      'query-failed', 'receipt-failed'].includes(condition);
+    if (failed) { summary.status = 'running'; summary.cases.pop(); }
+    const bytes = json(summary);
+    const summaryFile = join(batch, 'summary.json');
+    writeFileSync(summaryFile, bytes);
+    const request = { assignmentId: 'synthetic-attempt', sourceRevision: 'a'.repeat(40),
+      attemptId: 'c'.repeat(64), profileSha256: 'd'.repeat(64), outputRoot: root,
+      options: { commandTimeoutMs: 1000 }, controllerTimeoutMs: 10000 };
+    const before = [{ id: 'existing', url: 'https://example.invalid/private?token=canary-secret' }];
+    const leftover = { id: 'owned', url: 'https://example.invalid/workbook/private' };
+    const stdout = '[local-owned-page] {"targetId":"owned","testTitle":"Synthetic protected regression"}\n';
+    let queries = 0;
+    const run = () => {
+      if (condition === 'timeout-leftover') {
+        return execFileSync(process.execPath, ['-e',
+          'process.stdout.write(process.argv[1]); setInterval(() => {}, 1000);', stdout],
+        { timeout: 1000, encoding: 'utf8', windowsHide: true });
+      }
+      if (failed) throw Object.assign(new Error('primary canary-secret'), {
+        code: condition === 'cancelled-restored' ? 'ABORT_ERR' : undefined,
+        status: 7, stdout, stderr: `canary-secret ${'x'.repeat(20000)}`
+      });
+      return stdout;
+    };
+    const options = {
+      run,
+      sanitize: value => value.replaceAll('canary-secret', '[redacted]')
+        .replace(/https?:\/\/\S+/g, '[url]'),
+      targets: async () => {
+        queries++;
+        if (queries === 1) return before;
+        assert.equal(JSON.parse(readFileSync(join(root, 'primary-command.json'))).status,
+          failed ? 'failed' : 'passed', 'Primary result must be durable before querying pages');
+        if (condition === 'query-failed') throw new Error('query canary-secret');
+        return condition.endsWith('leftover') ? [...before, leftover] : before;
+      }
+    };
+    if (condition.endsWith('receipt-failed')) options.write = (file, value, exclusive = true) => {
+      if (file.endsWith('browser-cleanup.json') && !exclusive)
+        throw Object.assign(new Error('receipt canary-secret'), { code: 'EACCES' });
+      writeFileSync(file, json(value), { flag: exclusive ? 'wx' : 'w' });
+    };
+    let caught;
+    try { await native.runNativeAttempt(request, options); }
+    catch (error) { caught = error; }
+    assert.equal(Boolean(caught), condition !== 'passed-restored');
+    const primary = JSON.parse(readFileSync(join(root, 'primary-command.json')));
+    const diagnostic = JSON.parse(readFileSync(join(root, 'controller-diagnostic.json')));
+    assert.equal(primary.attemptId, request.attemptId);
+    assert.equal(diagnostic.cleanup.attemptId, request.attemptId);
+    assert.equal(diagnostic.profileSha256, request.profileSha256);
+    assert.equal(primary.status, failed ? 'failed' : 'passed');
+    assert.equal(diagnostic.cleanup.status,
+      condition.endsWith('leftover') || condition === 'query-failed' ? 'failed' : 'verified');
+    assert.equal(diagnostic.native.summaryRef.sha256, hash(bytes));
+    assert.equal(diagnostic.native.completedRounds.length, failed ? 4 : 5);
+    assert.equal(diagnostic.native.lastCompletedRound.repeatEachIndex, failed ? 3 : 4);
+    assert.equal(readFileSync(summaryFile, 'utf8'), bytes, 'Never rewrite the native summary');
+    assert.equal(diagnostic.native.nativeStatus, failed ? 'running' : 'passed');
+    assert.equal(diagnostic.effectiveBudgets.nativeCommandMs, 1000);
+    assert.equal(diagnostic.effectiveBudgets.controllerMs, 10000);
+    assert(!existsSync(join(root, 'receipt.json')), 'The diagnostic is not a publication receipt');
+    assert(!json(diagnostic).includes('canary-secret'));
+    assert(!json(diagnostic).includes('https://'));
+    assert(Buffer.byteLength(json(diagnostic)) < 100000);
+    if (condition === 'timeout-leftover') {
+      assert.equal(diagnostic.interruption, 'timeout');
+      assert.equal(primary.error.code, 'ETIMEDOUT');
+      assert.match(caught.message, /native command: timeout.*browser restoration failed/);
+      assert.equal(diagnostic.ownedPages[0].presentAfter, true);
+      assert.equal(diagnostic.ownedPages[0].preExisting, false);
+    }
+    if (condition === 'cancelled-restored') assert.equal(diagnostic.interruption, 'cancelled');
+    if (condition === 'receipt-failed') {
+      assert.equal(primary.error.exitCode, 7);
+      assert.match(caught.message, /native command: command-failure.*persist-browser-cleanup/);
+      assert.equal(diagnostic.secondaryErrors[0].code, 'EACCES');
+    }
+    if (condition === 'passed-leftover') assert.equal(diagnostic.interruption, null);
+    if (condition === 'failed-restored') {
+      assert.equal(primary.error.exitCode, 7);
+      assert.equal(primary.error.stderr.truncated, true);
+    }
+    if (condition === 'passed-receipt-failed') {
+      assert.equal(primary.exitCode, 0);
+      assert.equal(diagnostic.secondaryErrors[0].stage, 'persist-browser-cleanup.json');
+    }
+    if (['failed-restored', 'cancelled-restored'].includes(condition)) {
+      assert.equal(diagnostic.ownedPages[0].presentAfter, false);
+      assert.deepEqual(diagnostic.cleanup.before, diagnostic.cleanup.after);
+    }
+  });
+}
+
+test('diagnostics do not fabricate missing, oversized or malformed native history', t => {
+  const root = mkdtempSync(join(tmpdir(), 'native-history-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(native.nativeProgress(root).lastCompletedRound, null);
+  const batch = join(root, 'batch');
+  mkdirSync(batch);
+  const file = join(batch, 'summary.json');
+  for (const content of ['{invalid', 'x'.repeat(4 * 1024 * 1024 + 1)]) {
+    writeFileSync(file, content);
+    const progress = native.nativeProgress(root);
+    assert.equal(progress.lastCompletedRound, null);
+    assert(progress.error);
+    assert.equal(readFileSync(file, 'utf8'), content);
+  }
+});
+
+test('profile failure reporting preserves feed authentication classification without raw output', () => {
+  const output = native.profileFailure(Object.assign(new Error('canary-secret'), {
+    stdout: 'Your token is invalid. canary-secret',
+    stderr: 'Authentication to package feed failed canary-secret', status: 2
+  }));
+  assert.match(output, /Authentication to package feed failed/);
+  assert.equal(JSON.parse(output).exitCode, 2);
+  assert(!output.includes('canary-secret'));
+});
+
+for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover', 'passed-restored']) {
+  test(`standalone profile publication gate: ${condition}`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'native-profile-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const scenarioFile = join(root, file);
+    mkdirSync(dirname(scenarioFile), { recursive: true });
+    writeFileSync(scenarioFile, 'synthetic L3 declaration');
+    const declarationSha = hash(readFileSync(scenarioFile));
+    const outputRoot = join(root, 'output');
+    const yarnEntryPoint = join(root, 'yarn.cjs');
+    writeFileSync(yarnEntryPoint, '');
+    const request = {
+      format: declarativeProfile, assignmentId: 'synthetic-profile',
+      baseRevision: 'a'.repeat(40), sourceRevision: 'a'.repeat(40),
+      evidenceIds: ['synthetic'], inputItemIds: ['synthetic'],
+      changedFiles: [file], testsAddedOrUpdated: [CASE], outputRoot,
+      options: { yarnEntryPoint, maxCases: 1, cdpEndpoint: 'http://127.0.0.1:9222/' }
+    };
+    const runtime = { execPath: process.execPath, cwd: () => root, env: {
+      PILOT_DECLARATIVE_REQUEST: json(request)
+    } };
+    const loader = {
+      loadExcelAgentDeclarationConfig: () => ({}),
+      loadExcelAgentScenarios: () => [scenario],
+      loadExcelAgentScenario: () => scenario,
+      loadExcelAgentExecutionSelection: () => ({ enabledCaseKeys: [CASE] })
+    };
+    const appRequire = name => {
+      if (name === 'ts-node') return { register() {} };
+      if (name.endsWith('excelAgentDeclaration.ts')) return loader;
+      if (name.endsWith('catalogParity.ts')) return { scenarioCatalogEntry: () => entry };
+      if (name === 'yaml') return { parse: () => ({}) };
+      if (name === '@1js/declarative-e2e-runtime')
+        return { sanitizeDiagnosticText: () => '[sanitized synthetic diagnostic]' };
+      throw new Error(`Unexpected synthetic module: ${name}`);
+    };
+    let inventories = 0;
+    const context = {
+      module: { exports: {} }, process: runtime, Buffer, URL, AbortSignal,
+      console: { log() {} },
+      fetch: async () => ({ ok: true, json: async () => {
+        inventories++;
+        return [{ id: 'existing', type: 'page', url: 'about:blank' },
+          ...(inventories > 1 && condition.endsWith('leftover')
+            ? [{ id: 'owned', type: 'page', url: 'about:blank' }] : [])];
+      } }),
+      require: name => {
+        if (name === 'node:module') return { createRequire: () => appRequire };
+        if (name !== 'node:child_process') return require(name);
+        return { execFileSync: (executable, args) => {
+          if (executable === 'git')
+            return args.includes('rev-parse') ? request.sourceRevision : '';
+          if (!args.includes('declarative:local')) return '';
+          const batch = join(outputRoot, 'batch');
+          mkdirSync(batch);
+          const { summary, execution } = nativeSummary();
+          execution.declarations[0].sha256 = declarationSha;
+          if (condition.startsWith('timeout') || condition.startsWith('failed')) {
+            summary.status = 'running';
+            summary.cases.pop();
+          }
+          for (const result of summary.cases) {
+            result.attachments[0].file = join(batch, result.attachments[0].file);
+            writeFileSync(result.attachments[0].file, json(execution));
+          }
+          writeFileSync(join(batch, 'summary.json'), json(summary));
+          writeFileSync(join(batch, 'selection.json'), json({
+            kind: 'runtime-selection', lane: 'aad-enterprise', repeats: 5,
+            selected: [{ id: CASE, sha256: declarationSha }]
+          }));
+          if (condition.startsWith('timeout') || condition.startsWith('failed'))
+            throw Object.assign(new Error('synthetic command failure'), {
+              code: condition.startsWith('timeout') ? 'ETIMEDOUT' : undefined, status: 3
+            });
+          return '';
+        } };
+      }
+    };
+    runInNewContext(readFileSync(new URL('../scripts/validation/1js-declarative-e2e.cjs',
+      import.meta.url), 'utf8'), context);
+    if (condition === 'passed-restored') {
+      await context.module.exports.main();
+      const receipt = JSON.parse(readFileSync(join(outputRoot, 'receipt.json')));
+      assert.equal(receipt.status, 'passed');
+      assert.equal(receipt.browserCleanup, 'verified');
+    } else {
+      await assert.rejects(context.module.exports.main(), /Native attempt failed/);
+      assert(!existsSync(join(outputRoot, 'receipt.json')));
+    }
+    assert.equal(inventories, 2);
+  });
+}
+
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'onejs-adapter-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -482,6 +705,49 @@ test('an exit-zero runner without native five-pass proof is blocked without auto
     undefined, null, { skillExecution: execution });
   assert.equal(calls, 1);
   assert.equal(results[0].status, 'blocked');
+});
+
+test('Controller records outer process interruption even when the profile cannot finish', async t => {
+  const ctx = await fixture(t);
+  const execution = await finalize(ctx);
+  await ctx.g(['add', '.']);
+  await ctx.g(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Synthetic final revision']);
+  const revision = await ctx.g(['rev-parse', 'HEAD']);
+  let summaryFile, summaryBytes, attemptId;
+  const results = await runValidation(ctx.config, ctx.ledger, ctx.job, ctx.repo, revision,
+    async (_exe, _args, _cwd, _timeout, env) => {
+      const request = JSON.parse(env.PILOT_DECLARATIVE_REQUEST);
+      attemptId = request.attemptId;
+      const batch = join(request.outputRoot, 'batch');
+      mkdirSync(batch, { recursive: true });
+      const { summary } = nativeSummary();
+      summary.status = 'running';
+      summary.cases.pop();
+      summaryBytes = json(summary);
+      summaryFile = join(batch, 'summary.json');
+      writeFileSync(summaryFile, summaryBytes);
+      writeFileSync(join(request.outputRoot, 'primary-command.json'),
+        json({ attemptId, status: 'running' }));
+      throw Object.assign(new Error('canary-secret'), {
+        killed: true, signal: 'SIGTERM', code: null, ownedProcessesExited: true
+      });
+    }, undefined, null, { skillExecution: execution });
+  assert.equal(results[0].status, 'blocked');
+  assert.equal(results[0].attemptCount, 1);
+  const artifact = JSON.parse(readFileSync(results[0].artifactRefs[0]));
+  const diagnostic = JSON.parse(readFileSync(artifact.output.nativeInterruption));
+  assert.equal(diagnostic.attemptId, attemptId);
+  assert.equal(diagnostic.interruption, 'controller-termination');
+  assert.equal(diagnostic.timeoutConfirmed, false);
+  assert.equal(diagnostic.primary.signal, 'SIGTERM');
+  assert.equal(diagnostic.effectiveBudgets.controllerMs, ctx.gate.timeoutMs);
+  assert.equal(diagnostic.browserRestoration, 'unverified');
+  assert.equal(diagnostic.native.lastCompletedRound.repeatEachIndex, 3);
+  assert.equal(diagnostic.native.completedRounds.length, 4);
+  assert.equal(readFileSync(summaryFile, 'utf8'), summaryBytes);
+  assert.equal(JSON.parse(readFileSync(diagnostic.profileCommandRef)).status, 'running');
+  assert(!json(diagnostic).includes('canary-secret'));
 });
 
 for (const condition of ['valid', 'tampered', 'proof-drift', 'managed', 'managed-cleanup-failure']) {

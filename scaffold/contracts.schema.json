@@ -21,6 +21,7 @@
     { "$ref": "#/$defs/filterProposerHandoff" },
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/reviewedHandoff" },
+    { "$ref": "#/$defs/adoTestRequestHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -797,7 +798,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "namespace", "recordId", "revision", "versionBasis", "provenance", "ownerConfirmation"],
           "properties": {
-            "kind": { "enum": ["ado", "icm", "workiq", "fixture"] },
+            "kind": { "enum": ["ado", "ado-test-request", "icm", "workiq", "fixture"] },
             "namespace": { "$ref": "#/$defs/text" },
             "recordId": { "$ref": "#/$defs/text" },
             "revision": { "$ref": "#/$defs/nullableText" },
@@ -820,7 +821,7 @@
           },
           "allOf": [
             {
-              "if": { "properties": { "kind": { "const": "ado" } } },
+              "if": { "properties": { "kind": { "enum": ["ado", "ado-test-request"] } } },
               "then": { "properties": { "revision": { "$ref": "#/$defs/text" } } }
             },
             {
@@ -891,7 +892,7 @@
         }
       },
       "allOf": [{
-        "if": { "properties": { "source": { "properties": { "kind": { "const": "ado" } } } } },
+        "if": { "properties": { "source": { "properties": { "kind": { "enum": ["ado", "ado-test-request"] } } } } },
         "then": { "properties": { "snapshotAt": { "$ref": "#/$defs/utc" } } }
       }]
     },
@@ -963,6 +964,40 @@
           "then": { "properties": { "reportEligibility": { "const": "unavailable" }, "handoffEligibility": { "const": "needs-evidence" }, "defectConfirmation": { "const": "unconfirmed" } } }
         }
       ]
+    },
+    "adoTestRequestHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
+      "properties": {
+        "format": { "const": "ado-test-request-handoff-v1" },
+        "intakeId": { "$ref": "#/$defs/text" },
+        "intakeSha256": { "$ref": "#/$defs/rsiHash" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "review": { "$ref": "#/$defs/reviewedHandoff/properties/review" },
+        "planning": {
+          "type": "object", "additionalProperties": false,
+          "required": ["improvement", "testCoverage", "requestedOutcome"],
+          "properties": {
+            "improvement": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/improvement" },
+            "requestedOutcome": { "$ref": "#/$defs/text" },
+            "skillInput": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/skillInput" },
+            "testCoverage": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repoId", "capability", "sourceRevision", "searchStatus", "existingTests", "coverageGaps", "unknowns", "rationale"],
+              "properties": {
+                "repoId": { "$ref": "#/$defs/text" },
+                "capability": { "$ref": "#/$defs/text" },
+                "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+                "searchStatus": { "enum": ["complete", "partial", "not-run"] },
+                "existingTests": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/testCoverage/properties/existingTests" },
+                "coverageGaps": { "$ref": "#/$defs/texts" },
+                "unknowns": { "$ref": "#/$defs/texts" },
+                "rationale": { "$ref": "#/$defs/text" }
+              }
+            }
+          }
+        }
+      }
     },
     "reviewedHandoff": {
       "type": "object", "additionalProperties": false,

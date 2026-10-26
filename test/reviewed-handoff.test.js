@@ -20,6 +20,8 @@ import {
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
 
+import { collectTestRequest, prepareTestRequest, acceptTestRequest } from '../src/ado-test-request.js';
+
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
 const fixture = JSON.parse(readFileSync(
@@ -50,7 +52,7 @@ const oneJsRepairRunner = readFileSync(
   new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
   'utf8');
 
-async function setup(t, { inputFormat = null } = {}) {
+async function setup(t, { inputFormat = null, sourceCode = 'export const value = 1;\n' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
@@ -59,7 +61,7 @@ async function setup(t, { inputFormat = null } = {}) {
   mkdirSync(join(reference, '.github', 'skills', 'integration-test-authoring'), { recursive: true });
   mkdirSync(join(reference, 'src'), { recursive: true });
   writeFileSync(join(reference, skillPath), '# Fixture integration-test skill\nAdd focused tests.\n');
-  writeFileSync(join(reference, 'src', 'value.js'), 'export const value = 1;\n');
+  writeFileSync(join(reference, 'src', 'value.js'), sourceCode);
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
   await git(['init', '--quiet']);
@@ -136,6 +138,170 @@ async function setup(t, { inputFormat = null } = {}) {
   });
   return { root, remote, config, ledger, baseRevision, additionalLedgers };
 }
+
+const formulaSource = `export function removeDuplicates(rows) {
+  const seen = new Set();
+  return rows.filter(row => {
+    const key = JSON.stringify([row.item, row.quantity, row.unitPrice]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((row, index) => ({ ...row, formula: '=B' + (index + 2) + '*C' + (index + 2) }));
+}
+`;
+const formulaTest = `import test from 'node:test';
+import assert from 'node:assert/strict';
+import { removeDuplicates } from '../src/value.js';
+test('deduplication preserves formulas at surviving row positions', () => {
+  const rows = [
+    { item: 'Pen', quantity: 2, unitPrice: 3, formula: '=B2*C2' },
+    { item: 'Pen', quantity: 2, unitPrice: 3, formula: '=B3*C3' },
+    { item: 'Book', quantity: 1, unitPrice: 12, formula: '=B4*C4' }
+  ];
+  const before = structuredClone(rows);
+  assert.deepEqual(removeDuplicates(rows), [
+    { item: 'Pen', quantity: 2, unitPrice: 3, formula: '=B2*C2' },
+    { item: 'Book', quantity: 1, unitPrice: 12, formula: '=B3*C3' }
+  ]);
+  assert.deepEqual(rows, before);
+});
+`;
+async function requestFixture(t) {
+  const ctx = await setup(t, { sourceCode: formulaSource });
+  ctx.config.adoTestRequests = {
+    ...JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url))),
+    enabled: true, scopeApproved: true, approvalRef: 'synthetic-intake-experiment'
+  };
+  ctx.item = { id: 123, rev: 1, snapshotAt: '2026-10-01T00:00:00Z', fields: {
+    'System.TeamProject': 'OC', 'System.AreaPath': ctx.config.adoTestRequests.areaPath,
+    'System.WorkItemType': 'Bug', 'System.State': 'New', 'System.Tags': 'AgenticTestRequest',
+    'System.Title': 'Synthetic formula preservation coverage', 'System.CreatedDate': '2026-10-01T00:00:00Z',
+    'System.Description': readFileSync(new URL('../scaffold/ado-test-request.sample.md', import.meta.url), 'utf8')
+  } };
+  ctx.read = async () => ctx.item;
+  ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  ctx.handoff = {
+    format: 'ado-test-request-handoff-v1', intakeId: ctx.intake.id, intakeSha256: hash(json(ctx.intake)),
+    reviewedAt: now(), review: structuredClone(fixture.review), planning: structuredClone(fixture.planning)
+  };
+  Object.assign(ctx.handoff.review, {
+    observedBehavior: 'The synthetic deduplication helper has no focused regression test.',
+    expectedBehavior: 'Keep the first distinct rows, preserve formulas and leave input untouched.',
+    hypotheses: ['The fixture helper supports this contract.'], counterEvidence: [],
+    reviewer: 'synthetic-request-reviewer', rationale: 'Fixture inspection establishes the bounded coverage gap.',
+    nextAction: 'Add the formula-preservation test and behavior card in the fixture test directory.'
+  });
+  ctx.handoff.planning.improvement.theme = 'Synthetic formula-preservation coverage';
+  ctx.handoff.planning.testCoverage.sourceRevision = ctx.baseRevision;
+  ctx.handoff.planning.testCoverage.coverageGaps = ['Duplicate removal lacks formula and input-preservation assertions.'];
+  return ctx;
+}
+
+test('test request prepares shared planning with exact provenance and source revision', async t => {
+  const ctx = await requestFixture(t);
+  const first = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+  const second = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+  assert.equal(first.assignment.id, second.assignment.id);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+  assert.equal(ctx.ledger.get('evidence', ctx.intake.evidenceId).source.kind, 'ado-test-request');
+  assert.equal(first.assignment.intent, 'improvement');
+  assert.match(first.assignment.questions[0], /untrusted scenario data/);
+  assert.match(first.assignment.questions[0], /preserving all formulas/);
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  await assert.rejects(dispatch(ctx.config, ctx.ledger, first.assignment.id), /dedicated source-rechecking/);
+});
+
+for (const condition of ['stale-source', 'policy-drift', 'wrong-revision', 'missing-field',
+  'unknown-coverage', 'wrong-route', 'changed-review', 'missing-exclusion']) {
+  test(`test request rejects ${condition} before dispatch`, async t => {
+    const ctx = await requestFixture(t);
+    if (condition === 'stale-source') {
+      ctx.item.rev++;
+      await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+    }
+    if (condition === 'policy-drift') ctx.config.adoTestRequests.tag = 'Changed';
+    if (condition === 'wrong-revision') ctx.handoff.planning.testCoverage.sourceRevision = 'f'.repeat(40);
+    if (condition === 'missing-field') {
+      ctx.item.rev++;
+      ctx.item.fields['System.Description'] = '';
+      ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+      ctx.handoff.intakeId = ctx.intake.id;
+      ctx.handoff.intakeSha256 = hash(json(ctx.intake));
+    }
+    if (condition === 'unknown-coverage') ctx.handoff.planning.testCoverage.unknowns = ['Not inspected'];
+    if (condition === 'wrong-route') ctx.handoff.planning.testCoverage.repoId = '1js';
+    if (condition === 'changed-review') {
+      prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+      ctx.handoff.review.nextAction = 'Changed';
+    }
+    if (condition === 'missing-exclusion') ctx.handoff.review.exclusionsChecked.pop();
+    assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff));
+    assert.equal(ctx.ledger.status().jobs.length, condition === 'changed-review' ? 1 : 0);
+  });
+}
+
+test('test request cannot execute without grants or after withdrawal', async t => {
+  const ctx = await requestFixture(t);
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, { execute: true }), /authorization/);
+  assert.equal(ctx.ledger.status().jobs.length, 0);
+  ctx.item.fields['System.State'] = 'Closed';
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read
+  }), /approved test-request/);
+  assert.equal(ctx.ledger.status().jobs[0].state, 'prepared');
+});
+
+test('sample request exercises intake through real validation and local push, with a negative oracle', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  ctx.config.rsi = structuredClone(rsiPolicy);
+  await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+  let models = 0, drafts = 0;
+  const options = {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
+    dispatchDependencies: {
+      runModel: async (_config, _ledger, _job, assignment, _investigation, toolkit) => {
+        models++;
+        assert.equal(assignment.intent, 'improvement');
+        toolkit.write('test/behavior.test.js', formulaTest);
+        toolkit.write('test/behavior-card.md', '# Synthetic formula preservation\nCheck surviving rows, row-relative formulas and immutable input.\n');
+        toolkit.finish({
+          outcome: 'propose-change', findings: 'Added the synthetic request regression and behavior card.',
+          title: 'Preserve formulas during duplicate removal', description: 'Synthetic controller qualification only.',
+          skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
+            changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
+            testsAddedOrUpdated: ['deduplication preserves formulas at surviving row positions'],
+            behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false }
+        });
+      },
+      createDraft: async (_config, _ledger, _job, _repo, revision) => {
+        drafts++;
+        return { url: 'https://example.invalid/synthetic-test-request/draft/1', isDraft: true, headRevision: revision };
+      }
+    }
+  };
+  const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, options);
+  assert.equal(result.result.outcome, 'draft-pr-validated', json(result.result));
+  assert.equal(result.result.validation[0].sourceRevision, result.result.sourceRevision);
+  assert.equal(result.result.draftPR.headRevision, result.result.sourceRevision);
+  assert.equal(result.rsi.state, 'delivered');
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, options), /never-dispatched/);
+  assert.equal(models, 1);
+  assert.equal(drafts, 1);
+  const bad = join(ctx.root, 'negative-oracle');
+  mkdirSync(join(bad, 'src'), { recursive: true });
+  mkdirSync(join(bad, 'test'));
+  writeFileSync(join(bad, 'src/value.js'), formulaSource.replace("formula: '=B' + (index + 2) + '*C' + (index + 2)",
+    'formula: row.quantity * row.unitPrice'));
+  writeFileSync(join(bad, 'test/behavior.test.js'), formulaTest);
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const failure = spawnSync(process.execPath, ['--test', 'test/behavior.test.js'], { cwd: bad, encoding: 'utf8', env });
+  assert.notEqual(failure.status, 0);
+  assert.match(failure.stdout, /deduplication preserves formulas/);
+});
 
 async function addOneJsRepository(ctx, {
   enableDraftBuild = false, validationScript = null

@@ -44,6 +44,7 @@ import { createPreparedOutputObserver } from './prepared-output-observer.js';
 
 export { command };
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
+const adoTestRequestPermit = Symbol('ado-test-request-controller');
 const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
 const authoringSuccessorPermit = Symbol('authoring-successor-controller');
@@ -3908,6 +3909,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const currentEvidence = new Set(ledger.latestEvidence().map(e => e.id));
   requireThat(assignment.evidenceIds.every(e => currentEvidence.has(e)), 'New source evidence requires review before dispatch', 'blocked-reconciliation');
   const fixtureEvidence = assignment.evidenceIds.map(e => ledger.get('evidence', e));
+  if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
+    requireThat(dependencies[adoTestRequestPermit] === true,
+      'ADO test requests require the dedicated source-rechecking dispatch entrypoint', 'blocked-authorization');
+    (await import('./ado-test-request.js')).requireTestRequestAssignment(config, ledger, assignment);
+  }
   const permittedReviewedHandoff = dependencies[reviewedHandoffPermit] === true &&
     assignment.intent === 'improvement' && assignment.skillBindingId &&
     fixtureEvidence.every(e => e?.source.kind === 'fixture' && e.source.provenance === 'synthetic' &&
@@ -4342,6 +4348,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
 
 export async function dispatchReviewedHandoff(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [reviewedHandoffPermit]: true });
+}
+export async function dispatchAdoTestRequest(config, ledger, id, dependencies = {}) {
+  const { verifyCurrentTestRequest } = await import('./ado-test-request.js');
+  await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+  return dispatch(config, ledger, id, { ...dependencies, [adoTestRequestPermit]: true });
 }
 export async function dispatchLocalValidationContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [validationContinuationPermit]: true });

@@ -33,6 +33,14 @@ in collection-only storage and keep saved replay distinct. The coordinating host
 still supplies the authorized external FILTER executor; this is not a standalone
 service or qualified unattended end-to-end run.
 
+## Crew-authored ADO test requests
+
+Use the [five-field template and explicit-ID intake](scaffold/ADO-TEST-REQUESTS.md)
+for the owner-selected `OC\Excel\Intelligence\Copilot\Excel Agent\Automation`
+area. This opt-in lane preserves the resolved-bug cohort and reuses reviewed
+coverage planning, repository-native validation and Draft PR delivery. It is not
+a deployed queue watcher or automatic ADO comment responder.
+
 ## Account-free quick start
 
 Prerequisites: **Node.js 24 LTS**, npm and Git on PATH. Windows PowerShell is

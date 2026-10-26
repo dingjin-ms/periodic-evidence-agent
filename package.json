@@ -22,6 +22,7 @@
     "@azure/identity": "4.13.1",
     "@github/copilot-sdk": "1.0.18",
     "ajv": "8.17.1",
-    "ajv-formats": "3.0.1"
+    "ajv-formats": "3.0.1",
+    "parse5": "8.0.1"
   }
 }

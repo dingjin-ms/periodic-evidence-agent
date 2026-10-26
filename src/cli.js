@@ -26,6 +26,7 @@ import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
+import { collectTestRequest, acceptTestRequest } from './ado-test-request.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
@@ -89,6 +90,9 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
+  node src\\cli.js ado-test-request --id NUMBER --collect --config pilot.local.json
+  node src\\cli.js submit-test-request --file handoff.json --prepare --config pilot.local.json
+  node src\\cli.js submit-test-request --file handoff.json --execute --authorize-commit --authorize-push --authorize-draft-pr --config pilot.local.json
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --prepare [--intent improvement|defect-fix]
@@ -163,6 +167,26 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (['ado-test-request', 'submit-test-request'].includes(action)) {
+    requireThat(option('--config') && !option('--config').startsWith('--'),
+      'Test-request commands require an explicit --config', 'blocked-authorization');
+    const switches = action === 'ado-test-request' ? ['--collect']
+      : ['--prepare', '--execute', '--authorize-commit', '--authorize-push', '--authorize-draft-pr'];
+    const values = action === 'ado-test-request' ? ['--config', '--id'] : ['--config', '--file'];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...switches, ...values].includes(key),
+        'Unknown or duplicate test-request option', 'blocked-scope');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'),
+        'Test-request option needs a value');
+    }
+    requireThat(action === 'ado-test-request'
+      ? seen.has('--collect') && /^\d+$/.test(option('--id') ?? '')
+      : seen.has('--file') && seen.has('--prepare') !== seen.has('--execute'),
+    'Test-request commands require explicit collection or prepare/execute inputs', 'blocked-authorization');
+  }
   if (action.startsWith('one-shot-')) {
     requireThat(option('--config') && !option('--config').startsWith('--'),
       'One-shot controls require an explicit --config', 'blocked-authorization');
@@ -544,6 +568,17 @@ try {
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
+      case 'ado-test-request':
+        result = await collectTestRequest(config, ledger, Number(option('--id')));
+        break;
+      case 'submit-test-request':
+        result = await acceptTestRequest(config, ledger, input(), {
+          execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        });
+        break;
       case 'submit-reviewed-handoff': {
         requireThat(args.includes('--prepare') !== args.includes('--execute'),
           `${action} requires exactly one of --prepare or --execute`);

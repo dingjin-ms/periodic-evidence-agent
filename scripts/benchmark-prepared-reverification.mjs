@@ -110,6 +110,9 @@ try {
   report.journals = readdirSync(root).filter(name =>
     name.includes('.dependency-verification-')).map(name =>
     readFileSync(join(root, name), 'utf8').trim().split('\n').map(JSON.parse));
+  assert.equal(report.journals.length, 11);
+  assert.equal(report.journals.filter(records =>
+    records[0].verificationMode === 'pinned-byte-digest-reverification').length, 5);
   for (const records of report.journals) {
     const expected = records[0].verificationMode === 'pinned-byte-digest-reverification'
       ? ['copiedWorkspace', 'retainedSource']

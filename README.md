@@ -857,14 +857,27 @@ the qualified base. Changes affecting existing consumers require an explicit
 consumer-closure handoff, not an unapproved expansion of the selected live batch.
 
 After the bounded skill returns, a separately approved Controller registration
-step updates only the selected entries in the reviewed catalog, lifecycle
-catalog, capability matrix and canonical package script. These four owner files
+step updates only the selected entries in the reviewed catalog, app lifecycle
+snapshot, suite-owned reliability catalog, capability matrix and canonical
+package script. These five owner files
 are never added to the model's write allowlist. New cases use observing
 enforcement and the explicitly configured registration priority. Existing
 disabled cases, titles, tags, assertions and cleanup contracts cannot be removed,
 renamed, retagged or weakened by registration. Execution-selection policy is not
 changed. Registration emits an assignment-bound, profile-hashed receipt with
 exact owner file hashes; later source edits invalidate it.
+For a batch with unsupported experience tags, the approved registration policy
+must supply a non-empty `reason` (at most 1,024 characters) that explains the
+batch's qualification limitation. It is copied into each new catalog entry,
+never inferred by the model, and cannot rewrite an existing case's reason.
+All three catalogs must agree before registration; pre-existing drift requires
+an explicit owner handoff rather than silently synchronizing unrelated entries.
+Registration runs the source-owned Aurora case-tag validator after formatting
+and before emitting its receipt. Standalone preflight and final-SHA validation
+run that same validator before native loading, the native dependency-install
+fallback or browser execution, so incomplete registration cannot reach a live
+batch. Standalone environment preparation may install dependencies before
+invoking this preflight.
 Repair rounds regenerate metadata against the qualified base, preserving its
 contracts without treating an earlier unsuccessful round's additions as history.
 Explicit validation continuations verify the prior immutable receipt and source

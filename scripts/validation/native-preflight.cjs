@@ -9,6 +9,9 @@ function main() {
   const request = native.validateRequest(JSON.parse(process.env.PILOT_DECLARATIVE_REQUEST));
   const root = fs.realpathSync(process.cwd());
   assert.equal(request.options.installDependencies, false);
+  stage = 'case-tags';
+  native.validateCaseTags(root, request);
+  stage = 'native-load';
   Object.assign(process.env, {
     DONT_UPDATE_ENV: 'true', XLO_OMNI_FLIGHT: 'true',
     XLO_SHARED_AGENT_SHELL_FLIGHT: 'true'

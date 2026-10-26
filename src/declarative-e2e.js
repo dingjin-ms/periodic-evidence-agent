@@ -28,7 +28,10 @@ export function configureDeclarativeGate(gate, configFile) {
     options.maxCases <= 10 && typeof options.installDependencies === 'boolean' &&
     typeof options.registration?.approved === 'boolean' &&
     ['P0', 'P1', 'P2'].includes(options.registration.priority) &&
-    Object.keys(options.registration).every(key => ['approved', 'priority'].includes(key)),
+    Object.keys(options.registration).every(key => ['approved', 'priority', 'reason'].includes(key)) &&
+    (options.registration.reason === undefined ||
+      (typeof options.registration.reason === 'string' &&
+        options.registration.reason.trim() && options.registration.reason.length <= 1024)),
   'Invalid bounded declarative registration/execution policy');
   if (options.commandTimeoutMs !== undefined)
     requireThat(Number.isInteger(options.commandTimeoutMs) && options.commandTimeoutMs > 0,

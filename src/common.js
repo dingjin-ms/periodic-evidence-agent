@@ -4,6 +4,7 @@ import { resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { hash } from './hash.js';
+import { configureDeclarativeGate } from './declarative-e2e.js';
 import { failureDetails } from './failure-details.js';
 
 export class PilotError extends Error {
@@ -338,6 +339,7 @@ export function configAt(path) {
       `Repository ${repo.id} skill binding ${binding.id} references an unknown authoring provider`);
     }
     for (const gate of repo.validationGates ?? []) {
+      configureDeclarativeGate(gate, path);
       validationPackageAuth(gate);
       validationLfsPaths(gate);
       requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
@@ -353,6 +355,11 @@ export function configAt(path) {
         `Repository ${repo.id} validation gate ${gate.id} profile hash mismatch`);
       gate.profilePath = profilePath;
     }
+    if (repo.commitTrailers !== undefined)
+      requireThat(Array.isArray(repo.commitTrailers) &&
+        repo.commitTrailers.every(trailer => typeof trailer === 'string' &&
+          /^[A-Za-z][A-Za-z-]+: [^\r\n\0]+$/.test(trailer)),
+      `Repository ${repo.id} commitTrailers must contain single-line Git trailers`);
   }
   if (config.repositories.some(repo => repo.skillBindings?.some(binding =>
     config.authoringProviders?.[binding.authoringProvider]?.type === 'agency-local'))) {

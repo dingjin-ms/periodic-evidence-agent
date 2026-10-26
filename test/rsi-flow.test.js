@@ -147,6 +147,7 @@ test('target advancement invalidates draft admission including a previous reserv
   const reference = ctx.config.rsi.targetBaseline.referenceCheckout;
   writeFileSync(join(reference, 'test', 'coverage.txt'), 'new target state\n');
   const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks',
+    '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
     '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
   { cwd: reference, encoding: 'utf8', windowsHide: true, timeout: 10000 });
   git(['add', '.']); git(['commit', '--quiet', '-m', 'Target advanced']);

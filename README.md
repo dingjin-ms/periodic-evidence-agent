@@ -98,6 +98,30 @@ there is no automatic cleanup, archive transfer, candidate promotion or rollout.
 
 ## Devbox repository setup
 
+An isolated validation-preparation preflight can inspect an already authored,
+sealed blocked declarative assignment without collection, authoring, browser
+execution, publication or ledger mutation:
+
+```powershell
+node scripts\validation\preflight.mjs --config pilot.local.json --assignment <existing-id> --output <fresh-receipt.json> --workspace <fresh-absolute-path>
+```
+
+The receipt persists each preparation phase, exact source/profile/controller
+hashes, dependency byte verification and native loading, typecheck and case
+selection. Optional repeated `--sparse-path <directory>` arguments evaluate a
+bounded checkout closure; they do not change the formal live configuration.
+Preflight retains its detached worktree and evidence for inspection, and cannot
+count toward the five native product passes or authorize publication. Git objects
+are shared, while the validation worktree has its own HEAD/index and independently
+copied, link-rebased dependency outputs. Windows preparation commands use the
+owned Job Object boundary and confirm process-tree exit before cleanup; failures
+retain the primary preparation phase separately from cleanup failures.
+To reverify a completed preflight without recopying outputs, supply its receipt
+with `--prepared-receipt <previous-receipt.json>`, the same `--workspace` and a
+fresh `--output`. This rereads source and isolated dependency bytes, checks the
+unchanged sealed assignment, and reruns native preparation checks; no previous
+pass or byte hash is trusted without revalidation.
+
 This optional full product-development setup is not a prerequisite for the
 local controller's existing-Agency FILTER path. Account-free pilot checks above
 need no product checkout. Configure product repositories only for authorized
@@ -644,6 +668,13 @@ write-prefix allowlist inside the repository bounds. The controller pins that
 allowlist into the assignment, applies it to every authoring and repair tool
 call, and verifies the complete base-to-candidate diff before commit and push.
 
+A resolved production bug can still justify missing regression coverage.
+`testCoveragePlan.purpose: "regression-coverage"` explicitly records that intent
+for the integration/declarative test-only path. It does not replace the
+current cohort or existing-fix review requirements below. The same source
+eligibility rules apply to initial dispatch and explicitly authorized local
+continuations; neither a plan nor a continuation clears tracked reconciliation.
+
 Resolved/Closed ADO sources may execute only as otherwise eligible,
 source-bound test-coverage improvements in the Fixed/Duplicate cohort.
 They require a current complete coverage plan with a remaining gap and no
@@ -798,6 +829,74 @@ retry, or credential-bearing configuration is performed. Missing Git LFS,
 unavailable objects, authentication failure or object mismatch blocks validation
 with the original sanitized native failure, never a successful preparation receipt.
 
+### Built-in 1JS declarative execution
+
+The `1js-declarative-e2e-v1` profile is a repository-level execution adapter,
+not a script to write for each incident. Its packaged implementation is
+`scripts/validation/1js-declarative-e2e.cjs`. The example 1JS gate selects this
+profile by name; configuration resolves its fixed arguments and content hash
+automatically. Its execution settings and registration policy participate in
+read-only repository-skill qualification. Changing them requires requalification.
+Example routing, authoring, registration, execution and publication remain off.
+
+Configure the installed product-compatible Node executable, the installed Yarn
+or Corepack JavaScript entry point, and the signed-in loopback HTTP CDP endpoint
+once in private deployment settings. Do not put case IDs or evidence-specific
+commands in that configuration. The Controller derives the batch from the
+qualified assignment's reviewed mini-spec items, skill-reported scenario IDs,
+and changed L3 files. This version supports the Excel Agent ordinary AAD lane,
+one explicitly changed scenario per input item, with a configurable bound of
+one to ten cases. Shared-only changes, other applications and identity lanes
+require an owner capability handoff, not an implicit fallback or whole-suite run.
+The example does not narrow the checkout to app sources: native execution also
+needs the pinned Yarn, scoped installer, build tools and transitive package
+sources. An app-only sparse checkout is not a prepared execution lane.
+Shared YAML changes are restricted to new UI-map keys and appended composites:
+existing entries and resource contracts must remain semantically identical to
+the qualified base. Changes affecting existing consumers require an explicit
+consumer-closure handoff, not an unapproved expansion of the selected live batch.
+
+After the bounded skill returns, a separately approved Controller registration
+step updates only the selected entries in the reviewed catalog, lifecycle
+catalog, capability matrix and canonical package script. These four owner files
+are never added to the model's write allowlist. New cases use observing
+enforcement and the explicitly configured registration priority. Existing
+disabled cases, titles, tags, assertions and cleanup contracts cannot be removed,
+renamed, retagged or weakened by registration. Execution-selection policy is not
+changed. Registration emits an assignment-bound, profile-hashed receipt with
+exact owner file hashes; later source edits invalidate it.
+Repair rounds regenerate metadata against the qualified base, preserving its
+contracts without treating an earlier unsuccessful round's additions as history.
+Explicit validation continuations verify the prior immutable receipt and source
+before recording a new assignment-bound receipt; they do not rerun registration.
+
+The Controller commits the authored declarations and owner metadata together,
+respecting Git hooks. Optional repository `commitTrailers` contain single-line
+Git trailers, such as the invoking session's provenance; do not hard-code a
+session into the reusable profile. Validation uses a clean isolated checkout of
+that final SHA. The native profile runs typecheck, declarative unit tests,
+strict repair/catalog/lifecycle validation, then one native local batch with
+five repetitions, one worker, zero retries and fail-fast behavior. Controller
+infrastructure retries cannot silently rerun this live batch.
+
+Successful exit alone is insufficient: validation checks the exact native
+selection and declaration hashes, five distinct expected passes per scenario,
+protected business-contract events, every declared cleanup step and CDP tab
+preservation. It never closes user tabs or automatically deletes leaked tabs.
+Native output and the source-bound receipt remain under the private Controller
+state directory after the validation checkout is removed. Only an independently
+authorized dispatch with every required gate passing can reach push, Draft PR
+or the separately configured non-blocking build.
+
+Product dependencies and authenticated browser/feed setup are deployment
+prerequisites, not model-authored glue. The profile never accepts credentials in
+the assignment. `installDependencies` is off by default; when separately
+approved, a missing native dependency triggers the repository's scoped Yarn
+installer and native build once, rather than using another checkout's binaries.
+The scoped installer runs with its native `--skip-auth` option; unavailable feed
+access blocks execution rather than starting interactive sign-in inside a gate.
+Neither enabling the profile nor qualification grants publication permissions.
+
 The checked-in OneNote profile is
 `scripts/validation/office-agent-onenote-bootstrap-progress.ps1`.
 Its version 3 plan retains the controller-owned Azure Artifacts authentication
@@ -917,6 +1016,146 @@ imports the original evidence/review/plan into a separate empty ledger and
 prepares a new session for the same logical assignment. It never launches the
 model, resets the old job, edits its receipts, retries validation or republishes.
 An interrupted reservation or a second continuation requires reconciliation.
+
+For the exact `blocked-runtime` / `Copilot executable not found on PATH`
+rejection, use `agent proposer continue-runtime-launch --prepare|--execute`.
+Preparation takes `previousConfigPath`, `previousAssignmentId` and `authorization`;
+execution takes only the prepared `assignmentId`. The configurations must match
+except for separate state directories. Correct the private launcher's absolute
+path in both configurations first; no source, permission or budget change is
+allowed. Authorization must have kind `runtime-launch-path`, approve one model
+attempt after the failure, pin the previous assignment/attempt, source and
+controller revisions, next configuration hash, launcher `cliSha256` and a
+`runtimeSmoke: { path, sha256 }` receipt. The offline smoke must retain the same
+`cliPath` and `cliSha256`, prove custom-tool execution, rejection of unavailable
+shell tools, and no model or workplace read.
+Preparation requalifies the skill and verifies exactly zero authoring tool calls,
+native invocations and publication operations. Execution rechecks immutable
+predecessor receipts, source eligibility, launcher bytes and the clean qualified
+checkout before claiming the original task workspace once. The blocked job/result
+remain unchanged; a fresh attempt and bilateral reservation record the reuse.
+Ordinary dispatch, changed evidence/configuration, consumed reservations and
+subsequent model/native failures cannot use this narrow recovery path.
+Its recorded one-attempt authorization permits only that continuation even when
+general dispatch stays disabled; it never enables the scheduler or other jobs.
+
+For an authoring result classified `bounded-edit-capability-unavailable`, use
+`agent proposer continue-authoring-tools --prepare|--execute` after fixing the
+bounded tool contract. This separate path requires one terminal read-only
+authoring round, zero writes, native validation and publication, and a clean
+owned checkout at the qualified base. It also supports the attested workspace
+previously reused by the runtime-launch continuation, checking both original
+ledgers and immutable receipts. A fresh user authorization with kind
+`bounded-authoring-tool` pins the predecessor, source, controller and next
+configuration, with `maxModelAttempts: 1`. Only separate state placement and
+explicit `executionBounds` changes to `workerMaxToolCalls` (at most 240) and
+`maxValidationRepairRounds` (at most 10) may differ; each change contains
+`before` and `after`. Source, native gates, publication scope and other limits
+remain unchanged. Preparation reserves once; execution rechecks and claims the
+same workspace without resetting old attempts or enabling general dispatch.
+
+The same entrypoint can reconcile a read-only
+`missing-mid-flow-protected-assertion-capability` result only with an owner-reviewed
+`capabilityResolution: { path, sha256 }` artifact. Its
+`existing-declarative-capability-v1` report pins the qualified source, existing
+`assert`/`visible` primitive, native-loader proof and at least three Git source
+file digests. Both preparation and claim recheck the artifact and source bytes;
+the model receives the reviewed explanation, not permission to change the harness.
+Consumed authoring and runtime ancestry is checked recursively with a depth bound
+of three. Reservations are attempt-specific and every previous result is retained.
+An explicit user grant covering work until native validation may use
+`scope: "until-native-validation"` and the immediate predecessor authorization's
+`priorAuthorizationSha256`, retaining its original `authorizedAt`. This does not
+invent a later user approval or authorize a second claim of any attempt; other
+authorizations must still postdate their blocked predecessor.
+
+A successful authored proposal that failed its first owner registration before
+commit may also continue through this entrypoint with a content-bound
+`registrationRecovery` review (`uncommitted-registration-recovery-v1`).
+The review binds the prior assignment, attempt, result and every authored file
+digest, and records repaired dependencies/native loader with zero product
+invocations. Preparation and claim require the exact declared uncommitted diff,
+no commit, native validation or publication, and the single blocked round-zero
+registration. No Controller metadata changes are admitted. Every ancestor is
+still verified; only the reviewed descendant diff may explain a formerly clean
+ancestor's shared checkout. The retained proposal and owner feedback are given
+to a fresh bounded authoring round, rather than resetting the failed job or
+silently rerunning registration. This is not evidence of a passing product test.
+An optional `registrationRecovery.ownerReviewDirectory` holds an external
+pre-commit owner/security review rendezvous. Each round writes a fresh request
+with exact changed-file digests, waits at most thirty minutes for a matching
+`repository-owner-review-v1` approval, and rechecks source bytes before commit.
+Approval is outside the restricted worker workspace; missing, stale, rejected
+or changed-source reviews block before commit. The host performs the repository's
+required security review and applicable pre-commit checks against that snapshot.
+The request includes proposal-time publication text. The owner may return a
+`publicationDescription` using the applicable repository PR template, limited to
+3000 characters to reserve room for the Controller's final source/build receipts.
+This changes publisher-owned text only, not the reviewed files or publication scope.
+
+A first round-zero owner-review timeout after successful registration can use
+`ownerReviewRecovery` instead of `registrationRecovery`. Its immutable
+`owner-review-timeout-recovery-v1` proof binds the unchanged seven-file snapshot,
+prior result, original request and registration artifact, and successful
+build/unit/format/lint receipts with hashed logs. Preparation and claim reject
+any commit, validation, publication, extra files or operations, stale approval,
+changed metadata, or changed gates. The new attempt rebinds registration and
+reuses the qualified proposal with **zero new initial model calls**, then requests
+a fresh owner approval before committing. Native repair rounds remain bounded
+by the unchanged configuration. The original timed-out job and request stay
+terminal; never add a late approval or reset them. Consumed ancestors retain
+their original snapshot proofs while the independently reviewed leaf snapshot
+explains subsequent edits in the same owned checkout.
+
+Declarative validation still runs in a separate clean final-SHA clone. When the
+authored checkout already contains restored dependencies and compiled outputs,
+the Controller copies only Git-ignored `ooui/.store`, `node_modules`, and
+`lib`/`dist`/`out` entries using its existing snapshot materializer. It rebases
+internal links into the validation clone and requires matching content
+fingerprints before/after copying, unchanged clean revisions, and no overlap
+with existing clone files. Copying has a thirty-minute deadline. Missing,
+escaping or changed snapshot content blocks validation; it never counts as a
+passing native test. The five-pass runner/profile and retry policy are unchanged.
+
+The pinned native custom-skill unit fixture writes four known PNG diagnostics to
+its working directory. The Controller archives only those exact, initially
+absent and untracked filenames outside the validation clone, checks the PNG
+signature and size/count bounds, and records every captured file's hash. All
+other files remain subject to the unchanged clean-source checks; no ignore
+patterns, hooks, test assertions or repository source are changed. Capture errors
+block validation, and a failed test remains failed after its diagnostics are saved.
+
+`agent proposer continue-native-preparation --prepare|--execute` admits only the
+measured dependency-fingerprint timeout before the first native runner invocation,
+or one sealed pre-stage dispatch failure caused by the recorded workspace-base
+field mismatch. That correction preserves both predecessor ledgers and reservations,
+requires zero model/native/publication activity, and cannot nest another correction.
+Both paths require a single approved candidate commit. They preserve the original bounded
+until-validation grant and all old results, claims the same clean task checkout,
+and reuses the exact approved commit without initial authoring or another commit.
+It cannot admit a failed/started native case or any publication activity. The
+fresh ledger keeps infrastructure retries at zero, and the unchanged native
+profile still requires five retry-disabled passes at one final clean SHA. Any
+later test-only repair uses the existing bounds and a fresh external owner review.
+Large ordinary dependency trees are partitioned into bounded fingerprint tasks
+while reconstructing the identical canonical content digest; no hash checks or
+per-task timeout are removed.
+
+The same entrypoint also accepts `kind: "native-preparation-verified"` after
+standalone real preparation acceptance. This is stage-based admission, not a
+new error-message-specific exception: the sealed immediate predecessor must
+have no model, native output or publication activity. The pinned preflight
+must cover that exact assignment/result/ledger, approved source and profile,
+current Controller bytes, clean detached workspace, dependency byte equality,
+typed native loading, exact case selection and typecheck. Authorization retains
+the original grant and pins the new Controller/configuration. Both ledgers
+reserve an attempt-specific claim and recursively retain earlier reservations.
+Only state placement may change. Dispatch rechecks the accepted workspace and
+both dependency byte fingerprints before using the unchanged five-pass runner;
+it disables missing-dependency installation for this verified seed. The accepted
+workspace is never an authoring checkout. Native failure cannot use this
+preparation-only admission. Windows dependency copying batches at most fifty
+roots per contained command without extending the thirty-minute deadline.
 
 For a completed model proposal blocked by native-build LFS provisioning,
 `prepareLocalValidationContinuation` accepts the previous config/ledger/assignment,
@@ -1591,11 +1830,14 @@ product coverage or live E2E success. Real E2E still requires an approved identi
 reachable dedicated browser endpoint and successful repository-native execution.
 
 Worker calls to `pilot_list`, literal `pilot_search`, ranged/full `pilot_read`,
-`pilot_write` and `pilot_finish` share one `workerMaxToolCalls` budget across
+`pilot_write`, expected-text-checked `pilot_replace_lines` and `pilot_finish`
+share one `workerMaxToolCalls` budget across
 the initial authoring and every repair round. Search and ranged reads are
 repository-local, read-only and bounded; they do not grant shell or network
-access. `pilot_list` accepts an optional repository-relative directory and
-requires a narrower scope when the root file inventory exceeds the file-size
+access. `pilot_replace_lines` preserves the file's line endings and permits at most
+500 existing lines per call, under exactly the same edit bounds as `pilot_write`.
+`pilot_list` accepts an optional repository-relative directory and requires a
+narrower scope when the root file inventory exceeds the file-size
 limit. Each worker result records the limit, total/remaining calls, per-tool
 counts and per-round usage so operators can replace bootstrap limits with an
 observed percentile plus explicit headroom.

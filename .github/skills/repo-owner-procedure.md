@@ -29,8 +29,11 @@ only in the verified isolated product workspace.
    counterevidence and confirmed causes. Functional symptoms alone are not a
    code-defect confirmation.
 3. Preserve every scanner exclusion for both defect and improvement work. If
-   the assignment is excluded, fixed, misrouted or lacks evidence, report
+   the assignment is excluded, misrouted or lacks evidence, report
    `blocked` with the reason; do not reclassify it to obtain edit authority.
+   A fixed source blocks another production fix, not an explicitly planned
+   `regression-coverage` assignment through a qualified test-only skill.
+   Preserve the fix and source status while filling the reviewed coverage gap.
    Request newly needed source evidence from the collector/coordinator.
 4. For `rca-only`, do not edit code, create PRs or launch validation. For
    authorized defect/improvement work, make the smallest complete change
@@ -53,6 +56,13 @@ only in the verified isolated product workspace.
    Do not rely on a conversation-only response as the result artifact.
 
 ## Completion and recovery
+
+For a `1js-declarative-e2e-v1` assignment, report canonical scenario IDs and
+only skill-authored files. Do not edit catalog/lifecycle entries, capability
+matrices, package scripts or execution-selection policy. The separately approved
+Controller owner step registers the exact reviewed scenario batch and records
+its own file hashes before the final commit. The native gate, not the skill,
+produces the five-pass final-SHA proof and preserves cleanup receipts.
 
 `rca-complete` is only for RCA-only assignments. A code change/draft is
 `draft-reported` and awaits validation reconciliation; blocked work is

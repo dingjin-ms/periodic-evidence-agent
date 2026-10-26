@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, statSync 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { nativeCommand } from '../src/native-command.js';
 import { minimalEnvironment, command } from '../src/workers.js';
 
@@ -47,6 +48,7 @@ test('direct supervisor also rejects missing PATHEXT without a success-shaped ex
   { skip: process.platform !== 'win32' }, async t => {
     const root = fixture(t), marker = join(root, 'unexpected-launch');
     const env = { ...minimalEnvironment(), PILOT_NATIVE_COMMAND: JSON.stringify({
+      jobName: `Local\\PilotNative-${randomUUID()}`,
       executable: process.execPath,
       args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`]
     }) };
@@ -94,7 +96,7 @@ for (const mode of ['missing', 'cmdlet', 'script', 'invalid-binary']) {
     });
 }
 
-for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) test(`native ${mode} drains owned descendants`,
+for (const mode of ['timeout', 'abort', 'nonzero-exit', 'success', 'output-overflow']) test(`native ${mode} drains owned descendants`,
   { skip: process.platform !== 'win32' }, async t => {
     const root = fixture(t, false), leaf = join(root, 'leaf.mjs'), parent = join(root, 'parent.mjs');
     const idsPath = join(root, 'pids.json'), grandchildPath = join(root, 'grandchild.json');
@@ -111,7 +113,7 @@ for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) te
       renameSync(${JSON.stringify(idsPath + '.tmp')},${JSON.stringify(idsPath)});
       while(!existsSync(${JSON.stringify(grandchildPath)}))await new Promise(resolve=>setTimeout(resolve,10));
       console.log('synthetic-started');
-      ${mode === 'timeout' ? 'setInterval(()=>{},1000);' :
+      ${mode === 'timeout' || mode === 'abort' ? 'setInterval(()=>{},1000);' :
         mode === 'output-overflow' ? "process.stdout.write('x'.repeat(5*1024*1024));setInterval(()=>{},1000);" :
         mode === 'success' ? 'process.exit(0);' : "console.error('synthetic-failure');process.exit(23);"}
     `);
@@ -126,15 +128,22 @@ for (const mode of ['timeout', 'nonzero-exit', 'success', 'output-overflow']) te
         root, 10000, minimalEnvironment());
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
+    const controller = new AbortController();
+    const abortTimer = mode === 'abort' ? setTimeout(() => controller.abort(), 5000) : null;
+    t.after(() => clearTimeout(abortTimer));
     let failure, output;
     try { output = await nativeCommand(process.execPath, [parent], root, mode === 'timeout' ? 5000 : 15000,
-      minimalEnvironment()); }
+      minimalEnvironment(), { signal: controller.signal }); }
     catch (error) { failure = error; }
     assert.match((failure ?? output).stdout, /synthetic-started/);
     if (mode === 'success') assert.equal(failure, undefined);
     else {
       assert.ok(failure, 'The failed command must not look successful');
       if (mode === 'timeout') assert.equal(failure.killed, true);
+      else if (mode === 'abort') {
+        assert.equal(failure.code, 'ABORT_ERR');
+        assert.equal(failure.ownedProcessesExited, true);
+      }
       else if (mode === 'output-overflow') assert.equal(failure.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
       else { assert.equal(failure.code, 23); assert.match(failure.stderr, /synthetic-failure/); }
     }

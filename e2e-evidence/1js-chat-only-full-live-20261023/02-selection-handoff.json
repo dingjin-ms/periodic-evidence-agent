@@ -1,0 +1,29 @@
+{
+  "mechanism": "retained-approved-candidate-continuation",
+  "newFilterOrSelectionInvocations": 0,
+  "assignmentId": "assignment-ac679abae4f2478339a5be9e2831011620aba28deec6ef9fded321c475bd06b3",
+  "attemptId": "a2a6b455-2fc1-40f8-af4f-064f4609a441",
+  "repoId": "1js",
+  "evidenceIds": [
+    "ev-b07ea543f22313243869ea3b6c2e5ad08457ef4b79eda8c0c14dd30ec9eebc29"
+  ],
+  "selection": {
+    "investigation": {
+      "id": "investigation-74a3c261f1c68eab98b8b6c0df1266bb9c3ecbda8a37e35a47711cbc6af9fd62",
+      "version": 2,
+      "sha256": "db92400fada4ad78354502f2800781269e0b92016ab3af694ea1b8fdef44b6af"
+    },
+    "areaToImprove": {
+      "id": "improvement-cd3409293983babdc73084c638cc0942ad8b44efcef2fc9bf63c878f11020ae0",
+      "version": 1,
+      "sha256": "431a23b42652a8d45d8b17a92f9507662b8cd071335d773df915527b8dc25b02"
+    },
+    "testCoveragePlan": {
+      "id": "test-plan-f4c3a211a8ebdd4cbb7f5aa4a53597293adb778c86b91953a8e40d5d7d15b09e",
+      "version": 2,
+      "sha256": "9501a88022ed14dae8581dcb72a946f05dd1d3d071c98b24d00ff1f4f853a0f3"
+    }
+  },
+  "assignmentSha256": "968823238c83697574a5ccb207562a2201c7b24b93a685d4aec7c0ee323cfad1",
+  "limitation": "Preserves existing investigation/coverage-plan/assignment; does not claim the older complete-record FILTER-consolidation proof format."
+}

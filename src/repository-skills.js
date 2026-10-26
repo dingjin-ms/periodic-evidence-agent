@@ -64,6 +64,9 @@ export function repositoryValidationContract(repo) {
     args: gate.args,
     timeoutMs: gate.timeoutMs,
     profileSha256: gate.profileSha256 ?? null,
+    ...(gate.profile !== undefined ? {
+      profile: gate.profile, declarativeE2E: gate.declarativeE2E
+    } : {}),
     ...(gate.packageAuth !== undefined ? { packageAuth: validationPackageAuth(gate) } : {}),
     ...(gate.lfsPaths !== undefined ? { lfsPaths: validationLfsPaths(gate) } : {})
   }));
@@ -133,7 +136,7 @@ function failSkillGit(operation, error) {
 export function loadRepositorySkill(config, assignment, workspace, sourceRevision, qualification) {
   requireThat(assignment.skillBindingId && assignment.capability,
     'Repository skill execution requires an assignment capability and binding');
-  const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability,
+  const { repo, binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability,
     assignment.skillBindingId);
   const pinned = pinSkillQualification(qualification);
   requireThat(json(pinned) === json(assignment.skillQualification),
@@ -201,6 +204,7 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
     instructions: source.toString('utf8'),
     allowedWritePrefixes,
     allowedWriteFiles,
+    validationProfiles: (repo.validationGates ?? []).map(gate => gate.profile).filter(Boolean),
     skillRevision: sourceRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/')
   };

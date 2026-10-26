@@ -67,6 +67,10 @@ test('controller RPC authenticates, validates and forwards only bounded pilot to
       calls.push({ path, content });
       return 'written';
     },
+    replaceLines: (...args) => {
+      calls.push({ surgicalEdit: args });
+      return 'replaced';
+    },
     finish: proposal => {
       if (finished) throw new PilotError('blocked-result', 'Proposal already submitted');
       finished = true;
@@ -87,6 +91,19 @@ test('controller RPC authenticates, validates and forwards only bounded pilot to
     path: 'test/value.test.js', content: 'test'
   })).ok, true);
   assert.deepEqual(calls, [{ path: 'test/value.test.js', content: 'test' }]);
+  const patch = { path: 'test/value.test.js', startLine: 1, endLine: 1,
+    expected: 'before', replacement: 'after' };
+  assert.equal((await rpc(runtime.endpoint, runtime.token, 'pilot_replace_lines', patch)).result,
+    'replaced');
+  assert.deepEqual(calls.at(-1), {
+    surgicalEdit: ['test/value.test.js', 1, 1, 'before', 'after']
+  });
+  assert.equal((await rpc(runtime.endpoint, runtime.token, 'pilot_replace_lines', {
+    ...patch, expected: undefined
+  })).error.code, 'blocked-protocol');
+  assert.equal((await rpc(runtime.endpoint, runtime.token, 'pilot_replace_lines', {
+    ...patch, startLine: '1'
+  })).error.code, 'blocked-protocol');
   assert.equal((await rpc(runtime.endpoint, 'wrong-token', 'pilot_list')).error.code,
     'blocked-protocol');
   assert.equal((await rpc(runtime.endpoint, runtime.token, 'shell', {})).error.code,

@@ -1,5 +1,5 @@
 import {
-  closeSync, existsSync, lstatSync, openSync, readFileSync, readdirSync,
+  closeSync, existsSync, lstatSync, openSync, readdirSync,
   readlinkSync, readSync, realpathSync
 } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -12,13 +12,7 @@ const json = JSON.stringify;
 const FILE_HASH_BUFFER = Buffer.allocUnsafe(1024 * 1024);
 const fileReadProgress = channel('periodic-evidence-agent.fingerprint-file-read');
 
-function fileSha256(path, size) {
-  if (size <= FILE_HASH_BUFFER.length) {
-    const bytes = readFileSync(path);
-    const sha256 = hash(bytes);
-    fileReadProgress.publish({ bytes: bytes.length });
-    return sha256;
-  }
+function fileSha256(path) {
   const digest = createHash('sha256');
   const handle = openSync(path, 'r');
   let totalBytes = 0;
@@ -38,7 +32,7 @@ function fileSha256(path, size) {
 }
 
 export function fileContentSha256(path) {
-  return fileSha256(path, lstatSync(path).size);
+  return fileSha256(path);
 }
 
 function recordEntry(entries, path, value) {
@@ -69,7 +63,7 @@ export function pathFingerprint(root, path, recordedEntries = null) {
     return value;
   }
   if (info.isFile()) {
-    const sha256 = fileSha256(target, info.size);
+    const sha256 = fileSha256(target);
     recordEntry(recordedEntries, path, { type: 'file', sha256 });
     return { path, type: 'file', sha256 };
   }
@@ -111,7 +105,7 @@ function dependencyNodeFingerprint(workspace, physicalWorkspace, entryPath, name
     return value;
   }
   if (info.isFile()) {
-    const sha256 = fileSha256(entryPath, info.size);
+    const sha256 = fileSha256(entryPath);
     recordEntry(recordedEntries, recordedPath, { type: 'file', sha256 });
     return { name, type: 'file', size: info.size, sha256 };
   }

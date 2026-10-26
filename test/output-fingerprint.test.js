@@ -11,10 +11,69 @@ import { EventEmitter, once } from 'node:events';
 import { channel } from 'node:diagnostics_channel';
 import {
   outputPathFingerprint, outputPathFingerprintWithEntries,
-  dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries, pathFingerprint
+  dependencyEntriesFingerprint, dependencyEntryFingerprintWithEntries, pathFingerprint,
+  fileContentSha256
 } from '../src/output-fingerprint.js';
 import { capturePreparedOutputs, outputFingerprint, verifyPreparedOutputs } from '../src/workers.js';
 import { hash } from '../src/hash.js';
+
+test('file hashes reuse bounded reads for empty, small and buffer-boundary content', t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-buffer-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const target = join(root, 'content.bin');
+  const fs = createRequire(import.meta.url)('node:fs');
+  const readFile = fs.readFileSync;
+  const reads = [];
+  const record = message => reads.push(message.bytes);
+  const progress = channel('periodic-evidence-agent.fingerprint-file-read');
+  progress.subscribe(record);
+  try {
+    fs.readFileSync = () => { throw Error('File hashing must use bounded reads'); };
+    syncBuiltinESMExports();
+    for (const size of [0, 1, 65536, 1024 * 1024 - 1, 1024 * 1024, 1024 * 1024 + 1]) {
+      const bytes = Buffer.alloc(size, 173);
+      writeFileSync(target, bytes);
+      assert.equal(fileContentSha256(target), hash(bytes));
+      assert.equal(pathFingerprint(root, 'content.bin').sha256, hash(bytes));
+      assert.equal(reads.at(-1), size);
+    }
+  } finally {
+    progress.unsubscribe(record);
+    fs.readFileSync = readFile;
+    syncBuiltinESMExports();
+  }
+});
+
+test('file hashes read short reads through EOF and close handles on read failure', t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-short-read-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const target = join(root, 'content.bin');
+  const bytes = Buffer.alloc(1024 * 1024 + 17, 93);
+  writeFileSync(target, bytes);
+  const fs = createRequire(import.meta.url)('node:fs');
+  const read = fs.readSync, close = fs.closeSync;
+  let readCalls = 0, closed = 0;
+  try {
+    fs.readSync = (handle, buffer, offset, length, position) => {
+      readCalls++;
+      return read(handle, buffer, offset, Math.min(length, 4093), position);
+    };
+    fs.closeSync = handle => { closed++; return close(handle); };
+    syncBuiltinESMExports();
+    assert.equal(fileContentSha256(target), hash(bytes));
+    assert.ok(readCalls > 250);
+    assert.equal(closed, 1);
+    const failure = new Error('Synthetic read failure');
+    fs.readSync = () => { throw failure; };
+    syncBuiltinESMExports();
+    assert.throws(() => fileContentSha256(target), error => error === failure);
+    assert.equal(closed, 2);
+  } finally {
+    fs.readSync = read;
+    fs.closeSync = close;
+    syncBuiltinESMExports();
+  }
+});
 
 test('generic fingerprints avoid redundant existence probes for ordinary entries', t => {
   const root = mkdtempSync(join(tmpdir(), 'fingerprint-metadata-'));

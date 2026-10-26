@@ -341,6 +341,39 @@ async function deliveredWorkspace(t, { historicalFailure = false } = {}) {
   return { ...ctx, isolated, result, artifact };
 }
 
+test('named contract validation does not compile the unused document root union', () => {
+  const script = `
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const originalRead = fs.readFileSync;
+let intercepted = 0;
+fs.readFileSync = function (path, ...options) {
+  const value = originalRead.call(this, path, ...options);
+  if (path instanceof URL && path.href === ${JSON.stringify(new URL('../scaffold/contracts.schema.json', import.meta.url).href)}) {
+    intercepted++;
+    const schema = JSON.parse(value);
+    schema.oneOf.push({ $ref: '#/$defs/unused-root-union-member' });
+    return JSON.stringify(schema);
+  }
+  return value;
+};
+syncBuiltinESMExports();
+const { validateRecord } = await import(${JSON.stringify(new URL('../src/common.js', import.meta.url).href)});
+const examples = JSON.parse(originalRead(${JSON.stringify(fileURLToPath(new URL('../scaffold/example-flows.json', import.meta.url)))}, 'utf8'));
+validateRecord(examples, 'examples');
+const configuration = JSON.parse(originalRead(${JSON.stringify(fileURLToPath(new URL('../scaffold/configuration.template.json', import.meta.url)))}, 'utf8'));
+validateRecord(configuration, 'configuration');
+const invalid = structuredClone(examples.records.find(record => record.recordType === 'workerResult'));
+delete invalid.validation[0].attemptCount;
+assert.throws(() => validateRecord(invalid), error => error.code === 'invalid-record');
+assert.throws(() => validateRecord({}, 'missing-record-type'), error => error.code === 'invalid-record');
+assert.equal(intercepted, 1);
+`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: process.cwd(), encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+});
 test('portable scaffold config and all synthetic example records remain valid', () => {
   validateRecord(JSON.parse(readFileSync('scaffold/configuration.template.json')), 'configuration');
   validateRecord(JSON.parse(readFileSync('scaffold/example-flows.json')), 'examples');
@@ -986,7 +1019,7 @@ test('validation records real terminal command execution at exact fixture HEAD a
     executable: process.execPath, args: ['--input-type=module', '-e',
       "import {value} from './src/value.js'; import assert from 'node:assert/strict'; assert.equal(value,1)"], timeoutMs: 10000 }];
   const result = await runValidation(config, ledger, current, repo, isolated.baseRevision);
-  assert.equal(result[0].status, 'passed');
+  assert.equal(result[0].status, 'passed', json(result));
   assert.equal(result[0].sourceRevision, isolated.baseRevision);
   assert.ok(existsSync(result[0].artifactRefs[0]));
   await assert.rejects(runValidation(config, ledger, current, repo, isolated.baseRevision), /already started/);
@@ -2115,6 +2148,64 @@ test('runner dependency file mutation invalidates the prepared cache', async t =
   assert.equal(result[0].status, 'blocked');
   assert.equal(result[0].blockedReason, 'prepared-cache-corrupt');
   assert.equal(existsSync(dirname(prepared.staged.workspace)), false);
+});
+test('native artifacts survive a failed test and cleanup preserves the primary failure', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const execute = async (...args) => {
+    const [, , cwd, , env] = args;
+    if (env.PILOT_VALIDATION_STAGE !== 'test') return ctx.execute(...args);
+    writeFileSync(join(env.PILOT_VALIDATION_ARTIFACT_DIRECTORY, 'jest-result.json'),
+      '{"success":false,"numFailedTests":1}\n');
+    writeFileSync(join(cwd, 'extra', 'node_modules', 'fixture', 'package.json'),
+      '{"version":"mutated-by-failing-runner"}\n');
+    ctx.behavior.failTest = true;
+    return ctx.execute(...args);
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'prepared-cache-corrupt');
+  assert.equal(result[0].attemptCount, 1);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.deepEqual(artifact.output.primaryFailure, {
+    stage: 'test', status: 'failed', blockedReason: null, exitCode: 1, timeout: false
+  });
+  assert.equal(artifact.output.cleanupFailure.blockedReason, 'prepared-cache-corrupt');
+  assert.match(artifact.output.stderr, /fixture failure/);
+  assert.equal(existsSync(dirname(prepared.staged.workspace)), false);
+  assert.equal(artifact.nativeArtifacts.length, 1);
+  const retained = artifact.nativeArtifacts[0];
+  assert.equal(retained.stage, 'test');
+  assert.equal(hash(readFileSync(retained.path)), retained.sha256);
+  assert.equal(readFileSync(retained.path).length, retained.bytes);
+  const manifest = JSON.parse(readFileSync(join(ctx.config.stateDirectory, 'runs', ctx.current.id, 'manifest.json')));
+  assert.equal(manifest.artifacts.length, 1);
+  assert.equal(manifest.artifacts[0].sha256, retained.sha256);
+});
+
+test('unsafe native artifact links block acceptance without retrying', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const execute = async (...args) => {
+    const result = await ctx.execute(...args);
+    const [, , , , env] = args;
+    if (env.PILOT_VALIDATION_STAGE === 'test')
+      symlinkSync(ctx.current.workspace,
+        join(env.PILOT_VALIDATION_ARTIFACT_DIRECTORY, 'jest-result.json'),
+        process.platform === 'win32' ? 'junction' : 'dir');
+    return result;
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'blocked');
+  assert.equal(result[0].blockedReason, 'validation-artifact-unavailable');
+  assert.equal(result[0].attemptCount, 1);
+  const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
+  assert.match(artifact.output.artifactFailure, /bounded ordinary file/);
+  assert.deepEqual(artifact.nativeArtifacts, []);
 });
 test('metadata-only native module changes preserve an identical prepared cache', async t => {
   const ctx = await stagedValidationFixture(t);

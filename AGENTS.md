@@ -56,3 +56,19 @@ generated product-repository PRs, or vice versa.
 Keep draft publication and merge outside the autonomous agentic loop. Passing
 validation, a clean mergeability result, no blocking policies, and a prior merge
 authorization for another PR are not permission to merge.
+
+## Controller E2E test ownership
+
+Keep controller E2E input JSON, qualification scenarios and their expected
+contracts in this repository. Generated product test changes belong only in
+the controller-owned disposable product checkout and its test Draft PR.
+These Draft PRs are test outputs and must never be merged or auto-completed.
+Reusable product runner, authentication, upload, recovery and diagnostic
+mechanism fixes require a separate product-repository PR that excludes the
+controller's qualification scenarios.
+
+Screenshots, traces, browser profiles, execution logs and credential-bearing
+runtime files are local or CI artifacts, not source-controlled fixtures.
+Preserve failed-run evidence until investigation is complete; do not delete
+it merely because it is temporary. Commit only intentional sanitized synthetic
+inputs and expected contracts, never real accounts, secrets or workbook data.

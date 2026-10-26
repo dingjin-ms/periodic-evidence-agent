@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 const allowedRoots = /^(?:src\/|test\/|scripts\/|scaffold\/|e2e-evidence\/|\.github\/skills\/|\.github\/workflows\/)/;
 const allowedTop = new Set(['.gitignore', '.gitattributes', 'README.md', 'APP-NATIVE.md', 'AGENCY-EXECUTOR.md',
   'AGENCY-LOCAL-AUTHORING.md', 'EXECUTION-GUIDE.md', 'CONTRIBUTING.md', 'AGENTS.md', 'package.json',
-  'package-lock.json', 'pilot.example.json', 'ONE-SHOT.md']);
+  'package-lock.json', 'pilot.example.json', 'ONE-SHOT.md', 'LOCAL-E2E.md', 'LOOP-CONTROLLER.md']);
 const forbiddenPath = /(?:^|\/)(?:\.state|node_modules|\.copilot|captures|receipts|session-state)(?:\/|$)|(?:^|\/)\.env(?:\.|$)|\.local\.json$|\.(?:sqlite|db)(?:-|$)|(?:-wal|-shm|\.log)$|(?:auth-support|support-evidence|parent-app.*receipts)/i;
 const patterns = [
   ['personal Microsoft email', /\b[A-Z0-9._%+-]+@microsoft\.com\b/i],

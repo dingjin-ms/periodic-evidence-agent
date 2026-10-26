@@ -132,6 +132,23 @@
         }
       }
     },
+    "coverageReview": {
+      "type": "array", "minItems": 1, "maxItems": 50,
+      "description": "Author-reported seam inventory for independent review, not proof of semantic quality.",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["seam", "evidenceBasis", "unitEvidence", "integrationEvidence", "testFiles", "defectDetected", "residuals"],
+        "properties": {
+          "seam": { "$ref": "#/$defs/text" },
+          "evidenceBasis": { "$ref": "#/$defs/text" },
+          "unitEvidence": { "$ref": "#/$defs/texts" },
+          "integrationEvidence": { "$ref": "#/$defs/texts" },
+          "testFiles": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+          "defectDetected": { "$ref": "#/$defs/text" },
+          "residuals": { "$ref": "#/$defs/texts" }
+        }
+      }
+    },
     "rsiSkillDecision": {
       "type": "object", "additionalProperties": false,
       "required": ["outcome", "findings"],
@@ -154,6 +171,7 @@
             "changedFiles": { "$ref": "#/$defs/texts" },
             "testsAddedOrUpdated": { "$ref": "#/$defs/texts" },
             "behaviorCardsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+            "coverageReview": { "$ref": "#/$defs/coverageReview" },
             "unknowns": { "$ref": "#/$defs/texts" },
             "needsHumanDecision": { "type": "boolean" }
           }
@@ -628,6 +646,7 @@
               "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
               "allowedWriteFiles": { "$ref": "#/$defs/texts" },
               "requiresBehaviorCard": { "type": "boolean" },
+              "requiresCoverageReview": { "type": "boolean" },
               "sideEffects": {
                 "type": "object", "additionalProperties": false,
                 "required": ["commit", "push", "createDraftPR"],
@@ -1353,7 +1372,9 @@
         "format": { "const": "filter-batch-request-v1" },
         "sources": { "type": "array", "minItems": 1, "items": {
           "type": "object", "additionalProperties": false, "required": ["ledgerPath", "runId"],
-          "properties": { "ledgerPath": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" } }
+          "properties": { "ledgerPath": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" },
+            "sourceKinds": { "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": { "enum": ["ado", "workiq", "icm"] } } }
         } },
         "instructions": { "$ref": "#/$defs/text" },
         "groups": { "type": "array", "items": {
@@ -1588,6 +1609,8 @@
                 "changedFiles": { "$ref": "#/$defs/texts" },
                 "testsAddedOrUpdated": { "$ref": "#/$defs/texts" },
                 "behaviorCardsAddedOrUpdated": { "$ref": "#/$defs/texts" },
+                "coverageReview": { "$ref": "#/$defs/coverageReview" },
+                "coverageReviewAssurance": { "const": "author-reported-not-independently-verified" },
                 "unknowns": { "$ref": "#/$defs/texts" },
                 "needsHumanDecision": { "type": "boolean" }
               }

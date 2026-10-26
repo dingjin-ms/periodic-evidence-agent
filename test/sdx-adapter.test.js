@@ -72,9 +72,30 @@ test('SDX example binds a real profile and explicit test-only skill policy while
   const loaded = configAt(path);
   assert.deepEqual(loaded.activation, { collect: false, review: false, dispatch: false });
   assert.equal(loaded.repositories[0].skillBindings[0].requiresBehaviorCard, true);
+  assert.equal(loaded.repositories[0].skillBindings[0].requiresCoverageReview, true);
   assert.deepEqual(loaded.repositories[0].skillBindings[0].allowedWritePrefixes,
     loaded.repositories[0].allowedWritePrefixes);
   assert.equal(loaded.repositories[0].skillBindings[0].sideEffects.push, false);
+});
+
+test('SDX profile pin survives both Git checkout line-ending modes', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'sdx-profile-checkout-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const path = 'scripts/validation/1js-sdx-excel-integration.ps1';
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(path, target);
+  copyFileSync('.gitattributes', join(root, '.gitattributes'));
+  const git = args => command('git', ['-c', 'core.autocrlf=false', ...args], root);
+  await git(['init', '--quiet']);
+  await git(['add', '--', '.gitattributes', path]);
+  const repo = JSON.parse(readFileSync('scaffold/1js-sdx.repository.example.json', 'utf8'));
+  for (const autocrlf of ['true', 'false']) {
+    writeFileSync(target, 'must be replaced by checkout\n');
+    await git(['-c', `core.autocrlf=${autocrlf}`, 'checkout-index', '--force', '--all']);
+    assert.equal(hash(readFileSync(target)), repo.validationGates[0].profileSha256,
+      `Exact profile bytes must survive core.autocrlf=${autocrlf}`);
+  }
 });
 
 test('SDX authentication rejects missing sparse bootstrap before requesting sign-in', async t => {
@@ -109,41 +130,78 @@ test('SDX authentication rejects missing sparse bootstrap before requesting sign
   });
 });
 
-test('SDX source-runtime gate requires actual passing results for every selected path', async t => {
-  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
-  const { reference, repo, write, git } = await fixture(t);
+async function nativeTestFixture(t) {
+  const ctx = await fixture(t);
+  const { root, reference, repo, write, git } = ctx;
   const packageRoot = 'midgard/packages/officeaicopilot-agent-excel';
   const testPath = `${packageRoot}/tests/integration/scenarios/native.integration.test.ts`;
-  write(testPath, '// Synthetic native gate contract fixture\n');
+  const oldTestPath = `${packageRoot}/tests/integration/scenarios/existing.tests.ts`;
+  const helperPath = `${packageRoot}/tests/integration/harness/shared.ts`;
+  write(oldTestPath, '// Existing consumer\n');
+  write(helperPath, 'export const connected = true;\n');
+  write(`${packageRoot}/tests/integration/harness/data.json`, '{"connected":true}\n');
+  await git(['add', '--all']);
+  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Existing integration consumer and helper']);
+  repo.baseRef = await git(['rev-parse', 'HEAD']);
   write(`${packageRoot}/node_modules/jest/package.json`, '{"name":"jest","version":"1.0.0"}\n');
   write(`${packageRoot}/node_modules/jest/bin/jest.js`, `
-const assert = require('node:assert/strict'), fs = require('node:fs');
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const args = process.argv.slice(2), value = flag => args[args.indexOf(flag) + 1];
-assert.ok(args.includes('--passWithNoTests=false'));
 const configuration = fs.readFileSync(value('--config'), 'utf8');
 assert.ok(configuration.includes('@1js/jest-config/source-resolver'));
 assert.ok(configuration.includes('@1js/jest-config/swc-transform'));
 assert.ok(configuration.includes('...original'));
 const mode = process.env.PILOT_FIXTURE_RESULT;
-const count = mode === 'empty' ? 0 : 1;
+if (args.includes('--listTests')) {
+  if (mode === 'discovery-failed') process.exit(2);
+  const root = path.resolve('tests/integration');
+  let paths = fs.readdirSync(root, {recursive:true}).filter(p => /\\.tests?\\.[jt]sx?$/.test(p))
+    .map(p => path.join(root, p));
+  if (mode === 'excluded-test') paths = paths.filter(p => !p.includes('native.integration'));
+  console.log(JSON.stringify(paths));
+  process.exit(0);
+}
+assert.ok(args.includes('--passWithNoTests=false'));
+const selected = args.slice(args.indexOf('--runTestsByPath') + 1, args.indexOf('--runInBand'));
+assert.ok(selected.length > 0);
+const count = mode === 'empty' ? 0 : selected.length;
 fs.writeFileSync(value('--outputFile'), JSON.stringify({
   success: true, numTotalTests: count, numPassedTests: count,
-  testResults: [{ name: value('--runTestsByPath') + (mode === 'wrong-file' ? '.other' : ''),
-    assertionResults: mode === 'empty-suite' ? [] : [{ status: 'passed' }] }]
+  testResults: selected.map(name => ({
+    name: name + (mode === 'wrong-file' ? '.other' : ''),
+    assertionResults: mode === 'empty-suite' ? [] :
+      [{status: mode === 'skipped-case' ? 'pending' : 'passed'}]
+  }))
 }));
+if (mode === 'test-failed') process.exit(1);
 `);
-  await git(['add', testPath]);
-  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-    'commit', '--quiet', '-m', 'Add native test selection']);
-  const revision = await git(['rev-parse', 'HEAD']);
+  write(testPath, '// Synthetic native gate contract fixture\n');
+  const commit = async () => {
+    await git(['add', '--all']);
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-m', 'Update integration coverage']);
+    return git(['rev-parse', 'HEAD']);
+  };
   const profile = resolve('scripts/validation/1js-sdx-excel-integration.ps1');
-  for (const mode of ['passed', 'empty', 'wrong-file', 'empty-suite']) {
-    const execute = () => command('powershell.exe', [
+  const execute = (revision, mode, directory) => command('powershell.exe', [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', profile
     ], reference, 30000, {
       ...process.env, PILOT_VALIDATION_STAGE: 'test', PILOT_FIXTURE_RESULT: mode,
-      PILOT_VALIDATION_BASE_REVISION: repo.baseRef, PILOT_VALIDATION_REVISION: revision
+      PILOT_VALIDATION_BASE_REVISION: repo.baseRef, PILOT_VALIDATION_REVISION: revision,
+      PILOT_VALIDATION_ARTIFACT_DIRECTORY: directory
     });
+  const artifacts = () => mkdtempSync(join(root, 'native-artifacts-'));
+  return { ...ctx, packageRoot, testPath, oldTestPath, helperPath, commit, execute, artifacts };
+}
+
+test('SDX source-runtime gate requires actual passing results for every selected path', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+  const ctx = await nativeTestFixture(t);
+  const revision = await ctx.commit();
+  for (const mode of ['passed', 'empty', 'wrong-file', 'empty-suite', 'skipped-case']) {
+    const directory = ctx.artifacts();
+    const execute = () => ctx.execute(revision, mode, directory);
     if (mode === 'passed') {
       const result = await execute();
       assert.match(result.stdout, /PILOT_VALIDATION_TEST_RESULT:.*"testCount":1/);
@@ -151,7 +209,107 @@ fs.writeFileSync(value('--outputFile'), JSON.stringify({
       assert.match(error.stderr, /native Jest results do not prove all selected tests passed/);
       return true;
     });
+    const manifest = JSON.parse(readFileSync(join(directory, 'run.json')));
+    assert.equal(manifest.state, mode === 'passed' ? 'passed' : 'failed');
+    assert.equal(manifest.revision, revision);
+    assert.equal(manifest.resultPresent, true);
+    const selection = JSON.parse(readFileSync(join(directory, 'selection.json')));
+    assert.equal(selection.mode, 'changed-tests');
+    assert.deepEqual(selection.expectedPaths, [join(ctx.reference, ctx.testPath)]);
   }
+});
+
+for (const change of ['new-helper', 'shared-helper', 'shared-data', 'deleted-helper',
+  'shared-helper-only', 'renamed-test', 'deleted-test', 'modified-test', 'tsx-test']) {
+  test(`SDX native discovery selects the right scope for ${change}`, async t => {
+    if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+    const ctx = await nativeTestFixture(t);
+    if (change === 'new-helper')
+      ctx.write(`${ctx.packageRoot}/tests/integration/harness/new.ts`, 'export const value = 1;\n');
+    if (['shared-helper', 'shared-helper-only'].includes(change))
+      ctx.write(ctx.helperPath, 'export const connected = false;\n');
+    if (change === 'shared-helper-only') rmSync(join(ctx.reference, ctx.testPath));
+    if (change === 'shared-data')
+      ctx.write(`${ctx.packageRoot}/tests/integration/harness/data.json`, '{"connected":false}\n');
+    if (change === 'deleted-helper') rmSync(join(ctx.reference, ctx.helperPath));
+    if (change === 'deleted-test') rmSync(join(ctx.reference, ctx.oldTestPath));
+    if (change === 'modified-test') ctx.write(ctx.oldTestPath, '// Modified test\n');
+    if (change === 'renamed-test') {
+      await ctx.git(['mv', ctx.oldTestPath, ctx.oldTestPath.replace('existing', 'renamed')]);
+    }
+    if (change === 'tsx-test') ctx.write(`${ctx.testPath}x`, '// TSX test\n');
+    const revision = await ctx.commit();
+    const directory = ctx.artifacts();
+    await ctx.execute(revision, 'passed', directory);
+    const selection = JSON.parse(readFileSync(join(directory, 'selection.json')));
+    const wide = ['shared-helper', 'shared-helper-only', 'shared-data', 'deleted-helper',
+      'renamed-test', 'deleted-test'].includes(change);
+    assert.equal(selection.mode, wide ? 'integration-lane' : 'changed-tests');
+    assert.equal(selection.expectedPaths.length,
+      (wide && !['deleted-test', 'shared-helper-only'].includes(change)) ||
+        ['tsx-test', 'modified-test'].includes(change) ? 2 : 1);
+    assert.equal(selection.expectedPaths.includes(join(ctx.reference, ctx.oldTestPath)),
+      (wide && !['renamed-test', 'deleted-test'].includes(change)) || change === 'modified-test');
+  });
+}
+
+test('SDX retains native failure evidence and rejects excluded tests and reused artifact directories', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+  const ctx = await nativeTestFixture(t);
+  const revision = await ctx.commit();
+  for (const mode of ['test-failed', 'discovery-failed', 'excluded-test']) {
+    const directory = ctx.artifacts();
+    await assert.rejects(ctx.execute(revision, mode, directory), error => {
+      if (mode !== 'test-failed') assert.match(error.stderr, /PILOT_VALIDATION_PROFILE_ERROR:/);
+      return true;
+    });
+    const manifest = JSON.parse(readFileSync(join(directory, 'run.json')));
+    assert.equal(manifest.state, 'failed');
+    assert.equal(manifest.phase, mode === 'test-failed' ? 'test' : 'discovery');
+    assert.equal(manifest.resultPresent, mode === 'test-failed');
+    assert.equal(existsSync(join(directory, 'runtime-config.cjs')), true);
+    await assert.rejects(ctx.execute(revision, 'passed', directory), error => {
+      assert.match(error.stderr, /fresh absolute artifact directory/);
+      return true;
+    });
+  }
+});
+
+test('SDX policy runs native root policy and targeted lint without fix or environment skip', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+  const ctx = await nativeTestFixture(t);
+  ctx.write(ctx.helperPath, 'export const connected = false;\n');
+  const revision = await ctx.commit();
+  const bin = join(ctx.root, 'bin');
+  const callsPath = join(ctx.root, 'lint-calls.jsonl');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'yarn.cmd'), `@"${process.execPath}" "%~dp0lint.cjs" %*\r\n`);
+  writeFileSync(join(bin, 'lint.cjs'), `
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.PILOT_FIXTURE_LINT_CALLS, JSON.stringify(args) + '\\n');
+if (process.env.PILOT_FIXTURE_LINT_FAIL === '1' && args.includes('lint')) process.exit(1);
+`);
+  const profile = resolve('scripts/validation/1js-sdx-excel-integration.ps1');
+  const env = { ...process.env, Path: `${bin};${process.env.Path ?? process.env.PATH}`,
+    PATH: `${bin};${process.env.Path ?? process.env.PATH}`,
+    MIDGARD_SKIP_ROOT_LINT: '1', PILOT_VALIDATION_STAGE: 'policy',
+    PILOT_VALIDATION_BASE_REVISION: ctx.repo.baseRef, PILOT_VALIDATION_REVISION: revision,
+    PILOT_FIXTURE_LINT_CALLS: callsPath };
+  const execute = extra => command('powershell.exe',
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', profile],
+    ctx.reference, 30000, { ...env, ...extra });
+  await execute({});
+  const calls = readFileSync(callsPath, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls, [
+    ['lint:root'],
+    ['workspace', '@1js/officeaicopilot-agent-excel', 'lint',
+      'tests/integration/harness/shared.ts', 'tests/integration/scenarios/native.integration.test.ts']
+  ]);
+  await assert.rejects(execute({ PILOT_FIXTURE_LINT_FAIL: '1' }), error => {
+    assert.match(error.stderr, /exited with code 1/);
+    return true;
+  });
 });
 
 test('one source-ref resolver supports upstream and legacy SDX configuration without disagreement', () => {

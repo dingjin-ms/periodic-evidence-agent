@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'no
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { Ledger } from '../src/ledger.js';
 import { hash, json, PilotError } from '../src/common.js';
 import { readAppFlowPlan, runAppRoleFlow } from '../src/rsi-app-flow.js';
@@ -71,6 +73,96 @@ function fixture(t, { host = false, database = true, terminal = true } = {}) {
   };
   return { root, input, profile, plan, updatePlan, dependencies, calls, ledger };
 }
+
+test('ledger predicates reuse only adjacent identical reads and admit every fresh child', async t => {
+  const ctx = fixture(t), events = [], queries = [];
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (...args) => {
+    queries.push(JSON.parse(args[2].input));
+    events.push('query');
+    return execute(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    ctx.dependencies.admit = () => { events.push('admit'); return 10000; };
+    const result = await runAppRoleFlow(ctx.input, ctx.dependencies);
+    assert.ok(result.result.cases.every(item => item.outcome === 'passed'));
+    assert.deepEqual(result.diagnostics, []);
+    assert.equal(queries.length, ctx.plan.cases.length * 3);
+    for (const [index, selected] of ctx.plan.cases.entries()) {
+      assert.deepEqual(queries.slice(index * 3, index * 3 + 3).map(item => item.query),
+        selected.assertions.map(item => item.ledger.query));
+    }
+    for (const [index, event] of events.entries()) if (event === 'query') {
+      assert.equal(events[index - 1], 'admit');
+      assert.equal(events[index + 1], 'admit');
+    }
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test('ledger predicates do not reuse a result across an intervening native read', async t => {
+  const ctx = fixture(t), queries = [];
+  for (const selected of ctx.plan.cases)
+    selected.assertions[2].ledger.query = selected.workStarted.ledger.query;
+  ctx.updatePlan();
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (...args) => {
+    queries.push(JSON.parse(args[2].input).query);
+    return execute(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await runAppRoleFlow(ctx.input, ctx.dependencies);
+    assert.ok(result.result.cases.every(item => item.outcome === 'passed'));
+    assert.deepEqual(queries, ctx.plan.cases.flatMap(selected =>
+      selected.assertions.map(item => item.ledger.query)));
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test('post-query admission failure cannot turn ledger rows into passing assertions', async t => {
+  const ctx = fixture(t);
+  const execute = childProcess.execFileSync;
+  let completed = false;
+  t.mock.method(childProcess, 'execFileSync', (...args) => {
+    const output = execute(...args);
+    completed = true;
+    return output;
+  });
+  syncBuiltinESMExports();
+  try {
+    ctx.dependencies.admit = () => {
+      if (completed) {
+        completed = false;
+        throw new PilotError('blocked-budget', 'Query exhausted the original budget');
+      }
+      return 10000;
+    };
+    const result = await runAppRoleFlow(ctx.input, ctx.dependencies);
+    assert.equal(result.diagnostics.length, ctx.plan.cases.length);
+    assert.ok(result.diagnostics.every(item => item.error.code === 'blocked-budget'));
+    assert.ok(result.result.cases.every(item => item.outcome === 'unknown' &&
+      item.assertions.every(assertion => assertion.state === 'unknown')));
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test('native role admission is not rescanned across its synchronous ledger start', async t => {
+  const ctx = fixture(t);
+  const operation = ctx.ledger.operation.bind(ctx.ledger), execute = ctx.dependencies.execute;
+  let started = false;
+  ctx.ledger.operation = (...args) => {
+    const value = operation(...args);
+    if (args[2] === 'rsi-app-flow-step') started = true;
+    return value;
+  };
+  ctx.dependencies.admit = () => {
+    assert.equal(started, false, 'no intervening effect requires a second full scan');
+    return 10000;
+  };
+  ctx.dependencies.execute = (...args) => { started = false; return execute(...args); };
+  const result = await runAppRoleFlow(ctx.input, ctx.dependencies);
+  assert.ok(result.result.cases.every(item => item.outcome === 'passed'));
+  assert.equal(ctx.calls.length, 9);
+});
 
 test('role envelopes and prepared assignments cannot replace durable intended-work assertions', async t => {
   const ctx = fixture(t, { terminal: false });

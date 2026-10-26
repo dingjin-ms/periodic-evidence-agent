@@ -598,10 +598,9 @@ async function nativeCoveragePlanning(t, sourceStatus) {
     repoIds: ['fixture'], existingFixes: [], nextAction: 'Add focused OA integration coverage.'
   };
   appReview(config, ledger, 'test-run', { investigation, exclusionsChecked: exclusions });
-  if (sourceStatus === 'Resolved')
-    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
-      investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
-    }), error => error.code === 'blocked-reconciliation');
+  assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
+  }), error => error.code === 'blocked-reconciliation');
   const planned = appPlanImprovement(config, ledger, 'test-run', {
     improvement: {
       investigationIds: [investigation.id], category: 'missing-test-coverage',
@@ -611,7 +610,7 @@ async function nativeCoveragePlanning(t, sourceStatus) {
     },
     testCoverage: {
       repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: baseRevision,
-      ...(sourceStatus === 'Resolved' ? { purpose: 'regression-coverage' } : {}),
+      purpose: 'regression-coverage',
       searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
@@ -644,7 +643,7 @@ async function nativeCoveragePlanning(t, sourceStatus) {
   assert.equal(bound.baseRevision, baseRevision);
 }
 
-for (const sourceStatus of ['Active', 'Resolved']) {
+for (const sourceStatus of ['Closed', 'Resolved']) {
   test(`app native ${sourceStatus} OA planning pins coverage and qualification before claim`,
     t => nativeCoveragePlanning(t, sourceStatus));
 }

@@ -88,8 +88,8 @@ export async function commitRepositoryChanges(config, workspace, repo, title,
   execute = command) {
   const timeout = repositoryCloneTimeout(config, repo);
   const env = repositoryEnvironment(repo);
-  const hooks = repo.changeFile ? '.githooks' : '.git/no-hooks';
-  const run = args => (execute === command && repo.changeFile ? nativeCommand : execute)('git', [
+  const hooks = repo.changeFile ? '.githooks' : '.git/hooks';
+  const run = args => (execute === command ? nativeCommand : execute)('git', [
     '-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', '-c', `core.hooksPath=${hooks}`, ...args
   ], workspace, timeout, env);

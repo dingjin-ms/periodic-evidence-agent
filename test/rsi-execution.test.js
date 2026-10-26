@@ -81,7 +81,7 @@ function fixture(t, configure = () => {}, retainProof = false, fullFlow = false)
   const reference = join(root, 'reference');
   mkdirSync(join(reference, 'src'), { recursive: true });
   writeFileSync(join(reference, 'src', 'flow.mjs'), broken);
-  if (fullFlow) for (const path of ['src', 'scaffold', '.github/skills', 'APP-NATIVE.md',
+  if (fullFlow) for (const path of ['src', 'scaffold', 'scripts/validation', '.github/skills', 'APP-NATIVE.md',
     'package.json', 'package-lock.json', '.gitignore', 'pilot.example.json'])
     cpSync(fileURLToPath(new URL(`../${path.replaceAll('\\', '/')}`, import.meta.url)), join(reference, path),
       { recursive: true });

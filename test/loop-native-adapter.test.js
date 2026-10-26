@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { configAt, hash, json, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
-import { loopStages, normalizeLoopRequest, fileArtifact, digest, runEvidenceLoop, loopOperation } from '../src/loop-controller.js';
+import { loopStages, normalizeLoopRequest, fileArtifact, digest, runEvidenceLoop, loopOperation, readLoopArtifact } from '../src/loop-controller.js';
 import { createNativeLoopAdapter, nativeLoopSettings } from '../src/loop-native-adapter.js';
 import { createMailboxLoopAdapter } from '../src/loop-mailbox-adapter.js';
 import { readOneShotCollectionReceipt, oneShotCollectionStatus } from '../src/one-shot-collection.js';
@@ -15,7 +15,7 @@ import { prepareFilterBatches } from '../src/filter-batches.js';
 import { prepareOneShotFilterBudget } from '../src/one-shot-handoff.js';
 import { openApp } from '../src/app-native.js';
 
-for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
+for (const mode of ['native', 'mailbox', 'native-throttled', 'mailbox-throttled', 'native-mixed-throttled', 'mailbox-mixed-throttled', 'local-mixed-partial-throttled', 'local-sdk', 'local-unapproved', 'local-reconcile', 'local-reconcile-partial', 'local-rsi-recover']) test(mode + ': fresh collection, FILTER continuation, empty cohort, RSI and wrapper parity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-'));
   const c = configAt('pilot.example.json');
   c.statePolicy.accessApproved = true;
@@ -56,6 +56,15 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
       maxToolCalls: 5, timeoutMs: 10000, maxSourceBytes: 10000, maxRequestBytes: 1000000,
       sources: [{ repoId: 'fixture', revision }] };
   }
+  const throttled = mode.endsWith('-throttled');
+  const mixed = mode.includes('-mixed-');
+  const partial = mode.includes('-partial-') || mode.endsWith('-partial');
+  if (mixed) c.dryRun.limits = { maxItems: 5, maxCalls: 5 };
+  if (throttled) {
+    c.sources.ado.enabled = mixed;
+    c.sources.workiq.enabled = true; c.sources.workiq.scopeApproved = true;
+    c.runtime.workiqCli = { enabled: true, executable: process.execPath, packageVersion: '1.0.1', timeoutMs: 1000 };
+  }
   const collectorConfig = join(root, 'collector.local.json'), proposerConfig = join(root, 'proposer.local.json');
   writeFileSync(collectorConfig, json(c)); writeFileSync(proposerConfig, json(c));
   const deadlineAt = new Date(Date.now() + 600000).toISOString();
@@ -63,10 +72,11 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
     workflowId: 'native-test', timeZone: 'Asia/Singapore', adapter: mode === 'mailbox' ? 'mailbox' : 'native', rsiMode: 'capture-only', deadlineAt,
     stateOwner: { id: 'synthetic', directory: join(root, 'state'), accessApproved: true, retentionDays: 7 },
     budgets: Object.fromEntries(loopStages.map(stage => [stage, { maxEffects: 10, timeoutMs: 600000 }])),
-    collection: { dryRun: true, passes: ['ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
+    collection: { dryRun: true, passes: mixed ? ['ado:created', 'workiq:created'] : [throttled ? 'workiq:created' : 'ado:created'], authorization: { approvedBy: 'test', approvedAt: now(),
       approvalRef: 'synthetic-only', deadlineAt, maxItems: 10, maxCalls: 10 } },
     filterHost: { id: 'synthetic-host', approvalRef: 'synthetic-only', qualificationRef: verificationRef,
       maxRequests: 1, maxExecutionSeconds: 600, maxReservedTokens: 1000 } };
+  if (partial) bundle.collection.sourceFailurePolicy = 'complete-source-kinds';
   if (mode.startsWith('local-')) bundle.localFilterPlan = {
     instructions: 'Synthetic complete corpus review',
     groupingReview: { reviewer: 'test', reviewedAt: now(), rationale: 'Exact singleton membership only' },
@@ -78,16 +88,22 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
       authorizeCommit: false, authorizePush: false, authorizeDraftPR: false }
   };
   const bundlePath = join(root, 'bundle.local.json'); writeFileSync(bundlePath, json(bundle));
-  let calls = 0;
-  let failPreparation = mode === 'local-reconcile';
+  let calls = 0, workiqCalls = 0;
+  let failPreparation = mode.startsWith('local-reconcile');
   const native = createNativeLoopAdapter({ collectionDependencies: {
+    workiqFactory: async () => ({ read: async () => {
+      calls++;
+      return ++workiqCalls === 1 ? { structuredContent: { results: [{ statusCode: 200,
+        data: { id: c.identity.objectId, userPrincipalName: c.identity.designatedUser } }] } }
+        : { isError: true, structuredContent: { results: [{ statusCode: 429, retryAfterSeconds: 60 }] } };
+    }, close: async () => {} }),
     adoTransport: async () => async () => { calls++; return { asOf: '2026-10-23T00:00:00Z', workItems: [] }; }
   }, filterDependencies: { counter: async (_config, input) => {
     if (failPreparation) throw new Error('Known pre-submission preparation failure');
     return { sha256: input.sha256, model: input.model, tokenizer: input.tokenizer, tokens: 5 };
   },
     connect: async () => { throw new Error('An empty cohort must not launch a model'); } } });
-  const adapter = mode === 'mailbox' ? createMailboxLoopAdapter(native) : mode === 'local-rsi-recover'
+  const adapter = mode.startsWith('mailbox') ? createMailboxLoopAdapter(native) : mode === 'local-rsi-recover'
     ? { ...native, execute: (request, ledger) => request.stage === 'rsi'
       ? { state: 'blocked', code: 'fixture-capture-hold', action: 'Exercise explicit original-producer recovery' }
       : native.execute(request, ledger) } : native;
@@ -103,6 +119,35 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   const adapters = Object.fromEntries(loopStages.map(stage => [stage, adapter]));
   let waiting = await runEvidenceLoop(request, ledger, adapters);
+  if (throttled && !partial) {
+    if (mode.startsWith('mailbox')) {
+      await adapter.drain(loopOperation(ledger, waiting.runId + ':collect').detail.request, ledger);
+      waiting = await runEvidenceLoop(request, ledger, adapters);
+    }
+    assert.equal(waiting.state, 'blocked', json(waiting));
+    assert.equal(waiting.statusCode, 429, json(waiting));
+    assert.equal(waiting.retryAfterSeconds, 60);
+    assert.equal(waiting.failureReview.state, 'diagnosed-and-proposed', json(waiting));
+    const snapshot = JSON.parse(readLoopArtifact(ledger, waiting.failureReview.artifacts[0]));
+    assert.equal(snapshot.evidence.sourceCoverageComplete, false);
+    assert.equal(snapshot.evidence.transports.at(-1).failure.retryAfterSeconds, 60);
+    assert.equal(snapshot.evidence.producerBindings.length, 1);
+    assert.equal(snapshot.evidence.passes.at(-1).calls, 2);
+    if (mixed) {
+      assert.equal(snapshot.evidence.passes[0].state, 'complete');
+      assert.equal(snapshot.evidence.transports.length, 4);
+      assert.equal(snapshot.evidence.transports[0].state, 'received');
+      assert.equal(snapshot.evidence.transports[0].effectCertainty, 'response-recorded');
+      assert.match(snapshot.evidence.transports[0].requestSha256, /^[a-f0-9]{64}$/);
+      assert.equal(snapshot.evidence.transports[0].failure, null);
+    }
+    assert.equal(loopOperation(ledger, waiting.runId + ':filter'), null);
+    assert.equal(loopOperation(ledger, waiting.runId + ':rsi'), null);
+    assert.equal(calls, mixed ? 4 : 2);
+    assert.deepEqual(await runEvidenceLoop(request, ledger, adapters), waiting);
+    assert.equal(calls, mixed ? 4 : 2);
+    return;
+  }
   if (mode === 'local-rsi-recover') {
     assert.equal(waiting.code, 'fixture-capture-hold', json(waiting));
     const originalCalls = calls, requestPath = join(root, 'rsi-request.json');
@@ -124,7 +169,7 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
     assert.equal(completed.rsi, 'captured'); assert.equal(calls, originalCalls);
     return;
   }
-  if (mode === 'local-reconcile') {
+  if (mode.startsWith('local-reconcile')) {
     assert.equal(waiting.state, 'blocked');
     const originalCalls = calls, original = normalizeLoopRequest(request);
     const originalPath = join(root, 'original-request.json'); writeFileSync(originalPath, json(request));
@@ -136,6 +181,21 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
     const nextPath = join(root, 'successor-settings.json'); writeFileSync(nextPath, json(nextBundle));
     const next = { ...request, workflowId: 'successor', configuration: [fileArtifact(nextPath), ...configuration.slice(1)] };
     failPreparation = false;
+    const changedPolicyBundle = structuredClone(nextBundle);
+    if (partial) delete changedPolicyBundle.collection.sourceFailurePolicy;
+    else changedPolicyBundle.collection.sourceFailurePolicy = 'complete-source-kinds';
+    const changedPolicyPath = join(root, 'changed-policy-settings.json');
+    writeFileSync(changedPolicyPath, json(changedPolicyBundle));
+    const changedPolicy = { ...next, workflowId: 'changed-policy-successor',
+      configuration: [fileArtifact(changedPolicyPath), ...configuration.slice(1)] };
+    const refusedPolicy = await runEvidenceLoop(changedPolicy, ledger, adapters);
+    assert.equal(refusedPolicy.state, 'blocked', json(refusedPolicy));
+    assert.equal(refusedPolicy.code, 'blocked-reconciliation');
+    assert.match(refusedPolicy.message, /exact original source policy/);
+    assert.equal(calls, originalCalls, 'Cross-policy reuse must not repeat collection');
+    assert.equal(loopOperation(ledger, refusedPolicy.runId + ':collect'), null,
+      'Cross-policy reuse must fail before admitting a collection effect');
+    assert.equal(loopOperation(ledger, original.runId + ':collection-successor'), null);
     const predecessorLock = 'evidence-loop:' + original.runId, predecessorOwner = ledger.acquire(predecessorLock);
     try {
       const refused = await runEvidenceLoop(next, ledger, adapters);
@@ -156,9 +216,19 @@ for (const mode of ['native', 'mailbox', 'local-sdk', 'local-unapproved', 'local
     assert.equal(waiting.code, 'action-required-budget', json(waiting));
     assert.equal(calls, 0); return;
   }
-  if (mode === 'local-sdk') {
+  if (mode === 'local-sdk' || partial) {
     assert.equal(waiting.state, 'complete', json(waiting));
     assert.equal(waiting.proposer, 'no-candidate'); assert.equal(waiting.rsi, 'captured');
+    if (partial) {
+      assert.equal(waiting.sourceFailureReview.state, 'diagnosed-and-proposed');
+      assert.equal(waiting.coverage.sourceCoverageComplete, false);
+      assert.equal(waiting.coverage.filterReady, true);
+      assert.deepEqual(waiting.coverage.eligibleSourceKinds, ['ado']);
+      assert.equal(waiting.coverage.missingSources[0].kind, 'workiq');
+      const accepted = JSON.parse(readLoopArtifact(ledger, waiting.receipts[1].artifacts[0]));
+      assert.equal(accepted.sourceCoverageComplete, false);
+      assert.equal(accepted.selectedSourceCoverageComplete, true);
+    }
     const firstCalls = calls;
     assert.deepEqual(await runEvidenceLoop({ ...request, origin: 'scheduled' }, ledger, adapters), waiting);
     assert.equal(calls, firstCalls); return;

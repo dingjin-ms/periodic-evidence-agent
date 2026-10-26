@@ -532,6 +532,18 @@ test('SDX commit actually runs native hooks and carries the configured session t
   assert.equal(await git(['status', '--porcelain']), '');
 });
 
+test('a failing conventional repository hook blocks the commit without advancing HEAD', async t => {
+  const { repo, config, reference, write, git } = await fixture(t);
+  delete repo.changeFile;
+  const revision = await git(['rev-parse', 'HEAD']);
+  write('mono/packages/target/src.js', 'updated content\n');
+  writeFileSync(join(reference, '.git', 'hooks', 'pre-commit'),
+    '#!/bin/sh\necho synthetic-precommit-refusal >&2\nexit 1\n', { mode: 0o755 });
+  await assert.rejects(commitRepositoryChanges(config, reference, repo, 'Must not commit'),
+    error => error.code === 1 && /synthetic-precommit-refusal/.test(error.stderr));
+  assert.equal(await git(['rev-parse', 'HEAD']), revision);
+});
+
 test('SDX changefile preparation preserves the real blocker and commit budget', () => {
   assert.throws(() => preparedChangeFileWorkspace({ gate: {
     error: { code: 'blocked-validation', message: 'Native installation timed out' }

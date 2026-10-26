@@ -46,6 +46,37 @@ const message = (id, createdDateTime = '2026-10-08T01:00:00Z') => ({
   webUrl: `https://example.invalid/${id}`
 });
 
+test('plain-text HTTP failure keeps status without retry or body leakage', async t => {
+  const { config, ledger } = setup(t);
+  const text = "Remote tool 'fetch' failed: Response status code does not indicate success: 500 (Internal Server Error). Response body: private-diagnostic";
+  const tr = transport(config, [{ isError: true, content: [{ type: 'text', text }] }]);
+  const result = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const pass = result.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'failed-source');
+  assert.equal(pass.error.statusCode, 500);
+  assert.equal(tr.paths.length, 2);
+  assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.ok(!JSON.stringify(pass.error).includes('private-diagnostic'));
+  assert.throws(() => cliEnvelope({ content: [{ type: 'text', text }] }), e => e.code === 'blocked-protocol');
+  assert.throws(() => cliEnvelope({ isError: true, content: [{ type: 'text', text: 'body mentions 500' }] }), e => e.code === 'blocked-protocol');
+});
+
+for (const isError of [true, false]) test('429 details survive collection, isError=' + isError, async t => {
+  const { config, ledger } = setup(t);
+  const tr = transport(config, [{ isError, structuredContent: { results: [{ statusCode: 429,
+    retryAfterSeconds: 60, errorCode: 'Throttled', rawDiagnostic: 'must-not-escape' }] } }]);
+  const result = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const pass = result.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'blocked-throttled');
+  assert.equal(pass.error.statusCode, 429); assert.equal(pass.error.retryAfterSeconds, 60);
+  const row = JSON.parse(ledger.db.prepare("SELECT body FROM app_transport ORDER BY rowid DESC LIMIT 1").get().body);
+  assert.equal(row.call.failure.retryAfterSeconds, 60);
+  assert.match(row.captureSha256, /^[a-f0-9]{64}$/);
+  assert.equal(row.call.failure.rawDiagnostic, undefined);
+  assert.equal(tr.paths.length, 2); assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.equal(pass.nextRequest, null);
+});
+
 test('CLI collector journals all calls, old-root replies, provenance and complete cursor without dispatch', async t => {
   const { config, ledger } = setup(t);
   const tr = transport(config, [

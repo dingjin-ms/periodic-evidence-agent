@@ -1009,6 +1009,7 @@ for (const automaticRsi of [false, true]) test(
     mkdirSync(reference);
     writeFileSync(join(reference, 'README.txt'), 'Separate synthetic agent-system reference.\n');
     const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
       '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], reference);
     await git(['init', '-b', 'main', '--quiet']);
     await git(['remote', 'add', 'origin', `https://github.com/${config.rsi.targetRepository}.git`]);

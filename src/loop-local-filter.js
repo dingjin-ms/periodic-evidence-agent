@@ -17,13 +17,16 @@ export async function prepareLoopLocalFilter(settings, request, ledger, counter)
   const handoffPath = join(settings.root, 'handoff.json');
   if (existsSync(handoffPath)) return;
   const collected = JSON.parse(readLoopArtifact(ledger, request.upstream[0].artifacts[0]));
+  const instructions = plan.instructions + (collected.sourceCoverageComplete === false
+    ? '\nSource coverage is incomplete. Review only the supplied complete source cohorts. Missing sources: ' +
+      JSON.stringify(collected.missingSources) + '. Do not infer absence of findings in excluded sources.' : '');
   const corpus = loadFilterCorpus(settings.proposer, { format: 'stage2-sources-v1', sources: collected.snapshot.sources });
   const manifestPath = join(settings.root, 'filter-manifest.json');
   const materials = [...new Set([...corpus.evidence.map(sha), ...corpus.captures.map(c => c.sha256),
-      ...corpus.contexts.map(c => c.sha256), hash(plan.instructions),
+      ...corpus.contexts.map(c => c.sha256), hash(instructions),
       sha(corpus.coverage.map(({ runId, coverage }) => ({ runId, coverage })))])];
   const batchRequest = { format: 'filter-batch-request-v1',
-      sources: collected.snapshot.sources, instructions: plan.instructions,
+      sources: collected.snapshot.sources, instructions,
       groups: requiredSourceGroups(corpus.evidence),
       groupingReview: plan.groupingReview,
       sharing: { ...plan.sharing, materials: materials.map(sha256 =>

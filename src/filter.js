@@ -5,6 +5,17 @@ import { exclusions, hash, json, readJson, requireThat, utc, validateRecord } fr
 import { adoResolutionField, requireAdoEvidenceCohort } from './ado-cohort.js';
 
 const text = value => typeof value === 'string' && value.trim().length > 0;
+export function selectedSourceKinds(source, passes) {
+  const sourceKinds = source.sourceKinds;
+  if (sourceKinds !== undefined) requireThat(Array.isArray(sourceKinds) && sourceKinds.length > 0 &&
+    new Set(sourceKinds).size === sourceKinds.length && sourceKinds.every(kind => ['ado', 'workiq', 'icm'].includes(kind) &&
+      passes.some(p => p.pass.startsWith(kind + ':')) && passes.filter(p => p.pass.startsWith(kind + ':')).every(p => {
+        const value = JSON.parse(p.body);
+        return value.state === 'complete' && value.identityVerified === true &&
+          ['authenticated-source', 'workiq-cli-verified'].includes(value.provenance);
+      })), 'Selected FILTER source kinds must be complete and authenticated', 'blocked-reconciliation');
+  return sourceKinds;
+}
 function immutable(path, value) {
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
   if (existsSync(path)) requireThat(readFileSync(path, 'utf8') === bytes,
@@ -22,6 +33,7 @@ function sourceRead(source, retained = null, expected = null) {
     const run = db.prepare('SELECT body FROM app_runs WHERE id=?').get(source.runId);
     requireThat(run, 'Filter source run missing', 'invalid-record');
     const passes = db.prepare('SELECT pass,body FROM app_passes WHERE run_id=? ORDER BY pass').all(source.runId);
+    const sourceKinds = selectedSourceKinds(source, passes);
     // Project title/identity/provenance and cohort selectors, never description/RCA/capture bodies.
     const entries = db.prepare(`SELECT DISTINCT r.id AS evidenceId,
       json_extract(r.body,'$.title') AS title, json_extract(r.body,'$.source') AS source,
@@ -31,7 +43,7 @@ function sourceRead(source, retained = null, expected = null) {
       json_extract(r.body,'$.fields."${adoResolutionField}"') AS resolution
       FROM records r JOIN observations o ON o.evidence_id=r.id
       WHERE r.kind='evidence' AND substr(o.run_id,1,length(?)+1)=?||':' ORDER BY r.id`)
-      .all(source.runId, source.runId).map(row => {
+      .all(source.runId, source.runId).filter(row => !sourceKinds || sourceKinds.includes(JSON.parse(row.source).kind)).map(row => {
         const origin = JSON.parse(row.source), capture = JSON.parse(row.capture);
         requireAdoEvidenceCohort({ source: origin, sourceStatus: row.sourceStatus,
           fields: { 'System.State': row.state, [adoResolutionField]: row.resolution } });
@@ -44,7 +56,7 @@ function sourceRead(source, retained = null, expected = null) {
           ...(origin.kind === 'ado' ? { cohort: { state: row.state,
             resolutionField: adoResolutionField, resolution: row.resolution } } : {}) };
       });
-    const snapshotSha256 = hash(json([run.body, passes, entries]));
+    const snapshotSha256 = hash(json([run.body, passes, entries, ...(sourceKinds ? [sourceKinds] : [])]));
     if (expected) requireThat(snapshotSha256 === expected,
       'Filter source changed since title index preparation', 'blocked-reconciliation');
     const evidence = [], captures = new Map();
@@ -69,7 +81,9 @@ function sourceRead(source, retained = null, expected = null) {
       'SELECT body FROM app_thread_context WHERE run_id=? ORDER BY pass,id').all(source.runId)
       .map(row => JSON.parse(row.body)).filter(c => threads.has(json([c.teamId, c.channelId, c.rootId]))) : [];
     return { ledgerPath, runId: source.runId, window: JSON.parse(run.body).window, snapshotSha256,
-      coverage: passes.map(p => JSON.parse(p.body)), entries, evidence, contexts, captures: [...captures.values()] };
+      ...(sourceKinds ? { sourceKinds } : {}),
+      coverage: passes.filter(p => !sourceKinds || sourceKinds.includes(p.pass.split(':')[0]))
+        .map(p => JSON.parse(p.body)), entries, evidence, contexts, captures: [...captures.values()] };
   } finally { db.close(); }
 }
 function buildIndex(config, input) {
@@ -86,7 +100,8 @@ function buildIndex(config, input) {
     entries.set(entry.evidenceId, entry);
   }
   return { format: 'filter-title-index-v1', stage: 'filter', dispatchAllowed: false,
-    sources: sources.map(({ ledgerPath, runId, window, snapshotSha256 }) => ({ ledgerPath, runId, window, snapshotSha256 })),
+    sources: sources.map(({ ledgerPath, runId, window, snapshotSha256, sourceKinds }) =>
+      ({ ledgerPath, runId, window, snapshotSha256, ...(sourceKinds ? { sourceKinds } : {}) })),
     policy: { exclusions, dispositions: ['likely-relevant', 'needs-details', 'no-title', 'screen-out'],
       rules: [
         'Agent 2 FILTER loosely reviews every title before detailed reasoning; full-record inputs need no deferred retrieval.',

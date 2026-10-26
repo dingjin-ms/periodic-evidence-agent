@@ -13,10 +13,81 @@ import {
 } from '../src/self-improvement.js';
 import {
   buildSelfImprovementComparison, classifySelfImprovementEpisode, evaluateSelfImprovement,
-  fixtureEnvironment, inspectSelfImprovementEvidence, nativeCaseOutcomes, renderSelfImprovementComparison,
+  fixtureEnvironment, inspectFixture, inspectSelfImprovementEvidence, nativeCaseOutcomes, renderSelfImprovementComparison,
   runRsiChild, validChildEnvelope
 } from '../src/self-improvement-evaluation.js';
 import { hash, json, uuid } from '../src/common.js';
+import { Ledger } from '../src/ledger.js';
+
+function snapshotFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'rsi-snapshot-test-'));
+  const directory = join(root, 'prior'), workspace = join(directory, 'workspace');
+  mkdirSync(join(workspace, 'test'), { recursive: true });
+  writeFileSync(join(workspace, 'test', 'case.test.mjs'), 'synthetic assertions\n');
+  const ledger = new Ledger(directory);
+  try {
+    ledger.db.prepare(`INSERT INTO jobs
+      (id,investigation_id,version,repo,state,session_id,workspace,base_revision,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run('job', 'fixture', 1, 'fixture', 'completed', 'attempt',
+      workspace, '0'.repeat(40), '2026-01-01T00:00:00Z');
+  } finally { ledger.close(); }
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return { root, workspace, head: '1'.repeat(40) };
+}
+
+test('fixture snapshots overlap independent Git observations and preserve all source metadata', async t => {
+  const ctx = snapshotFixture(t), calls = [];
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const pending = inspectFixture(ctx.root, 'prior', async (cwd, args) => {
+    assert.equal(cwd, ctx.workspace);
+    calls.push(args);
+    if (args[0] === 'rev-parse') return ctx.head;
+    await barrier;
+    return { status: '', show: args[1] === '-s' ? 'Synthetic title' : 'Synthetic pointer',
+      'rev-list': '1' }[args[0]];
+  });
+  let result;
+  try {
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, [
+      ['rev-parse', 'HEAD'], ['status', '--porcelain'],
+      ['show', `${ctx.head}:fixtures/native.xlsx`],
+      ['rev-list', '--count', `${'0'.repeat(40)}..${ctx.head}`],
+      ['show', '-s', '--format=%s', 'HEAD']
+    ]);
+  } finally {
+    release();
+    result = await pending;
+  }
+  assert.deepEqual(result.source, {
+    head: ctx.head, clean: true, baseRevision: '0'.repeat(40),
+    testSha256: hash('synthetic assertions\n'), pointer: 'Synthetic pointer',
+    commitCount: 1, title: 'Synthetic title'
+  });
+});
+
+test('fixture snapshot failures wait for all admitted Git observations to settle', async t => {
+  const ctx = snapshotFixture(t);
+  let release, completed = 0, settled = false;
+  const failure = new Error('synthetic Git observation canceled');
+  const barrier = new Promise(resolve => { release = resolve; });
+  const pending = inspectFixture(ctx.root, 'prior', async (_cwd, args) => {
+    if (args[0] === 'rev-parse') return ctx.head;
+    if (args[0] === 'status') throw failure;
+    await barrier;
+    completed++;
+    return '';
+  });
+  const observed = pending.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(settled, false, 'A failed query must not leave sibling queries running');
+  } finally { release(); }
+  await assert.rejects(pending, error => error === failure);
+  await observed;
+  assert.equal(completed, 3);
+});
 
 function fixture(t, { retain = false, limits = {} } = {}) {
   const checkoutRoot = retain ? selfImprovementRoot : mkdtempSync(join(tmpdir(), 'rsi-evaluation-test-'));

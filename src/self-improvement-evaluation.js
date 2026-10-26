@@ -272,7 +272,7 @@ function nativePassed(native, cases) {
     cases.every(item => item.status === 'passed');
 }
 
-async function inspectFixture(root, name, git) {
+export async function inspectFixture(root, name, git) {
   const directory = join(root, name), database = join(directory, 'ledger.sqlite');
   if (!existsSync(database)) return null;
   inspectRsiPath(root, database);
@@ -292,14 +292,23 @@ async function inspectFixture(root, name, git) {
   if (job?.workspace) {
     inspectRsiPath(root, job.workspace, { directory: true });
     const head = await git(job.workspace, ['rev-parse', 'HEAD']);
+    // Drain every admitted query before propagating a failure or cancellation.
+    const queries = await Promise.allSettled([
+      git(job.workspace, ['status', '--porcelain']),
+      git(job.workspace, ['show', `${head}:fixtures/native.xlsx`]),
+      git(job.workspace, ['rev-list', '--count', `${job.base_revision}..${head}`]),
+      git(job.workspace, ['show', '-s', '--format=%s', 'HEAD'])
+    ]);
+    const [status, pointer, commitCount, title] = queries.map(query => {
+      if (query.status === 'rejected') throw query.reason;
+      return query.value;
+    });
     const testPath = join(job.workspace, 'test', 'case.test.mjs');
     snapshot.source = {
-      head, clean: !(await git(job.workspace, ['status', '--porcelain'])),
+      head, clean: !status,
       baseRevision: job.base_revision,
       testSha256: existsSync(testPath) ? hash(readFileSync(inspectRsiPath(root, testPath))) : null,
-      pointer: await git(job.workspace, ['show', `${head}:fixtures/native.xlsx`]),
-      commitCount: Number(await git(job.workspace, ['rev-list', '--count', `${job.base_revision}..${head}`])),
-      title: await git(job.workspace, ['show', '-s', '--format=%s', 'HEAD'])
+      pointer, commitCount: Number(commitCount), title
     };
   }
   return snapshot;

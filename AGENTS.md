@@ -40,6 +40,23 @@ When a controller command returns `state: "action-required-auth"`:
 Dependency-cache hits do not require authentication preflight. Never delete a
 trusted dependency receipt merely to force authentication.
 
+## Draft PR publication and merge authorization
+
+Controller and worker deliveries remain Draft PRs. Creating, updating, testing,
+reviewing or completing an assignment does not authorize publishing a draft,
+enabling auto-complete or merging it.
+
+A separate user instruction must explicitly identify the PR by repository and
+number or URL and authorize the requested publication or merge. Do not interpret
+"merge this PR", "merge first" or similar wording as authorization when multiple
+PRs are in scope. Ask which PR the user means; if the user is unavailable, leave
+all drafts unchanged. Authorization for a controller PR never extends to its
+generated product-repository PRs, or vice versa.
+
+Keep draft publication and merge outside the autonomous agentic loop. Passing
+validation, a clean mergeability result, no blocking policies, and a prior merge
+authorization for another PR are not permission to merge.
+
 ## Controller E2E test ownership
 
 Keep controller E2E input JSON, qualification scenarios and their expected

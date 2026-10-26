@@ -1505,6 +1505,14 @@ coverage facts remain in the audit/handoff rather than being excluded.
   unauthorized validation retry/cancel/requeue or implicit scheduling.
   Follow-up is separately bounded to at most one level, not a paging-budget escape.
 
+Draft publication and merge are outside the autonomous loop. A separate user
+instruction must explicitly identify the repository and PR number or URL and
+authorize the requested action. An ambiguous "merge this PR" is not authorization
+when multiple PRs are in scope: clarify the exact PR, or leave drafts unchanged
+if the user is unavailable. Approval for a controller PR does not authorize
+publishing or merging generated product PRs. Passing validation, assignment
+completion and server mergeability do not change this boundary.
+
 Null limits are unresolved, not unlimited. Instructions alone are not runtime
 enforcement; app permissions and native validation boundaries must also be
 qualified. The app helpers track external worker outcomes but do not assert

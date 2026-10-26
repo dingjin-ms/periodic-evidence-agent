@@ -3,6 +3,7 @@ import { workiqCli, cliEnvelope, cliFailure } from './workiq-cli.js';
 import { principalPath, verifyPrincipal, validateWorkiqPath, messageSelect } from './runtime.js';
 import { hash, json, now, uuid, requireThat, safeError, PilotError } from './common.js';
 import { failureDetails } from './failure-details.js';
+import { collectWorkiq } from './sources.js';
 
 function storedRun(ledger, runId) {
   const row = ledger.db.prepare('SELECT body FROM app_runs WHERE id=?').get(runId);
@@ -35,6 +36,17 @@ function capture(ledger, runId, raw) {
   ledger.db.prepare('INSERT OR IGNORE INTO app_artifacts VALUES(?,?,?)')
     .run(runId, `sqlite:capture:${digest}`, 'workiq-cli-mcp-response');
   return digest;
+}
+async function appendReceived(config, ledger, runId, pass, calls) {
+  const append = batch => appendApp(config, ledger, runId,
+    { eventId: `cli-batch-${batch.at(-1).id}`, pass, calls: batch }, { directWorkiqVerified: true });
+  try { return await append(calls); }
+  catch (error) {
+    // Preserve the valid prefix if the final response fails semantic validation.
+    // This verifies stored receipts only and never repeats a source read.
+    if (calls.length > 1) await append(calls.slice(0, -1));
+    throw error;
+  }
 }
 
 export async function collectCliWorkiq(config, ledger, runId, factory = workiqCli, pass = 'workiq:created') {
@@ -72,9 +84,10 @@ export async function collectCliWorkiq(config, ledger, runId, factory = workiqCl
     started = true;
     client = await factory(readConfig);
     let status;
-    while (pendingRequest) {
+    const received = [];
+    const readOnce = async path => {
+      pendingRequest = { entityUrls: [path] };
       requireThat(readCalls < run.limits.maxCalls, 'CLI read-call cap reached; coverage is partial', 'partial');
-      const path = pendingRequest.entityUrls[0];
       validateWorkiqPath(readConfig, path);
       const call = { id: uuid(), requestedAt: now(), tool: 'workiq-fetch', request: pendingRequest };
       // Persist intent before issuing the read. An interrupted request is never retried.
@@ -96,8 +109,8 @@ export async function collectCliWorkiq(config, ledger, runId, factory = workiqCl
         if (path === principalPath) verifyPrincipal(config, entry.data);
         ledger.db.prepare('UPDATE app_transport SET body=? WHERE id=?')
           .run(json({ execution: 'local-workiq-cli-stdio', state: 'received', call, captureSha256 }), call.id);
-        status = await appendApp(config, ledger, runId, { eventId: `cli-${call.id}`, pass, calls: [call] },
-          { directWorkiqVerified: true });
+        received.push(call);
+        return entry.data;
       } catch (error) {
         call.observedAt ??= now();
         const failure = call.failure ?? { code: error.code ?? 'failed-source', ...failureDetails(error) };
@@ -106,6 +119,27 @@ export async function collectCliWorkiq(config, ledger, runId, factory = workiqCl
           .run(json({ execution: 'local-workiq-cli-stdio', state: 'failed', call, captureSha256, error: safeError(error) }), call.id);
         throw error;
       }
+    };
+    if (!run.continuationFrom) {
+      // Traverse once while durably journaling each read. Replaying every prefix
+      // re-examined and re-inserted the entire history after every response.
+      const local = structuredClone(readConfig);
+      local.limits = { ...local.limits, ...run.limits };
+      let failure;
+      try {
+        await collectWorkiq(local, run.window, async () => {}, readOnce, pass.split(':')[1]);
+      } catch (error) { failure = error; }
+      // A single independent receipt replay remains the authority for evidence,
+      // budgets and coverage. Transport intent/response survives an interruption.
+      if (received.length) status = await appendReceived(config, ledger, runId, pass, received);
+      if (failure && failure.code !== 'partial') throw failure;
+      pendingRequest = status?.collection.find(p => p.pass === pass)?.nextRequest ?? null;
+    } else while (pendingRequest) {
+      // Explicit continuations retain their inherited replay/budget contract.
+      await readOnce(pendingRequest.entityUrls[0]);
+      const call = received.at(-1);
+      status = await appendApp(config, ledger, runId, { eventId: `cli-${call.id}`, pass, calls: [call] },
+        { directWorkiqVerified: true });
       const result = status.collection.find(p => p.pass === pass);
       pendingRequest = result.nextRequest;
       if (result.state !== 'partial' || !pendingRequest) break;
@@ -141,16 +175,25 @@ export async function reconcileCliWorkiq(config, ledger, runId, pass = 'workiq:c
   try {
     const rows = ledger.db.prepare('SELECT body FROM app_transport WHERE run_id=? AND pass=? ORDER BY rowid')
       .all(runId, pass).map(r => JSON.parse(r.body));
+    const accepted = new Map(ledger.db.prepare('SELECT body FROM app_events WHERE run_id=? AND pass=? ORDER BY rowid')
+      .all(runId, pass).flatMap(r => JSON.parse(r.body).calls).map(call => [call.id, json(call)]));
+    const pending = [];
     for (const row of rows) {
       requireThat(row.execution === 'local-workiq-cli-stdio', 'Not a CLI transport receipt');
       if (row.state !== 'received') break;
-      await appendApp(config, ledger, runId, { eventId: `cli-${row.call.id}`, pass, calls: [row.call] },
-        { directWorkiqVerified: true });
+      if (accepted.has(row.call.id)) requireThat(accepted.get(row.call.id) === json(row.call),
+        'Accepted transport receipt changed', 'blocked-reconciliation');
+      else pending.push(row.call);
+    }
+    let replayFailure;
+    if (pending.length) {
+      try { await appendReceived(config, ledger, runId, pass, pending); }
+      catch (error) { replayFailure = error; }
     }
     const prior = appStatus(ledger, runId).collection.find(p => p.pass === pass);
-    const result = rows.every(r => r.state === 'received') && (prior?.state === 'complete' || prior?.continuation)
+    const result = !replayFailure && rows.every(r => r.state === 'received') && (prior?.state === 'complete' || prior?.continuation)
       ? appStatus(ledger, runId)
-      : terminal(ledger, runId, new PilotError('blocked-reconciliation', 'Interrupted collection; no reads retried'),
+      : terminal(ledger, runId, replayFailure ?? new PilotError('blocked-reconciliation', 'Interrupted collection; no reads retried'),
         rows.at(-1)?.call.request ?? null, rows.length, pass);
     ledger.finishOperation(key, 'reconciled-offline', { newSourceReads: 0, renewalQualification: 'deferred' });
     return result;

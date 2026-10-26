@@ -26,7 +26,7 @@ const definitions = {
     operations: [
       'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
       'filter-batch-check', 'filter-consolidate', 'filter-execution-check',
-      'filter-local-preflight', 'filter-local-run',
+      'filter-local-preflight', 'filter-local-run', 'filter-local-retry-prepare',
       'stage2-handoff', 'stage2-proposal-check', 'app-review', 'app-plan-improvement',
       'review', 'review-pending', 'plan-improvement', 'report', 'replay-review', 'app-end',
       'one-shot-filter-prepare', 'one-shot-filter-reserve'

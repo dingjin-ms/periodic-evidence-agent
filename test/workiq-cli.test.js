@@ -46,6 +46,56 @@ const message = (id, createdDateTime = '2026-10-08T01:00:00Z') => ({
   webUrl: `https://example.invalid/${id}`
 });
 
+test('fresh collection materializes evidence once and reconciles an accepted batch offline', async t => {
+  const { config, ledger } = setup(t, { maxItems: 1000, maxCalls: 100 });
+  const roots = Array.from({ length: 40 }, (_, i) => message(`root-${i}`));
+  const tr = transport(config, [wrapped({ value: roots }),
+    ...roots.map((_, i) => wrapped({ value: [message(`reply-${i}`)] }))]);
+  const evidence = ledger.evidence.bind(ledger);
+  let writes = 0;
+  ledger.evidence = (...args) => { writes++; return evidence(...args); };
+  const status = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const result = status.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(result.state, 'complete');
+  assert.equal(result.evidenceCount, 80);
+  assert.equal(writes, 80, 'historical evidence must not be rewritten for every response');
+  assert.equal(tr.paths.length, 42);
+  // Crash after the batch transaction, before finishOperation: accepted receipt
+  // IDs must not be re-imported as individual events during reconciliation.
+  ledger.db.prepare("UPDATE operations SET state='started' WHERE id=?").run('cli-workiq:cli-test');
+  const recovered = await reconcileCliWorkiq(config, ledger, 'cli-test');
+  assert.deepEqual(recovered.collection, status.collection);
+  assert.equal(writes, 80);
+});
+
+for (const malformed of [false, true]) test(`offline recovery retains an unmaterialized prefix, malformed tail=${malformed}`, async t => {
+  const { config, ledger } = setup(t);
+  ledger.operation('cli-workiq:cli-test', 'cli-test', 'local-workiq-cli-collection', {});
+  const root = config.sources.workiq.seeds[0];
+  const path = `/teams/${encodeURIComponent(root.teamId)}/channels/${encodeURIComponent(root.channelId)}/messages` +
+    `?$select=${config.sources.workiq.projection}&$top=50`;
+  const pages = [[0, principalPath,
+    { id: config.identity.objectId, userPrincipalName: config.identity.designatedUser }],
+  [1, path, { value: [message('retained')] }]];
+  if (malformed) pages.push([2, path.replace('/messages?', '/messages/retained/replies?'),
+    { unexpected: 'malformed collection' }]);
+  for (const [i, request, data] of pages) {
+    const call = { id: `receipt-${i}`, tool: 'workiq-fetch', observedAt: '2026-10-09T01:00:00Z',
+      request: { entityUrls: [request] }, response: { results: [{ statusCode: 200, data }] } };
+    ledger.db.prepare('INSERT INTO app_transport VALUES(?,?,?,?)').run(call.id, 'cli-test', 'workiq:created',
+      json({ execution: 'local-workiq-cli-stdio', state: 'received', call }));
+  }
+  const recovered = await reconcileCliWorkiq(config, ledger, 'cli-test');
+  const result = recovered.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(result.state, malformed ? 'blocked-protocol' : 'blocked-reconciliation');
+  assert.equal(result.evidenceCount, 1);
+  assert.equal(result.nextRequest, null);
+  assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.equal(ledger.db.prepare('SELECT state FROM operations WHERE id=?').get('cli-workiq:cli-test').state,
+    'reconciled-offline');
+  await assert.rejects(reconcileCliWorkiq(config, ledger, 'cli-test'), /Only an interrupted/);
+});
+
 test('plain-text HTTP failure keeps status without retry or body leakage', async t => {
   const { config, ledger } = setup(t);
   const text = "Remote tool 'fetch' failed: Response status code does not indicate success: 500 (Internal Server Error). Response body: private-diagnostic";

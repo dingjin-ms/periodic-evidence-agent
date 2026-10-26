@@ -1748,3 +1748,48 @@ publication window; policy rows were not builds. The reconciled public controlle
 is offline-validated only. This is not a new collection/review, incident RCA,
 full-cohort, hosted, browser E2E, unattended or latest-target qualification.
 See [the sharing gate](README.md#validation-and-sharing-gate).
+
+## WorkIQ channel collection cost
+
+PILOT-47 recorded 820 WorkIQ reads and 12,058 examined messages for zero
+in-window evidence records. Collection across the approved sources took
+45m 9s. This is full channel enumeration, including replies on old roots;
+the requested date window filters evidence locally, not the source reads.
+At two seconds between responses, 820 sequential reads alone require about
+27m 18s of pacing, before network and local processing.
+
+The CLI also replayed every accumulated receipt after each response to find
+the next request. That repeatedly hashed and inspected old messages and
+rewrote evidence/thread context. With similarly sized pages, this grows
+quadratically in the number of reads.
+
+Fresh runs now drive the existing bounded traversal directly, journal every
+request intent and response, then independently replay all receipts once to
+materialize evidence and coverage. Failed reads retain the received prefix;
+budget stops retain buffered rows for explicitly authorized continuations.
+Offline reconciliation imports unaccepted receipts together and recognizes
+already accepted batches. Explicit continuation runs retain the existing
+inherited replay path.
+
+During fresh collection, progress is visible in the durable transport journal;
+the evidence/pass summary is materialized at the end or a handled failure.
+An interrupted run requires the existing offline reconciliation command and
+never silently repeats an uncertain read.
+
+Run `node scripts/benchmark-workiq.mjs` for 200 synthetic roots, 2,800 replies,
+205 reads and zero in-window evidence. It uses no network, pacing or business
+content. An optional first argument selects a baseline collector module, and
+the second sets the root count (1–1000). Compare on an otherwise idle host;
+these timings measure local processing, not daily end-to-end latency.
+
+This change does not reduce source calls or the two-second pacing interval.
+The next substantial reduction requires qualifying a source-side incremental
+or expanded-reply contract against the deployed WorkIQ version. Qualification
+must include new replies to old roots, reply pagination, edits/tombstones,
+expired checkpoints, permission failures and unchanged coverage receipts.
+Neither root creation-time cutoffs nor semantic search establish exhaustive
+reply coverage. No such API contract or production rollout is claimed here.
+
+Deployment requires a new reviewed, pinned release/configuration for future
+occurrences. Existing admitted occurrences retain their original immutable
+request, producer release and receipts.

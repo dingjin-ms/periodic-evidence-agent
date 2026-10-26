@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hash, json, now, requireThat, safeError, utc, uuid } from './common.js';
+import { failureDetails } from './failure-details.js';
 import { beginApp, openApp, collectAppAdo, reconcileAppAdo, noCredentials } from './app-native.js';
 import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
 import { loadFilterCorpus } from './filter.js';
@@ -10,6 +11,20 @@ const passes = ['ado:created', 'ado:changed', 'workiq:created', 'workiq:changed'
 const integer = value => Number.isSafeInteger(value) && value > 0;
 const text = value => typeof value === 'string' && value.trim().length > 0;
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const partialAllowed = row => row.input.sourceFailurePolicy === 'complete-source-kinds';
+const sourceKind = pass => pass.split(':')[0];
+const excludable = result => result && ['partial', 'failed-source', 'blocked-auth', 'blocked-permission',
+  'blocked-throttled', 'blocked-protocol', 'blocked-runtime'].includes(result.state);
+function coverage(row, selected) {
+  const kinds = [...new Set(row.input.passes.map(sourceKind))];
+  const eligibleSourceKinds = kinds.filter(kind => selected.filter(p => sourceKind(p.pass) === kind)
+    .every(p => p.state === 'complete' && qualifiedPass(p.result, p.pass, p.reservation)));
+  const missingSources = kinds.filter(kind => !eligibleSourceKinds.includes(kind)).map(kind => ({ kind,
+    passes: selected.filter(p => sourceKind(p.pass) === kind).map(p => ({ pass: p.pass, state: p.state,
+      code: p.result?.error?.code ?? p.result?.state ?? (p.state === 'excluded-binding' ? 'blocked-binding' : 'source-unavailable'),
+      ...failureDetails(p.result?.error) })) }));
+  return { eligibleSourceKinds, missingSources };
+}
 
 function fields(value, keys) {
   requireThat(value && typeof value === 'object' && !Array.isArray(value) &&
@@ -51,9 +66,9 @@ function checkedConfig(config, ledger, row) {
   'One-shot configuration or state owner changed; do not resume under new permissions',
   'blocked-reconciliation');
 }
-function block(ledger, runId, code, action) {
+function block(ledger, runId, code, action, details = {}) {
   ledger.db.prepare('UPDATE one_shot_collections SET blocker=? WHERE id=?')
-    .run(json({ code, action }), runId);
+    .run(json({ code, action, ...failureDetails(details) }), runId);
   return oneShotCollectionStatus(ledger, runId);
 }
 function passRows(ledger, runId) {
@@ -96,23 +111,27 @@ function snapshot(config, source, row, selected) {
   const appRun = source.db.prepare('SELECT body FROM app_runs WHERE id=?').get(row.id)?.body;
   requireThat(appRun && json(JSON.parse(appRun).input) === row.app_input,
     'One-shot source run identity changed', 'blocked-reconciliation');
-  const sources = [{ ledgerPath: realpathSync(join(source.directory, 'ledger.sqlite')), runId: row.id }];
+  const eligible = partialAllowed(row) ? coverage(row, selected).eligibleSourceKinds : null;
+  const sources = [{ ledgerPath: realpathSync(join(source.directory, 'ledger.sqlite')), runId: row.id,
+    ...(eligible ? { sourceKinds: eligible } : {}) }];
   const corpus = loadFilterCorpus(config, { format: 'stage2-sources-v1', sources });
   const recorded = source.db.prepare('SELECT pass FROM app_passes WHERE run_id=?').all(row.id);
-  requireThat(recorded.length === selected.length &&
+  requireThat(recorded.length === selected.filter(p => p.result).length &&
     recorded.every(value => selected.some(pass => pass.pass === value.pass)),
   'One-shot source contains an unselected or missing pass', 'blocked-reconciliation');
   for (const pass of selected) {
     const current = passResult(source, row.id, pass.pass);
-    requireThat(pass.state === 'complete' && json(current) === json(pass.result) &&
-      qualifiedPass(current, pass.pass, pass.reservation),
+    requireThat(json(current) === json(pass.result) &&
+      (eligible && !eligible.includes(sourceKind(pass.pass)) ||
+        pass.state === 'complete' && qualifiedPass(current, pass.pass, pass.reservation)),
     'Selected source pass is not complete, authenticated and unchanged', 'blocked-reconciliation');
   }
   const transport = source.db.prepare('SELECT id,pass,body FROM app_transport WHERE run_id=? ORDER BY rowid').all(row.id);
   const events = source.db.prepare('SELECT id,pass,body FROM app_events WHERE run_id=? ORDER BY rowid').all(row.id);
   const operations = selected.map(pass => source.db.prepare('SELECT * FROM operations WHERE id=?')
     .get(helperOperation(row.id, pass.pass)));
-  requireThat(operations.every(operation => operation && operation.state !== 'started'),
+  requireThat(operations.every((operation, index) => eligible && !eligible.includes(sourceKind(selected[index].pass)) ||
+    operation && operation.state !== 'started'),
     'Collection helper operations still need reconciliation', 'blocked-reconciliation');
   return { sources, appRunSha256: hash(appRun), corpusSha256: hash(json(corpus)),
     transportSha256: hash(json(transport)), eventsSha256: hash(json(events)), operationsSha256: hash(json(operations)),
@@ -121,7 +140,10 @@ function snapshot(config, source, row, selected) {
 }
 
 export function beginOneShotCollection(config, ledger, input) {
-  fields(input, ['format', 'runId', 'owner', 'dryRun', 'passes', 'authorization']);
+  fields(input, ['format', 'runId', 'owner', 'dryRun', 'passes', 'authorization',
+    ...(Object.hasOwn(input, 'sourceFailurePolicy') ? ['sourceFailurePolicy'] : [])]);
+  requireThat(!Object.hasOwn(input, 'sourceFailurePolicy') || input.sourceFailurePolicy === 'complete-source-kinds',
+    'Unknown pinned source failure policy', 'invalid-record');
   fields(input.authorization, ['approvedBy', 'approvedAt', 'approvalRef', 'deadlineAt', 'maxItems', 'maxCalls']);
   Object.values(input).forEach(noCredentials);
   const a = input.authorization;
@@ -181,7 +203,9 @@ export function oneShotCollectionStatus(ledger, runId) {
   const blocker = row.blocker ? JSON.parse(row.blocker) : null;
   return { format: 'one-shot-collection-status-v1', runId, owner: row.input.owner,
     state: blocker ? 'blocked' : row.stopped ? 'stopped' : receipt ? 'held-awaiting-filter' : 'collecting',
-    sourceCoverageComplete: Boolean(receipt) && !blocker, dispatchAllowed: false,
+    sourceCoverageComplete: Boolean(receipt?.sourceCoverageComplete) && !blocker, dispatchAllowed: false,
+    filterReady: Boolean(receipt) && !blocker && !row.stopped,
+    ...(partialAllowed(row) ? coverage(row, selected) : {}),
     configSha256: row.config_hash, requestSha256: hash(row.request),
     reserved: selected.reduce((sum, pass) => ({ maxItems: sum.maxItems + pass.reservation.maxItems,
       maxCalls: sum.maxCalls + pass.reservation.maxCalls }), { maxItems: 0, maxCalls: 0 }),
@@ -242,7 +266,20 @@ export async function advanceOneShotCollection(config, ledger, runId, {
           'Accepted collection pass changed', 'blocked-reconciliation');
         continue;
       }
+      if (pass.state.startsWith('excluded') && partialAllowed(row)) {
+        requireThat(json(passResult(source, runId, pass.pass)) === json(pass.result),
+          'Excluded collection pass changed', 'blocked-reconciliation');
+        continue;
+      }
       if (pass.state === 'blocked') return oneShotCollectionStatus(ledger, runId);
+      if (partialAllowed(row) && pass.state === 'pending' && passRows(ledger, runId).some(p =>
+        sourceKind(p.pass) === sourceKind(pass.pass) && p.state.startsWith('excluded'))) {
+        requireThat(!passResult(source, runId, pass.pass) && !source.db.prepare('SELECT id FROM operations WHERE id=?')
+          .get(helperOperation(runId, pass.pass)), 'Unowned excluded source effect exists', 'blocked-reconciliation');
+        ledger.db.prepare('UPDATE one_shot_collection_passes SET state=? WHERE run_id=? AND pass=?')
+          .run('excluded', runId, pass.pass);
+        continue;
+      }
       const operationId = helperOperation(runId, pass.pass);
       const operation = source.db.prepare('SELECT state FROM operations WHERE id=?').get(operationId);
       if (pass.state === 'started') {
@@ -260,6 +297,13 @@ export async function advanceOneShotCollection(config, ledger, runId, {
         if (row.blocker) return oneShotCollectionStatus(ledger, runId);
         if (Date.now() >= Date.parse(row.input.authorization.deadlineAt))
           return block(ledger, runId, 'blocked-budget', 'Collection authorization expired; no new pass was launched.');
+        if (pass.pass.startsWith('workiq:') && (!row.input.dryRun || config.runtime.workiqCli?.enabled !== true) && partialAllowed(row)) {
+          requireThat(!operation && !passResult(source, runId, pass.pass),
+            'Unowned unavailable-source operation exists', 'blocked-reconciliation');
+          ledger.db.prepare('UPDATE one_shot_collection_passes SET state=? WHERE run_id=? AND pass=?')
+            .run('excluded-binding', runId, pass.pass);
+          continue;
+        }
         if (pass.pass === 'icm:created' || (pass.pass.startsWith('workiq:') &&
           (!row.input.dryRun || config.runtime.workiqCli?.enabled !== true)))
           return block(ledger, runId, 'blocked-binding',
@@ -274,16 +318,21 @@ export async function advanceOneShotCollection(config, ledger, runId, {
       }
       const result = passResult(source, runId, pass.pass);
       const complete = qualifiedPass(result, pass.pass, pass.reservation);
+      const excluded = !complete && partialAllowed(row) && excludable(result);
       ledger.db.prepare('UPDATE one_shot_collection_passes SET state=?,result=? WHERE run_id=? AND pass=?')
-        .run(complete ? 'complete' : 'blocked', result ? json(result) : null, runId, pass.pass);
-      if (!complete) return block(ledger, runId, result?.state ?? 'blocked-reconciliation',
-        `${pass.pass} is incomplete or unqualified. Preserve reservations and source receipts; no retry or downstream release.`);
+        .run(complete ? 'complete' : excluded ? 'excluded' : 'blocked', result ? json(result) : null, runId, pass.pass);
+      if (!complete && !excluded) return block(ledger, runId, result?.state ?? 'blocked-reconciliation',
+        `${pass.pass} is incomplete or unqualified. Preserve reservations and source receipts; no retry or downstream release.`, result?.error);
       ledger.db.prepare('UPDATE one_shot_collections SET blocker=NULL WHERE id=?').run(runId);
     }
     row = stored(ledger, runId);
     if (row.stopped) return oneShotCollectionStatus(ledger, runId);
+    const available = coverage(row, passRows(ledger, runId));
+    if (!available.eligibleSourceKinds.length) return block(ledger, runId, 'missing-all-sources',
+      'No complete authenticated source-kind cohort is available; downstream work remains blocked.');
     const receipt = { format: 'one-shot-collection-receipt-v1', runId, owner: row.input.owner,
-      mode: 'fresh-local-collection', sourceCoverageComplete: true, dispatchAllowed: false,
+      mode: 'fresh-local-collection', sourceCoverageComplete: available.missingSources.length === 0, dispatchAllowed: false,
+      ...(partialAllowed(row) ? { sourceFailurePolicy: row.input.sourceFailurePolicy, filterReady: true, ...available } : {}),
       requestSha256: hash(row.request), configSha256: row.config_hash, completedAt: now(),
       authorization: row.input.authorization, snapshot: snapshot(config, source, row, passRows(ledger, runId)) };
     ledger.db.prepare('UPDATE one_shot_collections SET receipt=?,blocker=NULL WHERE id=?')

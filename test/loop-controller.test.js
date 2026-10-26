@@ -9,6 +9,7 @@ import { hash } from '../src/common.js';
 import { loopStages, normalizeLoopRequest, previousCalendarDay, digest, captureArtifact,
   fileArtifact, readLoopArtifact, roleReceipt, runEvidenceLoop, loopOperation } from '../src/loop-controller.js';
 import { createMailboxLoopAdapter } from '../src/loop-mailbox-adapter.js';
+import { reviewLoopFailure } from '../src/loop-failure-review.js';
 
 // Deliberately synthetic domain adapter. It performs real local reads, filtering,
 // test generation and comparison, but qualifies no source/provider/product integration.
@@ -108,6 +109,23 @@ test('previous complete day uses occurrence timezone, including DST and delayed 
 });
 
 for (const mode of ['direct', 'mailbox']) {
+  for (const stage of ['collect', 'filter', 'proposer']) test(mode + ': durable diagnosis after ' + stage + ' exception', async t => {
+    const s = fixture(t, mode, { uncertain: stage });
+    const first = await s.run();
+    assert.equal(first.state, 'blocked');
+    assert.equal(first.failureReview.state, 'diagnosed-and-proposed', JSON.stringify(first));
+    const snapshot = JSON.parse(readLoopArtifact(s.ledger, first.failureReview.artifacts[0]));
+    const review = JSON.parse(readLoopArtifact(s.ledger, first.failureReview.artifacts[1]));
+    assert.equal(snapshot.failure.stage, stage);
+    assert.equal(review.lifecycle.execution, 'not-authorized');
+    assert.equal(review.actualUsage.modelSessions, 0);
+    const before = { ...s.calls };
+    s.reopen();
+    const again = await s.run();
+    const repeated = await s.run();
+    assert.deepEqual(again.failureReview, repeated.failureReview);
+    assert.deepEqual(s.calls, before);
+  });
   test(mode + ': connected four-stage contract, manual/scheduled parity and distinct days', async t => {
     const s = fixture(t, mode);
     const first = await s.run();
@@ -149,6 +167,59 @@ for (const mode of ['direct', 'mailbox']) {
     await s.run(); assert.equal(s.calls.collect, 1);
   });
 }
+
+test('review completion survives lost acknowledgment and missing artifacts preserve the original failure', t => {
+  const s = fixture(t);
+  const { pins, runId } = normalizeLoopRequest(s.request);
+  const failure = { runId, stage: 'collect', state: 'blocked', statusCode: 429, retryAfterSeconds: 60, receipts: [] };
+  const first = reviewLoopFailure(s.ledger, pins, failure);
+  s.reopen();
+  assert.deepEqual(reviewLoopFailure(s.ledger, pins, failure), first);
+  assert.equal(s.ledger.db.prepare("SELECT COUNT(*) n FROM operations WHERE kind='loop-failure-review'").get().n, 1);
+  const review = JSON.parse(readLoopArtifact(s.ledger, first.artifacts[1]));
+  assert.equal(review.details.retryAfterSeconds, 60);
+  s.ledger.db.prepare('DELETE FROM captures WHERE hash=?').run(first.artifacts[0].sha256);
+  assert.equal(reviewLoopFailure(s.ledger, pins, failure).state, 'blocked');
+  assert.equal(failure.state, 'blocked');
+  assert.equal(s.ledger.db.prepare("SELECT COUNT(*) n FROM operations WHERE kind='loop-failure-review'").get().n, 1);
+});
+
+for (const location of ['evidence', 'receipt']) test('cached review rejects deleted ' + location + ' capture', t => {
+  const s = fixture(t);
+  const { pins, runId } = normalizeLoopRequest(s.request);
+  const artifact = captureArtifact(s.ledger, { diagnostic: 'original stage evidence' });
+  const failure = { runId, stage: 'collect', state: 'blocked', statusCode: 429,
+    receipts: location === 'receipt' ? [{ artifacts: [artifact] }] : [] };
+  const evidence = { artifacts: location === 'evidence' ? [artifact] : [] };
+  const first = reviewLoopFailure(s.ledger, pins, failure, evidence);
+  assert.equal(first.state, 'diagnosed-and-proposed');
+  s.reopen();
+  s.ledger.db.prepare('DELETE FROM captures WHERE hash=?').run(artifact.sha256);
+  // The cached review and snapshot still exist; their referenced evidence does not.
+  first.artifacts.forEach(a => readLoopArtifact(s.ledger, a));
+  const repeated = reviewLoopFailure(s.ledger, pins, failure, evidence);
+  assert.equal(repeated.state, 'blocked');
+  assert.equal(repeated.code, 'blocked-reconciliation');
+  assert.equal(repeated.operationId, first.operationId);
+  assert.equal(failure.state, 'blocked');
+  assert.equal(s.ledger.db.prepare("SELECT COUNT(*) n FROM operations WHERE kind='loop-failure-review'").get().n, 1);
+});
+
+test('RSI failure does not launch a recursive failure review', async t => {
+  const s = fixture(t, 'direct', { uncertain: 'rsi' });
+  const result = await s.run();
+  assert.equal(result.state, 'blocked');
+  assert.equal(result.failureReview, undefined);
+});
+
+test('FILTER throttling is not diagnosed as incomplete source collection', t => {
+  const s = fixture(t);
+  const { pins, runId } = normalizeLoopRequest(s.request);
+  const result = reviewLoopFailure(s.ledger, pins, { runId, stage: 'filter', state: 'blocked', statusCode: 429 });
+  const review = JSON.parse(readLoopArtifact(s.ledger, result.artifacts[1]));
+  assert.match(review.diagnosis, /filter stage/);
+  assert.doesNotMatch(review.proposal, /continuation of the confirmed rejected read/);
+});
 
 test('concurrent admission uses enforced ledger ownership', async t => {
   let release, entered;

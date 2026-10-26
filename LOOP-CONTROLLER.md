@@ -1,10 +1,71 @@
 # Shared daily controller
 
+## Continuing when a source is unavailable
+
+For a newly admitted run, set `collection.sourceFailurePolicy` to
+`complete-source-kinds` in its private native settings. This policy is pinned
+before collection; existing admitted runs retain their original contract.
+The default remains strict when the field is absent.
+
+Collection attempts independent source kinds even if another fails. Only kinds
+whose selected passes all completed with authenticated, bounded, verified
+receipts enter FILTER. For example, failed Teams enumeration excludes all
+WorkIQ evidence while complete ADO created/changed evidence can continue through
+FILTER, eligible Proposer and RSI. If one selected ADO pass fails, the entire
+ADO cohort is excluded. No partial evidence is promoted or failed read retried.
+
+The report distinguishes `coverage.filterReady` from
+`coverage.sourceCoverageComplete`, lists missing sources, and records a
+`sourceFailureReview` independently of downstream completion. A completed loop
+with missing sources means successful processing of the available complete
+cohorts, not complete coverage of every requested source. All sources missing,
+changed artifacts, invalid provenance and unresolved integrity failures remain
+blockers. RSI capture/diagnosis is not evaluated improvement or adoption.
+
 Manual and scheduled callers now use one versioned controller. It owns admission,
 stage order, aggregate reservations, receipt propagation and terminal reporting in
 the existing Ledger's operations/captures/locks. The control journal references the
 authoritative one-shot source, FILTER and worker ledgers; it does not replace their
 acceptance records or introduce another storage engine. Inner schedulers remain disabled.
+
+## Failed-stage diagnosis
+
+After an admitted collection, FILTER or Proposer stage blocks or throws, the
+controller records a separate
+failure review without releasing downstream product stages. The loop report keeps
+its original blocked state, stage and error;
+failureReview reports the independent review outcome and two hashed capture
+artifacts (immutable failure snapshot and diagnosis/proposal). Admission/preflight
+failures and pending host work do not trigger this path. RSI failures do not
+recursively trigger another review.
+
+The initial reviewer is explicitly deterministic (deterministic-rules-v1), with
+zero source calls, model sessions and worker sessions. It identifies confirmed
+HTTP 429 and proposes a bounded continuation for separate approval; for other
+failures it records the missing verified outcome and an investigation proposal,
+without claiming a root cause. Diagnosis/proposal, execution, evaluation and
+adoption are separate lifecycle fields. This is not a new model-based RSI session
+or an evaluated improvement, and does not change the successful capture-only path.
+
+The native snapshot includes original controller/configuration pins and producer
+bindings, source coverage/counts/reservations, upstream receipts, transport call
+IDs/request hashes, recorded-response versus unknown-effect indicators, and exact
+response capture hashes. Raw captures remain private local artifacts under the
+existing state-owner retention boundary; do not publish them. HTTP status and
+validated retry timing propagate through CLI errors, collection blockers and the
+controller report. Missing counts remain unknown; reservations are never refunded.
+
+Review identity is the snapshot hash. Snapshot and review commit atomically in
+the existing ledger; repeated delivery or a lost local acknowledgment reuses the
+same review. Missing or changed artifacts block review while preserving the
+original failure. Existing source/model resume rules still apply; this path never
+retries a read, advances a cursor, resets a ledger or launches a repair.
+
+Deployment requires a newly pinned release and approved configuration for future
+occurrences. Do not patch a failed occurrence's producer binding in place. The
+PILOT-44 occurrence and daily deployed schedule are not migrated by this code
+change. Model-based diagnosis needs its own bounded authorization and durable
+provider execution contract; it is deliberately not enabled by capture-only.
 
 The native adapter invokes supported one-shot collection and release machinery.
 With filterExecutor=local-sdk it prepares the complete corpus, runs the existing

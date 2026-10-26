@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configAt, hash, json, now } from '../src/common.js';
+import { configAt, hash, json, now, PilotError } from '../src/common.js';
+import { loadFilterCorpus } from '../src/filter.js';
 import { Ledger } from '../src/ledger.js';
 import { beginApp, openApp } from '../src/app-native.js';
 import { principalPath } from '../src/runtime.js';
@@ -156,6 +157,81 @@ test('partial traversal and authentication failure never become empty-success or
     assert.equal(reads, 2);
     assert.throws(() => readOneShotCollectionReceipt(config, ledger, input.runId), /Missing/);
   }
+});
+
+for (const failure of ['partial', 'auth', 'runtime', 'changed']) test('opt-in excludes ' + failure + ' source and continues complete later source kinds', async t => {
+  const { config, ledger, input } = setup(t, ['workiq:created', 'workiq:changed', 'ado:created', 'ado:changed'], { maxCalls: 2 });
+  input.sourceFailurePolicy = 'complete-source-kinds';
+  beginOneShotCollection(config, ledger, input);
+  const ado = []; let reads = 0;
+  const status = await advanceOneShotCollection(config, ledger, input.runId, {
+    workiqFactory: async () => ({ read: async path => {
+      reads++;
+      if (path === principalPath) return wrapped({ id: config.identity.objectId, userPrincipalName: config.identity.designatedUser });
+      if (failure === 'changed') return reads === 2 ? wrapped({ value: [] })
+        : { structuredContent: { results: [{ statusCode: 500 }] } };
+      if (failure === 'auth') return { structuredContent: { results: [{ statusCode: 401 }] } };
+      if (failure === 'runtime') throw new PilotError('blocked-runtime', 'Synthetic transport timeout');
+      return wrapped({ value: [{ id: 'partial-root', createdDateTime: '2026-10-08T01:00:00Z',
+        body: { content: 'Synthetic partial evidence', contentType: 'text' }, webUrl: 'https://example.invalid/partial-root' }] });
+    }, close: async () => {} }), adoTransport: emptyAdo(ado)
+  });
+  assert.equal(status.state, 'held-awaiting-filter', json(status.blocker));
+  assert.equal(status.filterReady, true); assert.equal(status.sourceCoverageComplete, false);
+  assert.deepEqual(status.eligibleSourceKinds, ['ado']);
+  assert.equal(status.missingSources[0].kind, 'workiq');
+  assert.deepEqual(status.passes.map(p => p.state), [failure === 'changed' ? 'complete' : 'excluded', 'excluded', 'complete', 'complete']);
+  assert.equal(reads, failure === 'changed' ? 4 : 2); assert.equal(ado.length, 4);
+  const receipt = readOneShotCollectionReceipt(config, ledger, input.runId);
+  assert.equal(receipt.sourceFailurePolicy, input.sourceFailurePolicy);
+  const corpus = loadFilterCorpus(config, { format: 'stage2-sources-v1', sources: receipt.snapshot.sources });
+  assert.deepEqual(corpus.index.sources[0].sourceKinds, ['ado']);
+  assert.equal(corpus.evidence.length, 0);
+  assert.deepEqual(corpus.coverage[0].coverage.map(p => p.pass), ['ado:changed', 'ado:created']);
+  const { ledger: source } = openApp(config, input.runId);
+  try {
+    assert.equal(source.all('evidence').length, failure === 'partial' ? 1 : 0);
+    if (failure !== 'changed') assert.equal(source.cursor('app:workiq:created'), null);
+  } finally { source.close(); }
+  assert.deepEqual(await advanceOneShotCollection(config, ledger, input.runId, {
+    workiqFactory: () => assert.fail('excluded source cannot retry'), adoTransport: () => assert.fail('complete source cannot retry')
+  }), status);
+  const broadened = structuredClone(receipt.snapshot.sources); broadened[0].sourceKinds.push('workiq');
+  assert.throws(() => loadFilterCorpus(config, { format: 'stage2-sources-v1', sources: broadened }), /complete and authenticated/);
+  const changed = structuredClone(input); delete changed.sourceFailurePolicy;
+  assert.throws(() => beginOneShotCollection(config, ledger, changed), /immutable authorization/);
+  const { ledger: mutated } = openApp(config, input.runId);
+  try { mutated.finishOperation('cli-workiq:fresh', 'blocked', { drift: true }); } finally { mutated.close(); }
+  assert.throws(() => readOneShotCollectionReceipt(config, ledger, input.runId), /snapshot changed/);
+});
+
+test('opt-in still blocks when every source is missing', async t => {
+  const { config, ledger, input } = setup(t); input.sourceFailurePolicy = 'complete-source-kinds';
+  beginOneShotCollection(config, ledger, input);
+  const status = await advanceOneShotCollection(config, ledger, input.runId, { workiqFactory: async () => ({
+    read: async () => ({ structuredContent: { results: [{ statusCode: 401 }] } }), close: async () => {}
+  }) });
+  assert.equal(status.blocker.code, 'missing-all-sources');
+  assert.equal(status.filterReady, false); assert.equal(status.receiptSha256, null);
+});
+
+test('opt-in excludes a missing WorkIQ binding without inventing a source receipt', async t => {
+  const { config, ledger, input } = setup(t, ['workiq:created', 'workiq:changed', 'ado:created']);
+  config.runtime.workiqCli.enabled = false; input.sourceFailurePolicy = 'complete-source-kinds';
+  beginOneShotCollection(config, ledger, input);
+  const status = await advanceOneShotCollection(config, ledger, input.runId, {
+    workiqFactory: () => assert.fail('unavailable binding must not execute'), adoTransport: emptyAdo([])
+  });
+  assert.equal(status.filterReady, true, json(status.blocker));
+  assert.equal(status.sourceCoverageComplete, false);
+  assert.equal(status.missingSources[0].passes[0].code, 'blocked-binding');
+  const receipt = readOneShotCollectionReceipt(config, ledger, input.runId);
+  assert.deepEqual(receipt.eligibleSourceKinds, ['ado']);
+  const { ledger: source } = openApp(config, input.runId);
+  try {
+    assert.equal(source.db.prepare("SELECT count(*) n FROM app_passes WHERE pass LIKE 'workiq:%'").get().n, 0);
+    assert.equal(source.db.prepare("SELECT count(*) n FROM operations WHERE id LIKE 'cli-workiq:%'").get().n, 0);
+  } finally { source.close(); }
 });
 
 test('uncertain outer dispatch never relaunches even without a helper operation', async t => {

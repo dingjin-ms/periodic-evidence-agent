@@ -36,10 +36,13 @@ inputs” grants permission to generate test data, not source evidence or a clai
 of product validation. Semantic feasibility, file access, expected behavior and
 existing coverage still need review. An unsupported scenario stays held.
 
-[The sample request](ado-test-request.sample.md) asks for duplicate removal that
-preserves row-relative formulas. It is a synthetic experiment, not a real bug
-report. Its observable assertions are designed to distinguish correct output
-from a superficially correct row count or hard-coded calculated values.
+Start with [the single-record SuperApp sample](ado-test-request.single-record.sample.md).
+It targets a meaningful minimum nonempty-table boundary using the existing
+cross-app structural verifier. The separate [formula-preservation sample](ado-test-request.sample.md)
+is retained as a capability-gap example: current structural checks cannot prove
+formula preservation. Both are synthetic onboarding requests, not observed
+product defects. FILTER eligibility does not replace native discovery or a real
+passing E2E run.
 
 ### Operator configuration and commands
 

@@ -5,7 +5,7 @@ import { channel } from 'node:diagnostics_channel';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  readFileSync, writeFileSync, mkdirSync, existsSync, statSync, lstatSync, realpathSync,
+  readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, statSync, lstatSync, realpathSync,
   readdirSync, readlinkSync, symlinkSync, copyFileSync, cpSync, rmSync, renameSync,
   constants as fsConstants, watch
 } from 'node:fs';
@@ -1207,13 +1207,14 @@ async function runOutputFingerprintTasks(workspace, tasks, captureEntries, telem
   const workerCount = Math.min(8, availableParallelism(), tasks.length);
   const started = performance.now();
   const dispatchTimes = new Map();
+  const taskReads = new Map();
   if (telemetry) Object.assign(telemetry, {
-    taskCount: tasks.length, workerCount,
+    taskCount: tasks.length, workerCount, completedTasks: 0,
     dispatchQueueSumMs: 0, dispatchQueueMaxMs: 0,
     taskRoundTripSumMs: 0, taskRoundTripMaxMs: 0,
     workerComputeSumMs: 0, workerComputeMaxMs: 0,
     workerSerializeSumMs: 0, serializedBytes: 0,
-    capturedEntryCount: 0, hashedFileCount: captureEntries ? 0 : null
+    capturedEntryCount: 0, hashedFileCount: 0, hashedBytes: 0
   });
   let next = 0;
   let abort = null;
@@ -1262,6 +1263,16 @@ async function runOutputFingerprintTasks(workspace, tasks, captureEntries, telem
         workers.push(worker);
         worker.on('message', result => {
           if (settled) return;
+          if (telemetry && (result.progress || result.reads)) {
+            const previous = taskReads.get(result.index) ??
+              { completedFiles: 0, hashedBytes: 0 };
+            const current = result.progress ?? result.reads;
+            telemetry.hashedFileCount += current.completedFiles - previous.completedFiles;
+            telemetry.hashedBytes += current.hashedBytes - previous.hashedBytes;
+            taskReads.set(result.index, current);
+          }
+          // In-task progress must not reset the absolute task deadline.
+          if (result.progress) return;
           const timer = taskTimers.get(result.index);
           if (timer) {
             clearTimeout(timer);
@@ -1288,13 +1299,12 @@ async function runOutputFingerprintTasks(workspace, tasks, captureEntries, telem
             telemetry.workerSerializeSumMs += result.timing.serializeMs;
             telemetry.serializedBytes += Buffer.byteLength(result.serialized);
             telemetry.capturedEntryCount += result.entries?.length ?? 0;
-            if (captureEntries) telemetry.hashedFileCount +=
-              result.entries.filter(([, value]) => value.type === 'file').length;
           }
           if (captureEntries && Array.isArray(result.entries))
             for (const entry of result.entries) capturedEntries.push(entry);
           serialized[result.index] = result.serialized;
           completed++;
+          if (telemetry) telemetry.completedTasks = completed;
           if (completed === tasks.length || performance.now() - lastProgress >= 10000) {
             lastProgress = performance.now();
             preparationProgress.publish({
@@ -2154,7 +2164,48 @@ function rebaseDependencySnapshotLinks(snapshot, workspace, paths, deadline) {
 }
 export async function seedDeclarativeDependencies(source, workspace, revision, timeoutMs,
   { expectedSeed = null, retainedCopy = null, timings = [], persist = () => {} } = {}) {
-  const stage = (id, operation) => workspacePreparationStage(timings, id, operation, persist);
+  const progressPath = `${workspace}.dependency-verification-${uuid()}.jsonl`;
+  const scans = {};
+  const progressStarted = performance.now();
+  writeFileSync(progressPath, `${json({
+    format: 'dependency-verification-progress-v1', sourceRevision: revision,
+    source, workspace, startedAt: now(),
+    scope: 'complete-byte-scans; hashedBytes are logical bytes, not physical disk throughput',
+    cpuScope: 'controller process including worker threads; concurrent scan CPU intervals overlap',
+    percentage: null, eta: null
+  })}\n`, { flag: 'wx', mode: 0o600, flush: true });
+  const saveProgress = () => {
+    appendFileSync(progressPath, `${json({
+      recordedAt: now(), elapsedMs: performance.now() - progressStarted,
+      timings, scans
+    })}\n`, { flush: true });
+    persist();
+  };
+  const stage = (id, operation) => workspacePreparationStage(timings, id, operation, saveProgress);
+  const scan = async (root, name, paths) => {
+    const telemetry = scans[name] = { state: 'running', startedAt: now() };
+    const cpu = process.cpuUsage();
+    const started = performance.now();
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      try { saveProgress(); }
+      catch (error) { controller.abort(error); }
+    }, 10000);
+    try {
+      const result = await outputFingerprint(root, paths, false, telemetry, controller.signal);
+      telemetry.state = result ? 'passed' : 'rejected';
+      return result;
+    } catch (error) {
+      telemetry.state = 'blocked';
+      throw error;
+    } finally {
+      clearInterval(timer);
+      telemetry.completedAt = now();
+      telemetry.wallMs = performance.now() - started;
+      const used = process.cpuUsage(cpu);
+      telemetry.controllerProcessCpuMs = (used.user + used.system) / 1000;
+    }
+  };
   requireThat(!expectedSeed || !retainedCopy,
     'A prepared seed and an unqualified retained copy cannot be combined', 'blocked-validation');
   const seedGit = (cwd, args) => preparationGit(cwd, args, Math.min(timeoutMs, defaultGitTimeoutMs));
@@ -2186,15 +2237,16 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
   requireThat(fingerprintPaths.length <= 20000, 'Declarative dependency seed is too large',
     'blocked-validation');
   const sha256 = await stage('dependency-source-fingerprint',
-    () => outputFingerprint(source, fingerprintPaths));
+    () => scan(source, 'initialSource', fingerprintPaths));
   requireThat(sha256, 'Declarative dependency seed has missing or unsafe outputs',
     'blocked-validation');
   if (expectedSeed) {
-    requireThat(expectedSeed.format === 'declarative-dependency-seed-v1' &&
+    await stage('dependency-seed-check', () => requireThat(
+      expectedSeed.format === 'declarative-dependency-seed-v1' &&
       expectedSeed.sourceRevision === revision && expectedSeed.sha256 === sha256 &&
       json(expectedSeed.paths) === json(paths),
     'Prepared dependency receipt does not match the current exact source bytes',
-    'blocked-validation');
+    'blocked-validation'));
   } else if (retainedCopy) {
     await stage('dependency-copy', () => {
       const copy = verifyRetainedDependencyCopy(retainedCopy, source, workspace, revision, paths,
@@ -2208,16 +2260,23 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
       materializeDependencySnapshot(source, workspace, paths, timeoutMs,
         Date.now() + Math.min(timeoutMs, 30 * 60 * 1000)));
   }
-  const [retained, copied] = await stage('dependency-byte-verification', () => Promise.all([
-    outputFingerprint(source, fingerprintPaths), outputFingerprint(workspace, fingerprintPaths)
-  ]));
-  requireThat(retained === sha256 && copied === sha256 &&
-    await seedGit(source, ['rev-parse', 'HEAD']) === revision &&
-    !await seedGit(source, ['status', '--porcelain']) &&
-    await seedGit(workspace, ['rev-parse', 'HEAD']) === revision &&
-    !await seedGit(workspace, ['status', '--porcelain']),
-  'Declarative dependency seed changed source, tracked files or copied output bytes',
-  'blocked-validation');
+  await stage('dependency-byte-verification', async () => {
+    // Drain both bounded pools before cleanup can inspect a rejected workspace.
+    const verified = await Promise.allSettled([
+      scan(source, 'retainedSource', fingerprintPaths),
+      scan(workspace, 'copiedWorkspace', fingerprintPaths)
+    ]);
+    const rejected = verified.find(result => result.status === 'rejected');
+    if (rejected) throw rejected.reason;
+    const [retained, copied] = verified.map(result => result.value);
+    requireThat(retained === sha256 && copied === sha256 &&
+      await seedGit(source, ['rev-parse', 'HEAD']) === revision &&
+      !await seedGit(source, ['status', '--porcelain']) &&
+      await seedGit(workspace, ['rev-parse', 'HEAD']) === revision &&
+      !await seedGit(workspace, ['status', '--porcelain']),
+    'Declarative dependency seed changed source, tracked files or copied output bytes',
+    'blocked-validation');
+  });
   return { format: 'declarative-dependency-seed-v1', sourceRevision: revision, paths, sha256 };
 }
 async function dependencySnapshotPaths(workspace, configuredPaths) {

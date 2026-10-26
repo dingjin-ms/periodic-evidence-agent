@@ -3,26 +3,38 @@ import {
   readlinkSync, readSync, realpathSync
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hash } from './hash.js';
 
 const json = JSON.stringify;
 
 const FILE_HASH_BUFFER = Buffer.allocUnsafe(1024 * 1024);
+const fileReadProgress = channel('periodic-evidence-agent.fingerprint-file-read');
 
 function fileSha256(path, size) {
-  if (size <= FILE_HASH_BUFFER.length) return hash(readFileSync(path));
+  if (size <= FILE_HASH_BUFFER.length) {
+    const bytes = readFileSync(path);
+    const sha256 = hash(bytes);
+    fileReadProgress.publish({ bytes: bytes.length });
+    return sha256;
+  }
   const digest = createHash('sha256');
   const handle = openSync(path, 'r');
+  let totalBytes = 0;
   try {
     let bytesRead;
     while ((bytesRead = readSync(handle, FILE_HASH_BUFFER, 0,
-      FILE_HASH_BUFFER.length, null)) > 0)
+      FILE_HASH_BUFFER.length, null)) > 0) {
       digest.update(FILE_HASH_BUFFER.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
   } finally {
     closeSync(handle);
   }
-  return digest.digest('hex');
+  const sha256 = digest.digest('hex');
+  fileReadProgress.publish({ bytes: totalBytes });
+  return sha256;
 }
 
 export function fileContentSha256(path) {

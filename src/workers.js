@@ -1168,14 +1168,34 @@ async function computeOutputFingerprint(workspace, paths, captureEntries, teleme
   });
   if ((paths.length >= 8 || hasDependencyDirectory || hasLargePath) && availableParallelism() > 1)
     return parallelOutputFingerprint(workspace, paths, captureEntries, telemetry, signal);
-  const results = paths.map(path => captureEntries
-    ? outputPathFingerprintWithEntries(workspace, path)
-    : { value: outputPathFingerprint(workspace, path), entries: null });
-  if (!results.every(result => result?.value)) return null;
-  const sha256 = hash(json(results.map(result => result.value)));
-  return captureEntries
-    ? { sha256, entries: new Map(results.flatMap(result => result.entries)) }
-    : sha256;
+  const fileReads = channel('periodic-evidence-agent.fingerprint-file-read');
+  const observe = ({ bytes }) => {
+    telemetry.hashedFileCount++;
+    telemetry.hashedBytes += bytes;
+  };
+  if (telemetry) {
+    Object.assign(telemetry, {
+      taskCount: paths.length, workerCount: 0, completedTasks: 0,
+      hashedFileCount: 0, hashedBytes: 0
+    });
+    fileReads.subscribe(observe);
+  }
+  try {
+    const results = paths.map(path => {
+      const result = captureEntries
+        ? outputPathFingerprintWithEntries(workspace, path)
+        : { value: outputPathFingerprint(workspace, path), entries: null };
+      if (telemetry) telemetry.completedTasks++;
+      return result;
+    });
+    if (!results.every(result => result?.value)) return null;
+    const sha256 = hash(json(results.map(result => result.value)));
+    return captureEntries
+      ? { sha256, entries: new Map(results.flatMap(result => result.entries)) }
+      : sha256;
+  } finally {
+    if (telemetry) fileReads.unsubscribe(observe);
+  }
 }
 function normalizedOutputPath(path) {
   return path.replaceAll('\\', '/').replace(/^\.\/+/, '').replace(/\/+$/, '');

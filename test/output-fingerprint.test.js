@@ -112,6 +112,23 @@ test('generic fingerprints avoid redundant existence probes for ordinary entries
   assert.equal(pathFingerprint(root, 'dist/0.js/child'), null);
 });
 
+test('serial fingerprint progress counts real file bytes without leaking observers', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-serial-progress-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'dist'));
+  writeFileSync(join(root, 'dist', 'empty.js'), '');
+  writeFileSync(join(root, 'dist', 'content.js'), 'content');
+  const telemetry = {};
+  const expected = hash(JSON.stringify([outputPathFingerprint(root, 'dist')]));
+  assert.equal(await outputFingerprint(root, ['dist'], false, telemetry), expected);
+  assert.equal(telemetry.workerCount, 0);
+  assert.equal(telemetry.completedTasks, telemetry.taskCount);
+  assert.equal(telemetry.hashedFileCount, 2);
+  assert.equal(telemetry.hashedBytes, 7);
+  fileContentSha256(join(root, 'dist', 'content.js'));
+  assert.equal(telemetry.hashedBytes, 7, 'Completed scans no longer observe later reads');
+});
+
 test('generic fingerprints still reject dangling links at roots and within directories', t => {
   const root = mkdtempSync(join(tmpdir(), 'fingerprint-dangling-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

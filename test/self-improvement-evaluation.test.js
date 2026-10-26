@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
+  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -133,9 +133,19 @@ function readEpisodes(ctx) {
 test('current/current qualification executes original assertions and retains an independently rederived no-benefit scorecard',
   { timeout: 650000 }, async t => {
     const ctx = fixture(t, { retain: process.env.RSI_RETAIN_QUALIFICATION === '1' });
+    const scans = new Map(), canonical = realpathSync.native;
+    t.mock.method(realpathSync, 'native', (path, ...args) => {
+      if (scans.has(path)) scans.set(path, scans.get(path) + 1);
+      return canonical(path, ...args);
+    });
     let sealedExperiment;
     await assert.rejects(evaluateSelfImprovement(ctx.store, ctx.experiment.id, ctx.experiment.version, {
       fault: point => {
+        if (point === 'controller-admission') {
+          const current = ctx.store.ledger.get('selfImprovementExperiment', ctx.experiment.id);
+          const allocation = selfImprovementOperation(ctx.store, current).detail.fixtureRoots[0];
+          if (!scans.has(allocation)) scans.set(allocation, 0);
+        }
         if (['reserved', 'episode-persisted', 'artifacts-persisted'].includes(point)) {
           const pending = ctx.store.ledger.get('selfImprovementExperiment', ctx.experiment.id);
           assert.equal(inspectSelfImprovementEvidence(ctx.store, pending).state, 'uncertain-or-invalid');
@@ -177,6 +187,16 @@ test('current/current qualification executes original assertions and retains an 
     }
     assert.deepEqual(comparison.coverageDelta, { gained: [], lost: [] });
     const evidence = readEpisodes(ctx);
+    await t.test('only synchronous fixture bookkeeping reuses its immediately preceding storage scan', () => {
+      const synchronous = evidence.flatMap(item => item.trace)
+        .filter(item => ['deterministic-authoring', 'guard-start'].includes(item.operationKind));
+      assert.equal(synchronous.length, 12, 'Exercise authoring and both duplicate guard challenges in both arms');
+      const expected = evidence.reduce((total, item) => total + item.trace.length * 2 + 1, 0) -
+        synchronous.length;
+      assert.equal(scans.size, 1);
+      assert.equal([...scans.values()][0], expected,
+        'Every request still scans freshly; writing, async and hook boundaries retain their post-scan');
+    });
     assert.equal(evidence.reduce((sum, item) => sum + item.native.length, 0), 6);
     assert.ok(evidence.flatMap(item => item.native).every(native =>
       native.process.nativeEvents.filter(event => event.event === 'test:pass').length === 2));

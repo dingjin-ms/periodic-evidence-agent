@@ -33,6 +33,12 @@ in collection-only storage and keep saved replay distinct. The coordinating host
 still supplies the authorized external FILTER executor; this is not a standalone
 service or qualified unattended end-to-end run.
 
+[Reusable local SDK orchestration](LOCAL-E2E.md) executes a complete approved
+FILTER manifest, exports/reconciles immutable results, requires independently
+bound semantic review and releases one normal local Proposer through Draft PR.
+Explicit retry-config preparation and durable resume replace per-run private
+scripts; collection, qualification and authentication gates remain separate.
+
 ## Account-free quick start
 
 Prerequisites: **Node.js 24 LTS**, npm and Git on PATH. Windows PowerShell is

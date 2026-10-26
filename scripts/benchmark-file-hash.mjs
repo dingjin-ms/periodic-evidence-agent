@@ -1,26 +1,24 @@
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync
+  mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { channel } from 'node:diagnostics_channel';
 import { command } from '../src/workers.js';
 import { pathFingerprint } from '../src/output-fingerprint.js';
 import { hash } from '../src/hash.js';
+import { benchmarkOptions } from './benchmark-fingerprint.mjs';
 
 const args = process.argv.slice(2);
 assert.ok(args.length === 4 && args[0] === '--baseline' && args[2] === '--output',
   'Use --baseline FULL_COMMIT_SHA --output ABSOLUTE_PATH');
 assert.match(args[1], /^[a-f0-9]{40}$/);
-assert.ok(isAbsolute(args[3]));
-const output = resolve(args[3]);
-assert.ok(!existsSync(output), 'Refuse to overwrite existing evidence');
-assert.ok(!/(?:^|[\\/])e2e-evidence(?:[\\/]|$)/i.test(output));
+const { output } = benchmarkOptions(args.slice(2));
 mkdirSync(dirname(output), { recursive: true });
-assert.ok(!/(?:^|[\\/])e2e-evidence(?:[\\/]|$)/i.test(realpathSync(dirname(output))));
+benchmarkOptions(args.slice(2));
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const git = async parameters => (await command('git', parameters, repository)).stdout;
 const baselineSource = await git(['show', `${args[1]}:src/output-fingerprint.js`]);

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { benchmarkOptions, sampleSummary } from '../scripts/benchmark-fingerprint.mjs';
 
@@ -39,4 +40,25 @@ test('benchmark output cannot enter e2e-evidence through a directory alias', t =
   assert.throws(() => benchmarkOptions([
     '--output', join(root, 'alias', 'new', 'benchmark.json')
   ]), /e2e-evidence/);
+});
+
+test('dependency benchmarks reject aliased frozen evidence before creating directories', t => {
+  const root = mkdtempSync(join(tmpdir(), 'dependency-benchmark-boundary-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'e2e-evidence'));
+  symlinkSync(join(root, 'e2e-evidence'), join(root, 'alias'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  for (const [script, prefix] of [
+    ['benchmark-dependency-scan.mjs', []],
+    ['benchmark-file-hash.mjs', ['--baseline', '0'.repeat(40)]]
+  ]) {
+    const child = spawnSync(process.execPath, [
+      fileURLToPath(new URL(`../scripts/${script}`, import.meta.url)),
+      ...prefix, '--output', join(root, 'alias', 'new', 'result.json')
+    ], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+    assert.ifError(child.error);
+    assert.notEqual(child.status, 0);
+    assert.match(child.stderr, /e2e-evidence/);
+    assert.equal(existsSync(join(root, 'e2e-evidence', 'new')), false);
+  }
 });

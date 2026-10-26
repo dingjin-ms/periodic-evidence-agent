@@ -1,24 +1,21 @@
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  mkdirSync, mkdtempSync, readFileSync, readdirSync,
   rmSync, symlinkSync, writeFileSync
 } from 'node:fs';
 import { tmpdir, availableParallelism } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { command, seedDeclarativeDependencies } from '../src/workers.js';
+import { benchmarkOptions } from './benchmark-fingerprint.mjs';
 
 const args = process.argv.slice(2);
 assert.equal(args.length, 2, 'Use --output ABSOLUTE_PATH');
-assert.equal(args[0], '--output');
-assert.ok(isAbsolute(args[1]));
-const output = resolve(args[1]);
-assert.ok(!existsSync(output), 'Refuse to overwrite an existing result');
-assert.ok(!/(?:^|[\\/])e2e-evidence(?:[\\/]|$)/i.test(output));
+const { output } = benchmarkOptions(args);
 mkdirSync(dirname(output), { recursive: true });
-assert.ok(!/(?:^|[\\/])e2e-evidence(?:[\\/]|$)/i.test(realpathSync(dirname(output))));
+benchmarkOptions(args);
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const git = async (cwd, parameters) => (await command('git', [
   '-c', 'core.autocrlf=false', '-c', 'core.hooksPath=.git/no-hooks', ...parameters
@@ -103,8 +100,13 @@ try {
 } finally {
   persist();
   try {
-    if (root) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    report.cleanup = 'removed-only-own-generated-fixture';
+    if (root && report.status === 'passed') {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      report.cleanup = 'removed-only-own-generated-fixture';
+    } else if (root) {
+      report.retainedFixture = root;
+      report.cleanup = 'retained-own-failed-fixture';
+    }
   } catch (error) {
     report.status = 'failed';
     report.cleanup = { code: error.code };

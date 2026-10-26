@@ -49,6 +49,8 @@ import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
 import { beginOneShotCollection, advanceOneShotCollection, oneShotCollectionStatus,
   stopOneShotCollection } from './one-shot-collection.js';
 import { prepareOneShotFilterBudget, reserveOneShotFilterRequest, advanceOneShotHandoff } from './one-shot-handoff.js';
+import { advanceLocalE2E } from './local-e2e.js';
+import { prepareLocalFilterRetry } from './local-filter-retry.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -70,7 +72,7 @@ function failedOutcome(result) {
   if (!result || typeof result !== 'object') return false;
   return Boolean(result.error) ||
     result.state === 'failed' ||
-    ['action-required-auth', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
+    ['action-required-auth', 'action-required-budget', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
     ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'rsi', 'execution']
@@ -156,6 +158,9 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js filter-execution-check --file result-paths.json --manifest private-batches.json --ledger execution.sqlite
   node src\\cli.js filter-local-preflight --config local-filter.local.json
   node src\\cli.js filter-local-run --manifest private-batches.json --batch ID --output private-result.json --execution-mode standalone-sdk
+  node src\\cli.js filter-local-retry-prepare --file retry-request.json --output next.local.json --config pilot.local.json
+  node src\\cli.js local-e2e --check|--filter|--execute --file run.local.json --config pilot.local.json [--review review.local.json]
+  node src\\cli.js local-e2e --execute --authorize-commit --authorize-push --authorize-draft-pr --review review.local.json --file run.local.json --config pilot.local.json [--resume-auth]
   node src\\cli.js e2e-proof-export --file private-proof-request.json --output e2e-evidence\\RUN_ID
   node src\\cli.js e2e-proof-check --file private-proof-request.json --bundle e2e-evidence\\RUN_ID
   node src\\cli.js stage2-proposal-check --file private-proposal.json --handoff private-handoff.json
@@ -175,6 +180,32 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (action === 'filter-local-retry-prepare') requireThat(
+    ['--config', '--file', '--output'].every(key => option(key) && !option(key).startsWith('--')),
+    'Retry preparation requires explicit --config, --file and --output', 'blocked-authorization');
+  if (action === 'local-e2e') {
+    const values = new Set(['--config', '--file', '--review']);
+    const flags = new Set(['--check', '--filter', '--execute', '--resume-auth',
+      '--authorize-commit', '--authorize-push', '--authorize-draft-pr']);
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat((values.has(key) || flags.has(key)) && !seen.has(key),
+        'Unknown or duplicate local E2E option', 'blocked-authorization');
+      seen.add(key);
+      if (values.has(key)) requireThat(args[++index] && !args[index].startsWith('--'),
+        `Local E2E option ${key} requires a value`, 'blocked-authorization');
+    }
+    requireThat(option('--config') && !option('--config').startsWith('--') &&
+      option('--file') && !option('--file').startsWith('--'),
+    'Local E2E requires explicit --config and --file', 'blocked-authorization');
+    requireThat(['--check', '--filter', '--execute'].filter(flag => args.includes(flag)).length === 1 &&
+      (!args.includes('--resume-auth') || args.includes('--execute')),
+    'Local E2E requires exactly one of --check, --filter or --execute', 'blocked-authorization');
+    if (args.includes('--execute')) requireThat(
+      ['--authorize-commit', '--authorize-push', '--authorize-draft-pr'].every(flag => args.includes(flag)),
+      'Local E2E execution requires explicit commit, push and Draft PR flags', 'blocked-authorization');
+  }
   if (action.startsWith('one-shot-')) {
     requireThat(option('--config') && !option('--config').startsWith('--'),
       'One-shot controls require an explicit --config', 'blocked-authorization');
@@ -310,7 +341,7 @@ try {
       ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
         'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
         'continue-native-preparation', 'continue-native-source', 'review-pending', 'tick', 'serve',
-        'runtime-smoke', 'filter-local-run'].includes(action)) {
+        'runtime-smoke', 'filter-local-run', 'local-e2e'].includes(action)) {
       requireThat(option('--execution-mode') === 'standalone-sdk',
         'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
     }
@@ -327,6 +358,30 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'filter-local-retry-prepare': {
+        const output = resolve(option('--output'));
+        requireThat(output.endsWith('.local.json') && dirname(output) === dirname(resolve(configFile)),
+          'Retry config must be a new .local.json file beside the original config to preserve relative paths');
+        requireThat(!existsSync(output),
+          'Retry config output already exists; preserve it and choose a new path', 'blocked-reconciliation');
+        const prepared = prepareLocalFilterRetry(config, ledger, input());
+        const next = readJson(resolve(configFile));
+        next.localFilter = prepared.localFilter;
+        writeFileSync(output, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
+        result = { state: prepared.state, attemptId: prepared.attemptId, output,
+          executionAcceptanceVerifiedByHelper: prepared.executionAcceptanceVerifiedByHelper,
+          action: prepared.action };
+        break;
+      }
+      case 'local-e2e':
+        result = await advanceLocalE2E(config, ledger, input(), {
+          filter: args.includes('--filter'), execute: args.includes('--execute'),
+          review: option('--review') ? readJson(resolve(option('--review'))) : null,
+          resumeAuth: args.includes('--resume-auth'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        }); break;
       case 'one-shot-begin': result = beginOneShotCollection(config, ledger, input()); break;
       case 'one-shot-status': result = oneShotCollectionStatus(ledger, option('--run')); break;
       case 'one-shot-stop': result = stopOneShotCollection(ledger, option('--run')); break;

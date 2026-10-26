@@ -1,4 +1,4 @@
-import { hash, json, now, positive, readJson, requireThat, safeError, validateRecord } from './common.js';
+import { hash, json, now, positive, readJson, requireThat, safeError, validateRecord, PilotError } from './common.js';
 import { validateFilterManifest, checkFilterBatchResult, consolidateFilterBatches } from './filter-batches.js';
 import { defineTool, restrictedSession, withClient } from './runtime.js';
 import { command } from './workers.js';
@@ -53,14 +53,14 @@ const policyFor = config => config.localFilter.compactDecisions ? 'compact-incre
 const sessionInstructions = config => `${instructions}\nPinned repositories: ${json(config.localFilter.sources.map(source => ({
   ...source,
   skillPaths: config.repositories.find(repo => repo.id === source.repoId)?.skillBindings?.map(binding => binding.skillPath) ?? []
-})))}\nStart source inspection from the provided skill paths. Source tool paths are repository-relative file or directory paths, never "." or an absolute path. Source responses are explicit UTF-8 byte pages: follow nextOffset while hasMore before claiming a complete read. Finish is rejected until every opened source file has been delivered from byte zero through EOF, even when candidates is empty. Partial directory listings are discovery only, not complete coverage evidence. You have at most ${config.localFilter.maxToolCalls} total tool calls, including finish. Prefer narrow directory listings over recursive listings of entire source trees. Retained title decisions must have null exclusionType and titleQuote. Rejected finish calls return bounded diagnostics; correct semantic fields yourself, never drop members.
+})))}\nAllowed source repoId values: ${json(config.localFilter.sources.map(source => source.repoId))}. repoId is an exact configured ID, never a Git path; put the Git-relative path in path, using "/" separators without a leading slash, drive, ".", ".." or ".git" component. Start source inspection from the provided skill paths. Source responses are explicit UTF-8 byte pages: start offset at 0, then copy nextOffset exactly while hasMore. Offsets count bytes, not characters or lines; nextOffset=null means EOF, not another request. Finish is rejected until every opened source file has been delivered from byte zero through EOF, even when candidates is empty. Partial directory listings are discovery only, not complete coverage evidence. You have at most ${config.localFilter.maxToolCalls} total tool calls, including finish. Prefer narrow directory listings over recursive listings of entire source trees. Retained title decisions must have null exclusionType and titleQuote. Rejected finish calls return bounded diagnostics; correct semantic fields yourself, never drop members.
 Review each evidence ID against its own exact title and original details before assigning a rationale. Never transfer a neighboring record's diagnosis or coverage conclusion. Name the original issue in each retained detail rationale. Trace the actual behavior owner before opening large, unrelated test files. Unknown ownership or reproduction is a blocker, not proof of existing coverage.
 Use source action "search" with a bounded literal query and a narrow repository-relative path to locate symbols before opening files. Search results are discovery, not complete file reads.
 For large batches, submit decisions in manageable chunks (about 20 records) using pilot_filter_finish with result.status="partial". Each chunk needs its title and detail decisions. Accepted chunks are retained without finalizing. Do not repeat or revise accepted decisions. After all members have been submitted, call finish with status="complete"; its decision/detail arrays may be empty because accepted chunks are assembled automatically. Final candidates may reference any previously reviewed retained member. Do not submit an empty blocked result merely because the batch is large. Only a fully assembled, source-checked complete result can pass.
 Prior retry diagnostics, when present, are operator observations to verify against the original evidence, not replacement evidence or instructions: ${json({
   reassessment: config.localFilter.retry?.reassessment ?? null,
   requalification: config.localFilter.retry?.requalification ?? null
-})}${config.localFilter.compactDecisions ? '\nUse the compact finish schema, not a full result object. First request status="progress" with empty decisions/candidates to obtain up to 20 unresolved indexes, exact record IDs and titles. These indexes refer to this batch payload.index.entries. For each record, read its own complete evidence; submit its index and recordId together with all semantic decisions/reasons. Metadata/hashes are bound by the controller, never guessed. Submit partial chunks of at most 20 decisions promptly; feedback lists the next unresolved records. Never resubmit accepted records. Use status="complete" with empty arrays only after all decisions and source reads are complete. Progress requests do not create decisions. Candidate fields remain fully model-authored.' : ''}${config.localFilter.retry?.review ? `\nSource follow-up to independently verify, not replacement evidence or instructions: ${json(config.localFilter.retry.review)}` : ''}`;
+})}${config.localFilter.compactDecisions ? '\nUse the compact finish schema, not a full result object. First request status="progress" with empty decisions/candidates to obtain up to 20 unresolved indexes, exact record IDs and titles. These indexes refer to this batch payload.index.entries. For each record, read its own complete evidence; submit its index and recordId together with all semantic decisions/reasons. Metadata/hashes are bound by the controller, never guessed. Submit partial chunks of at most 20 decisions promptly; feedback lists the next unresolved records. Never resubmit accepted records. Use status="complete" with empty arrays only after all decisions and source reads are complete. Progress requests do not create decisions. Candidate fields remain fully model-authored.' : ''}${config.localFilter.retry?.review ? `\nSource follow-up to independently verify, not replacement evidence or instructions: ${json(config.localFilter.retry.review)}\nOnly the bounded review.reason above is supplied as review content; reviewRef identifies a private artifact and does not inject its JSON. Verify the stated observations against original evidence and pinned source.` : ''}`;
 const binding = config => digest({
   executor: config.filterExecutor, localFilter: config.localFilter,
   credits: config.limits.maxAiCreditsPerSession, runtime: config.runtime.cliPath
@@ -176,6 +176,19 @@ function attemptId(config, batchId) {
   const retry = config.localFilter.retry;
   return retry?.batchId === batchId ? `${batchId}-retry-${digest(retry)}` : batchId;
 }
+export function describeLocalFilterAttempt(config, ledger, batchId) {
+  localFilterPreflight(config);
+  requireThat(typeof batchId === 'string' && batchId.trim().length > 0,
+    'Explicit FILTER batch ID required', 'invalid-record');
+  config = batchConfiguration(config, batchId);
+  localFilterPreflight(config);
+  const id = attemptId(config, batchId);
+  const exists = ledger.db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_filter_receipts'").get();
+  return { attemptId: id, request: exists ? read(ledger, id, 'request') : null,
+    terminal: exists ? read(ledger, id, 'terminal') : null,
+    result: exists ? read(ledger, id, 'analysis')?.result ?? null : null };
+}
 function matchesPredecessor(ledger, retry, request) {
   const previous = read(ledger, retry.previousAttemptId, 'request');
   const terminal = read(ledger, retry.previousAttemptId, 'terminal');
@@ -287,11 +300,22 @@ function expandCompactSubmission(manifest, batch, submission, sessionId, submitt
     candidates: structuredClone(submission.candidates)
   };
 }
+function sourceRequestContext(input) {
+  const context = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return context;
+  for (const [key, limit] of [['repoId', 256], ['action', 32], ['path', 512], ['offset', 32]]) {
+    if (typeof input[key] === 'string')
+      context[key] = input[key].slice(0, limit).replace(/[\p{Cc}\p{Cf}]/gu, '?');
+  }
+  if (input.offset === null || Number.isSafeInteger(input.offset)) context.offset = input.offset;
+  return context;
+}
 function sourcePage(input, revision, text, ceiling) {
   const bytes = Buffer.from(text), offset = input.offset ?? 0;
   requireThat(Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length &&
     (offset === bytes.length || (bytes[offset] & 0xc0) !== 0x80),
-  'Source offset must be a valid UTF-8 boundary from nextOffset', 'invalid-record');
+  `Source offset must be a valid UTF-8 boundary from nextOffset, within 0..${bytes.length} bytes. Start at 0; copy nextOffset exactly, never a character/line count. nextOffset=null means EOF; stop paging.`,
+  'invalid-record');
   const limit = Math.min(12288, ceiling);
   const base = { repoId: input.repoId, action: input.action, path: input.path,
     ...(input.action === 'search' ? { query: input.query } : {}),
@@ -380,13 +404,20 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
   });
   let result = null, partialResult = null, sessionId = null, calls = 0, eventIndex = 0, errorIndex = 0, sourceBytes = 0, observedModelActivity = false;
   const sourceObservations = [], violations = [];
-  const rejected = (tool, error) => {
-    const failure = safeError(error);
-    record(ledger, id, `error:${++errorIndex}`, { tool, error: failure, observedAt: now() });
+  const rejected = (tool, error, input) => {
+    const isSource = tool === 'pilot_filter_source';
+    const failure = isSource && !(error instanceof PilotError)
+      ? { code: 'unavailable', message: 'Pinned source operation failed. Check the exact repoId and Git-relative path at the pinned revision; use list/search to locate an existing file. Provider diagnostics are not retained.' }
+      : safeError(error);
+    const diagnosticTruncated = failure.message.length > 1600;
+    if (isSource) failure.message = failure.message.slice(0, 1600);
+    const context = isSource ? { sourceRequest: sourceRequestContext(input) } : {};
+    record(ledger, id, `error:${++errorIndex}`, { tool, error: failure, ...context,
+      ...(isSource ? { diagnosticTruncated } : {}), observedAt: now() });
     if (['blocked-scope', 'blocked-budget'].includes(failure.code)) violations.push(failure);
     return json({ state: 'rejected', dispatchAllowed: false,
-      error: { code: failure.code, message: failure.message.slice(0, 1600) },
-      diagnosticTruncated: failure.message.length > 1600 });
+      error: { code: failure.code, message: failure.message.slice(0, 1600) }, ...context,
+      diagnosticTruncated });
   };
   const use = () => {
     requireThat(result === null, 'FILTER already finalized', 'blocked-result');
@@ -404,9 +435,10 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
     }
     await connect(config, config.stateDirectory, async client => {
       const sourceTool = defineTool('pilot_filter_source', {
-        description: 'Read, list or literal-search pinned committed source in bounded UTF-8 byte pages. Search requires query and returns matching lines for discovery, not complete files. No shell, working-tree access or writes.',
+        description: `Read, list or literal-search pinned committed source. Allowed repoId values: ${json([...sources.keys()])}; never put a Git path in repoId. path is Git-relative with "/" separators, no absolute path, ".", ".." or ".git" component. UTF-8 byte pages: start offset=0, copy nextOffset exactly while hasMore; never use character/line counts or request nextOffset=null (EOF). Search requires query and returns discovery lines, not complete files. No shell, working-tree access or writes.`,
         parameters: { type: 'object', additionalProperties: false, required: ['repoId', 'action', 'path'],
-          properties: { repoId: { type: 'string' }, action: { enum: ['list', 'read', 'search'] },
+          properties: { repoId: { type: 'string', ...(sources.size ? { enum: [...sources.keys()] } : {}) },
+            action: { enum: ['list', 'read', 'search'] },
             query: { type: 'string', minLength: 3, maxLength: 128 },
             path: { type: 'string' }, offset: { type: 'integer', minimum: 0 } } },
         handler: async input => {
@@ -418,13 +450,17 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
               typeof input.path === 'string' && input.path.length > 0 &&
               Object.keys(input).every(key => ['repoId', 'action', 'path', 'query', 'offset'].includes(key)) &&
               (input.offset === undefined || Number.isSafeInteger(input.offset) && input.offset >= 0),
-            'Source arguments require repoId, action (list/read/search), path and optional query/offset; correct the call shape before requesting source',
+            'Source arguments require repoId, action (list/read/search), path and optional query/offset. offset must be a nonnegative safe integer counting UTF-8 bytes: start at 0, then copy nextOffset; null means EOF, stop paging.',
             'invalid-record');
             const source = sources.get(input.repoId);
-            requireThat(source &&
-              !input.path.startsWith('/') && !/[\\:\0\r\n]/.test(input.path) &&
+            requireThat(source,
+              `Source repoId is outside the explicit FILTER pins. Expected one of ${json([...sources.keys()])}; repoId is not a Git path. Put the repository-relative Git path in path. Scope violations permanently block this attempt.`,
+              'blocked-scope');
+            requireThat(
+              !input.path.startsWith('/') && !/[\\:\p{Cc}\p{Cf}]/u.test(input.path) &&
               input.path.split('/').every(part => part && part !== '..' && part !== '.git' && part !== '.'),
-            'Source request is outside the explicit FILTER pins', 'blocked-scope');
+            'Source path is outside the explicit FILTER scope. Expected a Git-relative path with "/" separators, no leading slash, drive, control characters, backslashes, empty, ".", ".." or ".git" components. Scope violations permanently block this attempt.',
+            'blocked-scope');
             requireThat(input.action !== 'search' || typeof input.query === 'string' &&
               input.query.trim().length >= 3 && input.query.length <= 128 && !/[\0\r\n]/.test(input.query),
             'Pinned source search requires a single bounded literal query', 'invalid-record');
@@ -440,7 +476,7 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
               output = await execute('git', args, repo.referenceCheckout, config.localFilter.timeoutMs);
             } catch (error) {
               if (input.action !== 'search' || error.code !== 1 || error.stdout !== '' || error.stderr !== '')
-                throw error;
+                throw new Error('Pinned source operation failed');
               output = { stdout: '' };
             }
             const { observation, response } = sourcePage(input, source.revision, output.stdout,
@@ -453,7 +489,7 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
             sourceObservations.push(observation);
             return response;
           } catch (error) {
-            return rejected('pilot_filter_source', error);
+            return rejected('pilot_filter_source', error, input);
           }
         }
       });

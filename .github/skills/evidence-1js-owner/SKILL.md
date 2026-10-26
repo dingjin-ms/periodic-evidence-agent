@@ -28,3 +28,17 @@ and follow it in full.
 The pilot's ownership/write/validation configuration is not automatically
 resolved by this skill. If no valid claimed assignment and isolated workspace
 are supplied, return the missing inputs without modifying or running product code.
+
+## Setup and validation troubleshooting
+
+After the required handoff is verified, read the controller's
+[1JS local setup and validation notes](../../../README.md#1js-local-setup-and-validation)
+alongside the active product checkout's own instructions and application README.
+The notes distinguish Azure CLI, package-feed and browser authentication;
+installation from compilation; and local checks from real product E2E.
+
+Inspect the actual tasks before replacement of dependency/generated directories,
+and obtain the exact cleanup approval required by that checkout. Do not borrow
+another worktree's tools or outputs, clear shared caches, bypass build checks or
+treat an earlier checkout's success as validation of this assignment.
+These troubleshooting notes grant no additional execution or publication authority.

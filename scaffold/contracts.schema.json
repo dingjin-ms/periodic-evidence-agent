@@ -1372,7 +1372,9 @@
         "format": { "const": "filter-batch-request-v1" },
         "sources": { "type": "array", "minItems": 1, "items": {
           "type": "object", "additionalProperties": false, "required": ["ledgerPath", "runId"],
-          "properties": { "ledgerPath": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" } }
+          "properties": { "ledgerPath": { "$ref": "#/$defs/text" }, "runId": { "$ref": "#/$defs/text" },
+            "sourceKinds": { "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": { "enum": ["ado", "workiq", "icm"] } } }
         } },
         "instructions": { "$ref": "#/$defs/text" },
         "groups": { "type": "array", "items": {

@@ -46,6 +46,37 @@ const message = (id, createdDateTime = '2026-10-08T01:00:00Z') => ({
   webUrl: `https://example.invalid/${id}`
 });
 
+test('plain-text HTTP failure keeps status without retry or body leakage', async t => {
+  const { config, ledger } = setup(t);
+  const text = "Remote tool 'fetch' failed: Response status code does not indicate success: 500 (Internal Server Error). Response body: private-diagnostic";
+  const tr = transport(config, [{ isError: true, content: [{ type: 'text', text }] }]);
+  const result = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const pass = result.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'failed-source');
+  assert.equal(pass.error.statusCode, 500);
+  assert.equal(tr.paths.length, 2);
+  assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.ok(!JSON.stringify(pass.error).includes('private-diagnostic'));
+  assert.throws(() => cliEnvelope({ content: [{ type: 'text', text }] }), e => e.code === 'blocked-protocol');
+  assert.throws(() => cliEnvelope({ isError: true, content: [{ type: 'text', text: 'body mentions 500' }] }), e => e.code === 'blocked-protocol');
+});
+
+for (const isError of [true, false]) test('429 details survive collection, isError=' + isError, async t => {
+  const { config, ledger } = setup(t);
+  const tr = transport(config, [{ isError, structuredContent: { results: [{ statusCode: 429,
+    retryAfterSeconds: 60, errorCode: 'Throttled', rawDiagnostic: 'must-not-escape' }] } }]);
+  const result = await collectCliWorkiq(config, ledger, 'cli-test', tr.factory);
+  const pass = result.collection.find(p => p.pass === 'workiq:created');
+  assert.equal(pass.state, 'blocked-throttled');
+  assert.equal(pass.error.statusCode, 429); assert.equal(pass.error.retryAfterSeconds, 60);
+  const row = JSON.parse(ledger.db.prepare("SELECT body FROM app_transport ORDER BY rowid DESC LIMIT 1").get().body);
+  assert.equal(row.call.failure.retryAfterSeconds, 60);
+  assert.match(row.captureSha256, /^[a-f0-9]{64}$/);
+  assert.equal(row.call.failure.rawDiagnostic, undefined);
+  assert.equal(tr.paths.length, 2); assert.equal(ledger.cursor('app:workiq:created'), null);
+  assert.equal(pass.nextRequest, null);
+});
+
 test('CLI collector journals all calls, old-root replies, provenance and complete cursor without dispatch', async t => {
   const { config, ledger } = setup(t);
   const tr = transport(config, [
@@ -178,6 +209,7 @@ test('real stdio process verifies handshake, allows only scoped fetch and suppre
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');
     });
   `;
+  config.runtime.workiqCli.minReadIntervalMs = 80;
   const client = await workiqCli(config, { spawnProcess: (exe, args, options) => {
     assert.equal(exe, config.runtime.workiqCli.executable);
     assert.deepEqual(args, ['--account', config.identity.designatedUser, 'mcp']);
@@ -185,9 +217,17 @@ test('real stdio process verifies handshake, allows only scoped fetch and suppre
   } });
   try {
     assert.equal(cliEnvelope(await client.read(principalPath)).results[0].data.fixture, true);
+    const completedAt = Date.now();
+    assert.equal(cliEnvelope(await client.read(principalPath)).results[0].data.fixture, true);
+    assert.ok(Date.now() - completedAt >= 70, 'configured pacing applies before the next read');
     await assert.rejects(client.read('/me/messages?$select=id'), /scope|outside|approved/i);
     assert.equal(client.rpc, undefined);
   } finally { await client.close(); }
+});
+
+test('CLI reports explicit throttling and its server delay without disguising it as authentication', () => {
+  assert.deepEqual(cliFailure({ results: [{ statusCode: 429, retryAfterSeconds: 60 }] }),
+    { code: 'blocked-throttled', statusCode: 429, retryAfterSeconds: 60 });
 });
 
 test('CLI startup timeout closes child and does not retry', async t => {

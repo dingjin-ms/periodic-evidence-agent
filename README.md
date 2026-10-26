@@ -143,6 +143,148 @@ exact base revisions, repository skill paths and skill content fingerprints.
 It does not install product-repository dependencies, authenticate accounts,
 enable routing/write permissions or create PRs.
 
+### Azure CLI sign-in recovery
+
+`blocked-auth` during ADO repository qualification or collection requires a
+usable local Azure CLI session for the configured tenant and designated user.
+Windows sign-in, login on another machine, or working package-feed access does
+not establish that session. Setup does not log in automatically or change the
+configured identity.
+
+Outside a managed Codespaces authentication environment, first check
+`Get-Command az` and `az version`. If an existing Azure CLI installation is
+absent from this process PATH, open a new shell or add its verified directory
+to this shell's PATH only. Do not reinstall it or change machine-wide settings
+solely because command lookup failed. In Codespaces, follow the repository's
+broker recovery instructions rather than replacing its shim or running login.
+
+For Windows WAM login that waits indefinitely or reaches unrelated subscription
+selection, use an Azure CLI whose `az login --help` lists
+`--skip-subscription-discovery`. In a new PowerShell session, run the following
+manually from this controller checkout and complete any sign-in/MFA:
+
+```powershell
+$config = Get-Content .\pilot.local.json -Raw | ConvertFrom-Json
+$tenant = $config.identity.tenantId
+if (!$tenant) { throw 'An approved configured tenant is required' }
+$env:AZURE_CORE_ENABLE_BROKER_ON_WINDOWS = 'true'
+$env:AZURE_CORE_LOGIN_EXPERIENCE_V2 = 'off'
+az login --tenant $tenant --scope https://graph.microsoft.com/.default `
+  --skip-subscription-discovery --output none
+if ($LASTEXITCODE -ne 0) { throw 'Interactive sign-in did not succeed' }
+az account show --output none
+if ($LASTEXITCODE -ne 0) { throw 'Azure CLI account is unavailable' }
+az ad signed-in-user show --output none
+if ($LASTEXITCODE -ne 0) { throw 'Signed-in Graph user is unavailable' }
+```
+
+These settings affect only this shell and its children. On Linux/macOS, use the
+supported browser or device-code flow with the same tenant/scope/discovery
+arguments, omitting the Windows WAM setting. Skipping subscription discovery
+does not skip sign-in, MFA, conditional access, ADO authorization, or the
+controller's tenant/user checks. A successful Graph check alone is not an ADO
+access receipt. Never change the configured identity to accept the wrong
+account, print tokens, copy credential caches, or clear shared caches.
+
+After manual sign-in, retry the selected setup once. If this controller's
+locked dependencies are already installed:
+
+```powershell
+npm run setup -- --repo 1js --skip-install
+```
+
+`--skip-install` skips only controller dependency installation, not repository
+qualification, diagnostics, offline checks or the synthetic demo. If access
+still fails, preserve the safe failure and stop rather than cycling through
+login modes. This sequence recovered a Windows session; it does not establish
+the cause of an earlier timeout.
+
+If qualification instead reports `The empty string is not a valid path` after
+fetch, inspect the Git invocation: Windows Git can reject
+`-c core.hooksPath=`. Preserve and report that compatibility failure rather than
+reauthenticating or changing global Git configuration. This documentation-only
+change does not modify the controller's Git wrapper.
+
+### 1JS local setup and validation
+
+These notes apply only after an authorized assignment has supplied the exact
+isolated product checkout, base revision and validation bounds. They do not
+activate the optional 1JS authoring binding or authorize product execution.
+Keep local paths, identities and credentials in ignored machine-local
+configuration, not in this repository's documentation or PRs.
+
+Read the active checkout's root/OOUI instructions, workspace-configuration skill
+and selected application's README first. Use the active branch's paths rather
+than copying paths from another revision. The controller requires Node 24;
+the product checkout's own runtime requirements remain independent.
+
+Run product package-management commands with its repository Yarn, not this
+controller's npm. Before installation or building, inspect the active tasks
+and obtain confirmation for exact existing dependency/generated directories
+they will replace. Build dependencies can regenerate tracked sources in
+addition to cleaning compiled outputs. Approval in another worktree does not
+cover this checkout or newly discovered cleanup paths.
+
+When the selected checkout supports these standard commands, run from its
+OOUI root, with the package name validated against its manifest:
+
+```powershell
+$package = "<approved-package-name>"
+yarn fast "$package" --skip-prestart
+yarn build --to "$package"
+```
+
+Omit `--skip-prestart` when the next step needs development-server prestart.
+Use the selected application's actual scripts for typecheck, static validation
+and local unit tests; do not invent script names or replace the standard build.
+
+- **Separate authentication chains.** Azure CLI/ADO qualification, Yarn
+  package-feed access and the product browser account are independent checks.
+  On an actual package-feed `E401`, including one from a build dependency's npm
+  subprocess, run the repository's `yarn auth` in the same checkout/profile and
+  retry the failed command once. Do not use another npm login, copy credentials
+  from another machine or repeatedly reinstall for a later-stage failure.
+  `yarn auth --skip-check` can reuse a cached token; it does not guarantee a
+  new token or sufficient lifetime for a long installation. Timed experiments
+  retain their own declared validity checks; do not weaken them or omit auth time.
+- **Missing build outputs.** Missing workspace `lib` entrypoints or type
+  definitions can mean installation succeeded but compilation is incomplete.
+  Build the normal dependency closure, not hand-made links, source aliases or
+  another checkout's outputs. If root repository tooling itself cannot resolve
+  a required configuration package, diagnose root tooling separately. A root
+  restore can replace dependencies and change scope/project references; do not
+  run it without inspecting its effects and obtaining required approval.
+- **Windows generated-file staging.** For `CRLF would be replaced by LF`,
+  inspect the affected paths' Git attributes and effective line-ending
+  settings. Only after verifying that every affected normalized Git blob equals
+  HEAD, use a narrowly process-local `core.safecrlf=warn` override if needed
+  for the standard staging step. Preserve existing process Git configuration
+  entries. Do not alter global/repository settings, bypass hooks, set CI to
+  skip checks or ignore actual generated-source differences.
+- **Missing local test browser.** Local Playwright DOM fixtures can need
+  Chromium headless shell without being product E2E. Only after an actual
+  missing-executable failure, use the selected package's installed Playwright
+  and the same profile/browser-cache environment as the test. When that
+  application's tooling supports it, run the following from OOUI, then retry
+  its documented unit command:
+
+```powershell
+$env:PLAYWRIGHT_SKIP_BROWSER_GC = "1"
+yarn workspace "$package" playwright install chromium --only-shell
+```
+
+The browser setting affects this shell and prevents install-time garbage
+collection of other browser versions. Do not clear shared caches or pin a
+revision copied from another checkout. A headless-shell install does not set
+up the full product browser or CDP session.
+
+Record the exact checkout revision, command, exit status and pending/failed
+stages. Installation, build, typecheck, static validation, unit tests and test
+discovery are not proof of a real product E2E pass or installation-performance
+target. Product E2E still needs its approved deployment, accounts, secrets,
+flights and browser/CDP prerequisites. Neither another checkout's results nor
+an offline controller demo qualifies this checkout or a new native experiment.
+
 ### Offline demo coverage
 
 The demo prints JSON with these stable collection fields (excerpt; paths,

@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { PilotError, requireThat, positive } from './common.js';
 import { principalPath, validateWorkiqPath } from './runtime.js';
+import { failureDetails } from './failure-details.js';
 
 export function cliEnvelope(result) {
   let envelope = result?.structuredContent;
@@ -11,11 +13,20 @@ export function cliEnvelope(result) {
     requireThat(texts?.length === 1, 'CLI fetch returned no unique structured/text envelope', 'blocked-protocol');
     try { envelope = JSON.parse(texts[0].text); }
     catch {
+      // Only parse the CLI's fixed HTTP error prefix, never its downstream body.
+      const http = result.isError && /^Remote tool 'fetch' failed: Response status code does not indicate success: ([45]\d{2}) \([^\r\n)]*\)\./.exec(texts[0].text);
+      if (http) {
+        const failure = cliFailure({ statusCode: Number(http[1]) });
+        throw Object.assign(new PilotError(failure.code, 'CLI fetch reported an HTTP failure; raw diagnostics suppressed'), failure);
+      }
       throw new PilotError(/AuthenticationRequired|authentication requires|sign in again/i.test(texts[0].text)
         ? 'blocked-auth' : 'blocked-protocol', 'CLI fetch returned non-JSON content; raw diagnostics suppressed');
     }
   }
-  requireThat(!result.isError, 'CLI fetch reported a tool error', cliFailure(envelope).code);
+  if (result.isError) {
+    const failure = cliFailure(envelope);
+    throw Object.assign(new PilotError(failure.code, 'CLI fetch reported a tool error'), failure);
+  }
   requireThat(envelope && Array.isArray(envelope.results) && envelope.results.length === 1,
     'CLI fetch returned an unrecognized entity envelope', 'blocked-protocol');
   return envelope;
@@ -25,13 +36,9 @@ export function cliFailure(envelope) {
   const entry = envelope?.results?.[0] ?? envelope;
   const auth = entry?.statusCode === 401 || /AuthenticationRequired|InteractionRequired|Unauthenticated/i.test(entry?.errorCode ?? '');
   const policy = entry?.statusCode === 403 || /AccessDenied|PolicyDenied|Forbidden/i.test(entry?.errorCode ?? '');
-  const code = auth ? 'blocked-auth' : policy ? 'blocked-permission' : 'failed-source';
-  const result = { code };
-  if (Number.isInteger(entry?.statusCode)) result.statusCode = entry.statusCode;
-  for (const key of ['errorCode', 'recoveryAction']) {
-    if (typeof entry?.[key] === 'string' && /^[\w.-]{1,128}$/.test(entry[key])) result[key] = entry[key];
-  }
-  return result;
+  const code = auth ? 'blocked-auth' : policy ? 'blocked-permission'
+    : entry?.statusCode === 429 ? 'blocked-throttled' : 'failed-source';
+  return { code, ...failureDetails(entry) };
 }
 
 // No arbitrary tool/method surface escapes this module. Diagnostics are discarded,
@@ -44,6 +51,9 @@ export async function workiqCli(config, { spawnProcess = spawn } = {}) {
   requireThat(typeof config.identity.designatedUser === 'string' && config.identity.designatedUser.includes('@'),
     'An explicit delegated account is required');
   const timeoutMs = positive(settings.timeoutMs, 'workiqCli.timeoutMs');
+  const minReadIntervalMs = settings.minReadIntervalMs ?? 0;
+  requireThat(Number.isSafeInteger(minReadIntervalMs) && minReadIntervalMs >= 0 && minReadIntervalMs <= 60000,
+    'workiqCli.minReadIntervalMs must be an integer from 0 to 60000');
   const child = spawnProcess(settings.executable, ['--account', config.identity.designatedUser, 'mcp'],
     { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false });
   child.stdout.setEncoding('utf8');
@@ -127,11 +137,16 @@ export async function workiqCli(config, { spawnProcess = spawn } = {}) {
       requireThat(cursors.size <= 10, 'CLI discovery exceeded page bound', 'blocked-protocol');
     } while (cursor);
     requireThat(found, 'WorkIQ CLI fetch tool is unavailable', 'blocked-runtime');
+    let lastReadFinishedAt = 0;
     return {
       read: async path => {
         validateWorkiqPath(config, path);
         requireThat(path === principalPath || path.startsWith('/teams/'), 'CLI pilot permits Teams reads only', 'blocked-scope');
-        return rpc('tools/call', { name: 'fetch', arguments: { entityUrls: [path] } });
+        // Pace sequential reads without hiding retries or changing receipt/call budgets.
+        const remaining = minReadIntervalMs - (Date.now() - lastReadFinishedAt);
+        if (remaining > 0) await delay(remaining);
+        try { return await rpc('tools/call', { name: 'fetch', arguments: { entityUrls: [path] } }); }
+        finally { lastReadFinishedAt = Date.now(); }
       },
       close
     };

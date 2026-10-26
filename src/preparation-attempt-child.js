@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync, openSync, closeSync, fsyncSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { command, prepareValidation } from './workers.js';
+import { command } from './command.js';
 import { json } from './common.js';
+import { preparationFailureDiagnostic } from './preparation-progress.js';
 
 const root = process.argv[2];
 const requestPath = join(root, 'request.json');
@@ -11,6 +12,7 @@ unlinkSync(requestPath);
 const descriptor = openSync(join(root, 'progress.jsonl'), 'wx', 0o600);
 let sequence = 0;
 const started = performance.now();
+let operation = 'controller-start';
 function record(event) {
   writeFileSync(descriptor, json({
     sequence: ++sequence, processId: process.pid,
@@ -24,18 +26,27 @@ try {
   const workspace = join(root, 'data', 'source');
   record({ kind: 'stage', gateId: repo.validationGates[0].id,
     id: 0, stage: 'source-materialization', phase: 'start' });
-  await command('git', ['-c', 'core.hooksPath=.git/no-hooks',
-    'clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, workspace],
-  join(root, 'data'), request.wholeTimeoutMs);
-  await command('git', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
-    'checkout', '--detach', revision], workspace, request.wholeTimeoutMs);
+  for (const [step, args, cwd] of [
+    ['clone', ['-c', 'core.hooksPath=.git/no-hooks',
+      'clone', '--no-hardlinks', '--no-checkout', '--', job.workspace, workspace], join(root, 'data')],
+    ['checkout', ['-c', 'core.hooksPath=.git/no-hooks', '-c', 'core.autocrlf=false',
+      'checkout', '--detach', revision], workspace]
+  ]) {
+    operation = `source-${step}`;
+    record({ kind: 'materialization-step', step, phase: 'start' });
+    await command('git', args, cwd, request.wholeTimeoutMs);
+    record({ kind: 'materialization-step', step, phase: 'finish' });
+  }
   record({ kind: 'stage', gateId: repo.validationGates[0].id,
     id: 0, stage: 'source-materialization', phase: 'finish' });
+  operation = 'validation-preparation';
+  const { prepareValidation } = await import('./workers.js');
   const prepared = await prepareValidation(
     { ...config, stateDirectory: join(root, 'data', 'state') },
     { ...job, workspace }, repo, revision, undefined, {
       onProgress: event => record({ kind: 'stage', ...event })
     });
+  operation = 'result-publication';
   const gates = Object.entries(prepared).map(([gateId, value]) => {
     if (value?.error) return {
       gateId, accepted: false, error: value.error,
@@ -53,9 +64,10 @@ try {
   });
   writeFileSync(join(root, 'child-result.json'), json({ gates }), { flag: 'wx', mode: 0o600 });
   record({ kind: 'complete' });
-} catch {
-  record({ kind: 'infrastructure-failed' });
+} catch (error) {
   process.exitCode = 1;
+  record({ kind: 'infrastructure-failed', operation,
+    diagnostic: preparationFailureDiagnostic(error) });
 } finally {
   fsyncSync(descriptor);
   closeSync(descriptor);

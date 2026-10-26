@@ -4,6 +4,7 @@ import { resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { hash } from './hash.js';
+import { failureDetails } from './failure-details.js';
 
 export class PilotError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -50,7 +51,7 @@ export function repositorySourceRef(repo, assignmentId) {
   return `${prefix}${assignmentId}`;
 }
 export function safeError(error) {
-  if (error instanceof PilotError) return { code: error.code, message: error.message };
+  if (error instanceof PilotError) return { code: error.code, message: error.message, ...failureDetails(error) };
   // Library errors can contain request headers, source payloads or credentials.
   return { code: 'failed', message: `Operation failed (${error?.name ?? 'Error'}); inspect the operation and supported sign-in state, not credential caches.` };
 }
@@ -78,7 +79,8 @@ export function boundedPath(root, name, { write = false } = {}) {
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 addFormats(ajv);
 const contracts = readJson(new URL('../scaffold/contracts.schema.json', import.meta.url));
-ajv.addSchema(contracts, 'contracts');
+// Named records need the definitions, not eager compilation of the document's root union.
+ajv.addSchema({ $defs: contracts.$defs }, 'contracts');
 export function validateRecord(value, type = value.recordType) {
   const validate = ajv.getSchema(`contracts#/$defs/${type}`);
   requireThat(validate && validate(value), `Invalid ${type} record: ${ajv.errorsText(validate?.errors)}`, 'invalid-record');

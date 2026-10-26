@@ -44,7 +44,10 @@ const compactParameters = {
   $defs: Object.fromEntries(Object.entries(definitions)
     .filter(([name]) => !['filterBatchResult', 'filterTitleDecisions'].includes(name)))
 };
-const compactValidator = addFormats(new Ajv2020({ strict: false, allErrors: true })).compile(compactParameters);
+let compactValidator;
+function getCompactValidator() {
+  return compactValidator ??= addFormats(new Ajv2020({ strict: false, allErrors: true })).compile(compactParameters);
+}
 const parametersFor = config => config.localFilter.compactDecisions ? compactParameters : resultParameters;
 const policyFor = config => config.localFilter.compactDecisions ? 'compact-incremental-complete-cohort-v1' : analysisPolicy;
 const sessionInstructions = config => `${instructions}\nPinned repositories: ${json(config.localFilter.sources.map(source => ({
@@ -268,6 +271,7 @@ function mergeAnalysis(config, manifest, previous, incoming) {
   return { result, checked };
 }
 function expandCompactSubmission(manifest, batch, submission, sessionId, submittedAt) {
+  const compactValidator = getCompactValidator();
   requireThat(compactValidator(submission), 'Invalid compact FILTER submission: ' +
     compactValidator.errors?.map(error => `${error.instancePath} ${error.message}`).join('; '), 'invalid-record');
   requireThat(['partial', 'complete'].includes(submission.status),
@@ -506,7 +510,7 @@ export async function executeLocalFilterBatch(config, ledger, manifest, batchId,
               })).filter(entry => unresolvedIds.includes(entry.evidenceId)).slice(0, 20)
             });
             if (compact && input?.status === 'progress') {
-              requireThat(compactValidator(input) && input.decisions.length === 0 && input.candidates.length === 0,
+              requireThat(getCompactValidator()(input) && input.decisions.length === 0 && input.candidates.length === 0,
                 'Progress requires empty decisions and candidates', 'invalid-record');
               const reviewed = new Set(partialResult?.details.map(detail => detail.evidenceId) ?? []);
               const remaining = batch.memberIds.filter(member => !reviewed.has(member));

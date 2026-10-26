@@ -339,7 +339,7 @@ try {
     if (['rsi-run', 'app-rsi-run'].includes(action))
       requireThat(rsiAutomationPolicy(config), 'RSI automation is not authorized', 'blocked-authorization');
     if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
-    const resources = await monitorResourceLifecycle(config);
+    const resources = args.includes('--dry-run') ? [] : await monitorResourceLifecycle(config);
     if (resources.length) {
       console.error(JSON.stringify({ resourceLifecycle: resources }));
       if (resources.some(resource => resource.status === 'blocked') || failedOutcome(resources))

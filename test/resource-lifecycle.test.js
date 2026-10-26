@@ -44,6 +44,55 @@ async function fixture(t, kind = 'validation') {
 }
 
 describe('owned resource lifecycle', { concurrency: 3 }, () => {
+test('CLI prune dry-run preserves an eligible exited resource, registration, caches and journal', async t => {
+  const f = await fixture(t);
+  const cache = join(f.workspace, 'node_modules', 'canary');
+  mkdirSync(join(f.workspace, 'node_modules'));
+  writeFileSync(cache, 'regenerable synthetic cache');
+  await f.finish();
+  const module = new URL('../src/resource-lifecycle.js', import.meta.url).href;
+  const journal = join(f.state, 'resource-lifecycle', `${f.resource.id}.json`);
+  const owner = await command(process.execPath, ['--input-type=module', '-e',
+    `import { writeFileSync } from 'node:fs';
+     import { resourceRecord } from ${JSON.stringify(module)};
+     const record = resourceRecord(${JSON.stringify(f.state)}, ${JSON.stringify(f.resource.id)});
+     record.leasePid = process.pid;
+     writeFileSync(${JSON.stringify(journal)}, JSON.stringify(record));
+     process.stdout.write(String(process.pid));`],
+  f.root, 30000);
+  assert.equal(resourceRecord(f.state, f.resource.id).leasePid, Number(owner.stdout));
+  assert.notEqual(Number(owner.stdout), process.pid);
+  const original = {
+    journal: readFileSync(journal), pointer: readFileSync(join(f.workspace, '.git')),
+    cache: readFileSync(cache), proof: readFileSync(f.proof),
+    worktrees: await f.git(['worktree', 'list', '--porcelain'])
+  };
+  const settings = JSON.parse(readFileSync('pilot.example.json', 'utf8'));
+  settings.stateDirectory = f.state;
+  const settingsPath = join(f.root, 'settings.json');
+  writeFileSync(settingsPath, JSON.stringify(settings));
+  const invoke = args => command(process.execPath,
+    ['src/cli.js', 'state-prune', ...args, '--config', settingsPath], process.cwd(), 120000);
+  const result = JSON.parse((await invoke(['--dry-run'])).stdout);
+  assert.equal(result.dryRun, true);
+  assert(existsSync(f.workspace));
+  assert.deepEqual(readFileSync(journal), original.journal);
+  assert.deepEqual(readFileSync(join(f.workspace, '.git')), original.pointer);
+  assert.deepEqual(readFileSync(cache), original.cache);
+  assert.deepEqual(readFileSync(f.proof), original.proof);
+  assert.equal(await f.git(['worktree', 'list', '--porcelain']), original.worktrees);
+  assert(!existsSync(f.resource.archive));
+  assert(!existsSync(join(f.state, 'resource-lifecycle', 'reconciliation.json')));
+
+  await invoke([]);
+  const retired = resourceRecord(f.state, f.resource.id);
+  assert.equal(retired.stage, 'complete', retired.cleanupError?.message);
+  assert(!existsSync(f.workspace));
+  assert(!existsSync(join(retired.archive, 'snapshot', 'node_modules')));
+  assert(!(await f.git(['worktree', 'list', '--porcelain'])).includes(f.workspace.replaceAll('\\', '/')));
+  assert.deepEqual(readFileSync(f.proof), original.proof);
+});
+
 for (const outcome of ['passed', 'failed', 'cancelled']) {
   test(`${outcome}: archive after evidence and process exit, unregister exactly and repeat safely`, async t => {
     const f = await fixture(t);

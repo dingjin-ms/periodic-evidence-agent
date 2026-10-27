@@ -4,6 +4,7 @@ import {
 import { execFileSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hash, now, requireThat } from './common.js';
+import { resourceRetentionPaths, withResourceRetentionLock } from './resource-lifecycle.js';
 
 const manifestName = 'manifest.json';
 const runIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -182,7 +183,11 @@ export function assertStateDirectoryIgnored(config, cwd = process.cwd()) {
   return { checked: true, ignored: true, path: root };
 }
 
-export function pruneState(config, { dryRun = false, nowMs = Date.now() } = {}) {
+export function pruneState(config, options = {}) {
+  return withResourceRetentionLock(config.stateDirectory, () => pruneUnlocked(config, options));
+}
+
+function pruneUnlocked(config, { dryRun = false, nowMs = Date.now() } = {}) {
   const retentionDays = config.statePolicy.rawEvidenceDays;
   requireThat(Number.isInteger(retentionDays) && retentionDays >= 1 && retentionDays <= 7,
     'statePolicy.rawEvidenceDays must be an integer from 1 through 7');
@@ -201,6 +206,7 @@ export function pruneState(config, { dryRun = false, nowMs = Date.now() } = {}) 
   requireThat(!lstatSync(root).isSymbolicLink() && !lstatSync(runs).isSymbolicLink(),
     'State root and runs directory must not be links', 'blocked-scope');
   const cutoff = nowMs - retentionDays * 24 * 60 * 60 * 1000;
+  const resourcePaths = resourceRetentionPaths(root);
   for (const entry of readdirSync(runs, { withFileTypes: true })) {
     requireThat(entry.isDirectory() && !entry.isSymbolicLink(),
       `Unexpected non-directory state entry: ${entry.name}`, 'blocked-scope');
@@ -208,6 +214,10 @@ export function pruneState(config, { dryRun = false, nowMs = Date.now() } = {}) 
     const directory = safeRunDirectory(config, runId);
     const manifest = readManifest(config, runId);
     requireThat(manifest, `Missing local evidence manifest for ${runId}`, 'invalid-record');
+    if (resourcePaths.some(path => within(directory, resolve(path)))) {
+      result.retained.push({ runId, reason: 'resource-lifecycle-reference' });
+      continue;
+    }
     if (manifest.state === 'active') {
       result.retained.push({ runId, reason: 'active-lease' });
       continue;

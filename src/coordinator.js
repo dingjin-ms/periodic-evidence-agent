@@ -6,6 +6,7 @@ import { makeAssignment, dispatch } from './workers.js';
 import { followRelated } from './followup.js';
 import { revisitTracked } from './revisit.js';
 import { requireCompleteExclusionReview } from './review-decisions.js';
+import { monitorResourceLifecycle } from './task-lifecycle.js';
 
 export async function collect(config, ledger, { window = config.window, lane = 'created', adapters = {}, onlySources = null, follow = true } = {}) {
   collectionPreflight(config); windowCheck(window);
@@ -264,6 +265,7 @@ export function nextDailyWake(schedule, time = new Date()) {
   return new Date(next);
 }
 export async function tick(config, ledger, time = new Date()) {
+  const resources = await monitorResourceLifecycle(config);
   requireThat(config.schedule.enabled, 'Schedule is disabled');
   nextDailyWake(config.schedule, time);
   requireThat(ledger.qualification('manual-run')?.fingerprint === readinessFingerprint(config),
@@ -302,6 +304,6 @@ export async function tick(config, ledger, time = new Date()) {
         'Recurring worker intent is unresolved');
       workers = await route(config, ledger, config.workerIntent, json(window));
     }
-    return { collection: results, reviews, workers };
+    return { collection: results, reviews, workers, ...(resources.length ? { resources } : {}) };
   } finally { ledger.release('coordinator', owner); }
 }

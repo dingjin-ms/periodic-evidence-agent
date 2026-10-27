@@ -19,6 +19,19 @@ product-repository dependencies, enable write permissions or create a PR.
 Use `npm run setup:repos -- --repo <id>` only when intentionally rerunning the
 repository layer without reinstalling dependencies or repeating all checks.
 
+## Hosted CI budget fallback
+
+When GitHub Actions cannot start because of an account budget, spending-limit
+or payment restriction, run complete local CI instead of repeatedly retrying
+the blocked hosted jobs. Follow the
+[README procedure](README.md#local-ci-when-hosted-actions-is-budget-blocked):
+run all three full groups sequentially, preserve runner concurrency and budgets,
+and include syntax, package and standalone demo checks. Preserve failed reports
+and record the validated revision and complete results. An actual test failure
+still requires investigation and correction. Report local success separately
+from the hosted account blocker; never override required checks or infer
+permission to publish or merge a Draft.
+
 ## Validation authentication recovery
 
 When a controller command returns `state: "action-required-auth"`:

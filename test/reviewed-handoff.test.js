@@ -23,6 +23,7 @@ import { pruneState } from '../src/state-retention.js';
 import { beginApp, openApp, appWorker } from '../src/app-native.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
+import { runTestRequest } from '../src/test-request-flow.js';
 import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
@@ -304,6 +305,69 @@ test('sample request exercises intake through real validation and local push, wi
   const failure = spawnSync(process.execPath, ['--test', 'test/behavior.test.js'], { cwd: bad, encoding: 'utf8', env });
   assert.notEqual(failure.status, 0);
   assert.match(failure.stdout, /deduplication preserves formulas/);
+});
+
+test('automated request FILTER hands its plan to the real worker and publication gates without an operator handoff', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.executionMode = 'standalone-sdk';
+  ctx.config.activation.review = true; ctx.config.activation.dispatch = true;
+  ctx.config.filterExecutor = 'local-sdk'; ctx.config.limits.maxAiCreditsPerSession = 30;
+  ctx.config.localFilter = { enabled: true, acceptSoftCreditLimit: true, maxRequests: 1,
+    maxToolCalls: 10, timeoutMs: 10000, maxSourceBytes: 12000, maxRequestBytes: 100000,
+    sources: [{ repoId: 'office-agent', revision: ctx.baseRevision }] };
+  ctx.config.adoTestRequests.automation = { enabled: true, scopeApproved: true, approvalRef: 'fixture-flow',
+    model: 'fixture', maxRequests: 1, sourcePaths: ['src'] };
+  // New policy is collected into a fresh ledger, not retrofitted onto old receipts.
+  const ledger = new Ledger(join(ctx.root, 'flow-state'));
+  ctx.additionalLedgers.push(ledger);
+  ledger.qualify(skillQualificationId('office-agent', 'oa-integration-test-core'),
+    ctx.ledger.qualification(skillQualificationId('office-agent', 'oa-integration-test-core')));
+  await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+  let filters = 0, proposers = 0, drafts = 0, comments = 0;
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'fixture-feedback' };
+  const dependencies = { read: ctx.read,
+    feedback: { getToken: async () => 'fixture', fetchResponse: async (_url, options) => {
+      comments++; assert.match(JSON.parse(options.body).text, /validated coverage Draft PR/);
+      return Response.json({ id: 99, workItemId: 123 });
+    } },
+    connect: async (_config, _cwd, action) => action({ createSession: async options => {
+      filters++; let event;
+      return { sessionId: 'fixture-filter-session', on: callback => { event = callback; return () => {}; },
+        rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
+        sendAndWait: async () => {
+          event({ type: 'assistant.turn_start' });
+          await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: 'src/value.js' });
+          const result = JSON.parse(await options.tools.find(tool => tool.name === 'pilot_request_finish').handler({
+            decision: 'supported', missingCapabilities: [], sourcePaths: ['src/value.js'],
+            rationale: 'Fixture implementation supports the invariant.', verificationEvidence: [],
+            handoff: { review: ctx.handoff.review, planning: ctx.handoff.planning }
+          }));
+          assert.equal(result.error, undefined, json(result));
+        }, disconnect: async () => {} };
+    } }),
+    dispatchDependencies: {
+      runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
+        proposers++; toolkit.write('test/behavior.test.js', formulaTest);
+        toolkit.write('test/behavior-card.md', '# Formula preservation\nSynthetic contract.\n');
+        toolkit.finish({ outcome: 'propose-change', findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
+          skillResult: { status: 'succeeded', classification: 'missing-test-coverage', changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
+            testsAddedOrUpdated: ['formula preservation'], behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+      },
+      createDraft: async (_config, _ledger, _job, _repo, revision) => {
+        drafts++; return { url: 'https://example.invalid/automated-request/draft/1', isDraft: true, headRevision: revision };
+      }
+    }
+  };
+  const options = { authorizeReview: true, execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, authorizeComment: true };
+  const result = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+  assert.equal(result.state, 'draft-pr-validated', json(result));
+  assert.equal(result.result.validation[0].sourceRevision, result.result.draftPR.headRevision);
+  assert.equal((await runTestRequest(ctx.config, ledger, 123, options, dependencies)).replayed, true);
+  assert.equal(result.feedback.state, 'commented');
+  ctx.item.rev++;
+  const revisionReplay = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+  assert.equal(revisionReplay.priorOutcomeOnly, true);
+  assert.deepEqual([filters, proposers, drafts, comments], [1, 1, 1, 1]);
 });
 
 async function supportedRequestAssessment(ctx) {

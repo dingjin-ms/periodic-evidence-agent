@@ -118,12 +118,14 @@ export function selectedItem(item, id, policy) {
     fields: Object.fromEntries(sourceFields.filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]])) };
 }
 
-export async function readTestRequest(config, id, { getToken = adoAccessToken, fetchResponse = fetch } = {}) {
+const quote = value => `'${value.replaceAll("'", "''")}'`;
+const requestScope = policy => `[System.TeamProject] = ${quote(policy.project)} AND [System.AreaPath] UNDER ${quote(policy.areaPath)} AND [System.WorkItemType] IN (${policy.workItemTypes.map(quote).join(', ')}) AND [System.State] IN (${policy.states.map(quote).join(', ')}) AND [System.Tags] CONTAINS ${quote(policy.tag)}`;
+
+async function requestTransport(config, { getToken = adoAccessToken, fetchResponse = fetch } = {}) {
   const policy = testRequestPolicy(config);
-  requireThat(Number.isSafeInteger(id) && id > 0, 'Test-request ID must be a positive integer');
   const token = await getToken(config, 'ADO test-request read');
   const base = `https://dev.azure.com/${encodeURIComponent(policy.organization)}/${encodeURIComponent(policy.project)}/_apis/wit/`;
-  async function request(path, body) {
+  return async (path, body) => {
     const response = await fetchResponse(base + path, { method: body ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       ...(body ? { body: json(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(60000) });
@@ -137,9 +139,32 @@ export async function readTestRequest(config, id, { getToken = adoAccessToken, f
       chunks.push(chunk);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  }
-  const quote = value => `'${value.replaceAll("'", "''")}'`;
-  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = ${quote(policy.project)} AND [System.Id] = ${id} AND [System.AreaPath] UNDER ${quote(policy.areaPath)} AND [System.WorkItemType] IN (${policy.workItemTypes.map(quote).join(', ')}) AND [System.State] IN (${policy.states.map(quote).join(', ')}) AND [System.Tags] CONTAINS ${quote(policy.tag)}`;
+  };
+}
+
+export async function listTestRequests(config, dependencies = {}) {
+  const policy = testRequestPolicy(config), queue = policy.automation?.queue;
+  requireThat(queue?.enabled === true && queue.scopeApproved === true && queue.approvalRef?.trim() &&
+    Number.isSafeInteger(queue.maxItems) && queue.maxItems > 0 && queue.maxItems <= 20,
+  'Queue discovery needs explicit bounded approval', 'blocked-authorization');
+  requireThat(config.statePolicy?.accessApproved === true, 'Queue reads require approved state');
+  const request = await requestTransport(config, dependencies);
+  const result = await request(`wiql?$top=${queue.maxItems + 1}&api-version=7.1`, {
+    query: `SELECT [System.Id] FROM WorkItems WHERE ${requestScope(policy)} ORDER BY [System.Id] ASC`
+  });
+  utc(result.asOf);
+  requireThat(Array.isArray(result.workItems) && result.workItems.length <= queue.maxItems &&
+    result.workItems.every(item => Number.isSafeInteger(item.id) && item.id > 0) &&
+    new Set(result.workItems.map(item => item.id)).size === result.workItems.length,
+  'Request queue is incomplete, malformed or exceeds its bound; no items dispatched', 'partial');
+  return { ids: result.workItems.map(item => item.id), snapshotAt: result.asOf };
+}
+
+export async function readTestRequest(config, id, dependencies = {}) {
+  const policy = testRequestPolicy(config);
+  requireThat(Number.isSafeInteger(id) && id > 0, 'Test-request ID must be a positive integer');
+  const request = await requestTransport(config, dependencies);
+  const query = `SELECT [System.Id] FROM WorkItems WHERE ${requestScope(policy)} AND [System.Id] = ${id}`;
   const candidates = await request('wiql?api-version=7.1', { query });
   utc(candidates.asOf);
   requireThat(candidates.workItems?.length === 1 && candidates.workItems[0].id === id,

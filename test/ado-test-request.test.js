@@ -8,7 +8,7 @@ import { Ledger } from '../src/ledger.js';
 import { configAt } from '../src/common.js';
 import { adoRecord, wiql } from '../src/sources.js';
 import { savedTestRequestLink, testRequestLink, testRequestRows } from '../src/ado-request-link.js';
-import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest } from '../src/ado-test-request.js';
+import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest, listTestRequests } from '../src/ado-test-request.js';
 
 const sample = readFileSync(new URL('../scaffold/ado-test-request.sample.md', import.meta.url), 'utf8');
 const policy = JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url)));
@@ -64,6 +64,23 @@ function setup(t) {
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   return { config, ledger, item };
 }
+
+test('queue discovery is independently approved, scoped and fails closed on overflow', async t => {
+  const { config } = setup(t);
+  await assert.rejects(listTestRequests(config), /bounded approval/);
+  config.adoTestRequests.automation = { queue: { enabled: true, scopeApproved: true, approvalRef: 'fixture', maxItems: 2 } };
+  let requests = 0;
+  const transport = workItems => ({ getToken: async () => 'fixture', fetchResponse: async (url, options) => {
+    requests++; assert.match(url, /\$top=3/); assert.equal(options.redirect, 'error');
+    const query = JSON.parse(options.body).query;
+    assert.match(query, /Automation/); assert.match(query, /AgenticTestRequest/); assert.match(query, /ORDER BY \[System.Id\] ASC/);
+    return Response.json({ asOf: '2026-10-01T00:00:00Z', workItems });
+  } });
+  assert.deepEqual((await listTestRequests(config, transport([{ id: 1 }, { id: 2 }]))).ids, [1, 2]);
+  await assert.rejects(listTestRequests(config, transport([{ id: 1 }, { id: 2 }, { id: 3 }])), /exceeds its bound/);
+  await assert.rejects(listTestRequests(config, transport([{ id: 1 }, { id: 1 }])), /malformed/);
+  assert.equal(requests, 3);
+});
 
 test('transport queries approved scope before details and pins the batch snapshot', async t => {
   const { config, item } = setup(t);

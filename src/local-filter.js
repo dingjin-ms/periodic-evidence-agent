@@ -287,7 +287,7 @@ function expandCompactSubmission(manifest, batch, submission, sessionId, submitt
     candidates: structuredClone(submission.candidates)
   };
 }
-function sourcePage(input, revision, text, ceiling) {
+export function sourcePage(input, revision, text, ceiling) {
   const bytes = Buffer.from(text), offset = input.offset ?? 0;
   requireThat(Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length &&
     (offset === bytes.length || (bytes[offset] & 0xc0) !== 0x80),

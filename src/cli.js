@@ -27,6 +27,7 @@ import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { collectTestRequest, acceptTestRequest } from './ado-test-request.js';
+import { runTestRequest, runTestRequestQueue } from './test-request-flow.js';
 import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from './ado-harness-request.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
@@ -91,6 +92,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
+  node src\\cli.js run-test-request --id NUMBER --authorize-review --authorize-comment --config pilot.local.json
+  node src\\cli.js run-test-request-queue --authorize-review --authorize-comment --config pilot.local.json
   node src\\cli.js ado-test-request --id NUMBER --collect --config pilot.local.json
   node src\\cli.js assess-test-request --file assessment.json --config pilot.local.json
   node src\\cli.js comment-test-request --assessment ID --authorize-comment [--retry-rejected] [--assignment ID] --config pilot.local.json
@@ -186,6 +189,20 @@ try {
     }
     requireThat([...values, ...switches].filter(key => !['--assignment', '--retry-rejected'].includes(key)).every(key => seen.has(key)),
       'Test-request assessment/feedback requires explicit inputs and comment authorization', 'blocked-authorization');
+  }
+  if (['run-test-request', 'run-test-request-queue'].includes(action)) {
+    const values = action === 'run-test-request' ? ['--config', '--id'] : ['--config'];
+    const switches = ['--authorize-review', '--execute', '--authorize-commit', '--authorize-push', '--authorize-draft-pr', '--authorize-comment'];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...values, ...switches].includes(key), 'Unknown or duplicate request-flow option');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Request-flow option needs a value');
+    }
+    requireThat(values.every(key => seen.has(key)) && seen.has('--authorize-review') &&
+      (action === 'run-test-request-queue' || /^\d+$/.test(option('--id') ?? '')),
+      'Request flow requires explicit config, ID and model review authorization', 'blocked-authorization');
   }
   if (['ado-test-request', 'submit-test-request'].includes(action)) {
     requireThat(option('--config') && !option('--config').startsWith('--'),
@@ -326,7 +343,7 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
-    if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))
+    if (['run-test-request', 'run-test-request-queue', 'assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))
       requireThat(config.statePolicy.accessApproved === true,
         'Test-request feedback/review requires approved local state', 'blocked-authorization');
     if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
@@ -608,6 +625,16 @@ try {
         result = await publishCapabilityComment(config, ledger, option('--assessment'), {
           authorizeComment: args.includes('--authorize-comment'), retryRejected: args.includes('--retry-rejected'),
           assignmentId: option('--assignment') ?? null
+        });
+        break;
+      case 'run-test-request-queue':
+      case 'run-test-request':
+        result = await (action === 'run-test-request-queue'
+          ? (settings, state, _id, grants) => runTestRequestQueue(settings, state, grants)
+          : runTestRequest)(config, ledger, Number(option('--id')), {
+          authorizeReview: args.includes('--authorize-review'), execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'), authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr'), authorizeComment: args.includes('--authorize-comment')
         });
         break;
       case 'ado-test-request':

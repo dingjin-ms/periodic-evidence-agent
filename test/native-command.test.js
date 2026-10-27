@@ -152,3 +152,70 @@ for (const mode of ['timeout', 'abort', 'nonzero-exit', 'success', 'output-overf
     for (const id of ids)
       assert.throws(() => process.kill(id, 0), error => error.code === 'ESRCH', `Owned process ${id} survived`);
   });
+
+for (const mode of ['empty-job', 'live-job', 'wrong-object-kind']) {
+  test(`direct drain distinguishes ${mode} using real kernel accounting`,
+    { skip: process.platform !== 'win32' }, async t => {
+      const root = fixture(t), probe = join(root, 'drain-probe.ps1');
+      writeFileSync(probe, `param([string]$mode,[string]$supervisor,[string]$node,[string]$name)
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NativeDrainProbe {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern IntPtr CreateJobObject(IntPtr attributes,string name);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
+  [DllImport("kernel32.dll")]
+  public static extern bool CloseHandle(IntPtr job);
+}
+'@
+$env:PILOT_NATIVE_COMMAND=@{action='drain';jobName=$name} | ConvertTo-Json -Compress
+$job=[IntPtr]::Zero; $event=$null; $child=$null; $code=1
+try {
+  if($mode -eq 'wrong-object-kind'){
+    $event=[Threading.EventWaitHandle]::new($false,[Threading.EventResetMode]::AutoReset,$name)
+  } else {
+    $job=[NativeDrainProbe]::CreateJobObject([IntPtr]::Zero,$name)
+    if($job -eq [IntPtr]::Zero){throw 'Cannot create diagnostic job'}
+    if($mode -eq 'live-job'){
+      $start=[Diagnostics.ProcessStartInfo]::new()
+      $start.FileName=$node; $start.UseShellExecute=$false
+      $start.ArgumentList.Add('-e'); $start.ArgumentList.Add('setTimeout(()=>{},2500)')
+      $child=[Diagnostics.Process]::Start($start)
+      if(![NativeDrainProbe]::AssignProcessToJobObject($job,$child.Handle)){
+        throw 'Cannot assign diagnostic child'
+      }
+      if($child.HasExited){throw 'Diagnostic child exited before drain'}
+    }
+  }
+  & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $supervisor
+  $code=$LASTEXITCODE
+  if($mode -eq 'live-job' -and $code -eq 0 -and !$child.HasExited){
+    throw 'Drain returned before the owned process exited'
+  }
+} finally {
+  if($null -ne $child){
+    if(!$child.HasExited){$child.Kill(); $child.WaitForExit()}
+    $child.Dispose()
+  }
+  if($null -ne $event){$event.Dispose()}
+  if($job -ne [IntPtr]::Zero){[void][NativeDrainProbe]::CloseHandle($job)}
+}
+exit $code
+`);
+      const run = nativeCommand('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+        probe, mode, fileURLToPath(new URL('../src/native-command.ps1', import.meta.url)), process.execPath,
+        `Local\\PilotNative-${randomUUID()}`], root, 15000, minimalEnvironment());
+      if (mode === 'wrong-object-kind') {
+        await assert.rejects(run, error => error.code !== 0 && error.ownedProcessesExited === true &&
+          /Cannot inspect owned native job/.test(error.stderr));
+      } else {
+        const output = await run;
+        assert.equal(output.stdout, '');
+        assert.equal(output.stderr, '');
+        assert.equal(output.ownedProcessesExited, true);
+      }
+    });
+}

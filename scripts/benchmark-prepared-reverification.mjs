@@ -24,6 +24,7 @@ mkdirSync(dirname(output), { recursive: true });
 benchmarkOptions(outputArgs);
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const git = async (cwd, parameters) => (await command('git', [
+  '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
   '-c', 'core.hooksPath=.git/no-hooks', ...parameters
 ], cwd)).stdout.trim();
 const files = ['workers.js', 'output-fingerprint.js',
@@ -56,7 +57,8 @@ let root, baselineRoot;
 try {
   root = mkdtempSync(join(tmpdir(), 'f3-prepared-reverification-'));
   baselineRoot = join(root, 'baseline-controller');
-  await git(repository, ['worktree', 'add', '--detach', '--', baselineRoot, baseline]);
+  await command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+    'worktree', 'add', '--detach', '--', baselineRoot, baseline], repository);
   symlinkSync(join(repository, 'node_modules'), join(baselineRoot, 'node_modules'),
     process.platform === 'win32' ? 'junction' : 'dir');
   report.baselineImplementation = implementation(baselineRoot);

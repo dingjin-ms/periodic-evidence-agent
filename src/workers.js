@@ -3329,14 +3329,32 @@ export function localProposerEnvironment(source = process.env) {
     if (source[name]) env[name] = source[name];
   return env;
 }
+function publicationAdmission(config, ledger, assignmentId, read) {
+  const assignment = ledger?.get('assignment', assignmentId);
+  const testRequest = assignment?.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request');
+  return {
+    refresh: async () => {
+      if (testRequest) await verifyCurrentTestRequest(config, ledger, assignmentId, read);
+    },
+    check: () => {
+      if (testRequest) requireCurrentAssignment(config, ledger,
+        ledger.get('investigation', assignment.investigationId), assignment);
+    }
+  };
+}
 export async function pushDraftBranch(config, workspace, repo, refspec, dependencies = {}) {
   const execute = dependencies.execute ?? git;
   const timeout = Math.max(120000, config.runtime?.timeoutMs ?? 0,
     ...(repo.validationGates ?? []).map(gate => gate.timeoutMs ?? 0));
-  if (repo.pr?.provider !== 'ado' || !/^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote))
-    return execute(workspace, ['push', 'origin', refspec], process.env, timeout);
-  const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
-  return execute(workspace, ['push', 'origin', refspec], adoGitEnvironment(token), timeout);
+  const admission = publicationAdmission(config, dependencies.ledger, dependencies.assignmentId, dependencies.readTestRequest);
+  let env = process.env;
+  if (repo.pr?.provider === 'ado' && /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote)) {
+    const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
+    env = adoGitEnvironment(token);
+  }
+  await admission.refresh();
+  admission.check();
+  return execute(workspace, ['push', 'origin', refspec], env, timeout);
 }
 export function draftSourceRef(repo, jobId) {
   return repositorySourceRef(repo, jobId);
@@ -3420,7 +3438,7 @@ export async function draftBuildPlan(ledger, job, repo, revision) {
   return { build, caseSelection: null, harnessSelection: { format: 'harness-contract-selection-v1',
     baseRevision: job.base_revision, sourceRevision: revision, testPaths, contractSha256: hash(json(build)) } };
 }
-export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride) {
+export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride, dependencies = {}) {
   const { build, caseSelection, harnessSelection } = await draftBuildPlan(ledger, job, repo, revision);
   requireThat(build?.enabled === true && build.provider === 'ado' &&
     Number.isInteger(build.definitionId) && build.definitionId > 0,
@@ -3442,17 +3460,23 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
   }
   const sourceRef = draftSourceRef(repo, job.id);
   const operationId = `${job.id}:draft-build:${build.id}`;
-  ledger.operation(operationId, job.id, 'draft-build', {
-    definitionId: build.definitionId, revision, sourceRef,
-    ...(caseSelection ? { caseSelection } : {}),
-    ...(harnessSelection ? { harnessSelection } : {})
-  });
+  const admission = publicationAdmission(config, ledger, job.id, dependencies.readTestRequest);
+  const reserve = () => {
+    admission.check();
+    ledger.operation(operationId, job.id, 'draft-build', {
+      definitionId: build.definitionId, revision, sourceRef,
+      ...(caseSelection ? { caseSelection } : {}),
+      ...(harnessSelection ? { harnessSelection } : {})
+    });
+  };
   let request = requestOverride;
   if (!request) {
     request = async body => {
-      const token = await adoAccessToken(config, 'ADO Draft build queue');
+      const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Draft build queue');
       const url = `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_apis/build/builds?api-version=7.1`;
-      const response = await fetch(url, {
+      await admission.refresh();
+      reserve();
+      const response = await (dependencies.fetchResponse ?? fetch)(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: json(body),
@@ -3463,6 +3487,10 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
         [401, 403].includes(response.status) ? 'blocked-auth' : 'blocked-build');
       return response.json();
     };
+  }
+  if (requestOverride) {
+    await admission.refresh();
+    reserve();
   }
   const queued = await request({
     definition: { id: build.definitionId },
@@ -3504,7 +3532,7 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
   ledger.finishOperation(operationId, 'queued', receipt);
   return receipt;
 }
-export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true) {
+export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true, dependencies = {}) {
   requireThat(repo.pr?.provider === 'ado' && repo.pr.repositoryId && repo.pr.project && repo.pr.organization &&
     repo.pr.targetRef?.startsWith('refs/heads/'), 'Draft PR provider is not configured', 'blocked-pr');
   const expected = [
@@ -3515,30 +3543,45 @@ export async function createAdoDraft(config, ledger, job, repo, revision, propos
     !repo.remote.includes('@') &&
     [repo.pr.organization, repo.pr.project, repo.pr.repositoryId].every(s => /^[a-zA-Z0-9_. -]+$/.test(s)),
   'ADO repository/remote mismatch', 'blocked-scope');
+  const admission = publicationAdmission(config, ledger, job.id, dependencies.readTestRequest);
+  const sourceRefName = draftSourceRef(repo, job.id);
+  const operationId = `${job.id}:draft`;
+  const reserve = () => {
+    admission.check();
+    ledger.operation(operationId, job.id, 'draft-pr', { revision, sourceRefName });
+  };
   let request = requestOverride;
   if (!request) {
     request = async (method, suffix, body) => {
-      const token = await adoAccessToken(config, 'ADO draft access');
+      const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO draft access');
       const url = `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_apis/git/repositories/${encodeURIComponent(repo.pr.repositoryId)}/pullrequests${suffix}`;
-      const response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      if (method === 'POST') {
+        await admission.refresh();
+        reserve();
+      }
+      const response = await (dependencies.fetchResponse ?? fetch)(url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: body ? json(body) : undefined, redirect: 'error', signal: AbortSignal.timeout(60000) });
       requireThat(response.ok, `ADO draft request returned HTTP ${response.status}`, [401, 403].includes(response.status) ? 'blocked-auth' : 'blocked-pr');
       return response.json();
     };
   }
-  const sourceRefName = draftSourceRef(repo, job.id);
   const found = await request('GET', `?searchCriteria.sourceRefName=${encodeURIComponent(sourceRefName)}&searchCriteria.status=all&api-version=7.1`);
   requireThat(Array.isArray(found.value) && found.value.length <= 1, 'Ambiguous existing PRs; manual reconciliation required', 'blocked-reconciliation');
   let pr = found.value[0];
   if (!pr) {
     requireThat(allowCreate, 'No matching draft found; uncertain creation is not retried', 'blocked-reconciliation');
-    const operationId = `${job.id}:draft`;
-    ledger.operation(operationId, job.id, 'draft-pr', { revision, sourceRefName });
+    if (requestOverride) {
+      await admission.refresh();
+      reserve();
+    }
     pr = await request('POST', '?api-version=7.1', {
       sourceRefName, targetRefName: repo.pr.targetRef, title: proposal.title,
       description: `${proposal.description}\n\nPilot assignment: ${job.id}`, isDraft: true
     });
     ledger.finishOperation(operationId, 'created', { pullRequestId: pr.pullRequestId, revision });
+  } else {
+    await admission.refresh();
+    admission.check();
   }
   requireThat(pr.isDraft === true && pr.status === 'active' && pr.sourceRefName === sourceRefName &&
     pr.targetRefName === repo.pr.targetRef && pr.lastMergeSourceCommit?.commitId === revision,
@@ -4305,12 +4348,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
       ledger.operation(`${id}:push`, id, 'push', { revision });
       await (dependencies.pushBranch ?? pushDraftBranch)(
-        config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
+        config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`,
+        { ledger, assignmentId: id, readTestRequest: dependencies.readTestRequest });
       ledger.finishOperation(`${id}:push`, 'completed', { revision });
       if (repo.draftBuild?.enabled) {
         requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
         const queuedBuild = await (dependencies.queueDraftBuild ?? queueAdoDraftBuild)(
-          config, ledger, current, repo, revision);
+          config, ledger, current, repo, revision, undefined, { readTestRequest: dependencies.readTestRequest });
         requireThat(queuedBuild?.status === 'queued' && queuedBuild.blocking === false &&
           queuedBuild.sourceRevision === revision &&
           queuedBuild.sourceRef === draftSourceRef(repo, id),
@@ -4342,7 +4386,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
       requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
       const createdDraft = await (dependencies.createDraft ?? createAdoDraft)(
-        config, ledger, current, repo, revision, publicationProposal);
+        config, ledger, current, repo, revision, publicationProposal, undefined, true,
+        { readTestRequest: dependencies.readTestRequest });
       validateRecord(createdDraft, 'draftPR');
       requireThat(createdDraft.headRevision === revision &&
         finalValidation.length === assignment.validationGates.length &&

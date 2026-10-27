@@ -265,12 +265,14 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
   if (previous) requireThat(retryRejected && ['rejected', 'not-posted'].includes(previous.state),
     'ADO comment was rejected or reconciled not-posted; explicit --retry-rejected is required', 'blocked-authorization');
   requireThat(Buffer.byteLength(text, 'utf8') <= 65536, 'ADO feedback comment exceeded its bound', 'blocked-budget');
+  const token = await getToken(config, 'ADO test-request feedback');
   const raw = await read(config, Number(evidence.source.recordId));
   requireThat(Buffer.byteLength(json(raw)) <= policy.maxResponseBytes, 'ADO request exceeded its feedback read bound', 'partial');
   const current = selectedItem(raw, Number(evidence.source.recordId), policy);
   requireThat(hash(json(current)) === receipt.captureSha256, 'ADO request changed before feedback; recollect and review', 'blocked-reconciliation');
-  const token = await getToken(config, 'ADO test-request feedback');
   ledger.transaction(() => {
+    requireThat(testRequestPolicySha256(requireFeedbackPolicy(config, authorizeComment)) === receipt.policySha256,
+      'Feedback policy changed before publication', 'blocked-reconciliation');
     requireThat(currentCapabilityAssessment(ledger, evidence)?.id === assessmentId &&
       ledger.latestEvidence().some(row => row.id === evidence.id),
     'Capability feedback was superseded during its source read', 'blocked-reconciliation');

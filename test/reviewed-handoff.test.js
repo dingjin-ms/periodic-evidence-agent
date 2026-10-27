@@ -11,7 +11,8 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import {
-  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment
+  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment,
+  createAdoDraft, pushDraftBranch
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import {
@@ -314,7 +315,7 @@ async function supportedRequestAssessment(ctx) {
   return input;
 }
 
-for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold'])
+for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 'draft-lookup-hold', 'draft-auth-hold', 'draft-auth-withdrawal', 'draft-read-hold'])
   test(`ADO coverage publication blocks ${interruption} and retains authored work`, async t => {
     const ctx = await requestFixture(t);
     const assessment = await supportedRequestAssessment(ctx);
@@ -337,10 +338,36 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold'])
           if (interruption === 'source-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
         },
         pushBranch: async () => { pushes++; if (interruption === 'push-hold') hold(); },
-        createDraft: async () => { drafts++; assert.fail('Draft must not be created after changed admission'); }
+        createDraft: async (config, ledger, job, repo, revision, proposal) => {
+          if (!interruption.startsWith('draft-')) { drafts++; assert.fail('Draft must not be created after changed admission'); }
+          const transportRepo = { ...repo, remote: 'https://dev.azure.com/fixture/project/_git/repo',
+            pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' } };
+          let tokens = 0;
+          return createAdoDraft(config, ledger, job, transportRepo, revision, proposal, undefined, true, {
+            getToken: async () => {
+              if (++tokens === 2) {
+                if (interruption === 'draft-auth-hold') hold();
+                if (interruption === 'draft-auth-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
+              }
+              return 'fixture-token';
+            },
+            readTestRequest: async () => {
+              if (interruption === 'draft-read-hold') hold();
+              return ctx.item;
+            },
+            fetchResponse: async (_url, options) => {
+              if (options.method === 'GET') {
+                if (interruption === 'draft-lookup-hold') hold();
+                return Response.json({ value: [] });
+              }
+              drafts++;
+              assert.fail('Draft POST must not be sent after changed admission');
+            }
+          });
+        }
       }
     }), /Coverage is held|approved test-request/);
-    assert.equal(pushes, interruption === 'push-hold' ? 1 : 0);
+    assert.equal(pushes, interruption === 'push-hold' || interruption.startsWith('draft-') ? 1 : 0);
     assert.equal(drafts, 0);
     const job = ctx.ledger.status().jobs[0];
     assert.equal(job.state, 'blocked');
@@ -349,6 +376,32 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold'])
     assert.equal(result.outcome, 'blocked');
     assert.ok(result.sourceRevision);
     assert.equal(result.validation[0].status, 'passed');
+  });
+
+for (const transport of ['push', 'build']) for (const interruption of ['auth', 'source-read'])
+  test(`${transport} transport rechecks admission after ${interruption}`, async t => {
+    const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const repo = { ...ctx.config.repositories[0], remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    // Use a later timestamp deterministically without timers around native Git.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const hold = () => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment,
+      decision: 'needs-evidence', reviewedAt: now() });
+    let mutations = 0;
+    const dependencies = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+      getToken: async () => { if (interruption === 'auth') hold(); return 'fixture-token'; },
+      readTestRequest: async () => { if (interruption === 'source-read') hold(); return ctx.item; },
+      execute: async () => { mutations++; assert.fail('Push after a hold'); },
+      fetchResponse: async () => { mutations++; assert.fail('Build POST after a hold'); } };
+    if (transport === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.config.repositories[0].referenceCheckout,
+      repo, 'HEAD:refs/heads/fixture', dependencies), /Coverage is held/);
+    else await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, undefined, dependencies), /Coverage is held/);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
   });
 
 test('shared admission enforces holds and app-native rejects unsupported ADO execution paths', async t => {
@@ -606,7 +659,7 @@ for (const buildMode of ['disabled', 'harness', 'missing-contract', 'unapproved'
         assert.equal(selection.sourceRevision, revision);
         assert.deepEqual(selection.testPaths, ['harness/reader.test.js']);
         return { id: 31 };
-      }),
+      }, { readTestRequest: ctx.read }),
       createDraft: async (_config, _ledger, _job, _repo, revision, proposal) => {
         drafts++;
         if (buildMode === 'harness') assert.match(proposal.description, /harness contract tests only/);
@@ -699,6 +752,20 @@ test('feedback refuses unapproved local state before ledger or external access',
     authorizeComment: true, read: forbidden, getToken: forbidden, fetchResponse: forbidden
   }), /approved local state/);
   assert.throws(() => reconcileCapabilityComment(ctx.config, ledger, {}, { authorizeReconciliation: true }), /approved local state/);
+});
+
+for (const change of ['source', 'authorization']) test(`feedback admission rechecks ${change} after authentication`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true,
+    getToken: async () => {
+      if (change === 'source') { ctx.item.rev++; ctx.item.fields['System.Title'] += ' changed during auth'; }
+      else ctx.config.adoTestRequests.feedback.enabled = false;
+      return 'fixture-token';
+    }, read: ctx.read, fetchResponse: async () => { posts++; assert.fail('Feedback POST after revoked admission'); }
+  }), /changed before feedback|authorization/);
+  assert.equal(posts, 0);
+  assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'ado-test-request-feedback'), false);
 });
 
 test('feedback activation does not invalidate unchanged intake or capability assessment', async t => {

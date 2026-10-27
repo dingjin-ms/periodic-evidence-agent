@@ -139,7 +139,13 @@ FILTER result. No new model/provider selection or daily configuration is install
   dispatch. A new hold retains authored source/validation as blocked work without
   publishing it; a hold arriving during push blocks subsequent build/PR effects
   without pretending an already completed push was undone. An ordinary `dispatch`
-  cannot bypass the dedicated entrypoint.
+  cannot bypass the dedicated entrypoint. Production Git-push, ADO-build and
+  ADO-Draft transports also recheck after authentication and PR lookup, at the
+  actual mutation boundary. A final synchronous ledger check follows each source
+  refresh with no intervening awaited work. Comment feedback similarly reads the
+  source after authentication. These checks cannot undo a remote write already
+  accepted while a later hold arrives; retained operation receipts remain the
+  authority for that case.
 - ADO test-request work is explicitly unsupported through `appWorker`: preparation,
   claim (including replay), binding and result actions reject this evidence kind.
   Use the dedicated source-rechecking controller. Existing app-native work for

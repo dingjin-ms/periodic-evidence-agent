@@ -51,6 +51,8 @@ import { beginOneShotCollection, advanceOneShotCollection, oneShotCollectionStat
 import { prepareOneShotFilterBudget, reserveOneShotFilterRequest, advanceOneShotHandoff } from './one-shot-handoff.js';
 import { advanceLocalE2E } from './local-e2e.js';
 import { prepareLocalFilterRetry } from './local-filter-retry.js';
+import { runCodingTask, closeCodingTask, monitorResourceLifecycle } from './task-lifecycle.js';
+import { abandonPreflight } from './resource-lifecycle.js';
 
 const invocationArgs = process.argv.slice(2);
 const roleInvocation = invocationArgs[0] === 'agent';
@@ -59,7 +61,8 @@ const [action = 'help', ...args] = roleInvocation ? invocationArgs.slice(2) : in
 const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
 ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
-  'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring'].includes(action)
+  'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring',
+  'task-run', 'task-close', 'resource-abandon-preflight'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
@@ -72,10 +75,11 @@ function failedOutcome(result) {
   if (!result || typeof result !== 'object') return false;
   return Boolean(result.error) ||
     result.state === 'failed' ||
+    (Array.isArray(result.resources) && result.resources.some(resource => resource.status === 'blocked')) ||
     ['action-required-auth', 'action-required-budget', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
       'draft-pr-validation-failed'].includes(result.state) ||
     ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
-    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'rsi', 'execution']
+    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'resources', 'rsi', 'execution']
       .some(key => failedOutcome(result[key]));
 }
 const help = `Local evidence pilot (live operations disabled by default)
@@ -109,6 +113,9 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --execute [--intent improvement|defect-fix] --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js status [--config pilot.local.json]
   node src\\cli.js workspace-gc --config pilot.local.json [--execute]
+  node src\\cli.js task-run --config pilot.local.json --file task.local.json
+  node src\\cli.js task-close --config pilot.local.json --file task-close.local.json
+  node src\\cli.js resource-abandon-preflight --config pilot.local.json --resource ID
   node src\\cli.js transport-gc --config pilot.local.json [--execute]
   node src\\cli.js reconcile-remote-authoring --assignment ID --round N --config pilot.local.json
   node src\\cli.js dispatch-ready --config pilot.local.json [--execute --limit N --authorize-commit --authorize-push --authorize-draft-pr]
@@ -332,6 +339,12 @@ try {
     if (['rsi-run', 'app-rsi-run'].includes(action))
       requireThat(rsiAutomationPolicy(config), 'RSI automation is not authorized', 'blocked-authorization');
     if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
+    const resources = args.includes('--dry-run') ? [] : await monitorResourceLifecycle(config);
+    if (resources.length) {
+      console.error(JSON.stringify({ resourceLifecycle: resources }));
+      if (resources.some(resource => resource.status === 'blocked') || failedOutcome(resources))
+        process.exitCode = 2;
+    }
     if (action !== 'state-prune') {
       automaticPruneConfig = config;
       pruneState(config);
@@ -358,6 +371,10 @@ try {
     const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
     let result;
     switch (action) {
+      case 'task-run': result = await runCodingTask(config, input()); break;
+      case 'task-close': result = { resources: await closeCodingTask(config, input()) }; break;
+      case 'resource-abandon-preflight':
+        result = { resources: [await abandonPreflight(config.stateDirectory, option('--resource'))] }; break;
       case 'filter-local-retry-prepare': {
         const output = resolve(option('--output'));
         requireThat(output.endsWith('.local.json') && dirname(output) === dirname(resolve(configFile)),

@@ -73,6 +73,72 @@ setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
 See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
 and the `local-fingerprint-benchmark` skill before running it.
 
+### Local CI when hosted Actions is budget-blocked
+
+If GitHub Actions cannot start jobs because the account has exhausted its
+Actions budget, reached its spending limit or has a payment restriction, use
+**complete local CI as the validation fallback**. Confirm the job annotation
+and whether any steps executed; do not keep retrying an unchanged account
+restriction or stop the code task solely because hosted runners are unavailable.
+An actual test failure is not a budget fallback: investigate and fix it.
+
+Run from the task's own clean worktree at the committed revision being validated;
+never reset another task's checkout. Use Windows with PowerShell 7 (`pwsh.exe`),
+Node.js 24, npm and Git on PATH, and the locked dependencies.
+On a fresh checkout, restore them with `npm ci --ignore-scripts`;
+reuse an existing valid installation rather than reinstalling unnecessarily.
+The workflow reference is [offline.yml](.github/workflows/offline.yml).
+
+Run the matrix groups **sequentially on the local machine**, not simultaneously
+as separate jobs sharing that machine. Keep the runner's file concurrency,
+timeouts and assertions unchanged. The commands below run the complete discovered
+test catalogue and keep reports outside the checkout:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$env:GITHUB_SHA = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the validation revision' }
+$reports = Join-Path ([IO.Path]::GetTempPath()) "periodic-evidence-ci-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $reports | Out-Null
+Write-Output "Local CI reports: $reports"
+
+node --check src\cli.js
+if ($LASTEXITCODE -ne 0) { throw 'CLI syntax check failed' }
+npm run check:package
+if ($LASTEXITCODE -ne 0) { throw 'Package check failed' }
+
+foreach ($group in @('pilot', 'remaining', 'demo')) {
+    $directory = Join-Path $reports $group
+    node scripts\ci-tests.mjs $group $directory
+    $exitCode = $LASTEXITCODE
+    Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64 |
+        ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $directory 'processes.json') -Encoding utf8
+    if ($exitCode -ne 0) { throw "Local CI group failed: $group; preserve $directory" }
+}
+
+npm run demo
+if ($LASTEXITCODE -ne 0) { throw 'Standalone synthetic demo failed' }
+```
+
+Keep each group's `summary.json`, `tests.tap` and process snapshot, including
+failed attempts. A successful subset or focused rerun is not complete local CI:
+all three complete groups must pass, with no failed or cancelled tests. Check
+that their source revision and catalogue hashes agree and their selected files
+cover the discovered catalogue exactly once. Explain existing conditional skips;
+do not add skips, extend budgets or weaken checks to obtain a green result.
+Investigate any failure, fix its cause and rerun the affected complete group.
+After a source fix, complete the full local CI at the updated revision before
+final acceptance; do not combine passing reports from different source revisions.
+
+Record the validated commit, Node version, per-group counts and exit status,
+standalone demo, syntax and package results in the PR or handover. Keep raw
+runtime reports local; publish only sanitized aggregate evidence. Report
+**local CI passed; hosted CI blocked by account budget** when applicable, not
+"GitHub Actions passed." This fallback does not override required branch
+checks or authorize Draft publication, auto-complete or merge. Retry hosted CI
+when runner eligibility is restored, not in an unbounded billing-error loop.
+
 ## Offline self-improvement qualification
 
 The opt-in `self-improvement` command qualifies one recovery harness and renders
@@ -110,8 +176,11 @@ The receipt persists each preparation phase, exact source/profile/controller
 hashes, dependency byte verification and native loading, typecheck and case
 selection. Optional repeated `--sparse-path <directory>` arguments evaluate a
 bounded checkout closure; they do not change the formal live configuration.
-Preflight retains its detached worktree and evidence for inspection, and cannot
-count toward the five native product passes or authorize publication. Git objects
+New preflights require a fresh direct child of
+`<stateDirectory>\preflight-workspaces`. A passed preflight retains its exact
+detached worktree through a persistent validation-handoff reference; passing is
+not permission to release it. It cannot count toward the five native product
+passes or authorize publication. Git objects
 are shared, while the validation worktree has its own HEAD/index and independently
 copied, link-rebased dependency outputs. Windows preparation commands use the
 owned Job Object boundary and confirm process-tree exit before cleanup; failures
@@ -121,6 +190,61 @@ with `--prepared-receipt <previous-receipt.json>`, the same `--workspace` and a
 fresh `--output`. This rereads source and isolated dependency bytes, checks the
 unchanged sealed assignment, and reruns native preparation checks; no previous
 pass or byte hash is trusted without revalidation.
+
+### Owned resource lifecycle
+
+New detached declarative validation worktrees and preflights carry durable
+assignment/attempt ownership, namespace/directory/Git-owner identities, references
+and a phase journal under `<stateDirectory>\resource-lifecycle`. Validation
+claims the exact preflight once and releases it only after the complete native
+batch, runner-tree exit and external execution evidence. Failed preflights release
+only their own unconsumed handoff. To explicitly abandon a successful unused
+handoff, use `resource-abandon-preflight --resource <receipt-resource-id> --config
+pilot.local.json`. Legacy receipts without lifecycle ownership remain usable but
+their workspaces are retained, never automatically adopted.
+
+CLI startup and each coordinator tick reconcile the declared namespaces, including
+owned residual directories without `.git` or Git registration. Unknown ownership,
+live references, unconfirmed process exit, replacement directories, linked parents
+and wrong Git owners remain blocked with a separate reconciliation/cleanup record.
+Interrupted moves, exact Git deregistration and cache deletion resume by directory
+identity; no global Git prune or recursive workspace-root deletion is used.
+The primary execution error is retained separately from cleanup failures.
+
+Retirement first preserves hashed evidence outside the workspace, moves the
+directory into a private same-volume `resource-archives\<resource-id>\snapshot`,
+and unregisters only the original secondary worktree. Only explicitly declared,
+ignored, untracked regenerable cache directories are removed without following
+links. Validation declarations come from the verified dependency seed; other
+files, including undeclared cache-shaped directories, remain in the snapshot.
+The archive has an independent recovery manifest; coding tasks additionally
+retain a verified `history.bundle`. Nonterminal lifecycle references protect
+ordinary run evidence from retention pruning. Existing sealed/native receipts
+are not rewritten or adopted.
+
+The repository previously had no callback for arbitrary host CLI task completion:
+worker `finally` and the author-clone `workspace-gc` are not such callbacks.
+For **Controller-owned coding tasks**, `task-run --file task.local.json --config
+pilot.local.json` creates a fresh task worktree and runs the requested coding
+command under native process containment. The request provides absolute `source`
+and `executable`, exact `revision`, new `branch`, `args`, `timeoutMs`, and optionally
+explicit relative `cachePaths`. Choose a state directory outside that source
+checkout. The runner receives `PILOT_TASK_RESOURCE_ID` and an external
+`PILOT_TASK_CLOSE_REQUEST` path. A handoff written there is consumed automatically
+after process-tree exit; a later host close can instead call
+`task-close --file task-close.local.json --config pilot.local.json`.
+
+Task close binds `resourceId`, GitHub `repository`, PR `number`, delivered
+`revision`, and external `{ path, sha256 }` validation/handover receipts. These
+receipts respectively use formats `coding-task-validation-v1` (`status: passed`)
+and `coding-task-handover-v1` (`status: complete`), with matching repository,
+number and revision. Close retains a merge reference while the PR remains open
+or Draft. Startup/tick monitors perform **read-only** `gh pr view`; only a merged,
+same-head PR with successful checks, completed handoff, confirmed runner exit and
+clean exact-revision task worktree can be archived/unregistered automatically.
+No command publishes, merges or enables auto-complete. Unregistered host CLI
+sessions, pre-existing task worktrees, product test Draft PRs, shared seeds and
+other tasks remain outside this lifecycle's authority.
 
 This optional full product-development setup is not a prerequisite for the
 local controller's existing-Agency FILTER path. Account-free pilot checks above

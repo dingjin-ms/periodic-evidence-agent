@@ -3829,6 +3829,7 @@ export async function materializeAgencyRemoteResult(
 }
 async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
   investigation, toolkit, loadedSkill, authoring, provider, dependencies = {}) {
+  requireTestRequestAssignment(config, ledger, assignment);
   const repo = repoFor(config, assignment.repoId);
   requireThat(repo.pr?.provider === 'ado',
     'Agency remote authoring currently requires an Azure DevOps Draft PR repository',
@@ -3842,7 +3843,8 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
     ref: `refs/heads/${seedBranch}`
   });
   await (dependencies.pushBranch ?? pushDraftBranch)(
-    config, current.workspace, repo, `HEAD:refs/heads/${seedBranch}`);
+    config, current.workspace, repo, `HEAD:refs/heads/${seedBranch}`,
+    { ledger, assignmentId: assignment.id, readTestRequest: dependencies.readTestRequest });
   ledger.finishOperation(seedOperation, 'completed', {
     round: authoring.round, baseRevision,
     ref: `refs/heads/${seedBranch}`
@@ -3850,6 +3852,7 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
   const prompt = agencyRemotePrompt(ledger, assignment, investigation, repo,
     loadedSkill, authoring, baseRevision, resultBranch);
   const execute = dependencies.executeRemoteJob ?? executeAgencyRemoteJob;
+  requireTestRequestAssignment(config, ledger, assignment);
   const remote = await execute(config, ledger, current, repo, provider, {
     round: authoring.round, baseRevision, branch: seedBranch, resultBranch, prompt
   }, dependencies.transport ?? {});
@@ -3870,6 +3873,7 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
 }
 async function runConfiguredModel(config, ledger, current, assignment, investigation, toolkit,
   loadedSkill, authoring, dependencies) {
+  requireTestRequestAssignment(config, ledger, assignment);
   if (!assignment.authoringProvider)
     return runModel(config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring);
   const provider = config.authoringProviders?.[assignment.authoringProvider];

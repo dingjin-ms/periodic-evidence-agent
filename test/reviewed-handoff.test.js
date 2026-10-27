@@ -11,8 +11,8 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import {
-  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment,
-  createAdoDraft, pushDraftBranch
+  dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment,
+  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import {
@@ -402,6 +402,50 @@ for (const transport of ['push', 'build']) for (const interruption of ['auth', '
       ctx.baseRevision, undefined, dependencies), /Coverage is held/);
     assert.equal(mutations, 0);
     assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
+  });
+
+for (const provider of ['agency-remote', 'agency-local'])
+  test(`ADO coverage rejects ${provider} before authoring or seed publication`, async t => {
+    const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath,
+      profile: 'fixture-provider', ...(provider === 'agency-remote' ? { pollSeconds: 1 } : {}) } };
+    ctx.config.repositories[0].skillBindings[0].authoringProvider = 'external';
+    const investigation = ctx.ledger.get('investigation', prepared.assignment.investigationId);
+    const external = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation,
+      prepared.assignment.testCoveragePlanId, prepared.assignment.requestedOutcome);
+    // Model an old persisted external assignment without granting it a new dispatch.
+    ctx.ledger.put(external);
+    const reviewId = `${ctx.intake.id}:review`;
+    const review = JSON.parse(ctx.ledger.status().operations.find(row => row.id === reviewId).detail);
+    ctx.ledger.finishOperation(reviewId, 'complete', { ...review, assignmentId: external.id });
+    assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /final local executor/);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment, decision: 'needs-harness',
+      missingCapabilities: ['Newly reviewed capability gap'], reviewedAt: now() });
+    let pushes = 0, launches = 0;
+    await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, external.id, {
+      readTestRequest: ctx.read,
+      agencyRemote: { pushBranch: async () => { pushes++; }, executeRemoteJob: async () => { launches++; } },
+      runAgencyLocal: async () => { launches++; }
+    }), /final local executor/);
+    assert.equal(pushes, 0);
+    assert.equal(launches, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'agency-remote-seed'), false);
+  });
+
+for (const provider of ['agency-remote', 'agency-local'])
+  test(`new ADO coverage preparation cannot select ${provider}`, async t => {
+    const ctx = await requestFixture(t);
+    await supportedRequestAssessment(ctx);
+    ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath, profile: 'fixture-provider' } };
+    ctx.config.repositories[0].skillBindings[0].authoringProvider = 'external';
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read
+    }), /final local executor/);
+    assert.equal(ctx.ledger.all('assignment').length, 0);
+    assert.equal(ctx.ledger.status().jobs.length, 0);
   });
 
 test('shared admission enforces holds and app-native rejects unsupported ADO execution paths', async t => {

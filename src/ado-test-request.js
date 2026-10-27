@@ -199,6 +199,12 @@ export async function collectTestRequest(config, ledger, id, { read = readTestRe
   });
 }
 
+function requireTestRequestExecution(assignment) {
+  requireThat(assignment.execution === 'local' && !assignment.authoringProvider,
+    'ADO test requests require the final local executor (SDK only); external authoring and hosted Agency execution are not supported',
+    'blocked-config');
+}
+
 export function requireTestRequestAssignment(config, ledger, assignment) {
   const evidence = assignment.evidenceIds.map(id => ledger.get('evidence', id));
   if (!evidence.some(record => record?.source.kind === 'ado-test-request')) return;
@@ -208,8 +214,7 @@ export function requireTestRequestAssignment(config, ledger, assignment) {
   const intake = intakeOperation(ledger, record.scopeId);
   const policy = testRequestPolicy(config);
   const route = intake.harness ? requireHarnessRequest(config, ledger, intake).policy : policy;
-  if (intake.harness) requireThat(assignment.execution === 'local',
-    'Harness authoring requires the final local executor, not hosted Agency execution', 'blocked-config');
+  requireTestRequestExecution(assignment);
   if (!intake.harness) requireCoverageCapability(config, ledger, record, assignment.skillQualification?.baseRevision);
   requireThat(intake.policySha256 === testRequestPolicySha256(policy) && intake.evidenceId === record.id &&
     intake.state === 'needs-review' && record.source.provenance === 'authenticated-source' &&
@@ -326,8 +331,7 @@ function prepareRequest(config, ledger, input, harness = false) {
     });
     const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
       planned.testCoveragePlan.id, route.requestedOutcome);
-    if (harness) requireThat(assignment.execution === 'local',
-      'Harness authoring requires the final local executor, not hosted Agency execution', 'blocked-config');
+    requireTestRequestExecution(assignment);
     const job = ledger.prepare(assignment);
     ledger.operation(reviewId, assignment.id, 'ado-test-request-review', { handoffSha256 });
     ledger.finishOperation(reviewId, 'complete', { handoffSha256, assignmentId: assignment.id });

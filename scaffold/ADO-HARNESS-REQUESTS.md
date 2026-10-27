@@ -51,8 +51,14 @@ bounded local `copilot-sdk` authoring provider without declarative scenario inpu
 A real repository-owned harness-authoring skill and validation gates must be
 qualified before execution; the controller does not create or pretend to qualify
 that product skill. Other authoring providers are rejected in this increment.
-The final assignment must also select local execution; a hosted Agency task
-selection is rejected during preparation and again at dispatch.
+Both ADO coverage and harness assignments must select the final local SDK
+executor. `agency-remote`, `agency-local` and hosted Agency selections are
+explicitly unsupported for this evidence lane until their complete source-hold
+lifecycle is integrated. Preparation and shared dispatch reject them, including
+previously persisted assignments; the configured-model/remote-seed paths also
+recheck before effects. No seed push or remote launch is authorized by an ADO
+request. This restriction does not change those providers for other evidence
+lanes. Do not silently switch providers to bypass it.
 
 If `repo.draftBuild.enabled` is enabled (including 1JS), supply a separate
 `repo.draftBuild.harness` contract: `enabled: true`, `scopeApproved: true`, an

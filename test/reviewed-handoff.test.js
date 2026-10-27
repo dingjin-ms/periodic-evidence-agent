@@ -21,7 +21,7 @@ import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork 
 import { pruneState } from '../src/state-retention.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
-import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment } from '../src/ado-harness-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
@@ -355,6 +355,9 @@ test('harness gap holds coverage and prepares one separate bounded agent assignm
   assert.equal(first.assignment.requestedOutcome, 'extend-e2e-harness');
   assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment.id, first.assignment.id);
   assert.equal(ctx.ledger.all('assignment').length, 1);
+  const equivalent = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: now() });
+  assert.equal(equivalent.id, ctx.assessment.id);
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment.id, first.assignment.id);
   await verifyCurrentTestRequest(ctx.config, ctx.ledger, first.assignment.id, ctx.read);
   ctx.item.rev++;
   ctx.item.fields['System.Tags'] = 'AgenticTestRequest';
@@ -383,6 +386,26 @@ for (const condition of ['no-tag', 'overlapping-bounds', 'normalized-overlap', '
     assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff));
     assert.equal(ctx.ledger.all('assignment').length, 0);
   });
+
+test('harness preparation rejects a selected hosted Agency executor before persisting work', async t => {
+  const ctx = await harnessFixture(t);
+  let assignment;
+  const rollback = new Error('fixture inspection rollback');
+  assert.throws(() => ctx.ledger.transaction(() => {
+    assignment = prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment;
+    throw rollback;
+  }), error => error === rollback);
+  ctx.config.agency = { selections: [{ taskId: assignment.id, repoId: assignment.repoId, role: 'proposer',
+    suiteId: 'fixture-suite', profileId: 'fixture-profile', qualificationId: 'fixture-qualification',
+    qualificationSha256: 'a'.repeat(64), sourceRevision: ctx.baseRevision, targetRef: 'refs/heads/main',
+    payloadSha256: 'b'.repeat(64), instructionsSha256: 'c'.repeat(64), resultKind: 'validation', allowPush: true,
+    dispatchAllowed: true, maxExecutionSeconds: 60, allowedPaths: ['harness'], forbiddenPaths: ['src'],
+    caseContract: { cases: [{ suite: 'harness', title: 'formula metadata', status: 'passed' }], scenarios: ['harness'],
+      commands: [{ id: 'fixture-test', phase: 'test', command: 'node --test', cwd: '.' }] } }] };
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff), /final local executor/);
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+  assert.equal(ctx.ledger.status().jobs.length, 0);
+});
 
 test('a new request revision cannot duplicate an existing harness assignment', async t => {
   const ctx = await harnessFixture(t);
@@ -461,6 +484,8 @@ test('harness request runs the bounded proposer through validation and a separat
   assert.equal(result.result.outcome, 'draft-pr-validated', json(result.result));
   assert.equal(result.result.validation[0].status, 'passed');
   assert.equal(result.result.draftPR.headRevision, result.result.sourceRevision);
+  const equivalent = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: now() });
+  assert.equal(equivalent.id, ctx.assessment.id);
   let comments = 0;
   const feedback = { authorizeComment: true, assignmentId: result.assignment.id, read: ctx.read,
     getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
@@ -487,7 +512,7 @@ test('capability feedback is escaped, authorized, source checked and posted at m
       posts++;
       assert.equal(options.redirect, 'error');
       assert.equal(options.method, 'POST');
-      assert.match(url, /workItems\/123\/comments\?api-version=7.1-preview.4$/);
+      assert.match(url, /workItems\/123\/comments\?format=html&api-version=7.1-preview.4$/);
       assert.match(JSON.parse(options.body).text, /AgenticHarnessRequest/);
       return Response.json({ id: 44, workItemId: 123 });
     } };
@@ -500,6 +525,92 @@ test('capability feedback is escaped, authorized, source checked and posted at m
   const repeated = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: '2026-10-03T00:00:00Z' });
   await publishCapabilityComment(ctx.config, ctx.ledger, repeated.id, options);
   assert.equal(posts, 1);
+});
+
+test('feedback refuses unapproved local state before ledger or external access', async t => {
+  const ctx = await harnessFixture(t);
+  ctx.config.statePolicy.accessApproved = false;
+  const ledger = new Proxy({}, { get() { assert.fail('Ledger accessed before state approval'); } });
+  const forbidden = () => assert.fail('External boundary called before state approval');
+  await assert.rejects(publishCapabilityComment(ctx.config, ledger, ctx.assessment.id, {
+    authorizeComment: true, read: forbidden, getToken: forbidden, fetchResponse: forbidden
+  }), /approved local state/);
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ledger, {}, { authorizeReconciliation: true }), /approved local state/);
+});
+
+test('feedback activation does not invalidate unchanged intake or capability assessment', async t => {
+  const ctx = await harnessFixture(t);
+  ctx.config.adoTestRequests.feedback.enabled = false;
+  assert.deepEqual(await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read }), ctx.intake);
+  assert.deepEqual(recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput), ctx.assessment);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true }), /authorization/);
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'new-feedback-grant' };
+  assert.deepEqual(await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read }), ctx.intake);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true,
+    read: ctx.read, getToken: async () => 'fixture-token', fetchResponse: async () => Response.json({ id: 70, workItemId: 123 }) });
+  assert.equal(result.commentId, 70);
+});
+
+for (const status of [401, 403]) test(`definitive ${status} feedback rejection permits only an authorized retry`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; return posts === 1 ? new Response('', { status }) : Response.json({ id: 71, workItemId: 123 }); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), error => error.code === 'blocked-auth');
+  const rejected = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  assert.equal(rejected.state, 'rejected');
+  assert.equal(JSON.parse(rejected.detail).status, status);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /retry-rejected/);
+  assert.equal(posts, 1);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, retryRejected: true });
+  assert.equal(result.commentId, 71);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.prior.detail.status, status);
+  assert.equal(posts, 2);
+});
+
+for (const disposition of ['posted', 'not-posted']) test(`uncertain feedback blocks newer revisions until explicit ${disposition} reconciliation`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('response lost'); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  const uncertain = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, intakeId: intake.id,
+    intakeSha256: hash(json(intake)), reviewedAt: now() });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, { ...options, retryRejected: true }), /uncertain/);
+  assert.equal(posts, 1);
+  const reconciliation = { operationId: uncertain.id, expectedOperationSha256: hash(json(uncertain)),
+    disposition, commentId: disposition === 'posted' ? 73 : null, reviewer: 'human-fixture', reviewedAt: now(),
+    evidenceRef: 'Synthetic bounded ADO comment history inspection' };
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ctx.ledger, reconciliation), /authorization/);
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ctx.ledger, { ...reconciliation, expectedOperationSha256: 'a'.repeat(64) },
+    { authorizeReconciliation: true }), /operation changed/);
+  reconcileCapabilityComment(ctx.config, ctx.ledger, reconciliation, { authorizeReconciliation: true });
+  assert.equal(ctx.ledger.status().operations.find(row => row.id === uncertain.id).state, disposition === 'posted' ? 'complete' : 'not-posted');
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, { ...options,
+    fetchResponse: async () => { posts++; return Response.json({ id: 74, workItemId: 123 }); } });
+  assert.equal(result.commentId, 74);
+  assert.equal(posts, 2);
+});
+
+test('reconciled not-posted feedback retries the same revision only with explicit authorization', async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('uncertain response'); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  const row = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  reconcileCapabilityComment(ctx.config, ctx.ledger, { operationId: row.id, expectedOperationSha256: hash(json(row)),
+    disposition: 'not-posted', commentId: null, reviewer: 'fixture-owner', reviewedAt: now(),
+    evidenceRef: 'Synthetic inspected remote history and stopped original publisher' }, { authorizeReconciliation: true });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /retry-rejected/);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, retryRejected: true,
+    fetchResponse: async () => { posts++; return Response.json({ id: 75, workItemId: 123 }); } });
+  assert.equal(posts, 2);
+  assert.equal(result.prior.detail.reconciliation.disposition, 'not-posted');
 });
 
 test('uncertain ADO writes never retry and changed requests never post', async t => {

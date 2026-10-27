@@ -1,6 +1,6 @@
 import { hash, json, requireThat, utc, PilotError } from './common.js';
 import { adoAccessToken } from './ado-auth.js';
-import { readTestRequest, selectedItem, testRequestPolicy } from './ado-test-request.js';
+import { readTestRequest, selectedItem, testRequestPolicy, testRequestPolicySha256 } from './ado-test-request.js';
 import { resolveSkillBinding, skillQualificationId, repositorySkillWritePrefixes, repositorySkillWriteFiles } from './repository-skills.js';
 
 export const harnessRequestTag = 'AgenticHarnessRequest';
@@ -56,7 +56,7 @@ export function recordCapabilityAssessment(config, ledger, input) {
   const policy = testRequestPolicy(config);
   requireThat(config.statePolicy.accessApproved === true, 'Capability review requires approved local state');
   const receipt = testRequestReceipt(ledger, input.intakeId);
-  requireThat(!receipt.harness && receipt.state === 'needs-review' && receipt.policySha256 === hash(json(policy)) &&
+  requireThat(!receipt.harness && receipt.state === 'needs-review' && receipt.policySha256 === testRequestPolicySha256(policy) &&
     input.intakeSha256 === hash(json(receipt)), 'Capability review intake changed or is incomplete', 'blocked-reconciliation');
   const evidence = ledger.get('evidence', receipt.evidenceId);
   requireThat(ledger.latestEvidence().some(row => row.id === evidence.id), 'Capability review was superseded', 'blocked-reconciliation');
@@ -67,9 +67,13 @@ export function recordCapabilityAssessment(config, ledger, input) {
   requireThat(ledger.qualification(skillQualificationId(policy.repoId, binding.id))?.baseRevision === input.sourceRevision,
     'Capability review must match the qualified harness revision', 'blocked-reconciliation');
   const id = `capability-review-${hash(json(input))}`;
+  const comparable = value => json(Object.fromEntries(keys.filter(key => key !== 'reviewedAt')
+    .map(key => [key, value[key]])));
   return ledger.transaction(() => {
     const prior = operation(ledger, id);
     const previous = currentCapabilityAssessment(ledger, evidence);
+    if (previous && comparable(previous) === comparable(input) &&
+      Date.parse(input.reviewedAt) >= Date.parse(previous.reviewedAt)) return previous;
     if (prior?.state === 'complete') {
       requireThat(previous?.id === id, 'Capability assessment was superseded', 'blocked-reconciliation');
       return JSON.parse(prior.detail);
@@ -96,7 +100,7 @@ export function requireHarnessRequest(config, ledger, receipt) {
   const assessment = currentCapabilityAssessment(ledger, evidence);
   const original = testRequestReceipt(ledger, receipt.originalIntakeId ?? receipt.id);
   requireThat(ledger.latestEvidence().some(row => row.id === original.evidenceId) &&
-    original.policySha256 === hash(json(testRequestPolicy(config))) &&
+    original.policySha256 === testRequestPolicySha256(testRequestPolicy(config)) &&
     (!receipt.assessmentId || receipt.assessmentId === assessment?.id),
   'Harness source or assessment was superseded', 'blocked-reconciliation');
   requireThat(assessment?.decision === 'needs-harness' && assessment.intakeId === (receipt.originalIntakeId ?? receipt.id) &&
@@ -125,19 +129,63 @@ export function capabilityComment(assessment) {
     `<p>No coverage PR will be proposed while this gap remains. Add <code>${harnessRequestTag}</code> to request the agentic system to author a separate harness-support Draft PR with validation tests. After integration and verification, the original case will be reassessed for coverage.</p>` +
     `<p>Reviewed harness revision: ${assessment.sourceRevision}. Receipt: ${assessment.id}.</p>`;
 }
-export async function publishCapabilityComment(config, ledger, assessmentId, {
-  authorizeComment = false, assignmentId = null, read = readTestRequest, getToken = adoAccessToken, fetchResponse = fetch
-} = {}) {
+function requireFeedbackPolicy(config, authorized) {
+  requireThat(config.statePolicy?.accessApproved === true,
+    'ADO feedback requires approved local state', 'blocked-authorization');
   const policy = testRequestPolicy(config);
-  requireThat(authorizeComment && policy.feedback?.enabled === true && policy.feedback.scopeApproved === true &&
+  requireThat(authorized && policy.feedback?.enabled === true && policy.feedback.scopeApproved === true &&
     policy.feedback.approvalRef?.trim(), 'ADO feedback requires explicit comment authorization and approved policy', 'blocked-authorization');
+  return policy;
+}
+function feedbackRequestKey(ledger, row) {
+  const detail = JSON.parse(row.detail);
+  if (detail.requestKey) return detail.requestKey;
+  const receipt = testRequestReceipt(ledger, row.job_id);
+  return assessmentKey(ledger.get('evidence', receipt.evidenceId));
+}
+function requireNoUncertainFeedback(ledger, requestKey) {
+  const uncertain = ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback' &&
+    row.state === 'started' && feedbackRequestKey(ledger, row) === requestKey);
+  requireThat(!uncertain, `ADO comment outcome is uncertain (${uncertain?.id}); reconcile before any publication for this request`,
+    'blocked-reconciliation');
+}
+export function reconcileCapabilityComment(config, ledger, input, { authorizeReconciliation = false } = {}) {
+  const policy = requireFeedbackPolicy(config, authorizeReconciliation);
+  const keys = ['operationId', 'expectedOperationSha256', 'disposition', 'commentId', 'reviewer', 'reviewedAt', 'evidenceRef'];
+  requireThat(input && Object.keys(input).length === keys.length && keys.every(key => Object.hasOwn(input, key)) &&
+    ['posted', 'not-posted'].includes(input.disposition) &&
+    ['reviewer', 'evidenceRef'].every(key => typeof input[key] === 'string' && input[key].trim() && input[key].length <= 2000) &&
+    (input.disposition === 'posted' ? Number.isSafeInteger(input.commentId) && input.commentId > 0 : input.commentId === null),
+  'Feedback reconciliation requires an exact operation and documented human inspection', 'invalid-record');
+  utc(input.reviewedAt);
+  return ledger.transaction(() => {
+    const row = operation(ledger, input.operationId);
+    requireThat(row?.kind === 'ado-test-request-feedback' && row.state === 'started' &&
+      hash(json(row)) === input.expectedOperationSha256 && Date.parse(input.reviewedAt) >= Date.parse(row.updated_at) &&
+      Date.parse(input.reviewedAt) <= Date.now(), 'Feedback operation changed or reconciliation is stale', 'blocked-reconciliation');
+    const receipt = testRequestReceipt(ledger, row.job_id);
+    const evidence = ledger.get('evidence', receipt.evidenceId);
+    requireThat(receipt.policySha256 === testRequestPolicySha256(policy), 'Feedback scope changed', 'blocked-scope');
+    selectedItem({ id: Number(evidence.source.recordId), rev: Number(evidence.source.revision), fields: evidence.fields },
+      Number(evidence.source.recordId), policy);
+    const result = { ...JSON.parse(row.detail), state: input.disposition === 'posted' ? 'commented' : 'not-posted',
+      workItemId: Number(evidence.source.recordId), commentId: input.commentId, reconciliation: structuredClone(input) };
+    ledger.finishOperation(row.id, input.disposition === 'posted' ? 'complete' : 'not-posted', result);
+    return result;
+  });
+}
+export async function publishCapabilityComment(config, ledger, assessmentId, {
+  authorizeComment = false, retryRejected = false, assignmentId = null,
+  read = readTestRequest, getToken = adoAccessToken, fetchResponse = fetch
+} = {}) {
+  const policy = requireFeedbackPolicy(config, authorizeComment);
   const row = operation(ledger, assessmentId);
   requireThat(row?.kind === assessmentKind && row.state === 'complete', 'Unknown capability assessment');
   const assessment = JSON.parse(row.detail);
   const receipt = testRequestReceipt(ledger, assessment.intakeId);
   const evidence = ledger.get('evidence', receipt.evidenceId);
   requireThat(currentCapabilityAssessment(ledger, evidence)?.id === assessmentId &&
-    receipt.policySha256 === hash(json(policy)), 'Capability feedback was superseded', 'blocked-reconciliation');
+    receipt.policySha256 === testRequestPolicySha256(policy), 'Capability feedback was superseded', 'blocked-reconciliation');
   let text = capabilityComment(assessment);
   if (assignmentId) {
     const assignment = ledger.get('assignment', assignmentId);
@@ -154,10 +202,10 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
   const id = `test-request-comment-${hash(json([assessment.key, evidence.source.revision,
     assessment.sourceRevision, [...assessment.missingCapabilities].sort(), assignmentId]))}`;
   const previous = operation(ledger, id);
-  if (previous) {
-    requireThat(previous.state === 'complete', 'ADO comment outcome is uncertain; reconcile without reposting', 'blocked-reconciliation');
-    return JSON.parse(previous.detail);
-  }
+  if (previous?.state === 'complete') return JSON.parse(previous.detail);
+  requireNoUncertainFeedback(ledger, assessment.key);
+  if (previous) requireThat(retryRejected && ['rejected', 'not-posted'].includes(previous.state),
+    'ADO comment was rejected or reconciled not-posted; explicit --retry-rejected is required', 'blocked-authorization');
   requireThat(Buffer.byteLength(text, 'utf8') <= 65536, 'ADO feedback comment exceeded its bound', 'blocked-budget');
   const raw = await read(config, Number(evidence.source.recordId));
   requireThat(Buffer.byteLength(json(raw)) <= policy.maxResponseBytes, 'ADO request exceeded its feedback read bound', 'partial');
@@ -168,13 +216,24 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
     requireThat(currentCapabilityAssessment(ledger, evidence)?.id === assessmentId &&
       ledger.latestEvidence().some(row => row.id === evidence.id),
     'Capability feedback was superseded during its source read', 'blocked-reconciliation');
-    ledger.operation(id, receipt.id, 'ado-test-request-feedback', { assessmentId });
+    requireNoUncertainFeedback(ledger, assessment.key);
+    const currentOperation = operation(ledger, id);
+    requireThat(json(currentOperation) === json(previous), 'Feedback operation changed during source read', 'blocked-reconciliation');
+    const detail = { assessmentId, requestKey: assessment.key,
+      attempts: previous ? (JSON.parse(previous.detail).attempts ?? 1) + 1 : 1,
+      ...(previous ? { prior: { state: previous.state, detail: JSON.parse(previous.detail) } } : {}) };
+    if (previous) ledger.finishOperation(id, 'started', detail);
+    else ledger.operation(id, receipt.id, 'ado-test-request-feedback', detail);
   });
   // Persist before the external write. A timeout/crash never permits a blind retry.
   try {
-    const url = `https://dev.azure.com/${encodeURIComponent(policy.organization)}/${encodeURIComponent(policy.project)}/_apis/wit/workItems/${evidence.source.recordId}/comments?api-version=7.1-preview.4`;
+    const url = `https://dev.azure.com/${encodeURIComponent(policy.organization)}/${encodeURIComponent(policy.project)}/_apis/wit/workItems/${evidence.source.recordId}/comments?format=html&api-version=7.1-preview.4`;
     const response = await fetchResponse(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000),
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: json({ text }) });
+    if ([401, 403].includes(response.status)) {
+      ledger.finishOperation(id, 'rejected', { ...JSON.parse(operation(ledger, id).detail), status: response.status });
+      throw new PilotError('blocked-auth', `ADO feedback rejected with HTTP ${response.status}; restore authorization, then use --retry-rejected`);
+    }
     requireThat(response.ok, `ADO feedback returned HTTP ${response.status}`, 'failed-source');
     let size = 0;
     const chunks = [];
@@ -186,10 +245,12 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
     const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     requireThat(Number.isSafeInteger(result.id) && result.id > 0 && result.workItemId === current.id,
       'ADO comment acknowledgement is invalid', 'blocked-reconciliation');
-    const receipt = { state: 'commented', assessmentId, workItemId: current.id, commentId: result.id };
+    const receipt = { ...JSON.parse(operation(ledger, id).detail), state: 'commented',
+      assessmentId, workItemId: current.id, commentId: result.id };
     ledger.finishOperation(id, 'complete', receipt);
     return receipt;
-  } catch {
+  } catch (error) {
+    if (operation(ledger, id)?.state === 'rejected') throw error;
     throw new PilotError('blocked-reconciliation', 'ADO comment outcome is uncertain; inspect the receipt marker on the work item before reconciliation. No automatic repost.');
   }
 }

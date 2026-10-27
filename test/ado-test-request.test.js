@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -216,6 +216,25 @@ test('existing resolved-bug collector is unchanged and rejects new requests', t 
   assert.match(query, /'Resolved', 'Closed'/);
   assert.match(query, /'Fixed', 'Duplicate'/);
   assert.doesNotMatch(query, /AgenticTestRequest/);
+});
+
+test('feedback CLI rejects local state denial before opening or pruning a ledger', t => {
+  const root = mkdtempSync(join(tmpdir(), 'feedback-cli-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = configAt('pilot.example.json');
+  config.stateDirectory = join(root, 'must-not-exist');
+  config.statePolicy.accessApproved = false;
+  const path = join(root, 'config.json');
+  writeFileSync(path, JSON.stringify(config));
+  for (const args of [
+    ['comment-test-request', '--assessment', 'missing', '--authorize-comment'],
+    ['reconcile-test-request-comment', '--file', 'missing.json', '--authorize-reconciliation']
+  ]) {
+    const output = spawnSync(process.execPath, ['src/cli.js', ...args, '--config', path], { encoding: 'utf8' });
+    assert.notEqual(output.status, 0);
+    assert.match(output.stderr + output.stdout, /approved local state/);
+    assert.equal(existsSync(config.stateDirectory), false);
+  }
 });
 
 test('CLI refuses implicit reads, unknown flags and missing execution choice', () => {

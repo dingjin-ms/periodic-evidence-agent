@@ -34,7 +34,13 @@ model access, authentication, commit/push permission or merge authorization.
 The inert intake policy example contains independent `feedback` and
 `harnessSupport` sections. Enable them only in an approved task-owned config.
 Feedback requires `enabled`, `scopeApproved`, `approvalRef` and the invocation's
-`--authorize-comment`. Harness support requires its own approved section and a
+`--authorize-comment`, plus `statePolicy.accessApproved` before opening the ledger.
+Feedback grants are checked at each publication but excluded from the immutable
+intake policy hash: enabling feedback does not require editing the ADO revision.
+Scope, routing and harness-authoring policy remain pinned. Pre-release receipts
+created with the old full-policy hash require explicit migration; no old receipt
+is silently rewritten by this change.
+Harness support requires its own approved section and a
 qualified repository-native binding for capability `e2e-harness-authoring`, outcome
 `extend-e2e-harness`, on the same configured repository.
 
@@ -45,6 +51,8 @@ bounded local `copilot-sdk` authoring provider without declarative scenario inpu
 A real repository-owned harness-authoring skill and validation gates must be
 qualified before execution; the controller does not create or pretend to qualify
 that product skill. Other authoring providers are rejected in this increment.
+The final assignment must also select local execution; a hosted Agency task
+selection is rejected during preparation and again at dispatch.
 
 With `harnessSupport.enabled`, coverage preparation and dispatch require a current
 `supported` assessment. In legacy configurations without this opt-in, the old
@@ -116,19 +124,47 @@ FILTER result. No new model/provider selection or daily configuration is install
   `dispatch` cannot bypass the dedicated entrypoint.
 - Replaying a handoff does not create another assignment. Existing harness work
   from another revision requires reconciliation, not a second proposal. Completed
-  or uncertain workers are not relaunched automatically.
+  or uncertain workers are not relaunched automatically. Equivalent capability
+  reassessment (only the review timestamp changed) returns the existing receipt,
+  preserving prepared work and Draft feedback. A material assessment change
+  still invalidates the old handoff.
 - Feedback persists an operation before POST. Same request revision/gap/harness
   revision reuses its completed comment receipt, even if reviewed again. A timeout,
   malformed acknowledgement or crash leaves an uncertain operation: inspect the
   receipt marker on the ADO and reconcile; there is no blind automatic repost or
-  lock stealing. Posting requires the captured revision still to match; if the
-  ticket changes, recollect and review instead.
+  lock stealing. Any unresolved write blocks publication for the logical ADO
+  request across revisions, even after recollection. Posting requires the
+  captured revision still to match; if the ticket changes, recollect and review.
+- Definitive HTTP 401/403 rejections retain their status as `rejected`, not
+  ambiguous acceptance. After restoring authorization, the same publication can
+  use `--retry-rejected` (with `--authorize-comment`). Retries remain source-checked,
+  serialized and retain the previous attempt evidence.
 - Returning from any historical proven gap to `supported` requires a different
   qualified revision and nonempty verification evidence. Evidence references are
   reviewer-attested, not an automatic proof that a PR merged or a live E2E passed.
   An intermediate `needs-evidence` state does not remove this requirement.
 - Existing coverage assignments still follow the repository's normal explicit
   reconciliation rule; the new lane does not silently supersede prior work.
+
+For a genuinely uncertain write, an authorized operator must inspect the exact
+ADO comment history/receipt marker and supply a reconciliation document:
+`operationId`, `expectedOperationSha256` (SHA-256 of `JSON.stringify(operationRow)`
+from ledger status), `disposition` (`posted` or `not-posted`), `commentId` (positive
+integer for posted, null otherwise), `reviewer`, `reviewedAt`, and `evidenceRef`.
+This is an explicit human-attested decision, not automatic proof of remote absence.
+Never attest `not-posted` from a timeout alone. Confirm the original publisher has
+terminated and no request remains in flight before reconciliation; this command
+is not a way to steal a live publisher's ownership. The CLI checks the exact unchanged
+operation and approval, records the decision, and performs no remote write.
+A confirmed `posted` result becomes the completed receipt; confirmed `not-posted`
+permits an explicitly requested `--retry-rejected` publication.
+
+```powershell
+node src/cli.js reconcile-test-request-comment --file reconciliation.local.json --authorize-reconciliation --config pilot.local.json
+```
+
+The comment transport sends explicit `format=html`, as required by the
+[ADO comments API contract](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/comments/add-work-item-comment?view=azure-devops-rest-7.1).
 
 Offline tests exercise real SQLite, isolated Git, bounded worker tools, commit,
 validation and local-bare push, with injected model/ADO/Draft boundaries. They

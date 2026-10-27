@@ -46,6 +46,11 @@ export function testRequestPolicy(config) {
   return structuredClone(policy);
 }
 
+export function testRequestPolicySha256(policy) {
+  const { feedback, ...intakePolicy } = policy;
+  return hash(json(intakePolicy));
+}
+
 function plain(node) {
   if (node.nodeName === '#text') return node.value;
   if (['script', 'style', 'iframe', 'object', 'template'].includes(node.tagName)) return '';
@@ -164,7 +169,7 @@ export async function collectTestRequest(config, ledger, id, { read = readTestRe
   const request = parseTestRequest(item.fields['System.Description'] ?? '');
   const namespace = `ado-test-request/${policy.organization}/${policy.project}`;
   const operationId = `test-request-${hash(json([namespace, id, item.rev]))}`;
-  const policySha256 = hash(json(policy));
+  const policySha256 = testRequestPolicySha256(policy);
   const captureSha256 = hash(json(item));
   return ledger.transaction(() => {
     const previous = ledger.latestEvidence().find(e => e.source.namespace === namespace && e.source.recordId === String(id));
@@ -203,8 +208,10 @@ export function requireTestRequestAssignment(config, ledger, assignment) {
   const intake = intakeOperation(ledger, record.scopeId);
   const policy = testRequestPolicy(config);
   const route = intake.harness ? requireHarnessRequest(config, ledger, intake).policy : policy;
+  if (intake.harness) requireThat(assignment.execution === 'local',
+    'Harness authoring requires the final local executor, not hosted Agency execution', 'blocked-config');
   if (!intake.harness) requireCoverageCapability(config, ledger, record, assignment.skillQualification?.baseRevision);
-  requireThat(intake.policySha256 === hash(json(policy)) && intake.evidenceId === record.id &&
+  requireThat(intake.policySha256 === testRequestPolicySha256(policy) && intake.evidenceId === record.id &&
     intake.state === 'needs-review' && record.source.provenance === 'authenticated-source' &&
     assignment.repoId === policy.repoId && assignment.capability === route.capability &&
     assignment.requestedOutcome === route.requestedOutcome,
@@ -224,7 +231,7 @@ function prepareHarnessRequest(config, ledger, input) {
   const handoff = { ...structuredClone(input), format: 'ado-test-request-handoff-v1' };
   const policy = testRequestPolicy(config);
   const original = intakeOperation(ledger, input.intakeId);
-  requireThat(!original.harness && original.policySha256 === hash(json(policy)) &&
+  requireThat(!original.harness && original.policySha256 === testRequestPolicySha256(policy) &&
     input.intakeSha256 === hash(json(original)), 'Harness intake changed', 'blocked-reconciliation');
   const { assessment } = requireHarnessRequest(config, ledger, original);
   const sourceEvidence = ledger.get('evidence', original.evidenceId);
@@ -265,7 +272,7 @@ function prepareRequest(config, ledger, input, harness = false) {
   const policy = testRequestPolicy(config);
   requireThat(config.statePolicy.accessApproved === true, 'Test-request preparation requires approved local state');
   const receipt = intakeOperation(ledger, handoff.intakeId);
-  requireThat(receipt.policySha256 === hash(json(policy)) && handoff.intakeSha256 === hash(json(receipt)) &&
+  requireThat(receipt.policySha256 === testRequestPolicySha256(policy) && handoff.intakeSha256 === hash(json(receipt)) &&
     receipt.state === 'needs-review', 'Test request is incomplete or its intake/policy changed', 'blocked-reconciliation');
   const evidence = ledger.get('evidence', receipt.evidenceId);
   requireThat(evidence && ledger.latestEvidence().some(e => e.id === evidence.id),
@@ -319,6 +326,8 @@ function prepareRequest(config, ledger, input, harness = false) {
     });
     const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
       planned.testCoveragePlan.id, route.requestedOutcome);
+    if (harness) requireThat(assignment.execution === 'local',
+      'Harness authoring requires the final local executor, not hosted Agency execution', 'blocked-config');
     const job = ledger.prepare(assignment);
     ledger.operation(reviewId, assignment.id, 'ado-test-request-review', { handoffSha256 });
     ledger.finishOperation(reviewId, 'complete', { handoffSha256, assignmentId: assignment.id });

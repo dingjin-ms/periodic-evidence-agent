@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { nativeCommand } from '../src/native-command.js';
 import { minimalEnvironment, command } from '../src/workers.js';
 
@@ -28,6 +30,65 @@ test('contained native command preserves arguments, cwd, output and environment 
     assert.deepEqual({ ...observed, cwd: root }, { args, cwd: root, marker: 'synthetic', requestPresent: false });
     assert.equal(result.stderr, '');
   });
+
+test('concurrent native commands keep separate jobs, input and environments while reusing compiled code',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = fixture(t);
+    const { nativeCommand: coldCommand } = await import('../src/native-command.js?cold-concurrency');
+    const runs = ['first', 'second', 'third'].map(marker => {
+      const run = coldCommand(process.execPath, ['-e',
+        'console.log(JSON.stringify({marker:process.env.TEST_MARKER,pid:process.pid,request:process.env.PILOT_NATIVE_COMMAND}))'],
+      root, 15000, { ...minimalEnvironment(), TEST_MARKER: marker });
+      assert(Number.isInteger(run.child?.pid));
+      return run;
+    });
+    assert.equal(new Set(runs.map(run => run.child.pid)).size, runs.length);
+    const results = await Promise.all(runs);
+    const observed = results.map(result => JSON.parse(result.stdout));
+    assert.deepEqual(observed.map(value => value.marker), ['first', 'second', 'third']);
+    assert.equal(new Set(observed.map(value => value.pid)).size, runs.length);
+    for (const [index, result] of results.entries()) {
+      assert.equal(result.ownedProcessesExited, true);
+      assert.equal(result.stderr, '');
+      assert.equal(observed[index].request, undefined);
+      assert.throws(() => process.kill(observed[index].pid, 0), { code: 'ESRCH' });
+    }
+  });
+
+test('aborting a cold native launch does not poison compilation or launch the cancelled application',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = fixture(t), marker = join(root, 'launched');
+    const { nativeCommand: coldCommand } = await import('../src/native-command.js?cold-abort');
+    const controller = new AbortController();
+    controller.abort();
+    const args = ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`];
+    await assert.rejects(coldCommand(process.execPath, args, root, 15000,
+      minimalEnvironment(), { signal: controller.signal }),
+    error => error.code === 'ABORT_ERR' && error.ownedProcessesExited === true);
+    assert.equal(existsSync(marker), false);
+    const result = await coldCommand(process.execPath, args, root, 15000, minimalEnvironment());
+    assert.equal(result.ownedProcessesExited, true);
+    assert.equal(readFileSync(marker, 'utf8'), 'launched');
+  });
+
+for (const input of ['not-base64!', Buffer.from('not an assembly').toString('base64')]) {
+  test(`invalid native assembly input cannot launch an application (${input})`,
+    { skip: process.platform !== 'win32' }, async t => {
+      const root = fixture(t), marker = join(root, 'unexpected-launch');
+      const run = promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+        fileURLToPath(new URL('../src/native-command.ps1', import.meta.url))], {
+        cwd: root, timeout: 15000, windowsHide: true,
+        env: { ...minimalEnvironment(), PILOT_NATIVE_COMMAND: JSON.stringify({
+          jobName: `Local\\PilotNative-${randomUUID()}`, assemblyFromStdin: true,
+          executable: process.execPath,
+          args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`]
+        }) }
+      });
+      run.child.stdin.end(`${input}\n`);
+      await assert.rejects(run, error => error.code === 1 && !error.killed);
+      assert.equal(existsSync(marker), false);
+    });
+}
 
 for (const pathExt of [undefined, '', ' ', '.CMD;.BAT']) {
   test(`native launch rejects unusable PATHEXT (${JSON.stringify(pathExt)}) before execution`,
@@ -57,6 +118,19 @@ test('direct supervisor also rejects missing PATHEXT without a success-shaped ex
       fileURLToPath(new URL('../src/native-command.ps1', import.meta.url))], root, 15000, env),
     error => error.code !== 0 && /requires PATHEXT including .EXE/.test(error.stderr));
     assert.equal(existsSync(marker), false);
+  });
+
+test('direct supervisor retains trusted-source compilation without an assembly input',
+  { skip: process.platform !== 'win32' }, async t => {
+    const root = fixture(t), marker = join(root, 'launched');
+    await command('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      fileURLToPath(new URL('../src/native-command.ps1', import.meta.url))], root, 15000, {
+      ...minimalEnvironment(), PILOT_NATIVE_COMMAND: JSON.stringify({
+        jobName: `Local\\PilotNative-${randomUUID()}`, executable: process.execPath,
+        args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'launched')`]
+      })
+    });
+    assert.equal(readFileSync(marker, 'utf8'), 'launched');
   });
 
 for (const exitCode of [0, 23]) test(`native silent exit ${exitCode} requires actual execution`,

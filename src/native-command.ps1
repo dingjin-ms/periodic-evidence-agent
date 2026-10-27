@@ -6,8 +6,8 @@ $OutputEncoding = [Console]::OutputEncoding
 $request = $env:PILOT_NATIVE_COMMAND | ConvertFrom-Json
 Remove-Item Env:\PILOT_NATIVE_COMMAND
 if ($request.jobName -notmatch '^Local\\PilotNative-[a-f0-9-]{36}$') { throw 'Invalid native job identity' }
-if ($request.action -ne 'drain' -and (!$request.executable -or $request.args -isnot [Array])) { throw 'Invalid native command request' }
-if ($request.action -ne 'drain') {
+if ($request.action -notin @('drain', 'compile') -and (!$request.executable -or $request.args -isnot [Array])) { throw 'Invalid native command request' }
+if ($request.action -notin @('drain', 'compile')) {
     if (($env:PATHEXT -split ';') -notcontains '.EXE') {
         throw 'Native validation requires PATHEXT including .EXE; command was not launched'
     }
@@ -16,7 +16,7 @@ if ($request.action -ne 'drain') {
     if ($null -eq $native) { throw 'Native validation executable did not resolve to an application; command was not launched' }
 }
 
-Add-Type -TypeDefinition @'
+$definition = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -102,6 +102,34 @@ public static class NativeValidationJob {
     }
 }
 '@
+if ($request.action -eq 'compile') {
+    # Compile only this trusted definition, in memory, before any application can run.
+    Add-Type -AssemblyName Microsoft.CodeAnalysis.CSharp
+    $references = [Microsoft.CodeAnalysis.MetadataReference[]]@(
+        Get-ChildItem -LiteralPath (Join-Path $PSHOME 'ref') -Filter '*.dll' |
+            ForEach-Object { [Microsoft.CodeAnalysis.MetadataReference]::CreateFromFile($_.FullName) }
+    )
+    $tree = [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree]::ParseText($definition)
+    $options = [Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions]::new(
+        [Microsoft.CodeAnalysis.OutputKind]::DynamicallyLinkedLibrary)
+    $compilation = [Microsoft.CodeAnalysis.CSharp.CSharpCompilation]::Create(
+        'PilotNativeJob', [Microsoft.CodeAnalysis.SyntaxTree[]]@($tree), $references, $options)
+    $stream = [IO.MemoryStream]::new()
+    try {
+        $result = $compilation.Emit($stream)
+        if (!$result.Success) {
+            throw (($result.Diagnostics | ForEach-Object { $_.ToString() }) -join "`n")
+        }
+        [Console]::WriteLine([Convert]::ToBase64String($stream.ToArray()))
+    } finally { $stream.Dispose() }
+    exit 0
+}
+if ($request.assemblyFromStdin -eq $true) {
+    $bytes = [Convert]::FromBase64String([Console]::ReadLine())
+    $null = [Reflection.Assembly]::Load($bytes)
+} else {
+    Add-Type -TypeDefinition $definition
+}
 if ($request.action -eq 'drain') {
     [NativeValidationJob]::Drain([string]$request.jobName)
     exit 0

@@ -8,7 +8,8 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { command } from '../src/workers.js';
 import { prepareValidationWorkspace, removeValidationWorktree,
-  preparationStage, preparationFailure, readDependencyCopyProgress } from '../src/validation-workspace.js';
+  preparationStage, preparationFailure, readDependencyCopyProgress,
+  requireCleanRevision } from '../src/validation-workspace.js';
 import { nativeCommand } from '../src/native-command.js';
 
 async function fixture(t) {
@@ -28,6 +29,44 @@ async function fixture(t) {
   await git(['commit', '-qm', 'synthetic baseline']);
   return { root, source, workspace, git, revision: await git(['rev-parse', 'HEAD']) };
 }
+
+test('clean revision witness rejects tracked, staged, renamed, deleted and untracked changes', async t => {
+  for (const change of ['modified', 'staged', 'renamed', 'deleted', 'untracked']) {
+    await t.test(change, async t => {
+      const ctx = await fixture(t);
+      await requireCleanRevision(ctx.source, ctx.revision, 30000);
+      const tracked = join(ctx.source, 'required', 'input.txt');
+      if (change === 'modified' || change === 'staged') writeFileSync(tracked, 'changed');
+      if (change === 'staged') await ctx.git(['add', '.']);
+      if (change === 'renamed') await ctx.git(['mv', 'required/input.txt', 'required/renamed.txt']);
+      if (change === 'deleted') rmSync(tracked);
+      if (change === 'untracked') writeFileSync(join(ctx.source, '# branch.oid fake'), 'untracked');
+      await assert.rejects(requireCleanRevision(ctx.source, ctx.revision, 30000),
+        { code: 'blocked-validation' });
+    });
+  }
+});
+
+test('clean revision witness handles detached, unborn and wrong-commit repositories with ignored outputs', async t => {
+  const ctx = await fixture(t);
+  await assert.rejects(requireCleanRevision(ctx.source, '0'.repeat(40), 30000),
+    { code: 'blocked-validation' });
+  writeFileSync(join(ctx.source, '.gitignore'), 'ignored/');
+  await ctx.git(['add', '.']);
+  await ctx.git(['commit', '-qm', 'ignored synthetic outputs']);
+  const revision = await ctx.git(['rev-parse', 'HEAD']);
+  await ctx.git(['checkout', '--detach', revision]);
+  mkdirSync(join(ctx.source, 'ignored'));
+  writeFileSync(join(ctx.source, 'ignored', 'output'), 'regenerable');
+  await requireCleanRevision(ctx.source, revision, 30000);
+  await assert.rejects(requireCleanRevision(ctx.source, ctx.revision, 30000),
+    { code: 'blocked-validation' });
+  const unborn = join(ctx.root, 'unborn');
+  mkdirSync(unborn);
+  await command('git', ['init', '-q'], unborn);
+  await assert.rejects(requireCleanRevision(unborn, revision, 30000),
+    { code: 'blocked-validation' });
+});
 
 test('detached sparse preparation preserves source and uses shared objects with a separate index', async t => {
   const ctx = await fixture(t), timings = [];

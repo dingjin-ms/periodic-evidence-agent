@@ -24,7 +24,6 @@ mkdirSync(dirname(output), { recursive: true });
 benchmarkOptions(outputArgs);
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const git = async (cwd, parameters) => (await command('git', [
-  '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
   '-c', 'core.hooksPath=.git/no-hooks', ...parameters
 ], cwd)).stdout.trim();
 const files = ['workers.js', 'output-fingerprint.js',

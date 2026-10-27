@@ -21,7 +21,7 @@ import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork 
 import { pruneState } from '../src/state-retention.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
-import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment } from '../src/ado-harness-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
@@ -447,8 +447,46 @@ test('coverage reassessment requires changed revision and qualification evidence
   assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff).assignment.capability, 'integration-test-authoring');
 });
 
-test('harness request runs the bounded proposer through validation and a separate Draft', async t => {
+test('equivalent holds retain latest review freshness without changing semantic identity', async t => {
   const ctx = await harnessFixture(t);
+  const hold = { ...ctx.assessmentInput, decision: 'needs-evidence', missingCapabilities: [], reviewedAt: '2026-10-03T00:00:00Z' };
+  const first = recordCapabilityAssessment(ctx.config, ctx.ledger, hold);
+  assert.equal(recordCapabilityAssessment(ctx.config, ctx.ledger, { ...hold, reviewedAt: '2026-10-05T00:00:00Z' }).id, first.id);
+  const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
+  ctx.ledger.qualify(qualificationId, { ...ctx.ledger.qualification(qualificationId), baseRevision: 'a'.repeat(40) });
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...hold, decision: 'supported',
+    sourceRevision: 'a'.repeat(40), reviewedAt: '2026-10-04T00:00:00Z', verificationEvidence: ['new revision test receipt'] }), /advance its timestamp/);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+});
+
+for (const buildMode of ['disabled', 'harness', 'missing-contract', 'unapproved', 'selection-override']) test(`harness proposer publication with ${buildMode} build contract`, async t => {
+  const ctx = await harnessFixture(t);
+  if (buildMode !== 'disabled') {
+    ctx.config.repositories[0].id = '1js';
+    ctx.config.adoTestRequests.repoId = '1js';
+    for (const handoff of [ctx.handoff, ctx.harnessHandoff]) {
+      handoff.review.repoIds = ['1js'];
+      handoff.planning.improvement.repoIds = ['1js'];
+      handoff.planning.testCoverage.repoId = '1js';
+    }
+    for (const binding of ctx.config.repositories[0].skillBindings) ctx.ledger.qualify(skillQualificationId('1js', binding.id), {
+      ...ctx.ledger.qualification(skillQualificationId('office-agent', binding.id)), repoId: '1js'
+    });
+    ctx.item.rev++;
+    ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+    ctx.assessmentInput = { ...ctx.assessmentInput, intakeId: ctx.intake.id, intakeSha256: hash(json(ctx.intake)), reviewedAt: now() };
+    ctx.assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput);
+    for (const handoff of [ctx.handoff, ctx.harnessHandoff]) {
+      handoff.intakeId = ctx.intake.id;
+      handoff.intakeSha256 = hash(json(ctx.intake));
+    }
+    ctx.config.repositories[0].pr = { provider: 'ado', organization: 'fixture', project: 'project',
+      repositoryId: '1js', targetRef: 'refs/heads/main', sourceBranchPrefix: 'fixture' };
+    ctx.config.repositories[0].draftBuild = { enabled: true, provider: 'ado', id: 'coverage', definitionId: 1,
+      ...(buildMode !== 'missing-contract' ? { harness: { enabled: true, scopeApproved: buildMode !== 'unapproved', approvalRef: 'fixture-build-approval',
+        provider: 'ado', id: 'harness-contracts', definitionId: 2, testPaths: ['harness/reader.test.js'],
+        templateParameters: buildMode === 'selection-override' ? { harnessSelection: 'untrusted override' } : {} } } : {}) };
+  }
   t.mock.timers.reset();
   ctx.config.activation.dispatch = true;
   ctx.config.limits.maxAiCreditsPerSession = 1;
@@ -475,11 +513,27 @@ test('harness request runs the bounded proposer through validation and a separat
             changedFiles: ['harness/reader.js', 'harness/reader.test.js'], testsAddedOrUpdated: ['formula evidence'],
             behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: false } });
       },
-      createDraft: async (_config, _ledger, _job, _repo, revision) => {
+      queueDraftBuild: async (config, ledger, job, repo, revision) => queueAdoDraftBuild(config, ledger, job, repo, revision, async body => {
+        assert.equal(body.definition.id, 2);
+        assert.equal(body.templateParameters.newCaseSelection, undefined);
+        const selection = JSON.parse(body.templateParameters.harnessSelection);
+        assert.equal(selection.format, 'harness-contract-selection-v1');
+        assert.equal(selection.sourceRevision, revision);
+        assert.deepEqual(selection.testPaths, ['harness/reader.test.js']);
+        return { id: 31 };
+      }),
+      createDraft: async (_config, _ledger, _job, _repo, revision, proposal) => {
         drafts++;
+        if (buildMode === 'harness') assert.match(proposal.description, /harness contract tests only/);
         return { url: 'https://example.invalid/harness/draft/1', isDraft: true, headRevision: revision };
       }
     } };
+  if (['missing-contract', 'unapproved', 'selection-override'].includes(buildMode)) {
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options), /separate approved harness Draft build|controller-owned selections/);
+    assert.equal(drafts, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'push'), false);
+    return;
+  }
   const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options);
   assert.equal(result.result.outcome, 'draft-pr-validated', json(result.result));
   assert.equal(result.result.validation[0].status, 'passed');
@@ -500,6 +554,30 @@ test('harness request runs the bounded proposer through validation and a separat
   await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options), /never-dispatched/);
   assert.equal(models, 1);
   assert.equal(drafts, 1);
+  ctx.item.rev++;
+  ctx.item.fields['System.Title'] += ' clarified';
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+    intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, feedback), /association reconciliation/);
+  const association = { assignmentId: result.assignment.id, assessmentId: assessment.id,
+    reviewer: 'fixture-owner', reviewedAt: now(), evidenceRef: 'Title-only change inspected' };
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, association, { read: ctx.read }), /authorization/);
+  ctx.item.rev++;
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, association, {
+    authorizeReconciliation: true, read: ctx.read }), /changed before harness association/);
+  ctx.item.rev--;
+  await reconcileHarnessAssociation(ctx.config, ctx.ledger, association, { authorizeReconciliation: true, read: ctx.read });
+  await publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, feedback);
+  assert.equal(comments, 2);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+  ctx.item.rev++;
+  ctx.item.fields['System.Description'] += '\nChanged expected contract.';
+  const changed = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const changedAssessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+    intakeId: changed.id, intakeSha256: hash(json(changed)), reviewedAt: now() });
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, { ...association,
+    assessmentId: changedAssessment.id, reviewedAt: now() }, { authorizeReconciliation: true, read: ctx.read }), /title-only/);
 });
 
 test('capability feedback is escaped, authorized, source checked and posted at most once', async t => {

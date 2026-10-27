@@ -54,6 +54,19 @@ that product skill. Other authoring providers are rejected in this increment.
 The final assignment must also select local execution; a hosted Agency task
 selection is rejected during preparation and again at dispatch.
 
+If `repo.draftBuild.enabled` is enabled (including 1JS), supply a separate
+`repo.draftBuild.harness` contract: `enabled: true`, `scopeApproved: true`, an
+`approvalRef`, `provider: "ado"`, a unique `id`, a positive `definitionId` different
+from the coverage pipeline, `testPaths` naming 1–100 committed regular harness
+contract-test files inside the assignment write scope, and optional bounded
+`templateParameters`. The pipeline owner must approve/implement the
+`harnessSelection` JSON parameter (`harness-contract-selection-v1`: base/source
+revisions, test paths, contract hash). It must run those tests at `sourceVersion`.
+No pipeline is configured by this change. Missing/unapproved contracts block
+before push; there is no fallback to the product new-scenario pipeline. Coverage
+assignments retain the existing `newCaseSelection` gate unchanged. The queued
+receipt and PR description explicitly label harness-only remote validation.
+
 With `harnessSupport.enabled`, coverage preparation and dispatch require a current
 `supported` assessment. In legacy configurations without this opt-in, the old
 coverage path stays compatible; recording a gap still holds that request.
@@ -126,8 +139,9 @@ FILTER result. No new model/provider selection or daily configuration is install
   from another revision requires reconciliation, not a second proposal. Completed
   or uncertain workers are not relaunched automatically. Equivalent capability
   reassessment (only the review timestamp changed) returns the existing receipt,
-  preserving prepared work and Draft feedback. A material assessment change
-  still invalidates the old handoff.
+  preserving prepared work and Draft feedback. A separate latest-review timestamp
+  advances monotonically; delayed decisions cannot clear a more recently reviewed
+  hold. A material assessment change still invalidates the old handoff.
 - Feedback persists an operation before POST. Same request revision/gap/harness
   revision reuses its completed comment receipt, even if reviewed again. A timeout,
   malformed acknowledgement or crash leaves an uncertain operation: inspect the
@@ -145,6 +159,22 @@ FILTER result. No new model/provider selection or daily configuration is install
   An intermediate `needs-evidence` state does not remove this requirement.
 - Existing coverage assignments still follow the repository's normal explicit
   reconciliation rule; the new lane does not silently supersede prior work.
+
+A title-only ADO revision can be associated with an existing validated harness
+Draft for reporting, without rewriting its assignment or rerunning the proposer.
+After collection/reassessment, supply `assignmentId`, current `assessmentId`,
+`reviewer`, `reviewedAt` and `evidenceRef` to the explicitly authorized command:
+
+```powershell
+node src/cli.js reconcile-harness-association --file association.local.json --authorize-reconciliation --config pilot.local.json
+```
+
+It re-reads the ADO source, compares the original and current scope/template/tags
+(all captured fields except title), requires the same gap and harness revision,
+and binds the exact validated result to the current capture. Only then can
+`comment-test-request --assessment CURRENT --assignment EXISTING` report the Draft.
+Other scenario changes require substantive reconciliation; this operation does
+not grant execution, clear the coverage hold, or bypass uncertain-write blocking.
 
 For a genuinely uncertain write, an authorized operator must inspect the exact
 ADO comment history/receipt marker and supply a reconciliation document:

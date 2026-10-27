@@ -3378,15 +3378,59 @@ export function newCaseBuildGroups(selection) {
   ].filter(([, prefix]) => selection.scenarioPaths.some(path => path.startsWith(prefix)))
     .map(([group]) => group).join(' ');
 }
+export async function draftBuildPlan(ledger, job, repo, revision) {
+  const assignment = ledger.get('assignment', job.id);
+  if (assignment?.capability !== 'e2e-harness-authoring') return {
+    build: repo.draftBuild,
+    caseSelection: repo.id === '1js' ? await newCaseBuildSelection(job, revision) : null,
+    harnessSelection: null
+  };
+  const build = repo.draftBuild?.harness;
+  requireThat(assignment.execution === 'local' && build?.enabled === true && build.scopeApproved === true &&
+    typeof build.approvalRef === 'string' && build.approvalRef.trim() && build.provider === 'ado' &&
+    typeof build.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(build.id) &&
+    Number.isInteger(build.definitionId) && build.definitionId > 0 &&
+    build.definitionId !== repo.draftBuild.definitionId,
+  'Harness publication requires a separate approved harness Draft build contract', 'blocked-build');
+  requireThat(Array.isArray(build.testPaths) && build.testPaths.length > 0 && build.testPaths.length <= 100 &&
+    new Set(build.testPaths).size === build.testPaths.length && build.testPaths.every(path =>
+      typeof path === 'string' && /^[A-Za-z0-9_./-]+$/.test(path) && !path.startsWith('/') &&
+      !path.split('/').some(part => ['', '.', '..'].includes(part)) &&
+      /\.tests?\.[cm]?[jt]sx?$/.test(path) &&
+      pathWithinBounds(path, assignment.allowedWritePrefixes, assignment.allowedWriteFiles)),
+  'Harness build requires bounded contract-test files inside the assignment write scope', 'blocked-build');
+  requireThat(/^[a-f0-9]{40}$/.test(job.base_revision ?? '') && /^[a-f0-9]{40}$/.test(revision) &&
+    await git(job.workspace, ['rev-parse', 'HEAD']) === revision,
+  'Harness build requires the exact assignment base and current revision', 'blocked-build');
+  await git(job.workspace, ['merge-base', '--is-ancestor', job.base_revision, revision]);
+  const parameters = build.templateParameters ?? {};
+  requireThat(parameters && typeof parameters === 'object' && !Array.isArray(parameters) &&
+    Object.keys(parameters).length <= 32 && Object.entries(parameters).every(([key, value]) =>
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) && ['string', 'number', 'boolean'].includes(typeof value) &&
+      (typeof value !== 'string' || value.length <= 1024)) &&
+    !['newCaseSelection', 'newCaseGroups', 'harnessSelection'].some(key => Object.hasOwn(parameters, key)),
+  'Harness build parameters must be bounded and cannot supply controller-owned selections', 'blocked-build');
+  const testPaths = [...build.testPaths].sort();
+  requireThat(JSON.stringify(testPaths).length <= 30000, 'Harness test selection exceeds the pipeline parameter limit', 'blocked-build');
+  const entries = (await gitRaw(job.workspace, ['ls-tree', '-z', revision, '--', ...testPaths])).split('\0').filter(Boolean);
+  requireThat(entries.length === testPaths.length && entries.every(entry => /^100(?:644|755) blob [a-f0-9]+\t/.test(entry)),
+    'Harness build accepts only committed regular contract-test files', 'blocked-build');
+  return { build, caseSelection: null, harnessSelection: { format: 'harness-contract-selection-v1',
+    baseRevision: job.base_revision, sourceRevision: revision, testPaths, contractSha256: hash(json(build)) } };
+}
 export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride) {
-  const build = repo.draftBuild;
+  const { build, caseSelection, harnessSelection } = await draftBuildPlan(ledger, job, repo, revision);
   requireThat(build?.enabled === true && build.provider === 'ado' &&
     Number.isInteger(build.definitionId) && build.definitionId > 0,
   'Draft build provider is not configured', 'blocked-build');
   requireThat(repo.pr?.provider === 'ado' && repo.pr.organization && repo.pr.project,
     'Draft build requires the configured ADO project', 'blocked-build');
-  const caseSelection = repo.id === '1js' ? await newCaseBuildSelection(job, revision) : null;
   const templateParameters = { ...build.templateParameters };
+  if (harnessSelection) {
+    requireThat(!['newCaseSelection', 'newCaseGroups', 'harnessSelection'].some(key => Object.hasOwn(templateParameters, key)),
+      'Harness build selection parameters are controller-owned', 'blocked-build');
+    templateParameters.harnessSelection = JSON.stringify(harnessSelection);
+  }
   if (caseSelection) {
     requireThat(!Object.hasOwn(templateParameters, 'newCaseSelection') &&
       !Object.hasOwn(templateParameters, 'newCaseGroups'),
@@ -3398,7 +3442,8 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
   const operationId = `${job.id}:draft-build:${build.id}`;
   ledger.operation(operationId, job.id, 'draft-build', {
     definitionId: build.definitionId, revision, sourceRef,
-    ...(caseSelection ? { caseSelection } : {})
+    ...(caseSelection ? { caseSelection } : {}),
+    ...(harnessSelection ? { harnessSelection } : {})
   });
   let request = requestOverride;
   if (!request) {
@@ -3451,7 +3496,8 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
     sourceRef,
     queuedAt: now(),
     blocking: false,
-    ...(caseSelection ? { caseSelection } : {})
+    ...(caseSelection ? { caseSelection } : {}),
+    ...(harnessSelection ? { harnessSelection } : {})
   };
   ledger.finishOperation(operationId, 'queued', receipt);
   return receipt;
@@ -4251,8 +4297,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         !await git(current.workspace, ['status', '--porcelain']),
       'Every required gate must pass at the clean current revision; no push permitted',
       'blocked-validation');
-      const caseSelection = repo.id === '1js' && repo.draftBuild?.enabled
-        ? await newCaseBuildSelection(current, revision) : null;
+      const buildPlan = repo.draftBuild?.enabled ? await draftBuildPlan(ledger, current, repo, revision) : null;
+      const { caseSelection = null, harnessSelection = null } = buildPlan ?? {};
       ledger.operation(`${id}:push`, id, 'push', { revision });
       await (dependencies.pushBranch ?? pushDraftBranch)(
         config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
@@ -4266,6 +4312,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         'Queued Draft build does not match the published revision', 'blocked-build');
         requireThat(!caseSelection || json(queuedBuild.caseSelection) === json(caseSelection),
           'Queued Draft build does not match the new-case selection', 'blocked-build');
+        requireThat(!harnessSelection || (json(queuedBuild.harnessSelection) === json(harnessSelection) &&
+          queuedBuild.definitionId === buildPlan.build.definitionId && queuedBuild.id === buildPlan.build.id && !queuedBuild.caseSelection),
+        'Queued Draft build does not match the approved harness contract', 'blocked-build');
         remoteValidation = [queuedBuild];
       }
       const publicationProposal = {
@@ -4280,7 +4329,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
             `A later remote failure remains review evidence and does not erase the local validation result.` +
             (caseSelection ? `\n\nScope: **new cases only**, added since \`${caseSelection.baseRevision}\`. ` +
               `Existing cases and unaffected suites are not scheduled; this is not a full regression run.\n\n` +
-              caseSelection.scenarioPaths.map(path => `- \`${path}\``).join('\n') : ''))
+              caseSelection.scenarioPaths.map(path => `- \`${path}\``).join('\n') : '') +
+            (harnessSelection ? '\n\nScope: **harness contract tests only**, not new product scenarios or full regression.\n\n' +
+              harnessSelection.testPaths.map(path => `- \`${path}\``).join('\n') : ''))
       };
       const createdDraft = await (dependencies.createDraft ?? createAdoDraft)(
         config, ledger, current, repo, revision, publicationProposal);

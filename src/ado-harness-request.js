@@ -72,14 +72,21 @@ export function recordCapabilityAssessment(config, ledger, input) {
   return ledger.transaction(() => {
     const prior = operation(ledger, id);
     const previous = currentCapabilityAssessment(ledger, evidence);
+    const freshnessId = previous ? `${previous.id}:latest-review` : null;
+    const freshness = freshnessId && operation(ledger, freshnessId);
+    const latestReviewedAt = freshness ? JSON.parse(freshness.detail).reviewedAt : previous?.reviewedAt;
     if (previous && comparable(previous) === comparable(input) &&
-      Date.parse(input.reviewedAt) >= Date.parse(previous.reviewedAt)) return previous;
+      Date.parse(input.reviewedAt) >= Date.parse(latestReviewedAt)) {
+      if (!freshness) ledger.operation(freshnessId, receipt.id, 'ado-capability-review-freshness', {});
+      ledger.finishOperation(freshnessId, 'complete', { reviewedAt: input.reviewedAt });
+      return previous;
+    }
     if (prior?.state === 'complete') {
       requireThat(previous?.id === id, 'Capability assessment was superseded', 'blocked-reconciliation');
       return JSON.parse(prior.detail);
     }
     if (previous) {
-      requireThat(Date.parse(input.reviewedAt) > Date.parse(previous.reviewedAt),
+      requireThat(Date.parse(input.reviewedAt) > Date.parse(latestReviewedAt),
         'Capability review must advance its timestamp', 'blocked-reconciliation');
       const gaps = ledger.status().operations.filter(row => row.kind === assessmentKind && row.state === 'complete')
         .map(row => JSON.parse(row.detail)).filter(row => row.key === previous.key && row.decision === 'needs-harness');
@@ -174,6 +181,58 @@ export function reconcileCapabilityComment(config, ledger, input, { authorizeRec
     return result;
   });
 }
+function validatedHarnessResult(ledger, assignmentId) {
+  const assignment = ledger.get('assignment', assignmentId);
+  requireThat(assignment?.capability === 'e2e-harness-authoring', 'Feedback assignment is not harness work');
+  const result = ledger.all('workerResult').find(result => result.assignmentId === assignmentId &&
+    result.outcome === 'draft-pr-validated' && result.draftPR?.isDraft === true &&
+    result.draftPR.headRevision === result.sourceRevision);
+  requireThat(result, 'Harness Draft PR has not been validated', 'blocked-reconciliation');
+  return { assignment, result };
+}
+export async function reconcileHarnessAssociation(config, ledger, input, {
+  authorizeReconciliation = false, read = readTestRequest
+} = {}) {
+  const policy = requireFeedbackPolicy(config, authorizeReconciliation);
+  const keys = ['assignmentId', 'assessmentId', 'reviewer', 'reviewedAt', 'evidenceRef'];
+  requireThat(input && Object.keys(input).length === keys.length && keys.every(key =>
+    typeof input[key] === 'string' && input[key].trim() && input[key].length <= 2000),
+  'Harness association requires exact work, assessment and review evidence', 'invalid-record');
+  utc(input.reviewedAt);
+  const { assignment, result } = validatedHarnessResult(ledger, input.assignmentId);
+  const harnessReceipt = testRequestReceipt(ledger, ledger.get('evidence', assignment.evidenceIds[0]).scopeId);
+  const original = testRequestReceipt(ledger, harnessReceipt.originalIntakeId);
+  const oldEvidence = ledger.get('evidence', original.evidenceId);
+  const assessment = currentCapabilityAssessment(ledger, oldEvidence);
+  requireThat(assessment?.id === input.assessmentId && assessment.decision === 'needs-harness' &&
+    Date.parse(input.reviewedAt) >= Date.parse(assessment.reviewedAt) && Date.parse(input.reviewedAt) <= Date.now(),
+  'Harness association assessment changed or review is stale', 'blocked-reconciliation');
+  const priorAssessment = JSON.parse(operation(ledger, harnessReceipt.assessmentId).detail);
+  const receipt = testRequestReceipt(ledger, assessment.intakeId);
+  const evidence = ledger.get('evidence', receipt.evidenceId);
+  const invariantFields = fields => Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'System.Title'));
+  requireThat(original.policySha256 === testRequestPolicySha256(policy) && receipt.policySha256 === original.policySha256 &&
+    assessmentKey(evidence) === assessmentKey(oldEvidence) &&
+    json(invariantFields(evidence.fields)) === json(invariantFields(oldEvidence.fields)) &&
+    assessment.sourceRevision === priorAssessment.sourceRevision &&
+    json([...assessment.missingCapabilities].sort()) === json([...priorAssessment.missingCapabilities].sort()),
+  'Harness association may only reconcile a title-only revision with the same capability gap and policy', 'blocked-reconciliation');
+  const raw = await read(config, Number(evidence.source.recordId));
+  requireThat(Buffer.byteLength(json(raw)) <= policy.maxResponseBytes &&
+    hash(json(selectedItem(raw, Number(evidence.source.recordId), policy))) === receipt.captureSha256,
+  'ADO request changed before harness association', 'blocked-reconciliation');
+  const id = `harness-feedback-association-${hash(json([input.assignmentId, input.assessmentId]))}`;
+  return ledger.transaction(() => {
+    requireThat(currentCapabilityAssessment(ledger, evidence)?.id === assessment.id &&
+      ledger.latestEvidence().some(row => row.id === evidence.id), 'Harness association was superseded', 'blocked-reconciliation');
+    const previous = operation(ledger, id);
+    if (previous?.state === 'complete') return JSON.parse(previous.detail);
+    const association = { ...structuredClone(input), resultId: result.id, captureSha256: receipt.captureSha256 };
+    ledger.operation(id, assignment.id, 'ado-harness-feedback-association', association);
+    ledger.finishOperation(id, 'complete', association);
+    return association;
+  });
+}
 export async function publishCapabilityComment(config, ledger, assessmentId, {
   authorizeComment = false, retryRejected = false, assignmentId = null,
   read = readTestRequest, getToken = adoAccessToken, fetchResponse = fetch
@@ -188,14 +247,13 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
     receipt.policySha256 === testRequestPolicySha256(policy), 'Capability feedback was superseded', 'blocked-reconciliation');
   let text = capabilityComment(assessment);
   if (assignmentId) {
-    const assignment = ledger.get('assignment', assignmentId);
-    requireThat(assignment?.capability === 'e2e-harness-authoring', 'Feedback assignment is not harness work');
+    const { assignment, result } = validatedHarnessResult(ledger, assignmentId);
     const harnessReceipt = testRequestReceipt(ledger, ledger.get('evidence', assignment.evidenceIds[0]).scopeId);
-    requireThat(harnessReceipt.assessmentId === assessmentId, 'Harness result belongs to another request');
-    const result = ledger.all('workerResult').find(result => result.assignmentId === assignmentId &&
-      result.outcome === 'draft-pr-validated' && result.draftPR?.isDraft === true &&
-      result.draftPR.headRevision === result.sourceRevision);
-    requireThat(result, 'Harness Draft PR has not been validated', 'blocked-reconciliation');
+    const associationRow = operation(ledger, `harness-feedback-association-${hash(json([assignmentId, assessmentId]))}`);
+    const association = associationRow?.state === 'complete' ? JSON.parse(associationRow.detail) : null;
+    requireThat(harnessReceipt.assessmentId === assessmentId || (association?.resultId === result.id &&
+      association.captureSha256 === receipt.captureSha256),
+    'Harness result needs source-checked association reconciliation for this assessment', 'blocked-reconciliation');
     text = `<p>The agentic system proposed a separate harness-support Draft PR: ${escapeHtml(result.draftPR.url)}.</p>` +
       `<p>Coverage remains held pending human review, integration and harness qualification. Receipt: ${assessmentId}.</p>`;
   }

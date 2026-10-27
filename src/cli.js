@@ -27,7 +27,7 @@ import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { collectTestRequest, acceptTestRequest } from './ado-test-request.js';
-import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment } from './ado-harness-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from './ado-harness-request.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
@@ -95,6 +95,7 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js assess-test-request --file assessment.json --config pilot.local.json
   node src\\cli.js comment-test-request --assessment ID --authorize-comment [--retry-rejected] [--assignment ID] --config pilot.local.json
   node src\\cli.js reconcile-test-request-comment --file reconciliation.json --authorize-reconciliation --config pilot.local.json
+  node src\\cli.js reconcile-harness-association --file association.json --authorize-reconciliation --config pilot.local.json
   node src\\cli.js submit-test-request --file handoff.json --prepare --config pilot.local.json
   node src\\cli.js submit-test-request --file handoff.json --execute --authorize-commit --authorize-push --authorize-draft-pr --config pilot.local.json
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
@@ -171,10 +172,10 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
-  if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment'].includes(action)) {
+  if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action)) {
     const values = action === 'comment-test-request' ? ['--config', '--assessment', '--assignment'] : ['--config', '--file'];
     const switches = action === 'comment-test-request' ? ['--authorize-comment', '--retry-rejected']
-      : action === 'reconcile-test-request-comment' ? ['--authorize-reconciliation'] : [];
+      : action.startsWith('reconcile-') ? ['--authorize-reconciliation'] : [];
     const seen = new Set();
     for (let index = 0; index < args.length; index++) {
       const key = args[index];
@@ -325,7 +326,7 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
-    if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment'].includes(action))
+    if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))
       requireThat(config.statePolicy.accessApproved === true,
         'Test-request feedback/review requires approved local state', 'blocked-authorization');
     if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
@@ -592,6 +593,11 @@ try {
       }
       case 'assess-test-request':
         result = recordCapabilityAssessment(config, ledger, input());
+        break;
+      case 'reconcile-harness-association':
+        result = await reconcileHarnessAssociation(config, ledger, input(), {
+          authorizeReconciliation: args.includes('--authorize-reconciliation')
+        });
         break;
       case 'reconcile-test-request-comment':
         result = reconcileCapabilityComment(config, ledger, input(), {

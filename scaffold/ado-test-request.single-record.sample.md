@@ -9,7 +9,7 @@ FILTER accepted the corresponding request; that does not establish a live pass.
 | --- | --- |
 | Starting context | Standard starting state: a new AAD conversation in SuperApp / M365 Copilot BizChat. No workbook is open or attached. |
 | Input files / data | Agent may create synthetic inputs. No attachment or private data is required. |
-| Steps / prompts | Ask: Create a new Excel workbook with a worksheet named Intake. On that worksheet create one Excel Table with exactly three columns, one text header row, and exactly one data row of synthetic values. Do not add extra sample records or a totals row. Attach the xlsx file and open its Excel preview. |
+| Steps / prompts | Ask: Create an Excel workbook with sheet 'Intake' and that contains a 2x3 table (contains header). After completion, the test driver opens the generated file and checks the preview; do not ask Copilot to perform that UI action. |
 | Expected result | Task completion, an xlsx artifact, and an interactive Excel preview. Saved workbook: worksheet Intake with one matching 2-by-3 Excel Table, headerRowCount=1, one data row, totalsRowCount=0, and nonempty text headers. Header wording and data values may vary. Response prose is not proof. |
 | Constraints / special rules | The minimum nonempty-table boundary is exactly one data row, not the existing five-row samples. Do not modify existing files. No formulas, exact values, upload, or existing-workbook editing is requested. |
 

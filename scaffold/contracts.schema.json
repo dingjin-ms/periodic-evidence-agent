@@ -22,6 +22,7 @@
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/reviewedHandoff" },
     { "$ref": "#/$defs/adoTestRequestHandoff" },
+    { "$ref": "#/$defs/adoHarnessRequestHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -964,6 +965,18 @@
           "then": { "properties": { "reportEligibility": { "const": "unavailable" }, "handoffEligibility": { "const": "needs-evidence" }, "defectConfirmation": { "const": "unconfirmed" } } }
         }
       ]
+    },
+    "adoHarnessRequestHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
+      "properties": {
+        "format": { "const": "ado-harness-request-handoff-v1" },
+        "intakeId": { "$ref": "#/$defs/text" },
+        "intakeSha256": { "$ref": "#/$defs/rsiHash" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "review": { "$ref": "#/$defs/reviewedHandoff/properties/review" },
+        "planning": { "$ref": "#/$defs/adoTestRequestHandoff/properties/planning" }
+      }
     },
     "adoTestRequestHandoff": {
       "type": "object", "additionalProperties": false,

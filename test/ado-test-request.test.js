@@ -222,7 +222,10 @@ test('CLI refuses implicit reads, unknown flags and missing execution choice', (
   for (const args of [
     ['ado-test-request', '--id', '123', '--config', 'pilot.example.json'],
     ['ado-test-request', '--id', '123', '--collect', '--config', 'pilot.example.json', '--surprise'],
-    ['submit-test-request', '--file', 'missing.json', '--config', 'pilot.example.json']
+    ['submit-test-request', '--file', 'missing.json', '--config', 'pilot.example.json'],
+    ['assess-test-request', '--file', 'missing.json'],
+    ['comment-test-request', '--assessment', 'missing', '--config', 'pilot.example.json'],
+    ['comment-test-request', '--assessment', 'missing', '--authorize-comment', '--config', 'pilot.example.json', '--surprise']
   ]) {
     const output = spawnSync(process.execPath, ['src/cli.js', ...args], { encoding: 'utf8' });
     assert.notEqual(output.status, 0);

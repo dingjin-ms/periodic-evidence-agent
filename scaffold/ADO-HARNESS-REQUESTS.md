@@ -1,0 +1,137 @@
+## Harness support for explicit ADO E2E requests
+
+The agentic system owns harness authoring. Feature crews describe their E2E case;
+they do not design selectors, modify readers or implement the harness themselves.
+This extends the explicit-ID intake in [ADO-TEST-REQUESTS.md](ADO-TEST-REQUESTS.md).
+It does not deploy an ADO watcher or change the resolved-bug scanner.
+
+### Flow
+
+1. The reviewing agent inspects the original request and pinned cross-app harness.
+   Submit a source-bound capability assessment. Distinguish `needs-harness` from
+   `needs-evidence`, `blocked-environment`, and `supported`.
+2. For a proven gap, the controller can post a bounded comment on that same ADO:
+   “not yet supported by the test harness,” the missing capability, and the exact
+   opt-in tag `AgenticHarnessRequest`. This does not claim a product defect.
+3. The requester adds that tag, retaining `AgenticTestRequest`. Collect the new
+   revision and reassess it. The agent prepares a harness-only handoff; the normal
+   bounded SDK proposer authors the reusable mechanisms and their contract tests.
+   The controller validates, commits, pushes and opens a separate Draft PR only
+   with the existing explicit execution grants.
+4. Link the validated harness Draft back to the ADO. Human review and integration
+   remain outside the autonomous loop. Do not add the product coverage scenario
+   to the harness Draft or relax its original assertions.
+5. After integration, qualify the new harness revision and submit a `supported`
+   assessment with verification evidence. The agent then prepares the original
+   coverage handoff against that revision. PR creation alone never clears the hold.
+
+The current transport uses the tag, not arbitrary comment text, as the authoring
+opt-in. An ADO description, tag or comment cannot grant repository write scope,
+model access, authentication, commit/push permission or merge authorization.
+
+### Configuration
+
+The inert intake policy example contains independent `feedback` and
+`harnessSupport` sections. Enable them only in an approved task-owned config.
+Feedback requires `enabled`, `scopeApproved`, `approvalRef` and the invocation's
+`--authorize-comment`. Harness support requires its own approved section and a
+qualified repository-native binding for capability `e2e-harness-authoring`, outcome
+`extend-e2e-harness`, on the same configured repository.
+
+Configure harness write prefixes narrowly (readers, schemas, runner helpers and
+harness contract tests), disjoint from the coverage binding's scenario prefixes
+and files. Existing coverage bounds are not widened. The binding must use the
+bounded local `copilot-sdk` authoring provider without declarative scenario input.
+A real repository-owned harness-authoring skill and validation gates must be
+qualified before execution; the controller does not create or pretend to qualify
+that product skill. Other authoring providers are rejected in this increment.
+
+With `harnessSupport.enabled`, coverage preparation and dispatch require a current
+`supported` assessment. In legacy configurations without this opt-in, the old
+coverage path stays compatible; recording a gap still holds that request.
+
+### Agent/controller commands
+
+Run intake first and preserve its receipt. The upstream reviewing agent produces
+this JSON (IDs, revision, paths and timestamps must come from actual inspection):
+
+```json
+{
+  "format": "ado-test-request-capability-v1",
+  "intakeId": "test-request-REPLACE",
+  "intakeSha256": "REPLACE_WITH_RECEIPT_SHA256",
+  "sourceRevision": "REPLACE_WITH_QUALIFIED_COMMIT",
+  "reviewedAt": "2026-10-27T00:00:00Z",
+  "reviewer": "configured-reviewing-agent",
+  "decision": "needs-harness",
+  "missingCapabilities": ["The workbook reader does not retain formula metadata."],
+  "sourcePaths": ["ooui/apps/cross-office-client-e2e/e2e/xlsxWorkbookData.ts"],
+  "rationale": "Inspection shows cached scalar results cannot establish formula preservation.",
+  "verificationEvidence": []
+}
+```
+
+```powershell
+node src/cli.js assess-test-request --file assessment.local.json --config pilot.local.json
+node src/cli.js comment-test-request --assessment CAPABILITY_RECEIPT_ID --authorize-comment --config pilot.local.json
+```
+
+The second command is an external write, unlike intake/review. Only selected
+scope IDs can receive comments. HTML is escaped; raw request data, credentials
+and arbitrary reviewer prose are not copied to ADO. Network operations are
+bounded, redirects are rejected and only the configured ADO host is used.
+
+After the exact tag appears and the new intake is assessed, produce the same
+review/planning structure as `ado-test-request-handoff-v1`, with these differences:
+
+- `format`: `ado-harness-request-handoff-v1`.
+- `planning.improvement.category`: `test-maintainability`.
+- `planning.improvement.capabilities`: `["e2e-harness-authoring"]`.
+- `planning.testCoverage.capability`: `e2e-harness-authoring`.
+- `planning.requestedOutcome`: `extend-e2e-harness`.
+- Source revision matches both the assessment and the harness binding qualification.
+- Review describes the harness behavior, keeps product claims separate, and lists
+  required positive/negative contract tests. No declarative product scenario input.
+
+The existing `testCoverage` planning record describes harness contract-test gaps
+in this lane; it is not permission to generate the original E2E coverage scenario.
+All exclusion review, repository ownership, validation and publication checks
+still apply. The current format supports reviewed functional harness mechanisms,
+not a general infrastructure/product-maintenance exemption.
+
+```powershell
+node src/cli.js submit-test-request --file harness-handoff.local.json --prepare --config pilot.local.json
+node src/cli.js submit-test-request --file harness-handoff.local.json --execute --authorize-commit --authorize-push --authorize-draft-pr --config pilot.local.json
+node src/cli.js comment-test-request --assessment CAPABILITY_RECEIPT_ID --assignment HARNESS_ASSIGNMENT_ID --authorize-comment --config pilot.local.json
+```
+
+These explicit commands are orchestration entrypoints, not a background service.
+The upstream agent invokes them; it supplies a real review rather than an invented
+FILTER result. No new model/provider selection or daily configuration is installed.
+
+### Recovery and qualification
+
+- Harness and coverage use distinct source-bound assignment identities. The
+  original ADO revision is rechecked before either can dispatch. An ordinary
+  `dispatch` cannot bypass the dedicated entrypoint.
+- Replaying a handoff does not create another assignment. Existing harness work
+  from another revision requires reconciliation, not a second proposal. Completed
+  or uncertain workers are not relaunched automatically.
+- Feedback persists an operation before POST. Same request revision/gap/harness
+  revision reuses its completed comment receipt, even if reviewed again. A timeout,
+  malformed acknowledgement or crash leaves an uncertain operation: inspect the
+  receipt marker on the ADO and reconcile; there is no blind automatic repost or
+  lock stealing. Posting requires the captured revision still to match; if the
+  ticket changes, recollect and review instead.
+- Returning from any historical proven gap to `supported` requires a different
+  qualified revision and nonempty verification evidence. Evidence references are
+  reviewer-attested, not an automatic proof that a PR merged or a live E2E passed.
+  An intermediate `needs-evidence` state does not remove this requirement.
+- Existing coverage assignments still follow the repository's normal explicit
+  reconciliation rule; the new lane does not silently supersede prior work.
+
+Offline tests exercise real SQLite, isolated Git, bounded worker tools, commit,
+validation and local-bare push, with injected model/ADO/Draft boundaries. They
+check tag/scope/policy/source gates, negative formula evidence, disjoint writes,
+replay and uncertain comment delivery. They do not claim a real SuperApp run,
+live ADO comment, product harness implementation, or deployment.

@@ -27,6 +27,7 @@ import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
 import { collectTestRequest, acceptTestRequest } from './ado-test-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment } from './ado-harness-request.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
@@ -91,6 +92,8 @@ const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
   node src\\cli.js ado-test-request --id NUMBER --collect --config pilot.local.json
+  node src\\cli.js assess-test-request --file assessment.json --config pilot.local.json
+  node src\\cli.js comment-test-request --assessment ID --authorize-comment --config pilot.local.json
   node src\\cli.js submit-test-request --file handoff.json --prepare --config pilot.local.json
   node src\\cli.js submit-test-request --file handoff.json --execute --authorize-commit --authorize-push --authorize-draft-pr --config pilot.local.json
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
@@ -167,6 +170,20 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (['assess-test-request', 'comment-test-request'].includes(action)) {
+    const values = action === 'assess-test-request' ? ['--config', '--file'] : ['--config', '--assessment', '--assignment'];
+    const switches = action === 'comment-test-request' ? ['--authorize-comment'] : [];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...values, ...switches].includes(key),
+        'Unknown or duplicate test-request option', 'blocked-scope');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Test-request option needs a value');
+    }
+    requireThat([...values, ...switches].filter(key => key !== '--assignment').every(key => seen.has(key)),
+      'Test-request assessment/feedback requires explicit inputs and comment authorization', 'blocked-authorization');
+  }
   if (['ado-test-request', 'submit-test-request'].includes(action)) {
     requireThat(option('--config') && !option('--config').startsWith('--'),
       'Test-request commands require an explicit --config', 'blocked-authorization');
@@ -568,6 +585,14 @@ try {
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
+      case 'assess-test-request':
+        result = recordCapabilityAssessment(config, ledger, input());
+        break;
+      case 'comment-test-request':
+        result = await publishCapabilityComment(config, ledger, option('--assessment'), {
+          authorizeComment: args.includes('--authorize-comment'), assignmentId: option('--assignment') ?? null
+        });
+        break;
       case 'ado-test-request':
         result = await collectTestRequest(config, ledger, Number(option('--id')));
         break;

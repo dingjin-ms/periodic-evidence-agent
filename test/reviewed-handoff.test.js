@@ -20,7 +20,8 @@ import {
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
 
-import { collectTestRequest, prepareTestRequest, acceptTestRequest } from '../src/ado-test-request.js';
+import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
@@ -301,6 +302,218 @@ test('sample request exercises intake through real validation and local push, wi
   const failure = spawnSync(process.execPath, ['--test', 'test/behavior.test.js'], { cwd: bad, encoding: 'utf8', env });
   assert.notEqual(failure.status, 0);
   assert.match(failure.stdout, /deduplication preserves formulas/);
+});
+
+async function harnessFixture(t) {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-01T00:00:00Z') });
+  const ctx = await requestFixture(t);
+  const repo = ctx.config.repositories[0];
+  ctx.config.adoTestRequests.harnessSupport = {
+    enabled: true, scopeApproved: true, approvalRef: 'synthetic-harness-approval',
+    capability: 'e2e-harness-authoring', requestedOutcome: 'extend-e2e-harness'
+  };
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'synthetic-feedback' };
+  repo.allowedWritePrefixes.push('harness');
+  const binding = { ...structuredClone(repo.skillBindings[0]), id: 'fixture-harness',
+    capability: 'e2e-harness-authoring', requestedOutcomes: ['extend-e2e-harness'],
+    allowedWritePrefixes: ['harness'], requiresBehaviorCard: false };
+  repo.skillBindings.push(binding);
+  const qualification = ctx.ledger.qualification(skillQualificationId(repo.id, repo.skillBindings[0].id));
+  ctx.ledger.qualify(skillQualificationId(repo.id, binding.id), {
+    ...qualification, bindingId: binding.id, capability: binding.capability
+  });
+  ctx.item.rev++;
+  ctx.item.fields['System.Tags'] += '; AgenticHarnessRequest';
+  ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = ctx.intake.id;
+  ctx.handoff.intakeSha256 = hash(json(ctx.intake));
+  ctx.assessmentInput = { format: 'ado-test-request-capability-v1', intakeId: ctx.intake.id,
+    intakeSha256: hash(json(ctx.intake)), sourceRevision: ctx.baseRevision,
+    reviewedAt: '2026-10-02T00:00:00Z', reviewer: 'synthetic-source-review', decision: 'needs-harness',
+    missingCapabilities: ['Formula metadata is not exposed by the workbook reader.'],
+    sourcePaths: ['harness/reader.js'], rationale: 'Synthetic gap for routing qualification.', verificationEvidence: [] };
+  t.mock.timers.setTime(new Date('2026-10-05T00:00:00Z').getTime());
+  ctx.handoff.reviewedAt = now();
+  ctx.assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput);
+  ctx.harnessHandoff = structuredClone(ctx.handoff);
+  ctx.harnessHandoff.format = 'ado-harness-request-handoff-v1';
+  ctx.harnessHandoff.planning.improvement.category = 'test-maintainability';
+  ctx.harnessHandoff.planning.improvement.capabilities = ['e2e-harness-authoring'];
+  ctx.harnessHandoff.planning.testCoverage.capability = 'e2e-harness-authoring';
+  ctx.harnessHandoff.planning.requestedOutcome = 'extend-e2e-harness';
+  ctx.harnessHandoff.review.nextAction = 'Extend only the reusable fixture reader and add contract tests; no product scenario.';
+  return ctx;
+}
+
+test('harness gap holds coverage and prepares one separate bounded agent assignment', async t => {
+  const ctx = await harnessFixture(t);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  assert.deepEqual(recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput), ctx.assessment);
+  const first = prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff);
+  assert.equal(first.assignment.capability, 'e2e-harness-authoring');
+  assert.deepEqual(first.assignment.allowedWritePrefixes, ['harness']);
+  assert.equal(first.assignment.requestedOutcome, 'extend-e2e-harness');
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment.id, first.assignment.id);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+  await verifyCurrentTestRequest(ctx.config, ctx.ledger, first.assignment.id, ctx.read);
+  ctx.item.rev++;
+  ctx.item.fields['System.Tags'] = 'AgenticTestRequest';
+  await assert.rejects(verifyCurrentTestRequest(ctx.config, ctx.ledger, first.assignment.id, ctx.read), /changed or was withdrawn/);
+  await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff), /superseded/);
+});
+
+for (const condition of ['no-tag', 'overlapping-bounds', 'normalized-overlap', 'unapproved', 'environment', 'no-assessment'])
+  test(`harness route rejects ${condition}`, async t => {
+    const ctx = await harnessFixture(t);
+    if (condition === 'overlapping-bounds') ctx.config.repositories[0].skillBindings[1].allowedWritePrefixes = ['test'];
+    if (condition === 'normalized-overlap') ctx.config.repositories[0].skillBindings[1].allowedWritePrefixes = ['./test/'];
+    if (condition === 'unapproved') ctx.config.adoTestRequests.harnessSupport.scopeApproved = false;
+    if (['no-tag', 'no-assessment'].includes(condition)) {
+      ctx.item.rev++;
+      if (condition === 'no-tag') ctx.item.fields['System.Tags'] = 'AgenticTestRequest; AgenticHarnessRequestOther';
+      const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+      ctx.harnessHandoff.intakeId = intake.id;
+      ctx.harnessHandoff.intakeSha256 = hash(json(intake));
+      if (condition === 'no-tag') recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+        intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() });
+    }
+    if (condition === 'environment') recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+      decision: 'blocked-environment', missingCapabilities: [], reviewedAt: '2026-10-03T00:00:00Z' });
+    assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff));
+    assert.equal(ctx.ledger.all('assignment').length, 0);
+  });
+
+test('a new request revision cannot duplicate an existing harness assignment', async t => {
+  const ctx = await harnessFixture(t);
+  prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff);
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, intakeId: intake.id,
+    intakeSha256: hash(json(intake)), reviewedAt: now() });
+  const handoff = { ...ctx.harnessHandoff, intakeId: intake.id, intakeSha256: hash(json(intake)) };
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, handoff), /Prior harness assignment/);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+});
+
+test('enabled harness routing requires a supported assessment even without a recorded gap', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.adoTestRequests.harnessSupport = { enabled: true };
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = intake.id;
+  ctx.handoff.intakeSha256 = hash(json(intake));
+  ctx.handoff.reviewedAt = now();
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+});
+
+test('coverage reassessment requires changed revision and qualification evidence, including through intermediate states', async t => {
+  const ctx = await harnessFixture(t);
+  const supported = { ...ctx.assessmentInput, decision: 'supported', missingCapabilities: [], reviewedAt: '2026-10-04T00:00:00Z' };
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /new harness revision/);
+  recordCapabilityAssessment(ctx.config, ctx.ledger, { ...supported, decision: 'needs-evidence', reviewedAt: '2026-10-03T00:00:00Z' });
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /new harness revision/);
+  const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
+  ctx.ledger.qualify(qualificationId, { ...ctx.ledger.qualification(qualificationId), baseRevision: 'a'.repeat(40) });
+  supported.sourceRevision = 'a'.repeat(40);
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /verification evidence/);
+  supported.verificationEvidence = ['Synthetic integrated harness contract test receipt'];
+  recordCapabilityAssessment(ctx.config, ctx.ledger, supported);
+  ctx.handoff.planning.testCoverage.sourceRevision = supported.sourceRevision;
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff).assignment.capability, 'integration-test-authoring');
+});
+
+test('harness request runs the bounded proposer through validation and a separate Draft', async t => {
+  const ctx = await harnessFixture(t);
+  t.mock.timers.reset();
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const repo = ctx.config.repositories[0];
+  repo.validationGates[0].args = ['--test', 'harness/reader.test.js'];
+  const contract = repositoryValidationContract(repo);
+  const key = skillQualificationId(repo.id, 'fixture-harness');
+  ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), validationContractVersion: contract.version,
+    validationContractSha256: contract.sha256 });
+  await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+  let models = 0, drafts = 0;
+  const options = { execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
+    dispatchDependencies: {
+      runModel: async (_config, _ledger, _job, assignment, _investigation, toolkit) => {
+        models++;
+        assert.equal(assignment.capability, 'e2e-harness-authoring');
+        assert.match(assignment.questions[0], /Formula metadata/);
+        assert.throws(() => toolkit.write('test/new-product-case.js', 'bad'), /bounds|scope|allowed/);
+        toolkit.write('harness/reader.js', 'export const formula = cell => cell.formula ?? null;\n');
+        toolkit.write('harness/reader.test.js', "import assert from 'node:assert/strict';\nimport { formula } from './reader.js';\nassert.equal(formula({formula: '=B2*C2', value: 6}), '=B2*C2');\nassert.equal(formula({value: 6}), null);\n");
+        toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic formula-aware reader contract.',
+          title: 'Extend harness formula evidence', description: 'Harness-only fixture; no product scenario.',
+          skillResult: { status: 'succeeded', classification: 'test-maintainability',
+            changedFiles: ['harness/reader.js', 'harness/reader.test.js'], testsAddedOrUpdated: ['formula evidence'],
+            behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: false } });
+      },
+      createDraft: async (_config, _ledger, _job, _repo, revision) => {
+        drafts++;
+        return { url: 'https://example.invalid/harness/draft/1', isDraft: true, headRevision: revision };
+      }
+    } };
+  const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options);
+  assert.equal(result.result.outcome, 'draft-pr-validated', json(result.result));
+  assert.equal(result.result.validation[0].status, 'passed');
+  assert.equal(result.result.draftPR.headRevision, result.result.sourceRevision);
+  let comments = 0;
+  const feedback = { authorizeComment: true, assignmentId: result.assignment.id, read: ctx.read,
+    getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+      comments++;
+      assert.match(JSON.parse(options.body).text, /https:\/\/example.invalid\/harness\/draft\/1/);
+      return Response.json({ id: 55, workItemId: 123 });
+    } };
+  await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, feedback);
+  await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, feedback);
+  assert.equal(comments, 1);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options), /never-dispatched/);
+  assert.equal(models, 1);
+  assert.equal(drafts, 1);
+});
+
+test('capability feedback is escaped, authorized, source checked and posted at most once', async t => {
+  const ctx = await harnessFixture(t);
+  assert.match(capabilityComment(ctx.assessment), /not yet supported by the test harness/);
+  assert.doesNotMatch(capabilityComment({ ...ctx.assessment, missingCapabilities: ['<script>unsafe</script>'] }), /<script>/);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async (url, options) => {
+      posts++;
+      assert.equal(options.redirect, 'error');
+      assert.equal(options.method, 'POST');
+      assert.match(url, /workItems\/123\/comments\?api-version=7.1-preview.4$/);
+      assert.match(JSON.parse(options.body).text, /AgenticHarnessRequest/);
+      return Response.json({ id: 44, workItemId: 123 });
+    } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, authorizeComment: false }), /authorization/);
+  assert.equal(posts, 0);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options);
+  assert.equal(result.commentId, 44);
+  assert.deepEqual(await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), result);
+  assert.equal(posts, 1);
+  const repeated = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: '2026-10-03T00:00:00Z' });
+  await publishCapabilityComment(ctx.config, ctx.ledger, repeated.id, options);
+  assert.equal(posts, 1);
+});
+
+test('uncertain ADO writes never retry and changed requests never post', async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('network lost after write'); } };
+  ctx.item.rev++;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /changed before feedback/);
+  assert.equal(posts, 0);
+  ctx.item.rev--;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  assert.equal(posts, 1);
 });
 
 async function addOneJsRepository(ctx, {
@@ -713,6 +926,7 @@ for (const automaticRsi of [false, true]) test(
     mkdirSync(reference);
     writeFileSync(join(reference, 'README.txt'), 'Separate synthetic agent-system reference.\n');
     const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
       '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], reference);
     await git(['init', '-b', 'main', '--quiet']);
     await git(['remote', 'add', 'origin', `https://github.com/${config.rsi.targetRepository}.git`]);

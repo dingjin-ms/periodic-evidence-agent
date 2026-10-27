@@ -25,7 +25,7 @@ function setup(t) {
   const repo = config.repositories.find(repo => repo.id === policy.repoId);
   repo.routingApproved = true; repo.owner = 'fixture'; repo.referenceCheckout = root;
   const binding = repo.skillBindings.find(binding => binding.capability === policy.capability);
-  binding.enabled = true; binding.qualification = 'qualified';
+  binding.enabled = true; binding.qualification = 'qualified'; binding.skillPath = 'src/verifier.js';
   repo.allowedWritePrefixes = binding.allowedWritePrefixes; repo.allowedWriteFiles = binding.allowedWriteFiles ?? [];
   const ledger = new Ledger(root);
   ledger.qualify(skillQualificationId(repo.id, binding.id), { baseRevision: revision });
@@ -37,7 +37,7 @@ function setup(t) {
   t.after(() => { ledger.close(); rmSync(root, { recursive: true, force: true }); });
   return { config, ledger, item, calls: 0, comments: 0, read: async () => item };
 }
-function dependencies(ctx, { decision = 'blocked-environment', crash = false, incomplete = false } = {}) {
+function dependencies(ctx, { decision = 'blocked-environment', crash = false, incomplete = false, support, rejectedFinish = false } = {}) {
   return { read: ctx.read, execute: async () => ({ stdout: incomplete ? 'x'.repeat(30000) : 'export const supported = false;\n' }),
     feedback: { getToken: async () => 'fixture', fetchResponse: async (_url, options) => {
       ctx.comments++; assert.equal(options.redirect, 'error');
@@ -60,8 +60,9 @@ function dependencies(ctx, { decision = 'blocked-environment', crash = false, in
             assert.equal(page.revision, 'a'.repeat(40));
             const finish = options.tools.find(tool => tool.name === 'pilot_request_finish');
             const result = JSON.parse(await finish.handler({ decision, missingCapabilities: [], sourcePaths: ['src/verifier.js'],
-              rationale: 'The test environment cannot read protected workbooks.', verificationEvidence: [], handoff: null }));
-            assert.equal(Boolean(result.error), incomplete);
+              rationale: 'The test environment cannot read protected workbooks.', verificationEvidence: [], handoff: null,
+              ...(support ? { support } : {}) }));
+            assert.equal(Boolean(result.error), incomplete || rejectedFinish);
           }, disconnect: async () => {} };
       } });
     } };
@@ -127,6 +128,56 @@ test('bounded queue tick discovers requests and reuses their completion receipts
   await runTestRequestQueue(ctx.config, ctx.ledger, { authorizeReview: true }, deps);
   assert.equal(ctx.calls, 1);
 });
+
+test('parallel source reads keep unique receipt IDs and finish waits for delivery', async t => {
+  const ctx = setup(t), deps = dependencies(ctx);
+  deps.connect = async (_config, _cwd, action) => action({ createSession: async options => {
+    let event;
+    return { sessionId: 'parallel-source-session', on: fn => { event = fn; return () => {}; },
+      rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
+      sendAndWait: async () => {
+        event({ type: 'assistant.turn_start' });
+        const source = options.tools.find(tool => tool.name === 'pilot_request_source');
+        const finish = options.tools.find(tool => tool.name === 'pilot_request_finish');
+        const submission = { decision: 'blocked-environment', missingCapabilities: [],
+          sourcePaths: ['src/one.js', 'src/two.js'], rationale: 'Fixture environment unavailable.', verificationEvidence: [], handoff: null };
+        const reads = ['src/one.js', 'src/two.js'].map(path => source.handler({ action: 'read', path }));
+        assert.match(JSON.parse(await finish.handler(submission)).error.message, /outstanding source reads/);
+        for (const response of await Promise.all(reads)) assert.equal(JSON.parse(response).error, undefined);
+        assert.equal(JSON.parse(await finish.handler(submission)).error, undefined);
+      }, disconnect: async () => {} };
+  } });
+  await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps);
+  const reads = ctx.ledger.status().operations.filter(row => row.kind === 'ado-request-filter-source');
+  assert.equal(reads.length, 2);
+  assert.equal(new Set(reads.map(row => row.id)).size, 2);
+});
+
+test('skill support is distinct from a blocked evidence environment', async t => {
+  const ctx = setup(t);
+  ctx.config.adoTestRequests.automation.requireSupportMatrix = true;
+  const support = { skill: 'supported', environment: 'blocked', requirements: [{
+    requirement: 'Count saved rows', status: 'supported', sourcePaths: ['src/verifier.js'], reason: 'Reader supports the assertion; credential access is unavailable.'
+  }] };
+  const result = await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, dependencies(ctx, { support }));
+  assert.equal(result.support.skill, 'supported'); assert.equal(result.support.environment, 'blocked');
+  assert.equal(result.state, 'blocked-environment'); assert.equal(ctx.ledger.all('assignment').length, 0);
+});
+
+for (const condition of ['missing-matrix', 'unknown-requirement', 'blocked-dispatch', 'unread-citation']) {
+  test(`support assessment rejects ${condition}`, async t => {
+    const ctx = setup(t);
+    ctx.config.adoTestRequests.automation.requireSupportMatrix = true;
+    const support = { skill: 'supported', environment: 'blocked', requirements: [{
+      requirement: 'Count saved rows', status: condition === 'unknown-requirement' ? 'unknown' : 'supported',
+      sourcePaths: [condition === 'unread-citation' ? 'src/unread.js' : 'src/verifier.js'], reason: 'Fixture source.'
+    }] };
+    const deps = dependencies(ctx, { support: condition === 'missing-matrix' ? undefined : support,
+      decision: condition === 'blocked-dispatch' ? 'supported' : 'blocked-environment', rejectedFinish: true });
+    await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /did not complete/);
+    assert.equal(ctx.ledger.all('assignment').length, 0);
+  });
+}
 
 test('post-finish session failure does not activate a capability assessment', async t => {
   const ctx = setup(t), deps = dependencies(ctx), connect = deps.connect;

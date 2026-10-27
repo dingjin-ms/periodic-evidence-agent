@@ -135,6 +135,21 @@ approved standalone `localFilter` limits/source pins and credit-policy acceptanc
 its source revision must match repository qualification. Feedback needs its
 independent policy; publication needs normal repository/dispatch grants.
 
+Set `automation.requireSupportMatrix: true` to require a fully read skill entry
+and a per-requirement `support` result. Its `skill` state is `supported`,
+`unsupported`, or `unknown`; its separate `environment` state is `ready`, `blocked`,
+or `unknown`. Each requirement cites completely delivered pinned files. Schema
+expressibility, registered native actions/verifiers, lifecycle registration and
+skill write bounds all matter. Missing runtime access is not a missing assertion.
+A blocked environment cannot dispatch even when every business assertion is
+supported. Revise sample requirements only with user authorization; never drop an
+assertion merely to turn a blocked run green. Recollect the changed ADO revision.
+
+Source requests may execute concurrently. Each receives its own immutable call ID
+before awaiting Git, and finish waits for all outstanding reads; receipt collisions
+must never make a successfully delivered source appear unreadable. Source errors
+are retained separately from successful read receipts.
+
 Each request holds a ledger lock. Started/interrupted model or dispatch attempts
 are never automatically retried. Completed receipts are replayed. ADO feedback
 increments work-item revision: unchanged selected fields can reuse a completed

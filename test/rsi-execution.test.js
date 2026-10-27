@@ -195,6 +195,47 @@ test('normal flow ending executes RSI, authors a real candidate and independentl
   }
 });
 
+test('RSI compacts only private clone objects without dropping history or unreachable objects', async t => {
+  const git = (workspace, args, input) => execFileSync('git',
+    ['--no-pager', '-c', 'core.autocrlf=false', ...args],
+    { cwd: workspace, input, encoding: 'utf8', windowsHide: true, timeout: 10000 }).trim();
+  const objects = workspace => git(workspace, ['cat-file', '--batch-all-objects',
+    '--batch-check=%(objectname) %(objecttype) %(objectsize)']).split(/\r?\n/).sort();
+  let sourceObjects, packedObject, looseObject;
+  const ctx = fixture(t, config => {
+    const reference = config.rsi.automation.referenceCheckout;
+    packedObject = git(reference, ['hash-object', '-w', '--stdin'], 'Packed unreachable fixture\n');
+    git(reference, ['pack-objects', join(reference, '.git', 'objects', 'pack', 'pack')], `${packedObject}\n`);
+    fs.unlinkSync(join(reference, '.git', 'objects', packedObject.slice(0, 2), packedObject.slice(2)));
+    looseObject = git(reference, ['hash-object', '-w', '--stdin'], 'Loose unreachable fixture\n');
+    sourceObjects = objects(reference);
+  });
+  const reference = ctx.config.rsi.automation.referenceCheckout;
+  const revision = ctx.config.rsi.automation.baselineRevision;
+  const looseHead = workspace => join(workspace, '.git', 'objects', revision.slice(0, 2), revision.slice(2));
+  assert.ok(existsSync(looseHead(reference)));
+  const result = await finishApp(ctx.config, ctx.ledger, 'flow', {
+    launch: async (...args) => {
+      const { execution } = JSON.parse(ctx.ledger.db.prepare(
+        "SELECT detail FROM operations WHERE kind='rsi-execution'").get().detail);
+      for (const workspace of [execution.baselineWorkspace, execution.workspace]) {
+        assert.equal(existsSync(looseHead(workspace)), false, 'Owned clone must compact its loose HEAD object');
+        assert.equal(git(workspace, ['rev-parse', 'HEAD']), revision);
+        assert.deepEqual(objects(workspace), sourceObjects);
+        assert.equal(git(workspace, ['show', 'HEAD:src/flow.mjs']), broken.trim());
+        assert.equal(git(workspace, ['cat-file', '-p', packedObject]), 'Packed unreachable fixture');
+        assert.equal(git(workspace, ['cat-file', '-p', looseObject]), 'Loose unreachable fixture');
+      }
+      return ctx.launch(...args);
+    }
+  });
+  assert.equal(result.rsi.execution.state, 'proposed', JSON.stringify(result.rsi.execution));
+  assert.equal(result.rsi.execution.comparison.qualified, true);
+  assert.equal(ctx.launches, 1);
+  assert.deepEqual(objects(reference), sourceObjects);
+  assert.ok(existsSync(looseHead(reference)), 'Reference object storage must remain untouched');
+});
+
 test('app-hosted RSI claims and resumes in the existing app without a provider profile or model launch', async t => {
   const ctx = fixture(t, config => {
     config.rsi.automation.executionMode = 'app-hosted';

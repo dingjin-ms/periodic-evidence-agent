@@ -374,6 +374,8 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
         await git(execution, ['clone', '--no-hardlinks', '--no-checkout', '--', reference, workspace], directory);
         await git(execution, ['checkout', '--detach', automation.baselineRevision], workspace);
         await git(execution, ['remote', 'set-url', 'origin', remote], workspace);
+        // Compact owned metadata without discarding unreachable objects or skipping allocation checks.
+        await git(execution, ['repack', '-ad', '--keep-unreachable'], workspace);
         await cleanHead(execution, workspace, automation.baselineRevision);
         return { workspace, revision: automation.baselineRevision };
       });

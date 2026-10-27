@@ -11,7 +11,7 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import {
-  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation
+  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import {
@@ -19,6 +19,7 @@ import {
 } from '../src/repository-skills.js';
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
+import { beginApp, openApp, appWorker } from '../src/app-native.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
 import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
@@ -302,6 +303,90 @@ test('sample request exercises intake through real validation and local push, wi
   const failure = spawnSync(process.execPath, ['--test', 'test/behavior.test.js'], { cwd: bad, encoding: 'utf8', env });
   assert.notEqual(failure.status, 0);
   assert.match(failure.stdout, /deduplication preserves formulas/);
+});
+
+async function supportedRequestAssessment(ctx) {
+  const input = { format: 'ado-test-request-capability-v1', intakeId: ctx.intake.id,
+    intakeSha256: hash(json(ctx.intake)), sourceRevision: ctx.baseRevision,
+    reviewedAt: now(), reviewer: 'fixture-reviewer', decision: 'supported', missingCapabilities: [],
+    sourcePaths: ['src/value.js'], rationale: 'Synthetic supported coverage contract.', verificationEvidence: [] };
+  recordCapabilityAssessment(ctx.config, ctx.ledger, input);
+  return input;
+}
+
+for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold'])
+  test(`ADO coverage publication blocks ${interruption} and retains authored work`, async t => {
+    const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    let pushes = 0, drafts = 0;
+    const hold = () => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment,
+      decision: 'needs-harness', missingCapabilities: ['Newly reviewed formula evidence gap'], reviewedAt: now() });
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
+      dispatchDependencies: {
+        runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
+          toolkit.write('test/behavior.test.js', formulaTest);
+          toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
+          toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+            description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
+              changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
+              behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+          if (interruption === 'authoring-hold') hold();
+          if (interruption === 'source-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
+        },
+        pushBranch: async () => { pushes++; if (interruption === 'push-hold') hold(); },
+        createDraft: async () => { drafts++; assert.fail('Draft must not be created after changed admission'); }
+      }
+    }), /Coverage is held|approved test-request/);
+    assert.equal(pushes, interruption === 'push-hold' ? 1 : 0);
+    assert.equal(drafts, 0);
+    const job = ctx.ledger.status().jobs[0];
+    assert.equal(job.state, 'blocked');
+    assert.ok(existsSync(join(job.workspace, 'test/behavior.test.js')));
+    const result = ctx.ledger.all('workerResult').at(-1);
+    assert.equal(result.outcome, 'blocked');
+    assert.ok(result.sourceRevision);
+    assert.equal(result.validation[0].status, 'passed');
+  });
+
+test('shared admission enforces holds and app-native rejects unsupported ADO execution paths', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.activation.collect = true;
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxCalls = 10;
+  const runId = 'ado-app-boundary';
+  beginApp(ctx.config, { runId, executorSessionId: 'fixture-session', dryRun: false, provenance: 'app-tool' });
+  const { ledger } = openApp(ctx.config, runId, false);
+  ctx.additionalLedgers.push(ledger);
+  for (const binding of ctx.config.repositories[0].skillBindings) {
+    const key = skillQualificationId('office-agent', binding.id);
+    ledger.qualify(key, ctx.ledger.qualification(key));
+  }
+  ctx.ledger = ledger;
+  ctx.intake = await collectTestRequest(ctx.config, ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = ctx.intake.id;
+  ctx.handoff.intakeSha256 = hash(json(ctx.intake));
+  ctx.handoff.reviewedAt = now();
+  const assessment = await supportedRequestAssessment(ctx);
+  const prepared = prepareTestRequest(ctx.config, ledger, ctx.handoff);
+  const assignment = prepared.assignment;
+  const prepareInput = { investigationId: assignment.investigationId, repoId: assignment.repoId,
+    intent: assignment.intent, testCoveragePlanId: assignment.testCoveragePlanId };
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'prepare', prepareInput), /app-native execution is not supported/);
+  recordCapabilityAssessment(ctx.config, ledger, { ...assessment, decision: 'needs-evidence', reviewedAt: now() });
+  assert.throws(() => requireCurrentAssignment(ctx.config, ledger, ledger.get('investigation', assignment.investigationId), assignment), /Coverage is held/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'prepare', prepareInput), /app-native execution is not supported/);
+  // Simulate an app worker persisted by the previous version before this guard existed.
+  ledger.db.prepare('INSERT INTO app_workers VALUES(?,?)').run(assignment.id, json({ id: assignment.id,
+    runId, state: 'prepared', assignment, claimId: null, execution: 'external-app-native-session' }));
+  const claim = { assignmentId: assignment.id, claimId: 'fixture-claim', coordinatorAgentId: ctx.config.agent.id };
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
+  ledger.db.prepare('UPDATE app_workers SET body=? WHERE id=?').run(json({ id: assignment.id,
+    runId, state: 'claimed', assignment, claimId: claim.claimId, execution: 'external-app-native-session' }), assignment.id);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'result', { ...claim, outcome: 'draft-reported' }), /app-native execution is not supported/);
 });
 
 async function harnessFixture(t) {

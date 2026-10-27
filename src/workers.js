@@ -39,6 +39,7 @@ import { nativeCommand, nativeTemporaryDirectory } from './native-command.js';
 import { completeRunEvidence, persistRunArtifact } from './state-retention.js';
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
 import { requireAdoEvidenceCohort } from './ado-cohort.js';
+import { requireTestRequestAssignment, verifyCurrentTestRequest } from './ado-test-request.js';
 import { command } from './command.js';
 import { createPreparedOutputObserver } from './prepared-output-observer.js';
 
@@ -250,6 +251,7 @@ export function makePlannedImprovementAssignment(config, ledger, investigation, 
   return makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
 }
 export function requireCurrentAssignment(config, ledger, investigation, assignment) {
+  requireTestRequestAssignment(config, ledger, assignment);
   requireThat(investigation && investigation.version === assignment.investigationVersion &&
     ledger.get('investigation', investigation.id)?.version === investigation.version,
   'Investigation was superseded before execution', 'blocked-reconciliation');
@@ -3959,7 +3961,6 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
     requireThat(dependencies[adoTestRequestPermit] === true,
       'ADO test requests require the dedicated source-rechecking dispatch entrypoint', 'blocked-authorization');
-    (await import('./ado-test-request.js')).requireTestRequestAssignment(config, ledger, assignment);
   }
   const permittedReviewedHandoff = dependencies[reviewedHandoffPermit] === true &&
     assignment.intent === 'improvement' && assignment.skillBindingId &&
@@ -4299,11 +4300,15 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       'blocked-validation');
       const buildPlan = repo.draftBuild?.enabled ? await draftBuildPlan(ledger, current, repo, revision) : null;
       const { caseSelection = null, harnessSelection = null } = buildPlan ?? {};
+      if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request'))
+        await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
       ledger.operation(`${id}:push`, id, 'push', { revision });
       await (dependencies.pushBranch ?? pushDraftBranch)(
         config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
       ledger.finishOperation(`${id}:push`, 'completed', { revision });
       if (repo.draftBuild?.enabled) {
+        requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
         const queuedBuild = await (dependencies.queueDraftBuild ?? queueAdoDraftBuild)(
           config, ledger, current, repo, revision);
         requireThat(queuedBuild?.status === 'queued' && queuedBuild.blocking === false &&
@@ -4333,6 +4338,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
             (harnessSelection ? '\n\nScope: **harness contract tests only**, not new product scenarios or full regression.\n\n' +
               harnessSelection.testPaths.map(path => `- \`${path}\``).join('\n') : ''))
       };
+      if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request'))
+        await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
       const createdDraft = await (dependencies.createDraft ?? createAdoDraft)(
         config, ledger, current, repo, revision, publicationProposal);
       validateRecord(createdDraft, 'draftPR');
@@ -4402,7 +4410,6 @@ export async function dispatchReviewedHandoff(config, ledger, id, dependencies =
   return dispatch(config, ledger, id, { ...dependencies, [reviewedHandoffPermit]: true });
 }
 export async function dispatchAdoTestRequest(config, ledger, id, dependencies = {}) {
-  const { verifyCurrentTestRequest } = await import('./ado-test-request.js');
   await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
   return dispatch(config, ledger, id, { ...dependencies, [adoTestRequestPermit]: true });
 }

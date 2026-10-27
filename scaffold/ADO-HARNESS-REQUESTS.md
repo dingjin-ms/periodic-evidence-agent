@@ -133,8 +133,18 @@ FILTER result. No new model/provider selection or daily configuration is install
 ### Recovery and qualification
 
 - Harness and coverage use distinct source-bound assignment identities. The
-  original ADO revision is rechecked before either can dispatch. An ordinary
-  `dispatch` cannot bypass the dedicated entrypoint.
+  original ADO revision is rechecked before either can dispatch, before branch
+  push and before Draft creation. Shared assignment admission rechecks capability
+  holds and source-bound review/policy at publication boundaries as well as
+  dispatch. A new hold retains authored source/validation as blocked work without
+  publishing it; a hold arriving during push blocks subsequent build/PR effects
+  without pretending an already completed push was undone. An ordinary `dispatch`
+  cannot bypass the dedicated entrypoint.
+- ADO test-request work is explicitly unsupported through `appWorker`: preparation,
+  claim (including replay), binding and result actions reject this evidence kind.
+  Use the dedicated source-rechecking controller. Existing app-native work for
+  other evidence kinds is unchanged; no app-native grants are inferred from a
+  prepared test-request assignment.
 - Replaying a handoff does not create another assignment. Existing harness work
   from another revision requires reconciliation, not a second proposal. Completed
   or uncertain workers are not relaunched automatically. Equivalent capability

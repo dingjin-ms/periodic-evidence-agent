@@ -653,6 +653,11 @@ function saveWorker(ledger, value) {
   ledger.db.prepare('UPDATE app_workers SET body=? WHERE id=?').run(json(value), value.id);
   return value;
 }
+function requireAppWorkerEvidence(ledger, assignment) {
+  requireThat(!assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request'),
+    'ADO test requests require the dedicated source-rechecking controller; app-native execution is not supported',
+    'blocked-authorization');
+}
 export function appWorker(config, ledger, runId, action, input) {
   const run = getRun(ledger, runId);
   requireThat(!run.dryRun && run.provenance === 'app-tool' && config.activation.dispatch,
@@ -669,6 +674,7 @@ export function appWorker(config, ledger, runId, action, input) {
       : makeAssignment(config, investigation, input.repoId, input.intent);
     requireThat(assignment.repoId === input.repoId && assignment.intent === input.intent,
       'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
+    requireAppWorkerEvidence(ledger, assignment);
     requireCurrentAssignment(config, ledger, investigation, assignment);
     const latest = new Set(ledger.latestEvidence().map(e => e.id));
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
@@ -693,6 +699,7 @@ export function appWorker(config, ledger, runId, action, input) {
       'baseRevision', 'outcome', 'evidenceRef', 'agencyRequest', 'agencySubmission', 'agencyResult'], ['assignmentId', 'claimId']);
     identifier(input.claimId);
     const value = worker(ledger, input.assignmentId);
+    requireAppWorkerEvidence(ledger, value.assignment);
     const before = value.state;
     requireThat(value.runId === runId, 'Assignment belongs to another app run');
     if (action === 'claim') {

@@ -4,17 +4,18 @@ import {
   mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
   symlinkSync, unlinkSync, utimesSync, writeFileSync
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { command, seedDeclarativeDependencies } from '../src/workers.js';
 
-async function fixture(t) {
+async function fixture(t, { extraDependencyRoots = 0 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'dependency-seed-progress-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   const source = join(root, 'source'), workspace = join(root, 'workspace');
   mkdirSync(source);
   writeFileSync(join(source, '.gitignore'),
-    'ooui/.store/\nooui/node_modules/\nooui/lib/\nooui/dist/\n');
+    'ooui/.store/\nooui/node_modules/\nooui/lib/\nooui/dist/\n' +
+    (extraDependencyRoots ? 'node_modules/\n' : ''));
   const git = async (cwd, args) => (await command('git', [
     '-c', 'core.autocrlf=false', '-c', 'core.hooksPath=.git/no-hooks', ...args
   ], cwd)).stdout.trim();
@@ -31,8 +32,41 @@ async function fixture(t) {
   writeFileSync(join(source, 'ooui/lib/output.js'), 'built');
   symlinkSync(join(source, 'ooui/.store/pkg'), join(source, 'ooui/node_modules/alias'),
     process.platform === 'win32' ? 'junction' : 'dir');
+  for (let index = 0; index < extraDependencyRoots; index++) {
+    const path = join(source, 'ooui', 'packages', `pkg-${index}`, 'node_modules');
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'dependency.js'), 'dependency');
+  }
   return { root, source, workspace, revision, git };
 }
+
+test('only the initial source scan expands its worker budget while all byte witnesses remain complete', async t => {
+  const { root, source, workspace, revision } =
+    await fixture(t, { extraDependencyRoots: 16 });
+  const seed = await seedDeclarativeDependencies(source, workspace, revision, 30000);
+  assert.deepEqual(await seedDeclarativeDependencies(source, workspace, revision, 30000,
+    { expectedSeed: seed }), seed);
+  const journals = readdirSync(root).filter(name => name.includes('.dependency-verification-'))
+    .map(name => readFileSync(join(root, name), 'utf8').trim().split('\n').map(JSON.parse));
+  assert.equal(journals.length, 2);
+  for (const records of journals) {
+    const scans = records.at(-1).scans;
+    const initial = records[0].verificationMode === 'initial-byte-seed';
+    assert.deepEqual(Object.keys(scans).sort(), initial
+      ? ['copiedWorkspace', 'initialSource', 'retainedSource']
+      : ['copiedWorkspace', 'retainedSource']);
+    for (const [name, scan] of Object.entries(scans)) {
+      assert.equal(scan.state, 'passed');
+      assert.equal(scan.hashedFileCount, 18);
+      assert.equal(scan.hashedBytes, 169);
+      assert.equal(scan.completedTasks, scan.taskCount);
+      assert.equal(scan.workerCount, availableParallelism() > 1
+        ? Math.min(name === 'initialSource' ? 16 : 8, availableParallelism(), scan.taskCount)
+        : 0);
+      if (availableParallelism() > 1) assert.ok(scan.taskCount >= 16);
+    }
+  }
+});
 
 test('dependency scans persist exact byte work and reject ignored-byte drift with clean identical SHA', async t => {
   const { root, source, workspace, revision, git } = await fixture(t);

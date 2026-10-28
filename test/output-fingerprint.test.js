@@ -17,6 +17,18 @@ import {
 import { capturePreparedOutputs, outputFingerprint, verifyPreparedOutputs } from '../src/workers.js';
 import { hash } from '../src/hash.js';
 
+test('invalid worker limits reject before reading output bytes', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fingerprint-worker-limit-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'output.js'), 'unchanged');
+  for (const limit of [0, -1, 1.5, 17, NaN]) {
+    const telemetry = {};
+    await assert.rejects(outputFingerprint(root, ['output.js'], false, telemetry, null, limit),
+      /worker limit must be an integer/);
+    assert.equal(telemetry.hashedFileCount, undefined);
+  }
+});
+
 test('file hashes reuse bounded reads for empty, small and buffer-boundary content', t => {
   const root = mkdtempSync(join(tmpdir(), 'fingerprint-buffer-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

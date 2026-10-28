@@ -1134,15 +1134,18 @@ function profileForGate(gate) {
   return { path: gate.profilePath, sha256: gate.profileSha256, bytes };
 }
 export async function outputFingerprint(
-  workspace, paths, captureEntries = false, telemetry = null, signal = null) {
+  workspace, paths, captureEntries = false, telemetry = null, signal = null, workerLimit = 8) {
   const started = performance.now();
   const cpu = telemetry ? process.cpuUsage() : null;
   preparationProgress.publish({
     event: 'output-fingerprint-started', workspace, pathCount: paths.length
   });
   try {
+    requireThat(Number.isInteger(workerLimit) && workerLimit >= 1 && workerLimit <= 16,
+      'Output fingerprint worker limit must be an integer from 1 to 16', 'blocked-validation');
     signal?.throwIfAborted();
-    const result = await computeOutputFingerprint(workspace, paths, captureEntries, telemetry, signal);
+    const result = await computeOutputFingerprint(
+      workspace, paths, captureEntries, telemetry, signal, workerLimit);
     preparationProgress.publish({
       event: 'output-fingerprint-completed', workspace,
       valid: Boolean(result), durationMs: performance.now() - started
@@ -1156,7 +1159,8 @@ export async function outputFingerprint(
     }
   }
 }
-async function computeOutputFingerprint(workspace, paths, captureEntries, telemetry, signal) {
+async function computeOutputFingerprint(
+  workspace, paths, captureEntries, telemetry, signal, workerLimit) {
   const hasDependencyDirectory = paths.some(path =>
     /(?:^|\/)(?:node_modules|\.store)$/.test(path.replaceAll('\\', '/')) &&
     existsSync(join(workspace, path)) && lstatSync(join(workspace, path)).isDirectory());
@@ -1167,7 +1171,7 @@ async function computeOutputFingerprint(workspace, paths, captureEntries, teleme
       outputFingerprintTaskEntryCount(target, info, new Map()) > maxOutputFingerprintTaskEntries;
   });
   if ((paths.length >= 8 || hasDependencyDirectory || hasLargePath) && availableParallelism() > 1)
-    return parallelOutputFingerprint(workspace, paths, captureEntries, telemetry, signal);
+    return parallelOutputFingerprint(workspace, paths, captureEntries, telemetry, signal, workerLimit);
   const fileReads = channel('periodic-evidence-agent.fingerprint-file-read');
   const observe = ({ bytes }) => {
     telemetry.hashedFileCount++;
@@ -1219,12 +1223,13 @@ function outputFingerprintTaskEntryCount(target, info, counts, telemetry) {
   counts.set(target, count);
   return count;
 }
-async function runOutputFingerprintTasks(workspace, tasks, captureEntries, telemetry = null, signal = null) {
+async function runOutputFingerprintTasks(
+  workspace, tasks, captureEntries, telemetry = null, signal = null, workerLimit = 8) {
   const serialized = Array(tasks.length);
   const capturedEntries = [];
   const workers = [];
   const taskTimers = new Map();
-  const workerCount = Math.min(8, availableParallelism(), tasks.length);
+  const workerCount = Math.min(workerLimit, availableParallelism(), tasks.length);
   const started = performance.now();
   const dispatchTimes = new Map();
   const taskReads = new Map();
@@ -1970,7 +1975,7 @@ async function preparedOutputsRemainValid(receipt) {
     receipt.receiptPath, receipt.workspace, receipt.outputs);
 }
 async function parallelOutputFingerprint(
-  workspace, paths, captureEntries = false, telemetry = null, signal = null) {
+  workspace, paths, captureEntries = false, telemetry = null, signal = null, workerLimit = 8) {
   const planningStarted = performance.now();
   const tasks = [];
   const counts = new Map();
@@ -2035,7 +2040,7 @@ async function parallelOutputFingerprint(
       : sha256;
   }
   const completed =
-    await runOutputFingerprintTasks(workspace, tasks, captureEntries, telemetry, signal);
+    await runOutputFingerprintTasks(workspace, tasks, captureEntries, telemetry, signal, workerLimit);
   if (!completed) return null;
   if (captureEntries)
     for (const entry of completed.capturedEntries) capturedEntries.push(entry);
@@ -2203,7 +2208,7 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
     persist();
   };
   const stage = (id, operation) => workspacePreparationStage(timings, id, operation, saveProgress);
-  const scan = async (root, name, paths) => {
+  const scan = async (root, name, paths, workerLimit = 8) => {
     const telemetry = scans[name] = { state: 'running', startedAt: now() };
     const cpu = process.cpuUsage();
     const started = performance.now();
@@ -2213,7 +2218,8 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
       catch (error) { controller.abort(error); }
     }, 10000);
     try {
-      const result = await outputFingerprint(root, paths, false, telemetry, controller.signal);
+      const result = await outputFingerprint(
+        root, paths, false, telemetry, controller.signal, workerLimit);
       telemetry.state = result ? 'passed' : 'rejected';
       return result;
     } catch (error) {
@@ -2322,8 +2328,9 @@ export async function seedDeclarativeDependencies(source, workspace, revision, t
   const fingerprintPaths = expandPaths(source);
   requireThat(fingerprintPaths.length <= 20000, 'Declarative dependency seed is too large',
     'blocked-validation');
+  // This scan runs alone; paired verification keeps its eight-worker pools.
   const sha256 = await stage('dependency-source-fingerprint',
-    () => scan(source, 'initialSource', fingerprintPaths));
+    () => scan(source, 'initialSource', fingerprintPaths, 16));
   requireThat(sha256, 'Declarative dependency seed has missing or unsafe outputs',
     'blocked-validation');
   if (retainedCopy) {

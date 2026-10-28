@@ -2,7 +2,7 @@
 
 > For colleagues setting up or rerunning the AugLoop (`augloop-workflows`) agentic loop.
 > Platform: Windows. The controller requires Node.js 24 or later.
-> Commands and contracts reviewed on 2026-10-26 against the AL adapter in this checkout.
+> Commands and contracts reviewed on 2026-10-28 against the AL adapter in this checkout.
 > This is an operating guide, not a run handoff, execution authorization, or proof of success.
 
 This guide follows the structure of the
@@ -156,6 +156,20 @@ The supported native owners are:
 The gate rebuilds and tests all four owning package targets. Dependency and
 other generated outputs retain immutable-output checks. AL does not inherit
 SDX's behavior-card/changefile requirements or write permissions.
+
+For an explicit sparse checkout, include the exact revision's read-only build,
+dependency, fixture and skill closure, not just these test write scopes. The
+controller preserves that path set through native preparation and binds its
+caches to it. Sparse installs follow the product's derived-lock contract; full
+checkouts remain immutable. See
+[Sparse native preparation](../scripts/validation/AUGLOOP.md#sparse-native-preparation).
+Changing the native profile requires fresh qualification, not rebinding old
+receipts to its new hash.
+
+Finalize the source closure before qualification. A changed explicit path set
+causes new dependency/compile preparation; this expected cache miss is not a
+reason to edit receipts or delete old snapshots. Adding read-only source paths
+does not expand the four allowed test write scopes.
 
 `capabilities` inventories other workspace and .NET/Rust project families.
 Those remain unsupported/unqualified/unapproved unless a real native contract,
@@ -367,6 +381,17 @@ FILTER ledger read-only; supplied JSON files alone cannot establish that FILTER
 executed. `prepare` performs a genuine qualified handoff but starts no model.
 Its preallocated session UUID is not an actual model session.
 
+The selected candidate's `harness` starts with an explicit repository-relative
+path under a supported owner. A following explanation may be separated by
+whitespace, a colon or a semicolon. Repository, exact source revision and
+integration-layer bindings still must match; prose-only routing or traversal is
+not accepted.
+
+The current AL `propose` entrypoint reserves one model session and forces zero
+automatic validation-repair rounds. Increasing a template's repair limit does
+not enable retries here. Preserve a failed attempt and use only a separately
+authorized, supported successor/recovery contract; do not loop `propose`.
+
 Workflow requests use `{path,sha256}` references for `templateConfig`,
 qualification and other inputs; native `qualify`/`replay` use a template filename.
 Each explicit workflow stage requires a fresh absolute `runDirectory`.
@@ -489,8 +514,13 @@ just to create a PR.
 | Native-main FILTER/Proposer skill mismatch | Keep separate FILTER and Proposer bindings; retain all four FILTER discovery paths. |
 | `action-required-auth` | Follow declared cwd, provider installation approval and MFA; bounded remediation/recheck only. No credential copying or authentication loops. |
 | Missing profile/hash mismatch | Rebind the relative path to the new input file; approve and requalify real changes instead of editing receipts. |
+| Sparse install rejects a derived lock | Confirm the disposable checkout is actually sparse and uses the product's native plugin/filters. Sparse installs use `--no-immutable`; full checkout installs must stay immutable. Do not relax the gate globally. |
+| Missing workspace API, fixture or postinstall script | Review the exact revision's read-only source closure and relink through native preparation. Expanding sparse paths alone does not relink an existing install; changed path sets require new preparation. Do not substitute selected tests for full owner tests. |
+| Cargo status drift or remaining dirty files | The profile renormalizes only tracked root Cargo inputs through configured filters in sparse mode. Inspect both staged and unstaged diffs; real changes and untracked files remain blockers. Never reset source or install an ad-hoc filter to hide changes. |
+| Changed sparse paths produce a cache miss | Expected: cache identity includes the effective explicit path set. Retain the old snapshot and let the new configuration prepare its own outputs; order-only/duplicate changes retain reuse. |
 | Partial collection or failed batch | Preserve failure/coverage records; no partial-cohort dispatch or unreviewed cursor advancement. |
-| Unsupported owner or harness | Keep it blocked. Add and qualify a real owning runner contract before expanding writes. |
+| Unsupported owner or harness | Check that `harness` starts with the supported source-bound path; a semicolon explanation is valid. Keep genuinely unsupported owners blocked until their own native contract and write authority are qualified. |
+| Native gates pass but push/Draft publication fails | Preserve the exact head, validation proofs and original failure; reconcile remote effects before separately authorizing recovery. `continue` is not a generic publish-only resume operation. Do not rerun authoring just to retry publication. |
 | Budget/expiry/first-Draft stop | Preserve cumulative reservations. New finite authority is required; spare old allowance is not renewal. |
 | Slow preparation despite cache hit | Inspect copy, compile, fingerprint and immutable-output events. Do not remove integrity checks or claim a wall-clock gap was active compute time. |
 | Process exit 0 but missing/empty results | Check raw Mocha/Jest counts, skipped aggregates and selected assertions. Exit code alone is insufficient. |

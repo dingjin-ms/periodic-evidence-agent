@@ -513,6 +513,48 @@ it neither reconstructs tests nor commits, pushes or creates a PR.
 The native artifact/raw results are new **deterministic replay** evidence.
 The original FILTER, model, PR and historical failures remain original evidence.
 
+### Sparse native preparation
+
+When using explicit `sparseCheckoutPaths`, choose a read-only source closure for
+the exact approved product revision, not just the four test write prefixes.
+Include the native build tooling, source workspace dependencies, postinstall
+scripts, test fixtures/configuration and the merged authoring skill with its
+companion. Missing source dependencies or legacy test resources remain blockers;
+do not replace full owner tests with selected tests to avoid them.
+
+The controller propagates the explicit paths to dependency and compile clones.
+Dependency/compile cache reuse is bound to the effective explicit path set;
+changing that set requires new preparation rather than reusing a full or
+differently pruned install. Reordering or repeating the same paths does not
+invalidate the cache. Existing declarative `sparseCheckout` handling takes
+precedence when configured.
+
+Finalize the source closure before qualification. If an install already exists,
+adding sparse directories is not proof that its dependencies have been relinked;
+use native preparation for the new path set. Treat a resulting cache miss as
+expected, retaining the old snapshots and original receipts. A larger read-only
+source closure grants no additional test or production write permission.
+
+The native sparse plugin derives local lockfiles, so sparse dependency installs
+use `--no-immutable`; full checkouts retain `--immutable`. At every cleanliness
+boundary, tracked root `Cargo.toml` and `Cargo.lock` are renormalized through
+their configured Git filters in sparse mode before checking the entire index,
+worktree and untracked files. This is not a reset or permission to edit manifests:
+unfiltered Cargo edits, other source edits and untracked files still block.
+Committed input blobs must remain unchanged.
+
+An unset or false `core.sparseCheckout` selects the full-checkout immutable
+contract. The profile does not install arbitrary clean filters: use the product's
+native plugin/filter setup. For remaining dirty files, inspect
+`git diff --name-only`, `git diff --cached --name-only`,
+`git status --porcelain --untracked-files=all` and
+`git check-attr filter -- yarn.lock Cargo.toml Cargo.lock` in the disposable
+workspace. Do not reset source, add exclusions or invent filters to hide changes.
+
+Changing this native profile requires a newly computed private `profileSha256`
+and fresh exact-base native qualification. Preserve old qualifications and run
+receipts; do not rewrite their pins or reuse them as proof for the new profile.
+
 ## Collection, FILTER and genuine handoff
 
 Workflow stages use content references for input files:
@@ -533,6 +575,13 @@ terminal output are preserved there. The following are stage-specific fields:
 | `prepare` | Reconciliation inputs plus `templateConfig` and `qualification` references. Reconciles original FILTER, requalifies the configured skill against the pinned base and native contract and calls genuine `acceptFilterProposerHandoff` in prepare-only mode. |
 | `propose` | Prepare inputs plus `modelAllocation` and explicit `authorizeCommit`, `authorizePush`, `authorizeDraftPR`, all true. Uses the existing worker and exact-clean-head native publisher; no custom publisher callback. |
 | `continue` | `previousConfig`, `nextConfig`, `authorization`, `originalProposal` references and `assignmentId`. Uses the existing source-bound `native-jest-cache-isolation` continuation only, with `maxModelAttempts:0`. `execute:true` additionally requires all three side-effect authorizations. |
+
+For the selected candidate, `definition.harness` must start with an explicit
+repository-relative path under one of the four supported owners' test directories.
+Whitespace, `:` or `;` may separate that path from a human-readable explanation.
+The accompanying `repository`, exact `sourceRevision` and `layer:"integration"`
+must still match the qualified repository; unsupported owners and traversal
+remain blocked. An explanation is not a fallback owner selector.
 
 Before Proposer dispatch, authentication is checked again rather than assuming a
 prior backend qualification means credentials are still valid. Set
@@ -644,11 +693,25 @@ original commit before any existing Draft publication path can proceed. The
 source, pins and unexpired recovery authority are rechecked after validation,
 before push.
 
+This pre-checkout transfer recovery is not a publish-only resume operation.
+If native validation passed but push/Draft creation failed, retain the exact
+commit, passing proofs and original failure, and reconcile remote branch/PR
+effects before any separately authorized recovery. Do not rerun authoring or
+mislabel the failure as Jest-cache isolation to retry publication.
+
 ## Model accounting
 
 No model allocation is needed for native qualification, reconciliation, prepare-only
-handoff or original-candidate replay. Before using `filter` or `propose`, coordinate
-the proposed count/purpose with the parent and provide a content-pinned allocation:
+handoff or original-candidate replay.
+
+The current AL `propose` entrypoint reserves one session and forces
+`maxValidationRepairRounds:0` in its generated configuration. Raising that limit
+in the input template or reserving spare sessions does not enable automatic
+authoring repair. A failed attempt remains preserved; any successor needs its
+own supported contract and explicit, finite authority.
+
+Before using `filter` or `propose`, coordinate the proposed count/purpose with
+the parent and provide a content-pinned allocation:
 
 ```json
 {
@@ -699,10 +762,14 @@ enforcement or erase earlier overshoots.
   the actual revision and material hashes used by a run.
 
 ```powershell
-node --test test\al-adapter.test.js test\al-workflow.test.js test\validation-auth.test.js test\sdx-adapter.test.js
+node --test test\al-adapter.test.js test\al-native-skill.test.js test\al-recurring.test.js test\al-workflow.test.js test\validation-auth.test.js test\sdx-adapter.test.js
 node --test test\filter-batches.test.js test\local-filter-evidence-pages.test.js test\local-jest-cache-continuation.test.js
+node --test --test-name-pattern="staged native preparation preserves explicit sparse|explicit sparse path changes invalidate" test\pilot.test.js
 ```
 
 These controller regressions do not replace actual native qualification/replay.
+For complete controller CI, including the hosted account-budget fallback, follow
+the [full local CI procedure](../../README.md#local-ci-when-hosted-actions-is-budget-blocked);
+focused selectors are not a complete-CI claim.
 Only a run's authoritative passing terminal and raw owner results establish its
 outcome. Remote CI/review remains separate and must be reported from remote receipts.

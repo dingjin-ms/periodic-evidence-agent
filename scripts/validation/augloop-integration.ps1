@@ -35,6 +35,14 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "$Executable exited with code $LASTEXITCODE" }
 }
 function Assert-Clean {
+    $sparse = & git config --bool core.sparseCheckout
+    if ($LASTEXITCODE -notin @(0, 1)) { throw 'Could not determine AL sparse checkout mode' }
+    if ($sparse -eq 'true') {
+        $cargo = @(& git ls-files -- Cargo.toml Cargo.lock)
+        if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked AL Cargo inputs' }
+        # Materialization can invalidate stat metadata for native clean-filtered locks.
+        if ($cargo.Count -gt 0) { Invoke-Checked git add --renormalize -- @cargo }
+    }
     $changes = @(& git status --porcelain --untracked-files=all)
     if ($LASTEXITCODE -ne 0 -or $changes.Count -gt 0) {
         throw "AL validation workspace is not clean: $($changes -join '; ')"
@@ -143,7 +151,11 @@ if ($stage -in @('authentication-check', 'authentication', 'all', 'dependencies'
 }
 Assert-Clean
 if ($stage -in @('all', 'dependencies')) {
-    Invoke-Checked node $yarn install --immutable
+    $sparse = & git config --bool core.sparseCheckout
+    if ($LASTEXITCODE -notin @(0, 1)) { throw 'Could not determine AL sparse checkout mode' }
+    # The native sparse plugin regenerates a local lock through its Git clean filter.
+    $lockMode = if ($sparse -eq 'true') { '--no-immutable' } else { '--immutable' }
+    Invoke-Checked node $yarn install $lockMode
     Assert-Clean
 }
 if ($stage -in @('all', 'compile')) {

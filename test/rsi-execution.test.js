@@ -91,6 +91,8 @@ function fixture(t, configure = () => {}, retainProof = false, fullFlow = false)
   git(['init', '-b', 'main', '--quiet']);
   git(['remote', 'add', 'origin', 'https://github.com/fixture/rsi-agent.git']);
   git(['add', '.']); git(['commit', '--quiet', '-m', 'Synthetic baseline']);
+  // Keep full-history clones small for repeated bounded storage scans.
+  if (fullFlow) git(['repack', '-ad']);
   const driverPath = join(root, 'trusted-driver.mjs');
   writeFileSync(driverPath, driver);
   const config = configAt('pilot.example.json');

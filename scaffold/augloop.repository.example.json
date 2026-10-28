@@ -44,7 +44,7 @@
     "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "{profile}",
       "-Mode", "candidate", "-ArtifactDirectory", "REPLACE_WITH_PRIVATE_ABSOLUTE_ARTIFACT_DIRECTORY"],
     "profilePath": "../scripts/validation/augloop-integration.ps1",
-    "profileSha256": "da3cfe0bf95a0fe4a9447f61f300f642107f1154ffeb80f1f0837ce1cda4f162",
+    "profileSha256": "5972224071c86f15d9610f50b58c15d4dd60067edec4e1ab90376ae07cca09c6",
     "timeoutMs": 3600000,
     "testRebuiltOutputPaths": [
       "server/session-protocol/dist",

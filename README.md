@@ -2056,6 +2056,14 @@ external bundles remain supported for old runs/replay, without implicit fallback
 or changes to original receipts. This migration grants no new provider, model,
 remote-execution or publication capability.
 
+For explicit sparse AL checkouts, configure the exact revision's read-only
+build/dependency/fixture/skill closure, not just the test write scopes. Native
+preparation preserves those paths and binds cache reuse to their effective set.
+Sparse installs use the product's derived-lock contract; full checkouts remain
+immutable. A changed native profile needs fresh qualification, not updated hashes
+on old receipts. See [sparse native preparation](scripts/validation/AUGLOOP.md#sparse-native-preparation)
+and the operating guide's blocker/recovery table.
+
 For reusable AL operation, `capabilities` inventories the pinned repository's
 actual workspace contracts, distinguishing supported/qualified owners from
 discovered but unsupported families. The opt-in `cycle` command composes existing

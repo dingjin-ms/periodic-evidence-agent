@@ -1,0 +1,21 @@
+{
+  "format": "al-recurring-plan-v1",
+  "enabled": false,
+  "repoId": "augloop-workflows",
+  "stateDirectory": "ABSOLUTE_APPROVED_PRIVATE_DURABLE_STATE",
+  "firstWindowStart": "EXPLICIT_FIRST_COMPLETE_UTC_WINDOW_START",
+  "cadence": { "managedBy": "operator", "schedule": null },
+  "collectorConfig": { "path": "ABSOLUTE_PRIVATE_COLLECTOR_CONFIG", "sha256": "SHA256_OF_FINAL_BYTES" },
+  "filterConfig": { "path": "ABSOLUTE_PRIVATE_NATIVE_MAIN_FILTER_CONFIG", "sha256": "SHA256_OF_FINAL_BYTES" },
+  "templateConfig": { "path": "ABSOLUTE_PRIVATE_EXTERNAL_SKILL_TEMPLATE", "sha256": "SHA256_OF_FINAL_BYTES" },
+  "qualification": { "path": "ABSOLUTE_CURRENT_NATIVE_QUALIFICATION_RESULT", "sha256": "SHA256_OF_FINAL_BYTES" },
+  "passes": ["ado:created", "ado:changed"],
+  "limits": {
+    "maxItems": null,
+    "maxCalls": null,
+    "maxFilterSessions": 0,
+    "maxProposers": 0,
+    "maxAiCreditsPerSession": 30,
+    "maxWindowHours": 24
+  }
+}

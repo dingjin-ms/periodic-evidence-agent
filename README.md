@@ -859,6 +859,77 @@ blocked; assignments must pin the repo-relative owner project. A changed skill
 or validation profile requires a new qualification and is used only by new
 assignments; an in-progress repair loop never changes contracts mid-run.
 
+### Opt-in local external skill bundles
+
+An unmerged skill can be used without putting its files in the product baseline.
+Add `externalBundle` to an existing `skillBindings[]` entry in **local,
+uncommitted configuration only**. Omit it to retain the existing native,
+exact-product-commit behavior. Store the files under the controller's already
+ignored `private-runtime/` directory, mirroring their original repository paths:
+
+```json
+{
+  "skillPath": "docs/skills/test-authoring/SKILL.md",
+  "externalBundle": {
+    "root": "private-runtime/test-authoring",
+    "source": {
+      "remote": "https://example.invalid/project/_git/product",
+      "revision": "<full source commit SHA>",
+      "path": "docs/skills/test-authoring/SKILL.md"
+    },
+    "files": [
+      {
+        "path": "docs/skills/test-authoring/SKILL.md",
+        "sha256": "<SHA-256 of the exact local file bytes>"
+      },
+      {
+        "path": "docs/skills/test-authoring/references/testing.md",
+        "sha256": "<SHA-256 of the exact local companion bytes>"
+      }
+    ]
+  }
+}
+```
+
+This is a binding fragment, not a complete configuration; replace the placeholders
+with real hashes. The root is relative to the configuration file (or absolute).
+Paths inside the bundle must be canonical, slash-separated repository paths,
+with no traversal, aliases or duplicates. Include the entrypoint and every
+companion needed by the skill. Hash actual bytes, not normalized text: line
+ending changes are drift. Each file and the entire bundle must fit within
+`limits.maxFileBytes`; at most 128 explicitly listed files are accepted.
+Symlinks/reparse paths, linked roots/ancestors and hard-linked files are rejected.
+
+Run the ordinary `qualify-skill` command. Qualification first binds the product
+base as before, then independently verifies **every** manifest file against
+regular Git blobs at `externalBundle.source.revision` in the reference
+checkout's object database. That commit must already be available locally; the
+controller does not fetch the skill revision, merge it or change the product
+checkout. The provenance remote must be the same credential-free HTTPS remote
+as the product repository. A local commit's presence is not proof it was
+published or approved: obtain the exact source revision through your normal
+trusted process. `qualificationRefresh` still controls only the product base.
+
+Qualification receipts and assignment pins contain the root, original
+remote/revision/path, and complete file/hash manifest. Runtime rejects changed
+bindings, missing files and byte drift; it rechecks before prompts, bundled
+reads, accepting results and publication. Worker results retain the external
+binding and original skill revision separately from the product source revision.
+Changing a bundle requires requalification and a new assignment.
+
+Only local execution with SDK or bounded local authoring is supported; hosted
+execution and remote authoring fail closed. The AL workflow is narrower:
+its Proposer permits only `copilot-sdk`, with the pinned model and expiring
+allocation enforced at execution boundaries. The existing `pilot_read` tool
+accepts `skill-bundle:<exact manifest path>` (including line ranges); it cannot
+read arbitrary controller files. The prompt lists these paths and distinguishes
+skill-relative companion links from repository-relative guidance, which still
+targets the isolated **product** workspace. Search/list and write tools remain
+product-only. No bundle file is copied into the workspace, no write allowlist
+is expanded, and all existing test-only, validation and publication gates remain.
+Unlisted/missing guidance is a blocker, not permission to substitute another file.
+Keep private contents, provenance and generated receipts out of public fixtures.
+
 Local wrappers that spawn the proposer CLI must use
 `localProposerEnvironment()` from `src/workers.js`, not the native runner's
 `minimalEnvironment()`. The former preserves only the documented
@@ -1066,6 +1137,45 @@ Do not print the token, save it to a script/receipt, pass it on a command line,
 or run interactive setup inside a validation gate. Provider installation,
 sign-in and account consent are separate, explicit setup operations. The
 controller's `npm run setup` does not perform them.
+
+Authentication preflight uses a unique authentication-only workspace containing
+the exact-revision Yarn configuration. It never reuses or deletes a dependency
+snapshot workspace, including an incomplete preparation or a forced recovery.
+
+Local SDK authoring may pin a verified model identifier with
+`runtime.authoringModel`; omission preserves the SDK default. The configured
+per-session AI credit ceiling remains a soft runtime limit.
+Sequential, separately ledgered attempts may explicitly share an absolute
+`runtime.validationCacheDirectory`. Native input hashes, source cleanliness and
+output verification still apply. Do not run concurrent preparations or workers
+against that directory.
+An explicitly authorized successor can also bind prior diagnostic data with
+`runtime.authoringFeedback: { path, sha256 }`. The absolute-path JSON is
+hash-verified before model creation and included as untrusted predecessor
+evidence; it grants no tools, writes, or publication permissions.
+For native runners that rebuild their owning compiled tests on every test-stage
+invocation, a gate may declare `testRebuiltOutputPaths` as exact roots already
+listed in its profile's `preparedOutputPaths`. Those generated roots are not
+immutable cache artifacts. The qualification and compile-cache key bind this
+declaration; tracked source, dependency roots and overlapping snapshot roots
+cannot be excluded. The qualified test stage must freshly compile the exact
+candidate before normal discovery; all other cached outputs remain verified.
+A separately authorized `native-jest-cache-isolation` validation continuation
+handles the narrow case where the full native suite passed but cleanup rejected
+`rename:node_modules/.cache/jest`. It preserves the clean model-authored commit
+and original captured evidence, requalifies the profile, and permits only an
+explicit Jest `--cacheDirectory` plus durable private result location. Its
+zero-model dispatch verifies the terminal predecessor, configuration, profile
+and controller-source hashes, prepares or verifies the original native
+snapshots, and records a test-only profile rebind before rerunning every gate.
+The predecessor's passing output is diagnostic evidence, never publication
+acceptance; fresh exact-head validation and cache cleanup must both pass.
+Authentication remediation is selected from the qualified feed contract.
+The existing pinned-provider setup supports the AL single AugmentationLoop feed
+through `-RepositoryProfile AugmentationLoop`; its default still requires both
+OfficeAgent feeds. SDX continues to use its repository `yarn auth` broker.
+An unknown feed combination fails closed instead of receiving unrelated setup
+instructions. Baseline test success alone is not isolation qualification.
 
 For example, in a dedicated PowerShell process after approved private provider
 installation, capture the documented standalone response without displaying it:
@@ -1918,6 +2028,54 @@ an operator prerequisite: the proposer adapter checks structural consolidation
 and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
+
+For AL setup and day-to-day operation, start with the
+[AL Agentic Loop Setup and Operations Guide](scaffold/AL-AGENTIC-LOOP.md).
+It covers the separate FILTER/authoring skills, four-owner native scope,
+finite recurring actions and operator-owned deployment boundaries.
+
+The AL-specific [`scripts\augloop.mjs`](scripts/validation/AUGLOOP.md) entrypoint
+enforces that original-ledger reconciliation before its `prepare`/`propose`
+operations. It composes the same collection, exact batching, local FILTER,
+skill-qualified handoff and source-preserving continuation APIs. Its native profile
+supports all four AL discovery owners, retaining Session Protocol's Gulp/Mocha
+runner and the other owners' Jest configurations. Use `qualify` for real isolated
+backend/baseline qualification and `replay` for an original model-authored candidate;
+neither is a fresh evidence/model E2E. The
+[`augloop.repository.example.json`](scaffold/augloop.repository.example.json)
+is disabled until private paths, identity, source/skill pins and actual qualification
+are supplied. New AL authoring uses the merged repository-native skill
+`utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md`
+(`excel-agent-in-container-proxy-integration-tests`). Explicitly invoke that path
+or name in the task; controller authoring and repair prompts name the configured
+path. Its `references/suites.md` companion is read from the pinned product
+workspace using normal `pilot_read`. Use a newly qualified exact product base
+containing the skill; old baseline qualifications do not transfer. FILTER still
+uses native-main `.github/skills/tests/SKILL.md`. Explicitly pinned historical
+external bundles remain supported for old runs/replay, without implicit fallback
+or changes to original receipts. This migration grants no new provider, model,
+remote-execution or publication capability.
+
+For reusable AL operation, `capabilities` inventories the pinned repository's
+actual workspace contracts, distinguishing supported/qualified owners from
+discovered but unsupported families. The opt-in `cycle` command composes existing
+one-shot collection, complete-cohort FILTER and native handoff with durable
+windows, overlap locks, evidence deduplication and finite per-cycle authorization.
+[`augloop.recurring.example.json`](scaffold/augloop.recurring.example.json) is
+inactive: operators must configure cadence and new expiring source/model/Draft
+budgets. No scheduler is installed, and a completed one-run authorization is
+never a recurring grant. See the [operator contract](scripts/validation/AUGLOOP.md).
+
+For large local-SDK cohorts, opt-in `localFilter.evidencePaging: true` sends
+the exact index/policy and exposes original records through
+`pilot_filter_evidence(index, offset)` instead of duplicating all bodies in the
+initial prompt. Each retained detail decision requires byte-zero-through-EOF
+delivery of that record and its lossless capture representation. Reconciliation
+reconstructs every page from the original manifest and rejects altered or missing
+pages. Title-only exclusions retain the original title policy. Contextual batches
+are not supported by this option and fail closed. Enabling it after a failed
+session requires a new explicitly authorized successor; prior receipts and
+configuration remain immutable.
 
 The input contains the immutable FILTER binding and the repository capability
 used for routing, plus optional structured skill input and a source-bound

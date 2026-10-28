@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
+  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,10 +13,81 @@ import {
 } from '../src/self-improvement.js';
 import {
   buildSelfImprovementComparison, classifySelfImprovementEpisode, evaluateSelfImprovement,
-  fixtureEnvironment, inspectSelfImprovementEvidence, nativeCaseOutcomes, renderSelfImprovementComparison,
+  fixtureEnvironment, inspectFixture, inspectSelfImprovementEvidence, nativeCaseOutcomes, renderSelfImprovementComparison,
   runRsiChild, validChildEnvelope
 } from '../src/self-improvement-evaluation.js';
 import { hash, json, uuid } from '../src/common.js';
+import { Ledger } from '../src/ledger.js';
+
+function snapshotFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'rsi-snapshot-test-'));
+  const directory = join(root, 'prior'), workspace = join(directory, 'workspace');
+  mkdirSync(join(workspace, 'test'), { recursive: true });
+  writeFileSync(join(workspace, 'test', 'case.test.mjs'), 'synthetic assertions\n');
+  const ledger = new Ledger(directory);
+  try {
+    ledger.db.prepare(`INSERT INTO jobs
+      (id,investigation_id,version,repo,state,session_id,workspace,base_revision,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run('job', 'fixture', 1, 'fixture', 'completed', 'attempt',
+      workspace, '0'.repeat(40), '2026-01-01T00:00:00Z');
+  } finally { ledger.close(); }
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return { root, workspace, head: '1'.repeat(40) };
+}
+
+test('fixture snapshots overlap independent Git observations and preserve all source metadata', async t => {
+  const ctx = snapshotFixture(t), calls = [];
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const pending = inspectFixture(ctx.root, 'prior', async (cwd, args) => {
+    assert.equal(cwd, ctx.workspace);
+    calls.push(args);
+    if (args[0] === 'rev-parse') return ctx.head;
+    await barrier;
+    return { status: '', show: args[1] === '-s' ? 'Synthetic title' : 'Synthetic pointer',
+      'rev-list': '1' }[args[0]];
+  });
+  let result;
+  try {
+    await new Promise(setImmediate);
+    assert.deepEqual(calls, [
+      ['rev-parse', 'HEAD'], ['status', '--porcelain'],
+      ['show', `${ctx.head}:fixtures/native.xlsx`],
+      ['rev-list', '--count', `${'0'.repeat(40)}..${ctx.head}`],
+      ['show', '-s', '--format=%s', 'HEAD']
+    ]);
+  } finally {
+    release();
+    result = await pending;
+  }
+  assert.deepEqual(result.source, {
+    head: ctx.head, clean: true, baseRevision: '0'.repeat(40),
+    testSha256: hash('synthetic assertions\n'), pointer: 'Synthetic pointer',
+    commitCount: 1, title: 'Synthetic title'
+  });
+});
+
+test('fixture snapshot failures wait for all admitted Git observations to settle', async t => {
+  const ctx = snapshotFixture(t);
+  let release, completed = 0, settled = false;
+  const failure = new Error('synthetic Git observation canceled');
+  const barrier = new Promise(resolve => { release = resolve; });
+  const pending = inspectFixture(ctx.root, 'prior', async (_cwd, args) => {
+    if (args[0] === 'rev-parse') return ctx.head;
+    if (args[0] === 'status') throw failure;
+    await barrier;
+    completed++;
+    return '';
+  });
+  const observed = pending.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(settled, false, 'A failed query must not leave sibling queries running');
+  } finally { release(); }
+  await assert.rejects(pending, error => error === failure);
+  await observed;
+  assert.equal(completed, 3);
+});
 
 function fixture(t, { retain = false, limits = {} } = {}) {
   const checkoutRoot = retain ? selfImprovementRoot : mkdtempSync(join(tmpdir(), 'rsi-evaluation-test-'));
@@ -35,16 +106,22 @@ function fixture(t, { retain = false, limits = {} } = {}) {
   const store = openSelfImprovementStore(policy, { checkoutRoot });
   if (retain) writeFileSync(join(store.root, 'qualification-policy.json'), json(policy), { flag: 'wx' });
   t.after(() => {
+    const failed = Boolean(t.error);
+    if (failed) {
+      const policyFile = join(store.root, 'qualification-policy.json');
+      if (!existsSync(policyFile)) writeFileSync(policyFile, json(policy), { flag: 'wx' });
+      t.diagnostic(`RSI failed qualification retained at ${store.root}`);
+    }
     for (const experiment of store.ledger.latest('selfImprovementExperiment')) {
       if (!experiment.reservation) continue;
       const operation = selfImprovementOperation(store, experiment);
       assert.ok(operation.detail.children.every(child => child.exited),
         'Disposable fixture cleanup is blocked until every owned child is observed stopped');
-      for (const root of operation.detail.fixtureRoots)
+      if (!failed) for (const root of operation.detail.fixtureRoots)
         rmSync(root, { recursive: true, force: true });
     }
     store.close();
-    if (!retain) rmSync(checkoutRoot, { recursive: true, force: true });
+    if (!retain && !failed) rmSync(checkoutRoot, { recursive: true, force: true });
   });
   const observation = recordSelfImprovementObservation(store, selfImprovementWorkload());
   const experiment = prepareSelfImprovementExperiment(store, {
@@ -59,12 +136,46 @@ function readEpisodes(ctx) {
     JSON.parse(readFileSync(join(ctx.store.root, 'runs', ctx.experiment.id, `${arm}-${episode.id}.json`)))));
 }
 
+test('qualification fixture cleanup retains failed evidence and removes successful disposable state', t => {
+  for (const failed of [false, true]) {
+    const callbacks = [], diagnostics = [];
+    const ctx = fixture({
+      error: failed ? new Error('synthetic qualification failure') : undefined,
+      after: callback => callbacks.push(callback),
+      diagnostic: message => diagnostics.push(message)
+    });
+    let closed = false;
+    t.after(() => {
+      if (!closed) ctx.store.close();
+      if (existsSync(ctx.checkoutRoot)) rmSync(ctx.checkoutRoot, { recursive: true, force: true });
+    });
+    callbacks[0]();
+    closed = true;
+    assert.equal(existsSync(ctx.checkoutRoot), failed);
+    if (failed) {
+      assert.deepEqual(JSON.parse(readFileSync(join(ctx.store.root, 'qualification-policy.json'))), ctx.policy);
+      assert.ok(diagnostics.some(message => message.includes(ctx.store.root)));
+    }
+  }
+});
+
 test('current/current qualification executes original assertions and retains an independently rederived no-benefit scorecard',
   { timeout: 650000 }, async t => {
     const ctx = fixture(t, { retain: process.env.RSI_RETAIN_QUALIFICATION === '1' });
+    const scans = new Map(), canonical = realpathSync.native;
+    realpathSync.native = (path, ...args) => {
+      if (scans.has(path)) scans.set(path, scans.get(path) + 1);
+      return canonical(path, ...args);
+    };
+    t.after(() => { realpathSync.native = canonical; });
     let sealedExperiment;
     await assert.rejects(evaluateSelfImprovement(ctx.store, ctx.experiment.id, ctx.experiment.version, {
       fault: point => {
+        if (point === 'controller-admission') {
+          const current = ctx.store.ledger.get('selfImprovementExperiment', ctx.experiment.id);
+          const allocation = selfImprovementOperation(ctx.store, current).detail.fixtureRoots[0];
+          if (!scans.has(allocation)) scans.set(allocation, 0);
+        }
         if (['reserved', 'episode-persisted', 'artifacts-persisted'].includes(point)) {
           const pending = ctx.store.ledger.get('selfImprovementExperiment', ctx.experiment.id);
           assert.equal(inspectSelfImprovementEvidence(ctx.store, pending).state, 'uncertain-or-invalid');
@@ -106,6 +217,16 @@ test('current/current qualification executes original assertions and retains an 
     }
     assert.deepEqual(comparison.coverageDelta, { gained: [], lost: [] });
     const evidence = readEpisodes(ctx);
+    await t.test('only synchronous fixture bookkeeping reuses its immediately preceding storage scan', () => {
+      const synchronous = evidence.flatMap(item => item.trace)
+        .filter(item => ['deterministic-authoring', 'guard-start'].includes(item.operationKind));
+      assert.equal(synchronous.length, 12, 'Exercise authoring and both duplicate guard challenges in both arms');
+      const expected = evidence.reduce((total, item) => total + item.trace.length * 2 + 1, 0) -
+        synchronous.length;
+      assert.equal(scans.size, 1);
+      assert.equal([...scans.values()][0], expected,
+        'Every request still scans freshly; writing, async and hook boundaries retain their post-scan');
+    });
     assert.equal(evidence.reduce((sum, item) => sum + item.native.length, 0), 6);
     assert.ok(evidence.flatMap(item => item.native).every(native =>
       native.process.nativeEvents.filter(event => event.event === 'test:pass').length === 2));
@@ -351,6 +472,31 @@ test('child admission refuses expired deadlines and canceled owners without spaw
     error.code === 'stopped-rsi-execution' && error.reason === 'owner-stopped');
   assert.equal(starts, 0);
 });
+
+test('storage admission hooks retain a fresh post-check after synchronous bookkeeping optimization',
+  { timeout: 240000 }, async t => {
+    const ctx = fixture(t, { limits: { maxEpisodes: 1 } });
+    let injected = false;
+    const result = await evaluateSelfImprovement(ctx.store, ctx.experiment.id, ctx.experiment.version, {
+      fault: point => {
+        if (point !== 'effect-admission' || injected) return;
+        const current = ctx.store.ledger.get('selfImprovementExperiment', ctx.experiment.id);
+        const allocation = selfImprovementOperation(ctx.store, current).detail.fixtureRoots[0];
+        writeFileSync(join(allocation, 'hook-overflow.bin'), Buffer.alloc(ctx.policy.limits.maxFixtureBytes),
+          { flag: 'wx' });
+        injected = true;
+      }
+    });
+    assert.equal(injected, true);
+    const evidence = readEpisodes(ctx).find(item => item.arm === 'old' && item.episodeId === 'recovery');
+    const push = evidence.trace.find(item => item.operationKind === 'push');
+    assert.equal(push?.outcome, 'refused');
+    assert.equal(push.error, 'blocked-budget');
+    assert.ok(!evidence.trace.some(item => item.operationKind === 'draft'),
+      'The same request must reject hook growth, before another request can be admitted');
+    assert.equal(evidence.native.length, 1);
+    assert.equal(result.comparison.qualification, 'not-qualified');
+  });
 
 test('episode budget executes exactly its admitted count and retains every unrun population',
   { timeout: 240000 }, async t => {

@@ -1,4 +1,4 @@
-import { json } from './common.js';
+import { json, requireThat } from './common.js';
 
 const prefix = 'PILOT_VALIDATION_AUTH_PREFLIGHT:';
 const evidencePrefix = 'PILOT_VALIDATION_AUTH:';
@@ -69,7 +69,7 @@ export function parseValidationAuthEvidence(output, contract) {
   }
 }
 
-export function validationAuthAction(gate, repo, preflight, controllerRoot) {
+export function validationAuthAction(gate, repo, preflight, controllerRoot, contract = null) {
   if (preflight.provider === '1js-node-azure-auth') {
     return {
       state: 'action-required-auth',
@@ -95,6 +95,21 @@ export function validationAuthAction(gate, repo, preflight, controllerRoot) {
     'run', 'setup:validation-auth', '--',
     '-Workspace', repo.referenceCheckout
   ];
+  if (contract) {
+    const augmentationRegistry = 'https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/';
+    const officeRegistry = 'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/';
+    const augmentation = contract.feeds?.some(feed =>
+      feed.scope === null && feed.registry === augmentationRegistry);
+    const singleFeed = augmentation && contract.feeds.length === 1;
+    const officeAgent = augmentation && contract.feeds.length === 2 &&
+      contract.feeds.some(feed => feed.scope === 'office' && feed.registry === officeRegistry);
+    requireThat(contract.type === 'azure-artifacts-npm' &&
+      contract.provider === preflight.provider &&
+      contract.providerVersion === preflight.providerVersion &&
+      contract.feeds.length === preflight.feedCount && (singleFeed || officeAgent),
+    'No approved authentication remediation matches the declared feed contract', 'blocked-auth');
+    if (singleFeed) args.push('-RepositoryProfile', 'AugmentationLoop');
+  }
   if (preflight.installProvider) args.push('-InstallProvider');
   return {
     state: 'action-required-auth',

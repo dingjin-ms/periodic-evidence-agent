@@ -272,7 +272,7 @@ function nativePassed(native, cases) {
     cases.every(item => item.status === 'passed');
 }
 
-async function inspectFixture(root, name, git) {
+export async function inspectFixture(root, name, git) {
   const directory = join(root, name), database = join(directory, 'ledger.sqlite');
   if (!existsSync(database)) return null;
   inspectRsiPath(root, database);
@@ -292,14 +292,23 @@ async function inspectFixture(root, name, git) {
   if (job?.workspace) {
     inspectRsiPath(root, job.workspace, { directory: true });
     const head = await git(job.workspace, ['rev-parse', 'HEAD']);
+    // Drain every admitted query before propagating a failure or cancellation.
+    const queries = await Promise.allSettled([
+      git(job.workspace, ['status', '--porcelain']),
+      git(job.workspace, ['show', `${head}:fixtures/native.xlsx`]),
+      git(job.workspace, ['rev-list', '--count', `${job.base_revision}..${head}`]),
+      git(job.workspace, ['show', '-s', '--format=%s', 'HEAD'])
+    ]);
+    const [status, pointer, commitCount, title] = queries.map(query => {
+      if (query.status === 'rejected') throw query.reason;
+      return query.value;
+    });
     const testPath = join(job.workspace, 'test', 'case.test.mjs');
     snapshot.source = {
-      head, clean: !(await git(job.workspace, ['status', '--porcelain'])),
+      head, clean: !status,
       baseRevision: job.base_revision,
       testSha256: existsSync(testPath) ? hash(readFileSync(inspectRsiPath(root, testPath))) : null,
-      pointer: await git(job.workspace, ['show', `${head}:fixtures/native.xlsx`]),
-      commitCount: Number(await git(job.workspace, ['rev-list', '--count', `${job.base_revision}..${head}`])),
-      title: await git(job.workspace, ['show', '-s', '--format=%s', 'HEAD'])
+      pointer, commitCount: Number(commitCount), title
     };
   }
   return snapshot;
@@ -413,10 +422,11 @@ async function executeEpisode(store, experiment, arm, episode, allocation, deadl
       }[message.kind];
       requireThat(fields && json(Object.keys(message.payload).sort()) === json(fields),
         'Unsupported boundary request or payload', fields ? 'invalid-fixture' : 'unsupported-action');
-      requireThat(rsiDirectoryBytes(allocation) <= store.policy.limits.maxFixtureBytes,
+      const admittedBytes = rsiDirectoryBytes(allocation);
+      requireThat(admittedBytes <= store.policy.limits.maxFixtureBytes,
         'Synthetic fixture storage ceiling reached', 'blocked-budget');
       const payload = message.payload;
-      let response = null;
+      let response = null, needsStorageRecheck = true;
       if (message.kind === 'checkpoint') {
         requireThat(['prepared', 'initial-complete', 'continuation-prepared', 'continued'].includes(payload.phase) &&
           !evidence.snapshots[payload.phase], 'Repeated/unrecognized fixture checkpoint', 'invalid-fixture');
@@ -426,6 +436,7 @@ async function executeEpisode(store, experiment, arm, episode, allocation, deadl
       } else if (message.kind === 'deterministic-authoring') {
         requireThat(evidence.trace.filter(item => item.operationKind === message.kind).length === 1,
           'Repeated deterministic authoring', 'invalid-fixture');
+        needsStorageRecheck = false;
       } else if (message.kind === 'unblock') {
         requireThat(!evidence.unblock &&
           initialFailure(evidence.snapshots['initial-complete']?.prior, experiment.identity),
@@ -539,6 +550,7 @@ async function executeEpisode(store, experiment, arm, episode, allocation, deadl
           evidence.trace.filter(item => item.operationKind === 'guard-start').length === evidence.guards.length + 1,
         'Unregistered guard challenge', 'invalid-fixture');
         entry.guard = payload.guard;
+        needsStorageRecheck = false;
       } else if (message.kind === 'guard-refusal') {
         const expected = episode.scenario === 'changed-proof' ? ['changed-proof'] :
           episode.scenario === 'duplicate-dispatch' ? ['duplicate-prepare', 'duplicate-dispatch'] : [];
@@ -559,7 +571,9 @@ async function executeEpisode(store, experiment, arm, episode, allocation, deadl
       } else {
         requireThat(false, 'Unsupported model/provider or boundary request', 'unsupported-action');
       }
-      requireThat(rsiDirectoryBytes(allocation) <= store.policy.limits.maxFixtureBytes,
+      // Only synchronous in-memory branches can reuse admission; I/O, awaits and hooks must recheck.
+      requireThat((needsStorageRecheck ? rsiDirectoryBytes(allocation) : admittedBytes) <=
+        store.policy.limits.maxFixtureBytes,
         'Synthetic fixture storage ceiling reached', 'blocked-budget');
       remainingExecutionMs(end, signal);
       entry.outcome = 'accepted';

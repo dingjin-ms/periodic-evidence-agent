@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { loadAuthoringFeedback } from '../src/workers.js';
 import assert from 'node:assert/strict';
 import {
   existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync,
@@ -24,6 +25,8 @@ import { repositoryValidationContract, skillQualificationId } from '../src/repos
 import { outputPathFingerprint } from '../src/output-fingerprint.js';
 import { cleanupWorkspace, cleanupWorkspaces } from '../src/workspace-gc.js';
 import { schedulePreparedAssignments } from '../src/assignment-scheduler.js';
+import { bindAlModelExecution } from '../src/al-workflow.js';
+import { alReference } from '../src/al-adapter.js';
 
 function setup(t) {
   const root = mkdtempSync(join(tmpdir(), 'evidence-pilot-test-'));
@@ -984,8 +987,10 @@ test('worker file callbacks reject traversal, alternate streams, protected paths
   const boundedTools = new WorkerTools(boundedConfig, editable, workspace);
   await assert.rejects(boundedTools.list(), /narrow pilot_list/);
   assert.deepEqual(await boundedTools.list('src'), ['src/value.js']);
-  tools.replaceLines('src\\value.js', 1, 1,
-    'export const value = 1;', 'export const value = 3;');
+  const surgicalEdit = tools.tools().find(tool => tool.name === 'pilot_replace_lines');
+  assert.ok(surgicalEdit, 'The real SDK toolset must expose the surgical editor');
+  await surgicalEdit.handler({ path: 'src\\value.js', startLine: 1, endLine: 1,
+    expected: 'export const value = 1;', replacement: 'export const value = 3;' });
   assert.equal(tools.read('src\\value.js', 1, 1), 'export const value = 3;');
   assert.throws(() => tools.replaceLines('src\\value.js', 1, 1,
     'export const value = 1;', 'bad'), /does not match/);
@@ -1040,7 +1045,9 @@ test('RCA-only workers cannot write and submitted workers cannot keep editing', 
   assert.throws(() => tools.finish({ outcome: 'investigated', findings: 'again' }), /already submitted/);
 });
 test('SDK configuration exposes no built-in tools and denies unrelated permissions', () => {
-  const config = restrictedSession([{ name: 'pilot_read' }]);
+  const config = restrictedSession([{ name: 'pilot_read' }], { model: 'gpt-6-luna' });
+  assert.equal(config.model, 'gpt-6-luna');
+  assert.equal(restrictedSession([]).model, undefined);
   assert.deepEqual(config.availableTools.toArray(), ['custom:pilot_read']);
   assert.equal(config.hooks.onPreToolUse({ toolName: 'powershell' }).permissionDecision, 'deny');
   assert.equal(config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
@@ -1052,14 +1059,28 @@ test('SDK authoring repairs resume the same persisted session with only bounded 
     resumeSession: async (id, config) => { calls.push({ kind: 'resume', id, config }); return 'resumed'; }
   };
   const tools = [{ name: 'pilot_replace_lines' }];
-  const options = { sessionId: 'same-attempt', workingDirectory: 'fixture', prompt: 'bounded' };
+  const options = { sessionId: 'same-attempt', workingDirectory: 'fixture', prompt: 'bounded',
+    model: 'gpt-6-luna' };
   assert.equal(await authoringSession(client, tools, options, 0), 'created');
   assert.equal(await authoringSession(client, tools, options, 1), 'resumed');
   assert.equal(calls[1].id, options.sessionId);
   for (const call of calls) {
+    assert.equal(call.config.model, options.model);
     assert.deepEqual(call.config.availableTools.toArray(), ['custom:pilot_replace_lines']);
     assert.equal(call.config.onPermissionRequest({ kind: 'shell' }).kind, 'denied-by-rules');
   }
+});
+test('authoring feedback is optional pinned data and rejects changed or relative inputs', async t => {
+  const { root, config } = await fixture(t);
+  assert.equal(loadAuthoringFeedback(config), null);
+  const path = join(root, 'native-feedback.json');
+  writeFileSync(path, '{"nativeFailure":"lint"}\n');
+  config.runtime.authoringFeedback = { path, sha256: hash(readFileSync(path)) };
+  assert.equal(loadAuthoringFeedback(config).evidence.nativeFailure, 'lint');
+  writeFileSync(path, '{"nativeFailure":"changed"}\n');
+  assert.throws(() => loadAuthoringFeedback(config), /feedback changed/);
+  config.runtime.authoringFeedback.path = 'relative.json';
+  assert.throws(() => loadAuthoringFeedback(config), /absolute path/);
 });
 test('validation records real terminal command execution at exact fixture HEAD and forbids duplicates', async t => {
   const { config, ledger, job, repo } = await fixture(t);
@@ -1293,6 +1314,50 @@ test('staged package auth stays out of fingerprint, policy, test and preparation
   assert.deepEqual(ctx.calls, ['fingerprint', 'dependencies', 'compile',
     'fingerprint', 'policy', 'test']);
   assert.equal(readFileSync(result[0].artifactRefs[0], 'utf8').includes(token), false);
+});
+test('reused native validation transfers only the candidate closure from a promisor workspace', async t => {
+  const ctx = await stagedValidationFixture(t);
+  ctx.config.limits.maxValidationInfrastructureRetries = 0;
+  const source = ctx.current.workspace;
+  const git = (cwd, args) => command('git', ['-c', 'core.autocrlf=false',
+    '-c', 'core.safecrlf=false', '-c', 'core.hooksPath=.git/no-hooks', ...args], cwd);
+  const commit = async title => {
+    await git(source, ['add', '-A']);
+    await git(source, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '-m', title]);
+    return (await git(source, ['rev-parse', 'HEAD'])).stdout.trim();
+  };
+  writeFileSync(join(source, 'test', 'historical.txt'), 'Unrelated promised history only\n');
+  const historical = await commit('Synthetic historical blob');
+  const missing = (await git(source, ['rev-parse', `${historical}:test/historical.txt`])).stdout.trim();
+  rmSync(join(source, 'test', 'historical.txt'));
+  const base = await commit('Remove historical blob before prepared base');
+  const current = { ...ctx.current, base_revision: base };
+  const prepared = await prepareValidation(ctx.config, current, ctx.repo, base, ctx.execute);
+  assert.ok(prepared.staged.receiptPath, json(prepared));
+  const target = prepared.staged.workspace;
+  const refs = (await git(target, ['for-each-ref', '--format=%(refname)'])).stdout.trim();
+  for (const ref of refs.split(/\r?\n/).filter(Boolean)) await git(target, ['update-ref', '-d', ref]);
+  writeFileSync(join(source, 'test', 'candidate.txt'), 'Synthetic candidate test-only addition\n');
+  const revision = await commit('Add candidate without changing prepared inputs');
+  await git(source, ['config', 'remote.origin.promisor', 'true']);
+  await git(source, ['config', 'remote.origin.partialclonefilter', 'blob:none']);
+  await git(source, ['remote', 'set-url', 'origin', join(ctx.root, 'offline-missing-promisor')]);
+  const objects = (await git(source, ['rev-parse', '--git-path', 'objects'])).stdout.trim();
+  rmSync(join(source, objects, missing.slice(0, 2), missing.slice(2)));
+  await assert.rejects(git(target, ['fetch', '--dry-run', '--no-tags', '--', source, revision]),
+    /promisor|bad pack|missing/i);
+  ctx.calls.length = 0;
+  const results = await runValidation(ctx.config, ctx.ledger, current, ctx.repo, revision,
+    ctx.execute, rmSync, prepared);
+  assert.equal(results[0].status, 'passed', json(results));
+  assert.equal(results[0].attemptCount, 1);
+  assert.deepEqual(ctx.calls, ['fingerprint', 'policy', 'test']);
+  const artifact = JSON.parse(readFileSync(results[0].artifactRefs[0], 'utf8'));
+  assert.equal(artifact.telemetry.validationRevision, revision);
+  assert.equal(artifact.telemetry.validationTimings.find(stage => stage.id === 'cleanup').cache, 'preserved');
+  assert.equal((await git(target, ['rev-parse', 'HEAD'])).stdout.trim(), base);
+  assert.equal((await git(source, ['rev-parse', 'HEAD'])).stdout.trim(), revision);
 });
 test('staged dependency auth failures are redacted before telemetry and receipts', async t => {
   const ctx = await stagedValidationFixture(t);
@@ -1647,6 +1712,51 @@ for (const variable of ['PILOT_VALIDATION_REVISION', 'PILOT_VALIDATION_BASE_REVI
     assert.equal(ctx.calls.includes('test'), false);
   });
 }
+test('sequential ledger successors can reuse an explicitly shared verified native cache', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  const successor = structuredClone(ctx.config);
+  successor.runtime.validationCacheDirectory = join(ctx.config.stateDirectory, 'pv');
+  successor.stateDirectory = join(ctx.config.stateDirectory, 'successor-ledger');
+  const reused = await prepareValidation(successor, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(reused.staged.receiptPath, prepared.staged.receiptPath);
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  successor.runtime.validationCacheDirectory = 'relative-cache';
+  const invalid = await prepareValidation(successor, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(invalid.staged.error.code, 'blocked-config');
+});
+test('native test-rebuilt outputs stay mutable while other generated outputs remain verified', async t => {
+  const ctx = await stagedValidationFixture(t, { parallelOutputs: true });
+  ctx.repo.validationGates[0].testRebuiltOutputPaths = ['.pilot/output-0'];
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(prepared.staged.error, undefined);
+  assert.ok(!prepared.staged.outputs.paths.includes('.pilot/output-0'));
+  assert.ok(prepared.staged.outputs.paths.includes('.pilot/output-1'));
+  const execute = async (executable, args, cwd, timeout, env) => {
+    if (env.PILOT_VALIDATION_STAGE === 'test') {
+      rmSync(join(cwd, '.pilot/output-0'), { recursive: true });
+      mkdirSync(join(cwd, '.pilot/output-0'));
+      writeFileSync(join(cwd, '.pilot/output-0/compiled.js'), 'fresh candidate compilation\n');
+    }
+    return ctx.execute(executable, args, cwd, timeout, env);
+  };
+  const result = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute, rmSync, prepared);
+  assert.equal(result[0].status, 'passed');
+  writeFileSync(join(prepared.staged.workspace, '.pilot/output-1/compiled.js'), 'tampered\n');
+  const verification = await verifyPreparedOutputs(prepared.staged.receiptPath,
+    prepared.staged.workspace, prepared.staged.outputs);
+  assert.equal(verification.valid, false);
+  ctx.repo.validationGates[0].testRebuiltOutputPaths = ['.pilot/dependencies'];
+  const invalid = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, ctx.execute);
+  assert.equal(invalid.staged.error.code, 'blocked-config');
+});
 test('cold authenticated preparation runs broker once and cache hits skip it', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
@@ -1679,7 +1789,7 @@ test('authentication preflight returns a safe action before a cold dispatch', as
     'run', 'setup:validation-auth', '--', '-Workspace'
   ]);
   assert.match(actions[0].remediation.args[4],
-    new RegExp(`pv[\\\\/]d[\\\\/].+[\\\\/]w$`));
+    new RegExp(`pv[\\\\/]a[\\\\/].+[\\\\/]w$`));
   const exactConfig = readFileSync(
     join(actions[0].remediation.args[4], '.yarnrc.yml'), 'utf8');
   assert.match(exactConfig, /AugmentationLoop/);
@@ -1687,7 +1797,7 @@ test('authentication preflight returns a safe action before a cold dispatch', as
   const remediationWorkspace = actions[0].remediation.args[4];
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
     ctx.isolated.baseRevision, ctx.execute);
-  assert.equal(remediationWorkspace,
+  assert.notEqual(remediationWorkspace,
     join(dirname(prepared.staged.dependencyReceiptPath), 'w'));
   assert.deepEqual(ctx.calls, [
     'fingerprint', 'authentication-check',
@@ -1730,7 +1840,29 @@ test('forced recovery preflight checks authentication without deleting trusted c
   assert.equal(actions[0].reason, 'credential-validation-failed');
   assert.equal(actions[0].requiresInstallApproval, false);
   assert.ok(existsSync(prepared.staged.receiptPath));
+  assert.ok(existsSync(prepared.staged.dependencyReceiptPath));
   assert.deepEqual(ctx.calls, ['fingerprint', 'authentication-check']);
+});
+
+test('authentication preflight preserves an in-progress dependency workspace', async t => {
+  const ctx = await stagedValidationFixture(t, { authentication: true });
+  let checked = false;
+  const execute = async (executable, args, cwd, timeout, env) => {
+    const output = await ctx.execute(executable, args, cwd, timeout, env);
+    if (env.PILOT_VALIDATION_STAGE === 'dependencies') {
+      const manifest = join(cwd, 'package.json');
+      const original = readFileSync(manifest, 'utf8');
+      await preflightValidationAuthentication(
+        ctx.config, ctx.repo, ctx.isolated.baseRevision, ctx.execute);
+      assert.equal(readFileSync(manifest, 'utf8'), original);
+      checked = true;
+    }
+    return output;
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,
+    ctx.isolated.baseRevision, execute);
+  assert.equal(prepared.staged.error, undefined);
+  assert.equal(checked, true);
 });
 
 test('local cache-miss authentication recovery stays prepared and never launches a model', async t => {
@@ -1786,6 +1918,77 @@ test('local late authentication recovery is bounded when no remediation action i
   assert.equal(preparations, 1);
   assert.equal(ctx.ledger.job(ctx.job.id).state, 'prepared');
 });
+
+for (const boundary of ['preparation', 'client-start', 'session-create', 'unexpired']) {
+  test(`standalone AL dispatch enforces its allocation at ${boundary}`, async t => {
+    const ctx = await stagedValidationFixture(t, {
+      authentication: true, provenance: 'authenticated-source'
+    });
+    ctx.repo.baseRef = ctx.isolated.baseRevision;
+    ctx.repo.flights = { proposerExecutor: 'local' };
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 30;
+    ctx.config.runtime.cliPath = process.execPath;
+    ctx.config.runtime.authoringModel = 'gpt-6-luna';
+    const investigation = { ...ctx.investigation, id: `${ctx.investigation.id}-allocation` };
+    ctx.ledger.put(investigation);
+    const job = ctx.ledger.prepare(makeAssignment(ctx.config, investigation, ctx.repo.id, 'defect-fix'));
+    const started = Date.now();
+    let time = started, preparations = 0, creations = 0, submissions = 0, disconnects = 0;
+    t.mock.method(Date, 'now', () => time);
+    const allocation = join(ctx.root, 'allocation.json');
+    writeFileSync(allocation, JSON.stringify({
+      format: 'al-e2e-model-allocation-v1', approvedBy: 'parent', model: 'gpt-6-luna',
+      repoId: ctx.repo.id, baseRevision: ctx.repo.baseRef, runDirectory: ctx.root,
+      maxTotalSessions: 30, priorActualSessions: 0, maxAdditionalSessions: 1,
+      purposes: ['proposer'], allowPublication: true,
+      deadlineAt: new Date(started + 1000).toISOString()
+    }));
+    bindAlModelExecution(ctx.config, alReference(allocation), ctx.root, 1, 'proposer');
+    t.mock.method(CopilotClient.prototype, 'start', async () => {
+      if (boundary === 'client-start') time += 1001;
+    });
+    t.mock.method(CopilotClient.prototype, 'stop', async () => {});
+    t.mock.method(CopilotClient.prototype, 'createSession', async options => {
+      creations++;
+      assert.equal(options.model, 'gpt-6-luna');
+      if (boundary === 'session-create') time += 1001;
+      return {
+        sendAndWait: async (_message, timeout) => {
+          submissions++;
+          assert.equal(timeout, 1000);
+          await options.tools.find(tool => tool.name === 'pilot_finish').handler({
+            outcome: 'investigated', findings: 'Synthetic allocation-bound SDK callback'
+          });
+        },
+        disconnect: async () => { disconnects++; }
+      };
+    });
+    const execution = dispatch(ctx.config, ctx.ledger, job.id, {
+      preflightValidationAuthentication: async () => [],
+      prepareValidation: async () => {
+        preparations++;
+        if (boundary === 'preparation') time += 1001;
+        return {};
+      },
+      runValidation: () => assert.fail('No changes or native validation are authorized by this fixture'),
+      pushBranch: () => assert.fail('No publication in this fixture'),
+      createDraft: () => assert.fail('No publication in this fixture')
+    });
+    if (boundary === 'unexpired') assert.equal((await execution).outcome, 'investigated');
+    else {
+      await assert.rejects(execution, error => error.code === 'blocked-authorization');
+      assert.equal(ctx.ledger.job(job.id).state, 'blocked');
+      assert.equal(ctx.ledger.all('workerResult').at(-1).outcome, 'blocked');
+    }
+    assert.equal(preparations, 1);
+    assert.equal(creations, ['session-create', 'unexpired'].includes(boundary) ? 1 : 0);
+    assert.equal(submissions, boundary === 'unexpired' ? 1 : 0);
+    assert.equal(disconnects, creations);
+    assert.equal(ctx.ledger.status().operations.filter(row =>
+      ['commit', 'push', 'draft-pr'].includes(row.kind)).length, 0);
+  });
+}
 
 test('authentication preflight is singleflight and malformed evidence blocks', async t => {
   const ctx = await stagedValidationFixture(t, { authentication: true });

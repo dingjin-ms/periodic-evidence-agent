@@ -1,0 +1,65 @@
+{
+  "id": "augloop-workflows",
+  "execution": "local",
+  "flights": { "proposerExecutor": "local" },
+  "projectId": "bc6e0ce9-86c2-4c5a-aece-d99afc758a73",
+  "owner": "REPLACE_WITH_APPROVED_OWNER",
+  "routingApproved": false,
+  "routingRules": ["Only the four supported AL integration-test owners and dedicated test fixtures."],
+  "referenceCheckout": null,
+  "baseRef": null,
+  "qualificationRefresh": "local",
+  "remote": "https://dev.azure.com/office/ISS/_git/augloop-workflows",
+  "allowedWritePrefixes": [
+    "server/session-protocol/test/integration-evolution",
+    "utils/doclab-serialization/tests",
+    "utils/eval-vnext-config-resolver/tests",
+    "utils/excel-agent-in-container-proxy/tests"
+  ],
+  "allowedWriteFiles": [],
+  "skillBindings": [{
+    "id": "al-integration-test-authoring",
+    "capability": "integration-test-authoring",
+    "skillPath": "utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md",
+    "enabled": false,
+    "qualification": "unqualified",
+    "authoringProvider": "copilot-sdk",
+    "requestedOutcomes": ["add-or-update-tests", "investigate-failure"],
+    "allowedWritePrefixes": [
+      "server/session-protocol/test/integration-evolution",
+      "utils/doclab-serialization/tests",
+      "utils/eval-vnext-config-resolver/tests",
+      "utils/excel-agent-in-container-proxy/tests"
+    ],
+    "allowedWriteFiles": [],
+    "requiresBehaviorCard": false,
+    "sideEffects": { "commit": false, "push": false, "createDraftPR": false }
+  }],
+  "commitIdentity": { "name": null, "email": null },
+  "validationGates": [{
+    "id": "al-four-owner-native",
+    "approved": false,
+    "isolationVerified": false,
+    "executable": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "{profile}",
+      "-Mode", "candidate", "-ArtifactDirectory", "REPLACE_WITH_PRIVATE_ABSOLUTE_ARTIFACT_DIRECTORY"],
+    "profilePath": "../scripts/validation/augloop-integration.ps1",
+    "profileSha256": "da3cfe0bf95a0fe4a9447f61f300f642107f1154ffeb80f1f0837ce1cda4f162",
+    "timeoutMs": 3600000,
+    "testRebuiltOutputPaths": [
+      "server/session-protocol/dist",
+      "utils/doclab-serialization/dist",
+      "utils/eval-vnext-config-resolver/dist",
+      "utils/excel-agent-in-container-proxy/dist"
+    ]
+  }],
+  "pr": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "5fd57e57-e20b-446c-877b-21db5464d04e",
+    "targetRef": "refs/heads/main",
+    "sourceBranchPrefix": "users/REPLACE_WITH_APPROVED_ALIAS/periodic-evidence-agent-al",
+    "draftOnly": true
+  }
+}

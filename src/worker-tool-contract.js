@@ -21,7 +21,7 @@ export const workerToolDefinitions = Object.freeze([
   },
   {
     name: 'pilot_read',
-    description: 'Read one bounded repository file, optionally by line range',
+    description: 'Read one bounded repository file or an exact skill-bundle: manifest path, optionally by line range',
     inputSchema: {
       type: 'object',
       properties: {

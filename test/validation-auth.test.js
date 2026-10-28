@@ -117,6 +117,66 @@ test('authentication failure diagnostics retain only typed reasons and numeric e
   assert.equal(validationAuthFailure({ code: 'synthetic-secret' }, 'dependencies').exitCode, null);
 });
 
+test('AL authentication remediation follows the pinned single-feed contract rather than repo name', () => {
+  const declared = { ...contract, type: 'azure-artifacts-npm', feeds: [contract.feeds[0]] };
+  const preflight = { provider: contract.provider, providerVersion: contract.providerVersion,
+    feedCount: 1, reason: 'interactive-sign-in-required', installProvider: false };
+  const action = validationAuthAction({ id: 'al-gate' },
+    { id: 'any-repository-id', referenceCheckout: 'C:\\isolated-al-auth' },
+    preflight, 'C:\\controller', declared);
+  assert.deepEqual(action.remediation.args, ['run', 'setup:validation-auth', '--',
+    '-Workspace', 'C:\\isolated-al-auth', '-RepositoryProfile', 'AugmentationLoop']);
+  assert.equal(action.requiresInstallApproval, false);
+  assert.equal(action.tokenRequested, false);
+  const install = validationAuthAction({ id: 'al-gate' },
+    { id: 'al', referenceCheckout: 'C:\\isolated-al-auth' },
+    { ...preflight, installProvider: true, reason: 'provider-missing' }, 'C:\\controller', declared);
+  assert.equal(install.requiresInstallApproval, true);
+  assert.equal(install.remediation.args.at(-1), '-InstallProvider');
+  assert.throws(() => validationAuthAction({ id: 'al-gate' },
+    { id: 'augloop-workflows', referenceCheckout: 'C:\\isolated-al-auth' },
+    preflight, 'C:\\controller', { ...declared,
+      feeds: [{ scope: null, registry: 'https://example.invalid/npm/registry/' }] }),
+  /No approved authentication remediation/);
+  const oa = validationAuthAction({ id: 'oa-gate' }, { id: 'oa', referenceCheckout: 'C:\\oa' },
+    { ...preflight, feedCount: 2 }, 'C:\\controller', { ...contract, type: 'azure-artifacts-npm' });
+  assert.deepEqual(oa.remediation.args, ['run', 'setup:validation-auth', '--', '-Workspace', 'C:\\oa']);
+});
+
+test('native authentication setup explicitly accepts AL single-feed without weakening OA default', {
+  skip: process.platform !== 'win32'
+}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'al-auth-profile-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace);
+  writeFileSync(join(workspace, '.yarnrc.yml'),
+    `npmRegistryServer: "${contract.feeds[0].registry}"\n`);
+  const script = join(process.cwd(), 'scripts', 'validation', 'prepare-office-agent-auth.ps1');
+  const systemPath = join(process.env.SystemRoot, 'System32');
+  const powershell = join(systemPath, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const run = extra => spawnSync(powershell, ['-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', script, '-Workspace', workspace, '-CheckOnly', ...extra], {
+    encoding: 'utf8', env: { ...process.env, PATH: systemPath }
+  });
+  const oa = run([]);
+  assert.notEqual(oa.status, 0);
+  assert.match(oa.stderr, /missing expected registry/);
+  const al = run(['-RepositoryProfile', 'AugmentationLoop']);
+  assert.equal(al.status, 0, al.stderr);
+  assert.match(al.stdout, /"feedCount":1/);
+  assert.match(al.stdout, /"reason":"provider-missing"/);
+  writeFileSync(join(workspace, '.yarnrc.yml'), yarnConfiguration);
+  const extraFeed = run(['-RepositoryProfile', 'AugmentationLoop']);
+  assert.notEqual(extraFeed.status, 0);
+  assert.match(extraFeed.stderr, /exactly its one declared registry/);
+  writeFileSync(join(workspace, '.yarnrc.yml'),
+    'npmRegistryServer: "https://example.invalid/npm/registry/"\n');
+  const wrongFeed = run(['-RepositoryProfile', 'AugmentationLoop']);
+  assert.notEqual(wrongFeed.status, 0);
+  assert.match(wrongFeed.stderr, /missing expected registry/);
+});
+
 test('preflight distinguishes provider mismatch and credential validation failure', () => {
   for (const [reason, installProvider] of [
     ['provider-version-mismatch', true], ['credential-validation-failed', false]

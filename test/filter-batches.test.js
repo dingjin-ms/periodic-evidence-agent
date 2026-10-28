@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { configAt, hash, json, readJson, now } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import { reserveAgencyRequest, recordAgencySubmission, recordAgencyAnalysisCheck, recordAgencyCaptureCheck,
@@ -25,6 +26,8 @@ import { advanceLocalE2E } from '../src/local-e2e.js';
 import { prepareLocalFilterRetry } from '../src/local-filter-retry.js';
 import { captureWorkerRsiOutcome, rsiWork } from '../src/rsi-flow.js';
 import { prepareValidation, resumePrecommitProposal, resumeCommittedValidation } from '../src/workers.js';
+import { bindAlModelExecution } from '../src/al-workflow.js';
+import { alReference } from '../src/al-adapter.js';
 import {
   qualifyRepositorySkill, repositoryValidationContract, skillQualificationId
 } from '../src/repository-skills.js';
@@ -69,6 +72,7 @@ function writeProposerSource(checkout) {
 }
 async function exerciseFilterProposer(s, ledger, checkout, git, manifest, reviewed, recover = false,
   orchestrated = false) {
+  const committed = ['committed', 'transfer'].includes(recover);
   const sourceHash = hash(readFileSync(s.ledgerPath));
   let filterConfig = structuredClone(s.config);
   const receiptTable = filterConfig.filterExecutor === 'local-sdk' ? 'local_filter_receipts' : 'agency_receipts';
@@ -98,7 +102,7 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
     }]
   };
   s.config.repositories = [repo];
-  if (recover === 'committed') {
+  if (committed) {
     const profilePath = join(s.root, 'native-profile.js');
     writeFileSync(profilePath, '// Native validation fixture\n');
     Object.assign(repo.validationGates[0], {
@@ -267,8 +271,8 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
     'synthetic-scenario': { error: { code: 'blocked-validation', message: 'Synthetic interrupted install' } }
   });
   let executed;
-  if (recover === 'committed') {
-    let validationArtifact;
+  if (committed) {
+    let validationArtifact, transferPrepared;
     Object.assign(executionOptions.dispatchDependencies, {
       prepareValidation: async (_config, current) => ({
         'synthetic-scenario': { workspace: current.workspace }
@@ -282,23 +286,45 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
       },
       runValidation: async (_config, _ledger, current, _repo, revision) => {
         const path = join(s.root, 'original-profile-failure.json');
-        writeFileSync(path, json({
+        const artifact = {
           gateId: 'synthetic-scenario', revision, status: 'failed',
           profileSha256: repo.validationGates[0].profileSha256,
           output: { exitCode: 1, stderr: 'PILOT_VALIDATION_REVISION is missing or invalid\r\n' },
           telemetry: { validationTimings: [{ id: 'policy' }] }
-        }));
+        };
+        if (recover === 'transfer') {
+          const directory = join(s.root, 'synthetic-transfer-cache');
+          mkdirSync(directory);
+          git(['clone', '--quiet', '--no-hardlinks', checkout, join(directory, 'w')]);
+          const body = { type: 'compile', inputs: { sourceRevision: current.base_revision,
+            profileSha256: artifact.profileSha256 } };
+          const receiptPath = join(directory, 'receipt.json');
+          writeFileSync(receiptPath, json({ ...body, syntheticUnitFixture: true, integrity: hash(json(body)) }));
+          transferPrepared = alReference(receiptPath);
+          Object.assign(artifact, {
+            status: 'blocked', blockedReason: 'validation-workspace-unavailable',
+            observedAt: now(), nativeArtifacts: [],
+            output: { stdout: '', stderr: '', inspectionError: 'Synthetic sanitized local Git transfer failure' },
+            telemetry: { preparedReceipt: receiptPath, preparedSourceRevision: current.base_revision,
+              validationRevision: revision, inputFingerprint: hash(json(body.inputs)),
+              cache: 'hit', compileCache: 'hit', dependencyCache: 'hit',
+              validationTimings: ['reuse-receipts', 'reuse-changed-paths', 'fingerprint', 'reuse-inputs',
+                'reuse-prepared-outputs', 'dependencies', 'compile', 'cleanup']
+                .map(id => ({ id, cache: id === 'cleanup' ? 'preserved' : 'hit' })) }
+          });
+        }
+        writeFileSync(path, json(artifact));
         validationArtifact = { path, sha256: hash(readFileSync(path)) };
         return [{
           gateId: 'synthetic-scenario', sourceRevision: revision,
-          status: 'failed', blockedReason: null, artifactRefs: [path],
+          status: artifact.status, blockedReason: artifact.blockedReason ?? null, artifactRefs: [path],
           owner: repo.owner, nextCheckAt: null, attemptCount: 1,
           commandOrRunUrl: 'synthetic native profile failure'
         }];
       }
     });
     await assert.rejects(acceptFilterProposerHandoff(s.config, ledger, input, executionOptions),
-      /No changes were proposed/);
+      recover === 'transfer' ? /Validation blocked/ : /No changes were proposed/);
     const prior = ledger.all('workerResult').at(-1);
     const job = ledger.job(prepared.assignment.id);
     assert.equal(job.state, 'blocked');
@@ -309,15 +335,88 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
       files: [...preservedProposal.skillExecution.changedFiles, 'scenarios/change.json']
         .sort().map(path => ({ path, sha256: hash(readFileSync(join(job.workspace, path))) }))
     };
+    if (recover === 'transfer') {
+      recovery.proposal = { ...preservedProposal, skillExecution: structuredClone(prior.skillExecution) };
+      const put = (name, value) => {
+        const path = join(s.root, name);
+        writeFileSync(path, json(value));
+        return alReference(path);
+      };
+      const args = ['fetch', '--dry-run', '--no-tags', `--negotiation-tip=${job.base_revision}`,
+        '--', job.workspace, prior.sourceRevision];
+      const cwd = join(s.root, 'synthetic-transfer-cache', 'w');
+      const dryRun = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+      assert.equal(dryRun.status, 0, dryRun.stderr);
+      const proof = { format: 'native-git-revision-transfer-proof-v1', assignmentId: job.id,
+        priorResultId: prior.id, baseRevision: job.base_revision, sourceRevision: prior.sourceRevision,
+        validationArtifact, preparedReceipt: transferPrepared, observedAt: now(),
+        configurationSha256: hash(json(s.config)), profileSha256: repo.validationGates[0].profileSha256,
+        dryRun: { executable: 'git', cwd, args, exitCode: dryRun.status,
+          stdout: dryRun.stdout, stderr: dryRun.stderr } };
+      const authority = { approved: true, authorizedBy: 'user', kind: 'native-git-revision-transfer',
+        maxModelAttempts: 0, maxValidationAttempts: 1, allowSourceChanges: false, allowCommit: false,
+        allowPush: true, allowDraftPR: true, allowMerge: false,
+        approvedAt: now(), expiresAt: new Date(Date.now() + 60000).toISOString(),
+        assignmentId: job.id, priorResultId: prior.id, baseRevision: job.base_revision,
+        sourceRevision: prior.sourceRevision, configurationSha256: hash(json(s.config)),
+        configuration: put('transfer-config.json', s.config),
+        proposalSha256: hash(json(recovery.proposal)), filesSha256: hash(json(recovery.files)),
+        validationArtifact, diagnostic: put('transfer-proof.json', proof),
+        controllerSource: alReference(fileURLToPath(new URL('../src/workers.js', import.meta.url))) };
+      Object.assign(recovery, { kind: authority.kind, authorization: put('transfer-authority.json', authority) });
+      await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id,
+        { ...recovery, sourceRevision: '0'.repeat(40) }), /latest preserved model result/);
+      for (const [field, value] of [['maxModelAttempts', 1], ['maxValidationAttempts', 2],
+        ['allowSourceChanges', true], ['configurationSha256', '0'.repeat(64)],
+        ['expiresAt', '2000-01-01T00:00:00Z']])
+        await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
+          ...recovery, authorization: put(`invalid-${field}.json`, { ...authority, [field]: value })
+        }), /zero-model authority/);
+      for (const field of ['controllerSource', 'configuration', 'diagnostic'])
+        await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
+          ...recovery, authorization: put(`changed-${field}.json`, {
+            ...authority, [field]: { ...authority[field], sha256: '0'.repeat(64) }
+          })
+        }), /changed/);
+      await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
+        ...recovery, authorization: put('wrong-tip-authority.json', { ...authority,
+          diagnostic: put('wrong-tip-proof.json', { ...proof, dryRun: { ...proof.dryRun,
+            args: args.map(arg => arg.startsWith('--negotiation-tip=') ? `--negotiation-tip=${'0'.repeat(40)}` : arg) } }) })
+      }), /dry-run proof/);
+      const originalArtifact = readFileSync(validationArtifact.path);
+      for (const stage of ['checkout', 'policy', 'test']) {
+        const changed = JSON.parse(originalArtifact);
+        changed.telemetry.validationTimings.splice(-1, 0, { id: stage });
+        writeFileSync(validationArtifact.path, json(changed));
+        const modified = alReference(validationArtifact.path);
+        await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
+          ...recovery, validationArtifact: modified,
+          authorization: put(`executed-${stage}.json`, { ...authority, validationArtifact: modified })
+        }), /pre-checkout transfer failure/);
+      }
+      writeFileSync(validationArtifact.path, originalArtifact);
+      ledger.operation('synthetic-prior-push', job.id, 'push', {});
+      await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
+        ...recovery, authorization: put('prior-push-authority.json', authority)
+      }), /unpublished original authored commit/);
+      ledger.db.prepare('DELETE FROM operations WHERE id=?').run('synthetic-prior-push');
+    }
     await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
       ...recovery, validationArtifact: { ...validationArtifact, sha256: '0'.repeat(64) }
     }), /validation evidence changed/);
+    const changedFiles = recovery.files.map((file, index) =>
+      index === 0 ? { ...file, sha256: '0'.repeat(64) } : file);
+    let changedAuthority = recovery.authorization;
+    if (recover === 'transfer') {
+      const path = join(s.root, 'changed-files-authority.json');
+      writeFileSync(path, json({ ...readJson(recovery.authorization.path), filesSha256: hash(json(changedFiles)) }));
+      changedAuthority = alReference(path);
+    }
     await assert.rejects(resumeCommittedValidation(s.config, ledger, job.id, {
-      ...recovery, files: recovery.files.map((file, index) =>
-        index === 0 ? { ...file, sha256: '0'.repeat(64) } : file)
+      ...recovery, files: changedFiles, ...(changedAuthority ? { authorization: changedAuthority } : {})
     }), /file population or contents changed/);
     assert.equal(draftCalls, 0);
-    assert.equal(modelCalls, 2);
+    assert.equal(modelCalls, recover === 'committed' ? 2 : 1);
     const resumed = await resumeCommittedValidation(s.config, ledger, job.id, recovery, {
       runModel: async () => assert.fail('Committed recovery must not invoke a model'),
       prepareValidation: async (config, current, repository, revision) => {
@@ -440,7 +539,7 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
 const counter = async (_config, input) => ({ sha256: input.sha256, model: input.model,
   tokenizer: input.tokenizer, tokens: input.text.startsWith('{') ? JSON.parse(JSON.parse(input.text).payload).groups.length * 100 + 20 : 5 });
 function setup(t, count = 3, related = false, titles = null, canonicalCapture = false,
-  provenance = 'synthetic') {
+  provenance = 'synthetic', description = null) {
   const root = mkdtempSync(join(tmpdir(), 'filter-batches-'));
   const cleanup = [];
   t.after(() => { for (const close of cleanup) close(); rmSync(root, { recursive: true, force: true }); });
@@ -456,7 +555,7 @@ function setup(t, count = 3, related = false, titles = null, canonicalCapture = 
     e.source.provenance = provenance; e.title = titles ? titles[i] : i === 0 ? null : 'Functional issue';
     e.sourceStatus = 'Resolved';
     e.fields = { 'System.State': 'Resolved', 'Microsoft.VSTS.Common.ResolvedReason': 'Fixed',
-      description: `Complete original body ${i}`, missing: null };
+      description: description ?? `Complete original body ${i}`, missing: null };
     if (related) e.fields.thread = { teamId: 'team', channelId: 'channel', rootId: 'root' };
     records.push(ledger.evidence(e, canonicalCapture
       ? { id: Number(e.source.recordId), rev: Number(e.source.revision), fields: e.fields, relations: e.links }
@@ -526,6 +625,27 @@ function localE2EInput(s) {
       maxProposers: 1, maxProposerAiCredits: 1,
       authorizeCommit: true, authorizePush: true, authorizeDraftPR: true } };
 }
+test('local SDK FILTER refuses an expired recurring authority before creating a model session', async t => {
+  const s = setup(t); localFilterConfig(s);
+  const manifest = await prepared(s), batch = manifest.batches[0];
+  const path = join(s.root, 'expired-authority.json'), planSha256 = 'd'.repeat(64);
+  writeFileSync(path, JSON.stringify({ format: 'al-recurring-authorization-v1', planSha256,
+    approvedAt: '2000-01-01T00:00:00Z', expiresAt: '2001-01-01T00:00:00Z', allowModels: true }));
+  const repo = s.config.repositories[0];
+  s.config.runtime.executionAuthorization = { reference: { path, sha256: hash(readFileSync(path)) },
+    repoId: repo.id, baseRevision: repo.baseRef, planSha256 };
+  const ledger = new Ledger(s.root); s.cleanup.push(() => ledger.close());
+  let sessions = 0;
+  const outcome = await executeLocalFilterBatch(s.config, ledger, manifest, batch.id, {
+    connect: async (_config, _cwd, action) => action({
+      createSession: async () => { sessions++; throw Error('Expired session must not be created'); }
+    })
+  });
+  assert.equal(sessions, 0);
+  assert.equal(outcome.state, 'blocked');
+  assert.equal(outcome.terminal.error.code, 'blocked-authorization');
+  assert.equal(outcome.terminal.sessionId, null);
+});
 function syntheticLocalConnection(batch, reviewed, behavior = async tools => {
   await tools.find(tool => tool.name === 'pilot_filter_finish').handler({ result: reviewed });
 }) {
@@ -535,7 +655,8 @@ function syntheticLocalConnection(batch, reviewed, behavior = async tools => {
     createSession: async options => {
       let listener;
       assert.equal(options.onPermissionRequest().kind, 'denied-by-rules');
-      assert.deepEqual(options.tools.map(tool => tool.name), ['pilot_filter_source', 'pilot_filter_finish']);
+      assert.deepEqual(options.tools.map(tool => tool.name), ['pilot_filter_source',
+        ...(config.localFilter.evidencePaging ? ['pilot_filter_evidence'] : []), 'pilot_filter_finish']);
       assert.equal(options.skipCustomInstructions, true);
       assert.equal(options.enableFileHooks, false);
       assert.equal(options.enableSkills, false);
@@ -557,15 +678,104 @@ function syntheticLocalConnection(batch, reviewed, behavior = async tools => {
             assert.deepEqual(value.includedBuiltinSkills, []);
           } } },
         sendAndWait: async input => {
-          assert.equal(input.prompt, batch.payload);
+          if (config.localFilter.evidencePaging) {
+            const envelope = JSON.parse(input.prompt);
+            assert.equal(envelope.format, 'paged-filter-batch-input-v1');
+            assert.equal(envelope.originalPayloadSha256, batch.payloadSha256);
+            assert.deepEqual(envelope.index, inputOf(batch).index);
+          } else assert.equal(input.prompt, batch.payload);
           listener({ id: 'synthetic-event', type: 'assistant.turn_start' });
-          await behavior(options.tools);
+          await behavior(options.tools, input, options);
         },
         disconnect: async () => {}
       };
     }
     });
   };
+}
+for (const boundary of ['connect', 'session-create', 'unexpired']) {
+  test(`standalone AL FILTER enforces its allocation at ${boundary}`, async t => {
+    const s = setup(t); localFilterConfig(s);
+    const repo = s.config.repositories[0];
+    repo.baseRef = 'a'.repeat(40);
+    const manifest = await prepared(s), batch = manifest.batches[0], reviewed = result(manifest, batch);
+    const started = Date.now();
+    let time = started, creations = 0, submissions = 0;
+    t.mock.method(Date, 'now', () => time);
+    const allocation = join(s.root, 'standalone-allocation.json');
+    writeFileSync(allocation, JSON.stringify({
+      format: 'al-e2e-model-allocation-v1', approvedBy: 'parent', model: 'gpt-6-luna',
+      repoId: repo.id, baseRevision: repo.baseRef, runDirectory: s.root,
+      maxTotalSessions: 30, priorActualSessions: 0, maxAdditionalSessions: 1,
+      purposes: ['filter'], allowPublication: false,
+      deadlineAt: new Date(started + 1000).toISOString()
+    }));
+    bindAlModelExecution(s.config, alReference(allocation), s.root, 1, 'filter');
+    const ledger = new Ledger(s.root); s.cleanup.push(() => ledger.close());
+    const native = syntheticLocalConnection(batch, reviewed);
+    const outcome = await executeLocalFilterBatch(s.config, ledger, manifest, batch.id, {
+      connect: (config, cwd, action, login) => native(config, cwd, async client => {
+        if (boundary === 'connect') time += 1001;
+        const create = client.createSession;
+        client.createSession = async options => {
+          creations++;
+          const session = await create(options), send = session.sendAndWait;
+          if (boundary === 'session-create') time += 1001;
+          session.sendAndWait = async (input, timeout) => {
+            submissions++;
+            assert.equal(timeout, 1000);
+            return send(input);
+          };
+          return session;
+        };
+        return action(client);
+      }, login)
+    });
+    assert.equal(outcome.state, boundary === 'unexpired' ? 'complete-held' : 'blocked');
+    if (boundary !== 'unexpired') assert.equal(outcome.terminal.error.code, 'blocked-authorization');
+    assert.equal(creations, boundary === 'connect' ? 0 : 1);
+    assert.equal(submissions, boundary === 'unexpired' ? 1 : 0);
+  });
+}
+async function reviewDeliveredEvidence(tools, prompt) {
+  const envelope = JSON.parse(prompt);
+  const read = tools.find(tool => tool.name === 'pilot_filter_evidence');
+  const records = [];
+  let deliveredBytes = 0, pages = 0;
+  for (const [index, entry] of envelope.index.entries.entries()) {
+    let offset = 0, content = '';
+    do {
+      const response = await read.handler({ index, offset });
+      const page = JSON.parse(response);
+      if (page.state === 'rejected') return { rejected: page, deliveredBytes, pages };
+      deliveredBytes += Buffer.byteLength(response);
+      pages++;
+      assert.equal(page.revision, envelope.analysisPayloadSha256);
+      content += page.content;
+      offset = page.nextOffset;
+    } while (offset !== null);
+    const record = JSON.parse(content);
+    assert.equal(record.evidence.id, entry.evidenceId);
+    assert.equal(sha(record.evidence), entry.recordSha256);
+    assert.ok(record.captures.length > 0);
+    records.push(record);
+  }
+  return { deliveredBytes, pages, result: {
+    format: 'filter-batch-result-v1', cohortId: envelope.cohortId, batchId: envelope.batchId,
+    payloadSha256: envelope.analysisPayloadSha256, status: 'complete',
+    titles: { format: 'filter-title-decisions-v1', indexSha256: envelope.indexSha256,
+      reviewer: 'synthetic-paged-reader', reviewedAt: now(),
+      decisions: envelope.index.entries.map(entry => ({
+        evidenceId: entry.evidenceId, source: entry.source, captureSha256: entry.captureSha256,
+        disposition: entry.title ? 'needs-details' : 'no-title', exclusionType: null,
+        reason: 'Read the delivered original record', titleQuote: null
+      })) },
+    details: records.map((record, index) => ({
+      evidenceId: record.evidence.id, recordSha256: sha(record.evidence),
+      captureSha256: envelope.index.entries[index].captureSha256,
+      status: 'reviewed', reason: 'Read the delivered original evidence and captures through EOF'
+    })), candidates: []
+  } };
 }
 test('local SDK FILTER budget preflight never raises the configured credit ceiling', async t => {
   const s = setup(t); localFilterConfig(s);
@@ -790,6 +1000,23 @@ test('local SDK FILTER counts returned pages and permanently blocks cumulative s
   assert.equal(ledger.db.prepare(
     "SELECT COUNT(*) n FROM local_filter_receipts WHERE kind LIKE 'source:%'").get().n, pages);
   assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(reviewed)]).state, 'blocked');
+});
+test('local SDK FILTER preserves nonpaged prompt accounting and original payload provenance', async t => {
+  const s = setup(t, 1), manifest = await prepared(s); localFilterConfig(s);
+  const ledger = new Ledger(join(s.root, 'execution')); s.cleanup.push(() => ledger.close());
+  const batch = manifest.batches[0], reviewed = result(manifest, batch);
+  const connect = syntheticLocalConnection(batch, reviewed, async (tools, { prompt }, options) => {
+    const finish = tools.find(tool => tool.name === 'pilot_filter_finish');
+    const request = JSON.parse(ledger.db.prepare(
+      "SELECT body FROM local_filter_receipts WHERE kind='request'").get().body);
+    assert.equal(prompt, batch.payload);
+    assert.equal(request.requestBytes, Buffer.byteLength(batch.payload) +
+      Buffer.byteLength(options.systemMessage.content) + Buffer.byteLength(json(finish.parameters)));
+    assert.equal(request.payloadSha256, hash(prompt));
+    assert.equal(JSON.parse(await finish.handler({ result: reviewed })).state, 'held');
+  });
+  const outcome = await executeLocalFilterBatch(s.config, ledger, manifest, batch.id, { connect });
+  assert.equal(outcome.state, 'complete-held', json(outcome));
 });
 test('local SDK FILTER returns bounded validation feedback and permits same-session correction', async t => {
   const s = setup(t, 1, false, ['Functional issue']), manifest = await prepared(s); localFilterConfig(s);
@@ -1115,9 +1342,9 @@ test('local SDK FILTER recovers missing files and journals concurrent pinned Git
   assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(reviewed)]).state, 'blocked');
 });
 const localE2EModes = ['orchestration', 'auth', 'uncertain'];
-for (const scenario of [false, true, 'committed', ...localE2EModes])
+for (const scenario of [false, true, 'committed', 'transfer', ...localE2EModes])
 test(localE2EModes.includes(scenario) ? `local E2E production pipeline preserves ${scenario} contract offline` :
-  `local SDK FILTER feeds the production proposer and native validation with synthetic callbacks${scenario === 'committed' ? ' after committed validation recovery' : scenario ? ' after precommit recovery' : ''}`, async t => {
+  `local SDK FILTER feeds the production proposer and native validation with synthetic callbacks${['committed', 'transfer'].includes(scenario) ? ` after ${scenario} validation recovery` : scenario ? ' after precommit recovery' : ''}`, async t => {
   const orchestrated = localE2EModes.includes(scenario) ? scenario : false;
   const recover = orchestrated ? false : scenario;
   const s = setup(t, 1, false, null, true, 'app-tool-reported');
@@ -1603,6 +1830,133 @@ test('local SDK FILTER compact decisions bind metadata but preserve every model 
   const tampered = reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(outcome.result)]);
   assert.equal(tampered.state, 'blocked');
   assert.match(tampered.batches[0].analysisError.message, /original model submission/);
+});
+test('local SDK FILTER paged evidence blocks unread decisions and reconciles original page bytes', async t => {
+  const s = setup(t, 2), manifest = await prepared(s); localFilterConfig(s);
+  Object.assign(s.config.localFilter, { evidencePaging: true, maxToolCalls: 12 });
+  const ledger = new Ledger(join(s.root, 'execution')); s.cleanup.push(() => ledger.close());
+  const batch = manifest.batches[0], reviewed = result(manifest, batch);
+  const connect = syntheticLocalConnection(batch, reviewed, async tools => {
+    const submit = async input => JSON.parse(await tools.find(tool => tool.name === 'pilot_filter_finish').handler(input));
+    assert.equal((await submit({ result: reviewed })).state, 'rejected');
+    const read = tools.find(tool => tool.name === 'pilot_filter_evidence');
+    for (let index = 0; index < reviewed.details.length; index++) {
+      let offset = 0;
+      do {
+        const response = JSON.parse(await read.handler({ index, offset }));
+        assert(response.content.includes('evidence') || offset > 0);
+        offset = response.nextOffset;
+      } while (offset !== null);
+    }
+    assert.equal((await submit({ result: reviewed })).state, 'held');
+  });
+  const outcome = await executeLocalFilterBatch(s.config, ledger, manifest, batch.id, { connect });
+  assert.equal(outcome.state, 'complete-held', json(outcome));
+  assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(outcome.result)]).state, 'complete-held');
+  const receipt = JSON.parse(ledger.db.prepare(
+    "SELECT body FROM local_filter_receipts WHERE task_id=? AND kind LIKE 'evidence:%' LIMIT 1").get(batch.id).body);
+  receipt.observation.sha256 = 'a'.repeat(64);
+  ledger.db.prepare('INSERT INTO local_filter_receipts VALUES(?,?,?)').run(batch.id, 'evidence:99', json(receipt));
+  const tampered = reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(outcome.result)]);
+  assert.equal(tampered.state, 'blocked');
+  assert.match(tampered.batches[0].analysisError.message, /original batch bytes/);
+});
+test('local SDK FILTER noncompact paging derives result pins only from delivered prompt and tools', async t => {
+  const s = setup(t, 2), manifest = await prepared(s); localFilterConfig(s);
+  Object.assign(s.config.localFilter, { evidencePaging: true, compactDecisions: false, maxToolCalls: 12 });
+  const ledger = new Ledger(join(s.root, 'execution')); s.cleanup.push(() => ledger.close());
+  const batch = manifest.batches[0];
+  const connect = syntheticLocalConnection(batch, null, async (tools, { prompt }) => {
+    const envelope = JSON.parse(prompt);
+    assert.match(envelope.indexSha256, /^[a-f0-9]{64}$/);
+    assert.match(envelope.analysisPayloadSha256, /^[a-f0-9]{64}$/);
+    assert.notEqual(envelope.originalPayloadSha256, envelope.analysisPayloadSha256);
+    const reviewed = await reviewDeliveredEvidence(tools, prompt);
+    const submit = async result => JSON.parse(await tools.find(tool =>
+      tool.name === 'pilot_filter_finish').handler({ result }));
+    assert.equal((await submit({ ...reviewed.result,
+      payloadSha256: envelope.originalPayloadSha256 })).state, 'rejected');
+    assert.equal((await submit({ ...reviewed.result, titles: { ...reviewed.result.titles,
+      indexSha256: envelope.originalPayloadSha256 } })).state, 'rejected');
+    assert.equal((await submit(reviewed.result)).state, 'held');
+  });
+  const outcome = await executeLocalFilterBatch(s.config, ledger, manifest, batch.id, { connect });
+  assert.equal(outcome.state, 'complete-held', json(outcome));
+  assert.equal(outcome.result.payloadSha256, batch.analysisPayloadSha256);
+  assert.equal(outcome.result.titles.indexSha256, batch.indexSha256);
+  assert.equal(reconcileFilterExecutionCohort(s.config, ledger, manifest, [bytes(outcome.result)]).state,
+    'complete-held');
+});
+test('local SDK FILTER budgets actual paged prompt and each delivered page once without relaxing ceilings', async t => {
+  const s = setup(t, 1, false, ['Functional issue'], true, 'synthetic',
+    'Original 中文 😀 evidence\n'.repeat(3000));
+  const manifest = await prepared(s); localFilterConfig(s);
+  Object.assign(s.config.localFilter, { evidencePaging: true, compactDecisions: false, maxToolCalls: 40 });
+  const batch = manifest.batches[0];
+  let attempts = 0;
+  const run = async (ceiling, expectPageRejection = false) => {
+    const config = structuredClone(s.config);
+    config.localFilter.maxRequestBytes = ceiling;
+    const ledger = new Ledger(join(s.root, `execution-${++attempts}`));
+    s.cleanup.push(() => ledger.close());
+    let measured, callbackFailure;
+    const behavior = async (tools, { prompt }, options) => {
+      const finish = tools.find(tool => tool.name === 'pilot_filter_finish');
+      const overheadBytes = Buffer.byteLength(options.systemMessage.content) +
+        Buffer.byteLength(json(finish.parameters));
+      const initialBytes = Buffer.byteLength(prompt) + overheadBytes;
+      const request = JSON.parse(ledger.db.prepare(
+        "SELECT body FROM local_filter_receipts WHERE kind='request'").get().body);
+      assert.equal(request.requestBytes, initialBytes);
+      assert.equal(request.payloadSha256, batch.payloadSha256);
+      const reviewed = await reviewDeliveredEvidence(tools, prompt);
+      measured = { initialBytes, totalBytes: initialBytes + reviewed.deliveredBytes,
+        oldTotalBytes: Buffer.byteLength(batch.payload) + overheadBytes + reviewed.deliveredBytes,
+        pages: reviewed.pages };
+      assert.ok(measured.totalBytes <= ceiling);
+      const submitted = JSON.parse(await finish.handler({ result: reviewed.result ?? {} }));
+      if (expectPageRejection) {
+        assert.equal(reviewed.rejected.error.code, 'blocked-budget');
+        assert.match(reviewed.rejected.error.message, /Cumulative FILTER input exceeds the byte ceiling/);
+        assert.equal(submitted.state, 'rejected');
+        assert.match(submitted.error.message, /permanent scope or budget violation/);
+      } else {
+        assert.equal(reviewed.rejected, undefined);
+        assert.equal(submitted.state, 'held');
+      }
+    };
+    const connect = syntheticLocalConnection(batch, null, async (...args) => {
+      try { await behavior(...args); }
+      catch (error) { callbackFailure = error; throw error; }
+    });
+    const outcome = await executeLocalFilterBatch(config, ledger, manifest, batch.id, { connect });
+    assert.ifError(callbackFailure);
+    assert.equal(outcome.state, expectPageRejection ? 'blocked' : 'complete-held', json(outcome));
+    assert.equal(ledger.db.prepare(
+      "SELECT COUNT(*) n FROM local_filter_receipts WHERE kind LIKE 'evidence:%'").get().n, measured.pages);
+    if (expectPageRejection) {
+      assert.equal(outcome.terminal.analysisPassed, false);
+      assert.equal(outcome.terminal.policyViolations.length, 1);
+      assert.equal(outcome.terminal.policyViolations[0].code, 'blocked-budget');
+    } else assert.equal(reconcileFilterExecutionCohort(config, ledger, manifest, [bytes(outcome.result)]).state,
+      'complete-held');
+    return measured;
+  };
+  const probe = await run(s.config.localFilter.maxRequestBytes);
+  assert.ok(probe.pages > 1);
+  const threshold = Math.floor((probe.totalBytes + probe.oldTotalBytes) / 2);
+  assert.ok(probe.totalBytes < threshold && threshold < probe.oldTotalBytes);
+  t.diagnostic(json({ ...probe, successfulCeiling: threshold, rejectedPageCeiling: probe.totalBytes - 1,
+    rejectedInitialCeiling: probe.initialBytes - 1 }));
+  const bounded = await run(threshold);
+  assert.deepEqual(bounded, probe);
+  const overrun = await run(probe.totalBytes - 1, true);
+  assert.ok(overrun.pages > 0 && overrun.pages < probe.pages);
+  const ledger = new Ledger(join(s.root, 'initial-overrun')); s.cleanup.push(() => ledger.close());
+  s.config.localFilter.maxRequestBytes = probe.initialBytes - 1;
+  await assert.rejects(executeLocalFilterBatch(s.config, ledger, manifest, batch.id,
+    { connect: () => assert.fail('An oversized actual prompt must not open a session') }),
+  error => error.code === 'blocked-budget' && /byte ceiling/.test(error.message));
 });
 test('local SDK FILTER adds a cohort retry without changing a completed batch execution binding', async t => {
   const s = setup(t, 3), manifest = await prepared(s); localFilterConfig(s);

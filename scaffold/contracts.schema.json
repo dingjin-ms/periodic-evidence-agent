@@ -636,6 +636,7 @@
               "id": { "$ref": "#/$defs/text" },
               "capability": { "$ref": "#/$defs/text" },
               "skillPath": { "$ref": "#/$defs/text" },
+              "externalBundle": { "$ref": "#/$defs/externalSkillBundle" },
               "inputFormat": {
                 "enum": ["declarative-e2e-mini-spec-batch-v1"]
               },
@@ -660,6 +661,33 @@
           }
         },
         "validationGates": { "$ref": "#/$defs/texts" }
+      }
+    },
+    "externalSkillBundle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["root", "source", "files"],
+      "properties": {
+        "root": { "$ref": "#/$defs/text" },
+        "source": {
+          "type": "object", "additionalProperties": false,
+          "required": ["remote", "revision", "path"],
+          "properties": {
+            "remote": { "$ref": "#/$defs/text" },
+            "revision": { "type": "string", "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$" },
+            "path": { "$ref": "#/$defs/text" }
+          }
+        },
+        "files": {
+          "type": "array", "minItems": 1, "maxItems": 128,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": { "$ref": "#/$defs/text" },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            }
+          }
+        }
       }
     },
     "workspaceCleanupPolicy": {
@@ -1259,6 +1287,7 @@
             "qualificationSource", "validationContractVersion", "validationContractSha256"],
           "properties": {
             "qualificationId": { "$ref": "#/$defs/text" },
+            "externalBundle": { "$ref": "#/$defs/externalSkillBundle" },
             "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
             "skillSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "skillPath": { "$ref": "#/$defs/text" },
@@ -1624,6 +1653,7 @@
                 "capability": { "$ref": "#/$defs/text" },
                 "skillPath": { "$ref": "#/$defs/text" },
                 "skillRevision": { "$ref": "#/$defs/text" },
+                "externalBundle": { "$ref": "#/$defs/externalSkillBundle" },
                 "status": { "enum": ["succeeded", "failed", "needs-input", "blocked"] },
                 "classification": { "$ref": "#/$defs/nullableText" },
                 "changedFiles": { "$ref": "#/$defs/texts" },

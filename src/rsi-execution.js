@@ -222,14 +222,16 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     requireThat(json(execution.controller) === json(pinRsiController()),
       'RSI loaded controller changed', 'blocked-reconciliation');
     pinRsiEvaluation(automation.evaluation, execution.workspace);
-    storageBytes();
+    const bytes = storageBytes();
     remaining(execution);
+    return bytes;
   };
   function retainRaw(key, value) {
-    check();
     const bytes = json(value);
+    // Serialize before measuring; reuse only this synchronous pre-write check.
+    const usedBytes = check();
     requireThat(Buffer.byteLength(bytes) <= config.rsi.maxObservationBytes &&
-      storageBytes() + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
+      usedBytes + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
     'RSI raw artifact exceeds the execution storage bound', 'blocked-budget');
     const rawRun = `${rawPrefix}${hash(key).slice(0, 24)}`;
     const artifact = persistRunArtifact(config, rawRun, 'payload.json', bytes);
@@ -372,6 +374,8 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
         await git(execution, ['clone', '--no-hardlinks', '--no-checkout', '--', reference, workspace], directory);
         await git(execution, ['checkout', '--detach', automation.baselineRevision], workspace);
         await git(execution, ['remote', 'set-url', 'origin', remote], workspace);
+        // Compact owned metadata without discarding unreachable objects or skipping allocation checks.
+        await git(execution, ['repack', '-ad', '--keep-unreachable'], workspace);
         await cleanHead(execution, workspace, automation.baselineRevision);
         return { workspace, revision: automation.baselineRevision };
       });

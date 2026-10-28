@@ -116,23 +116,33 @@ function expand(value, paths) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, paths)]));
   return value;
 }
-function evaluatePredicate(assertion, outputs, paths, admit, env) {
-  if (!outputs.has(assertion.step)) return { known: false };
-  let source = outputs.get(assertion.step);
-  if (assertion.ledger) {
-    const path = boundedPath(paths.directory, expand(assertion.ledger.path, paths));
-    if (!existsSync(path)) return { known: false };
-    const info = lstatSync(path);
-    requireThat(info.isFile() && info.nlink === 1, 'Flow ledger is not a regular file', 'blocked-scope');
-    source = JSON.parse(execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning',
-      '--input-type=module', '-e', queryRunner], {
-      input: json({ path, query: assertion.ledger.query }), timeout: Math.min(admit(), 10000),
-      maxBuffer: 1048576, windowsHide: true, encoding: 'utf8', env
-    }));
-    admit();
-  }
-  const actual = at(source, assertion.pointer);
-  return { known: actual.known, passed: actual.known && json(actual.value) === json(assertion.equals) };
+function evaluatePredicates(assertions, outputs, paths, admit, env) {
+  let previous = null;
+  return assertions.map(assertion => {
+    if (!outputs.has(assertion.step)) { previous = null; return { known: false }; }
+    let source = outputs.get(assertion.step);
+    if (assertion.ledger) {
+      const path = boundedPath(paths.directory, expand(assertion.ledger.path, paths));
+      if (!existsSync(path)) { previous = null; return { known: false }; }
+      const info = lstatSync(path);
+      requireThat(info.isFile() && info.nlink === 1, 'Flow ledger is not a regular file', 'blocked-scope');
+      const query = assertion.ledger.query;
+      if (previous?.path === path && previous.query === query) source = previous.rows;
+      else {
+        previous = null;
+        source = JSON.parse(execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning',
+          '--input-type=module', '-e', queryRunner], {
+          input: json({ path, query }), timeout: Math.min(admit(), 10000),
+          maxBuffer: 1048576, windowsHide: true, encoding: 'utf8', env
+        }));
+        admit();
+        // Reuse only immediately adjacent identical reads, never across another child.
+        previous = { path, query, rows: source };
+      }
+    } else previous = null;
+    const actual = at(source, assertion.pointer);
+    return { known: actual.known, passed: actual.known && json(actual.value) === json(assertion.equals) };
+  });
 }
 function roleResult(output, step) {
   let result;
@@ -200,13 +210,15 @@ export async function runAppRoleFlow(input, { admit, persist, hostInput, execute
           const reference = retainRaw(`${key}-input`, expand(stepInput, paths));
           args.push('--file', reference.path);
         }
-        admit();
+        const admittedMs = admit(), admittedAt = Date.now();
         ledger.operation(operationId, executionId, 'rsi-app-flow-step', {
           revision, profileSha256: hash(json(profile)), observationSha256, role: step.role, operation: step.operation
         });
         let output;
         try {
-          output = { ...await execute(process.execPath, args, workspace, admit(), env), exitCode: 0 };
+          const timeout = Math.min(deadline - Date.now(), admittedMs - (Date.now() - admittedAt));
+          requireThat(timeout > 0, 'RSI app flow deadline expired', 'blocked-budget');
+          output = { ...await execute(process.execPath, args, workspace, Math.ceil(timeout), env), exitCode: 0 };
         } catch (error) {
           if (typeof error.code !== 'number' || typeof error.stdout !== 'string' ||
             error.killed || error.signal) {
@@ -238,11 +250,12 @@ export async function runAppRoleFlow(input, { admit, persist, hostInput, execute
     }
     let started, assertions;
     try {
-      const marker = evaluatePredicate(selected.workStarted, outputs, paths, admit, env);
+      const [marker, ...values] = evaluatePredicates(
+        [selected.workStarted, ...selected.assertions], outputs, paths, admit, env);
       started = marker.known && marker.passed;
       unknown = !marker.known;
-      assertions = selected.assertions.map(assertion => {
-        const value = evaluatePredicate(assertion, outputs, paths, admit, env);
+      assertions = selected.assertions.map((assertion, index) => {
+        const value = values[index];
         if (!started) return { id: assertion.id, state: unknown ? 'unknown' : 'not-run' };
         return { id: assertion.id, state: value.known ? value.passed ? 'passed' : 'failed' : 'unknown' };
       });

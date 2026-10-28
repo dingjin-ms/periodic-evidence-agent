@@ -20,6 +20,15 @@ access or permission to change that policy.
 | `configuration.template.json` | Known Excel Agent seeds, permissions, and unresolved deployment inputs |
 | `contracts.schema.json` | JSON Schema 2020-12 portable record contracts |
 | `example-flows.json` | Synthetic records and example success, exclusion and recovery paths |
+| `AL-AGENTIC-LOOP.md` | AL-specific setup, separate FILTER/authoring skills, native qualification and operator recovery |
+| `augloop.repository.example.json` | Disabled AL repository fragment for the version-1 runtime configuration |
+| `augloop.recurring.example.json` | Inactive AL recurring plan with explicit finite authorization requirements |
+
+For AL, start with [AL-AGENTIC-LOOP.md](AL-AGENTIC-LOOP.md) and its
+[native contract](../scripts/validation/AUGLOOP.md). These runtime fragments are
+not the portable `configuration.template.json` above. Do not copy another
+product's sparse settings or qualification receipts, or activate the examples
+without completing AL's source/skill/profile and authorization checks.
 
 The schema root accepts each record type, a configuration template, or the
 example bundle. Use the appropriate `$defs` entry when validating a specific

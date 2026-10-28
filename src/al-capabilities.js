@@ -62,7 +62,7 @@ export function classifyAlOwner(path, manifest, trackedPaths) {
 export function requireAlCandidateOwner(candidate, repo) {
   requireAlRepository(repo);
   const definition = candidate?.definition;
-  const path = definition?.harness?.match(/^([a-zA-Z0-9_.\/-]+)(?:\s|:|$)/)?.[1];
+  const path = definition?.harness?.match(/^([a-zA-Z0-9_.\/-]+)(?:\s|:|;|$)/)?.[1];
   const owner = path && !path.split('/').some(part => ['', '.', '..'].includes(part)) &&
     alOwners.find(owner => path.startsWith(`${owner.path}/${owner.tests}/`));
   requireThat(definition?.repository === repo.id && definition.sourceRevision === repo.baseRef &&

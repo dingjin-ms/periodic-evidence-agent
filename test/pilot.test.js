@@ -1615,6 +1615,70 @@ test('unconfirmed native process exit retains the workspace without inspection o
   const artifact = JSON.parse(readFileSync(result[0].artifactRefs[0]));
   assert.deepEqual(artifact.output.residualPaths, [retained]);
 });
+test('staged native preparation preserves explicit sparse paths in dependency and compile clones', async t => {
+  const ctx = await stagedValidationFixture(t);
+  mkdirSync(join(ctx.current.workspace, 'unrelated'));
+  writeFileSync(join(ctx.current.workspace, 'unrelated', 'large.txt'), 'out of scope\n');
+  await command('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+    'add', '--', 'unrelated/large.txt'], ctx.current.workspace);
+  await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Add excluded fixture'], ctx.current.workspace);
+  const revision = (await command('git', ['rev-parse', 'HEAD'], ctx.current.workspace)).stdout.trim();
+  ctx.repo.sparseCheckoutPaths = ['src', 'test'];
+  const execute = async (...args) => {
+    const cwd = args[2], stage = args[4].PILOT_VALIDATION_STAGE;
+    if (['dependencies', 'compile', 'policy', 'test'].includes(stage)) {
+      assert.equal(existsSync(join(cwd, 'unrelated', 'large.txt')), false,
+        `${stage} must not materialize excluded source`);
+      assert.equal(existsSync(join(cwd, 'src', 'value.js')), true);
+      assert.equal(existsSync(join(cwd, 'test', 'behavior.test.js')), true);
+      assert.equal((await command('git', ['config', '--bool', 'core.sparseCheckout'], cwd)).stdout.trim(), 'true');
+    }
+    return ctx.execute(...args);
+  };
+  const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo, revision, execute);
+  assert.ok(prepared.staged.receiptPath, json(prepared));
+  const results = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    revision, execute, rmSync, prepared);
+  assert.equal(results[0].status, 'passed', json(results));
+  assert.deepEqual(ctx.calls.filter(stage => ['dependencies', 'compile', 'policy', 'test'].includes(stage)),
+    ['dependencies', 'compile', 'policy', 'test']);
+  assert.equal(existsSync(join(ctx.current.workspace, 'unrelated', 'large.txt')), true);
+  assert.equal((await command('git', ['status', '--porcelain'], ctx.current.workspace)).stdout.trim(), '');
+});
+test('explicit sparse path changes invalidate staged caches and supplied prepared receipts', async t => {
+  const ctx = await stagedValidationFixture(t);
+  const base = ctx.isolated.baseRevision;
+  const full = await prepareValidation(ctx.config, ctx.current, ctx.repo, base, ctx.execute);
+  assert.ok(full.staged.receiptPath, json(full));
+  assert.equal(full.staged.inputs.sparseCheckoutPaths, undefined);
+  const fullDependencyKey = full.staged.inputs.dependencyKey, fullReceiptPath = full.staged.receiptPath;
+  ctx.repo.sparseCheckoutPaths = ['test', 'src'];
+  ctx.calls.length = 0;
+  const results = await runValidation(ctx.config, ctx.ledger, ctx.current, ctx.repo,
+    base, ctx.execute, rmSync, full);
+  assert.equal(results[0].status, 'passed', json(results));
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1, json(ctx.calls));
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1, json(ctx.calls));
+  const sparse = await prepareValidation(ctx.config, ctx.current, ctx.repo, base, ctx.execute);
+  assert.deepEqual(JSON.parse(readFileSync(sparse.staged.dependencyReceiptPath, 'utf8')).inputs.sparseCheckoutPaths,
+    ['src', 'test']);
+  assert.notEqual(sparse.staged.inputs.dependencyKey, fullDependencyKey);
+  assert.notEqual(sparse.staged.receiptPath, fullReceiptPath);
+  ctx.repo.sparseCheckoutPaths = ['src', 'test', 'src'];
+  ctx.calls.length = 0;
+  const reordered = await prepareValidation(ctx.config, ctx.current, ctx.repo, base, ctx.execute);
+  assert.equal(reordered.staged.receiptPath, sparse.staged.receiptPath);
+  assert.equal(ctx.calls.filter(stage => ['dependencies', 'compile'].includes(stage)).length, 0);
+  ctx.repo.sparseCheckoutPaths.push('extra');
+  ctx.calls.length = 0;
+  const expanded = await prepareValidation(ctx.config, ctx.current, ctx.repo, base, ctx.execute);
+  assert.ok(expanded.staged.receiptPath, json(expanded));
+  assert.notEqual(expanded.staged.inputs.dependencyKey, sparse.staged.inputs.dependencyKey);
+  assert.equal(ctx.calls.filter(stage => stage === 'dependencies').length, 1);
+  assert.equal(ctx.calls.filter(stage => stage === 'compile').length, 1);
+  assert.equal((await command('git', ['status', '--porcelain'], ctx.current.workspace)).stdout.trim(), '');
+});
 test('test-only repair reuses dependency and compile receipts with phase telemetry', async t => {
   const ctx = await stagedValidationFixture(t);
   const prepared = await prepareValidation(ctx.config, ctx.current, ctx.repo,

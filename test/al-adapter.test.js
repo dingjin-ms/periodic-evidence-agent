@@ -221,6 +221,82 @@ test('native AL authentication uses the same neutral provider cwd as established
     assert.equal(proof.feedCount, 1);
     assert.equal(proof.tokenRecorded, false);
   });
+test('native AL sparse installs preserve filtered locks and still reject real source and untracked changes',
+  { skip: process.platform !== 'win32' }, t => {
+    const root = directory(t), workspace = join(root, 'workspace'), bin = join(root, 'bin');
+    mkdirSync(workspace); mkdirSync(bin);
+    const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', ...args],
+      { cwd: workspace, encoding: 'utf8', stdio: 'pipe' }).trim();
+    git(['init', '--quiet']); git(['config', 'core.autocrlf', 'false']);
+    git(['config', 'user.email', 'synthetic@example.invalid']);
+    git(['config', 'user.name', 'Synthetic AL dependency test']);
+    put(join(workspace, '.node-version'), process.versions.node);
+    put(join(workspace, '.yarnrc.yml'),
+      'npmRegistryServer: https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/\n');
+    put(join(workspace, 'package.json'), '{}\n');
+    put(join(workspace, 'yarn.lock'), 'committed lock\n');
+    put(join(workspace, 'Cargo.toml'), 'committed cargo\n');
+    put(join(workspace, 'Cargo.lock'), 'committed cargo lock\n');
+    put(join(workspace, '.yarn/releases/yarn-3.2.1.cjs'), `
+      const fs = require('node:fs'), { execFileSync } = require('node:child_process');
+      if (process.argv[2] === 'install') {
+        const args = process.argv.slice(2);
+        fs.writeFileSync(process.env.AL_SYNTHETIC_CAPTURE, JSON.stringify(args));
+        const sparse = execFileSync('git', ['config', '--bool', '--default=false', '--get', 'core.sparseCheckout'],
+          { encoding: 'utf8' }).trim() === 'true';
+        if (sparse) {
+          if (!args.includes('--no-immutable')) throw new Error('Sparse lock regeneration was forbidden');
+          fs.writeFileSync('yarn.lock', 'derived sparse lock\\n');
+          execFileSync('git', ['add', '--renormalize', 'yarn.lock']);
+          fs.writeFileSync('Cargo.toml', 'derived sparse cargo\\n');
+          fs.writeFileSync('Cargo.lock', 'derived sparse cargo lock\\n');
+        } else if (!args.includes('--immutable')) throw new Error('Full checkout must retain immutable install');
+        if (process.env.AL_SYNTHETIC_MUTATION === 'true') fs.writeFileSync('package.json', '{"changed":true}\\n');
+      }
+    `);
+    for (const owner of alOwners) put(join(workspace, owner.path, 'package.json'),
+      { name: owner.package, scripts: { build: 'gulp build', test: owner.testScript } });
+    put(join(bin, 'node_modules/@microsoft/artifacts-npm-credprovider/package.json'), { version: '1.2.1' });
+    put(join(bin, 'artifacts-npm-credprovider.cmd'), '@echo off\r\nexit /b 0\r\n');
+    put(join(bin, 'augloop.cmd'), '@echo off\r\nexit /b 0\r\n');
+    git(['add', '.']); git(['commit', '--quiet', '-m', 'Synthetic dependency fixture']);
+    const capture = join(root, 'install-args.json');
+    const invoke = (stage = 'dependencies', mutation = false) => execFileSync('C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', resolve('scripts/validation/augloop-integration.ps1'),
+        '-Mode', 'qualification', '-ArtifactDirectory', join(root, 'artifacts')],
+      { cwd: workspace, encoding: 'utf8', stdio: 'pipe', env: { ...process.env,
+        PATH: `${bin};${process.env.PATH}`, PILOT_VALIDATION_STAGE: stage, AL_SYNTHETIC_CAPTURE: capture,
+        AL_SYNTHETIC_MUTATION: mutation ? 'true' : 'false' } });
+    invoke();
+    assert.deepEqual(JSON.parse(readFileSync(capture, 'utf8')), ['install', '--immutable']);
+    git(['config', 'core.sparseCheckout', 'false']);
+    invoke();
+    assert.equal(readFileSync(join(workspace, 'yarn.lock'), 'utf8'), 'committed lock\n');
+    git(['config', 'core.sparseCheckout', 'true']);
+    git(['config', 'filter.synthetic-lock.clean', 'git show HEAD:%f']);
+    put(join(workspace, '.git/info/attributes'),
+      'yarn.lock filter=synthetic-lock\nCargo.toml filter=synthetic-lock\nCargo.lock filter=synthetic-lock\n');
+    put(join(workspace, 'Cargo.toml'), 'materialized derived sparse cargo\n');
+    assert.doesNotThrow(() => invoke());
+    assert.deepEqual(JSON.parse(readFileSync(capture, 'utf8')), ['install', '--no-immutable']);
+    assert.equal(readFileSync(join(workspace, 'yarn.lock'), 'utf8'), 'derived sparse lock\n');
+    for (const [path, original] of [['yarn.lock', 'committed lock'], ['Cargo.toml', 'committed cargo'],
+      ['Cargo.lock', 'committed cargo lock']]) assert.equal(git(['show', `HEAD:${path}`]), original);
+    assert.equal(git(['status', '--porcelain']), '');
+    put(join(workspace, 'Cargo.lock'), 'rematerialized sparse cargo lock\n');
+    assert.doesNotThrow(() => invoke('compile'));
+    assert.equal(git(['status', '--porcelain']), '');
+    assert.throws(() => invoke('dependencies', true), /AL validation workspace is not clean/);
+    put(join(workspace, 'package.json'), '{}\n');
+    put(join(workspace, 'unexpected.txt'), 'untracked source\n');
+    assert.throws(() => invoke('compile'), /AL validation workspace is not clean/);
+    rmSync(join(workspace, 'unexpected.txt'));
+    put(join(workspace, '.git/info/attributes'), 'yarn.lock filter=synthetic-lock\n');
+    put(join(workspace, 'Cargo.toml'), 'real unfiltered cargo change\n');
+    assert.throws(() => invoke('compile'), /AL validation workspace is not clean/);
+    assert.ok(git(['diff', '--cached', '--name-only']).split(/\r?\n/).includes('Cargo.toml'));
+    assert.equal(readFileSync(join(workspace, 'Cargo.toml'), 'utf8'), 'real unfiltered cargo change\n');
+  });
 test('native AL closure build delivers four separate package arguments to the native CLI',
   { skip: process.platform !== 'win32' }, t => {
     const root = directory(t), workspace = join(root, 'workspace'), bin = join(root, 'bin');

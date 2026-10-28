@@ -864,6 +864,8 @@ test('AL capability discovery never promotes similar scripts or unrelated owners
     const path = `${owner.path}/${owner.tests}/any.integration.test.ts`;
     assert.equal(requireAlCandidateOwner({ definition: { repository: repo.id, sourceRevision: revision,
       layer: 'integration', harness: `${path} (existing harness)` } }, repo).path, owner.path);
+    assert.equal(requireAlCandidateOwner({ definition: { repository: repo.id, sourceRevision: revision,
+      layer: 'integration', harness: `${path}; extend the existing public-entry scenario` } }, repo).path, owner.path);
     const matrix = { format: 'al-owner-capabilities-v1', repoId: repo.id, remote, revision, owners: entries };
     assert.throws(() => routeAlCandidate(matrix, repo, [path]), /qualified authorized/);
     assert.deepEqual(routeAlCandidate({ ...matrix, owners: entries.map(value => ({ ...value, qualified: true })) },
@@ -872,6 +874,17 @@ test('AL capability discovery never promotes similar scripts or unrelated owners
   }
   assert.throws(() => requireAlCandidateOwner({ definition: { repository: repo.id, sourceRevision: revision,
     layer: 'integration', harness: 'workflows/another/tests/new.integration.test.ts' } }, repo), /supported owner/);
+  const definition = { repository: repo.id, sourceRevision: revision, layer: 'integration',
+    harness: `${alTestPrefixes[3]}/existing.integration.test.ts; extend existing coverage` };
+  for (const invalid of [
+    { ...definition, repository: 'another' },
+    { ...definition, sourceRevision: 'b'.repeat(40) },
+    { ...definition, layer: 'unit' },
+    { ...definition, harness: `workflows/another/tests/new.integration.test.ts; ${definition.harness}` },
+    { ...definition, harness: `${alTestPrefixes[3]}/../src/production.ts; existing harness` },
+    { ...definition, harness: `${alTestPrefixes[3]}//new.integration.test.ts; existing harness` },
+    { ...definition, harness: `${alTestPrefixes[3]}/new.integration.test.ts\\outside; existing harness` }
+  ]) assert.throws(() => requireAlCandidateOwner({ definition: invalid }, repo), /supported owner/);
 });
 test('AL manifest discovery uses bounded exact native Git blob frames, including UTF-8 bytes', t => {
   const root = mkdtempSync(join(tmpdir(), 'al-git-blobs-'));

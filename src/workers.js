@@ -710,6 +710,10 @@ function repositorySparseCheckout(repo) {
     ])]
   };
 }
+function explicitSparseCheckoutPaths(repo) {
+  return !repo.sparseCheckout && repo.sparseCheckoutPaths?.length
+    ? [...new Set(repo.sparseCheckoutPaths)].sort() : null;
+}
 async function configureSparseCheckout(workspace, repo, timeout) {
   if (repo.sparseCheckout)
     return configureWorkspaceClosure(workspace, repositorySparseCheckout(repo), timeout);
@@ -2278,13 +2282,15 @@ function preparedValidationRoot(config, type, gateId, key) {
     hash(gateId).slice(0, 12), key.slice(0, 24));
 }
 function dependencySnapshotContext(config, gate, profile, plan, toolchain,
-  lockfileSha256) {
+  lockfileSha256, repo) {
   const packageAuth = validationPackageAuth(gate);
+  const sparseCheckoutPaths = explicitSparseCheckoutPaths(repo);
   const inputs = {
     gateId: gate.id, lockfileSha256, profileSha256: profile.sha256,
     dependencySnapshotVersion: 2,
     toolchain, toolchainSha256: hash(json(toolchain)),
-    ...(packageAuth ? { packageAuth } : {})
+    ...(packageAuth ? { packageAuth } : {}),
+    ...(sparseCheckoutPaths ? { sparseCheckoutPaths } : {})
   };
   if (plan.authentication) inputs.authentication = plan.authentication;
   const key = hash(json(inputs));
@@ -2395,6 +2401,7 @@ async function loadCompileSnapshot(context, revision, profile, plan, dependency,
 export async function preflightValidationAuthentication(config, repo, revision,
   execute = command, { force = false } = {}) {
   const actions = [];
+  const sparseCheckoutPaths = explicitSparseCheckoutPaths(repo);
   for (const configuredGate of repo.validationGates) {
     const gate = {
       ...configuredGate,
@@ -2407,7 +2414,8 @@ export async function preflightValidationAuthentication(config, repo, revision,
       gateId: gate.id,
       profileSha256: profile.sha256,
       authentication: plan.authentication,
-      revision, force
+      revision, force,
+      ...(sparseCheckoutPaths ? { sparseCheckoutPaths } : {})
     }))}`;
     let checking = authenticationPreflightPromises.get(promiseKey);
     if (!checking) {
@@ -2421,7 +2429,7 @@ export async function preflightValidationAuthentication(config, repo, revision,
           `Gate ${gate.id} authentication preflight fingerprints are incomplete`,
           'blocked-validation');
         const context = dependencySnapshotContext(
-          config, gate, profile, plan, toolchain, lockfileSha256);
+          config, gate, profile, plan, toolchain, lockfileSha256, repo);
         const dependency = force ? null : await loadDependencySnapshot(
           context, profile, plan, false);
         if (dependency) {
@@ -2484,7 +2492,7 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
   plan, fingerprintRun, toolchain, lockfileSha256, execute, verifyOutputs = true,
   resumeWorkspace = null, requireExisting = false) {
   const context = dependencySnapshotContext(
-    config, gate, profile, plan, toolchain, lockfileSha256);
+    config, gate, profile, plan, toolchain, lockfileSha256, repo);
   const { inputs, key, root, workspace, receiptPath } = context;
   const cached = await loadDependencySnapshot(
     context, profile, plan, verifyOutputs);
@@ -2517,8 +2525,7 @@ async function prepareDependencySnapshot(config, job, repo, gate, revision, prof
       await preparationStage('dependency-checkout', async () => {
         if (!resumeWorkspace) {
           await cloneRepositorySnapshot(job.workspace, workspace, repo, checkoutEnvironment(), gate.timeoutMs);
-          if (repo.sparseCheckout)
-            await configureSparseCheckout(workspace, repo, gate.timeoutMs);
+          await configureSparseCheckout(workspace, repo, gate.timeoutMs);
           try {
             await git(workspace, ['checkout', '--detach', revision],
               checkoutEnvironment(), gate.timeoutMs);
@@ -2665,8 +2672,7 @@ async function prepareValidationGate(config, job, repo, gate, revision,
       const checkoutStarted = now();
       await preparationStage('compile-checkout', async () => {
         await cloneRepositorySnapshot(dependency.workspace, workspace, repo, checkoutEnvironment(), gate.timeoutMs);
-        if (repo.sparseCheckout)
-          await configureSparseCheckout(workspace, repo, gate.timeoutMs);
+        await configureSparseCheckout(workspace, repo, gate.timeoutMs);
         await fetchLocalRevision(job.workspace, workspace, revision, checkoutEnvironment(), gate.timeoutMs);
         await git(workspace, ['checkout', '--detach', revision],
           checkoutEnvironment(), gate.timeoutMs);
@@ -2899,6 +2905,8 @@ async function reusablePreparation(gate, job, revision, prepared, execute, repo)
     dependency.key !== prepared.dependencyReceipt.key ||
     dependency.outputs?.sha256 !== prepared.inputs.dependencyOutputsSha256 ||
     !Array.isArray(dependency.outputs?.paths)) return null;
+  if (json(dependency.inputs?.sparseCheckoutPaths ?? null) !==
+    json(explicitSparseCheckoutPaths(repo))) return null;
   reuseTimings.push(stageTelemetry('reuse-receipts', receiptsStarted, 'hit'));
   const changedPathsStarted = now();
   const paths = await changedPaths(job.workspace, prepared.inputs.sourceRevision, revision);

@@ -4395,8 +4395,8 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     dependencies[nativeSourceContinuationPermit] === true ||
     (dependencies[validationContinuationPermit] === true && continuationOperation?.state === 'prepared'),
     'Worker dispatch is disabled');
-  const requireOrdinaryDispatch = () => requireThat(!ledger.db.prepare(
-    "SELECT id FROM operations WHERE job_id=? AND kind='agency-workspace-authoring' LIMIT 1").get(id),
+  const requireOrdinaryDispatch = () => requireThat(!ledger.status().operations.some(operation =>
+    operation.job_id === id && operation.kind === 'agency-workspace-authoring'),
   'A reserved remote authoring qualification requires reconciliation; ordinary dispatch cannot duplicate it',
   'blocked-reconciliation');
   requireOrdinaryDispatch();

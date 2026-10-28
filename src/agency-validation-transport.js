@@ -1,4 +1,3 @@
-import { AzureCliCredential } from '@azure/identity';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,14 +14,17 @@ export function createAgencyValidationTransport(config, dependencies = {}) {
   const identity = config.identity;
   requireThat(identity?.tenantId && identity.objectId && typeof dependencies.save === 'function',
     'Remote validation needs the designated Azure CLI tenant and user', 'blocked-auth');
-  const credential = dependencies.credential ??
-    new AzureCliCredential({ tenantId: identity.tenantId, processTimeoutInMs: 120000 });
+  let credential = dependencies.credential;
   const fetchResponse = dependencies.fetch ?? fetch;
   const execute = dependencies.execute ?? nativeCommand;
   const tokens = new Map();
   async function request(url, scope, deadline, method = 'GET', body) {
     let token = tokens.get(scope);
     if (!token || token.expiresOnTimestamp < Date.now() + 120000) {
+      if (credential == null) {
+        const { AzureCliCredential } = await import('@azure/identity');
+        credential ??= new AzureCliCredential({ tenantId: identity.tenantId, processTimeoutInMs: 120000 });
+      }
       try { token = await credential.getToken(scope); }
       catch { throw new PilotError('blocked-auth', 'Designated Azure CLI sign-in unavailable; credential diagnostics not recorded'); }
       requireThat(token?.token && token.expiresOnTimestamp > Date.now(),

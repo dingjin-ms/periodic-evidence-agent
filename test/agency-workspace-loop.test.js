@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, linkSync, renameSync
+  copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, linkSync, renameSync
 } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -792,6 +792,47 @@ exit 0
     assert.equal(result.exitCode, 0);
     assert.equal(readFileSync(join(f.directory, result.log), 'utf8').trim(),
       `${f.m.nugetDirectory}|${join(f.m.nugetDirectory, 'packages')}|false|false`);
+  });
+
+for (const exitCode of [0, 23])
+test(`real native supervisor drains remote stage descendants after exit ${exitCode}`,
+  { skip: process.platform !== 'win32' }, async t => {
+    let childPath, root;
+    t.after(() => {
+      if (!childPath || !existsSync(childPath)) return;
+      const pid = JSON.parse(readFileSync(childPath, 'utf8'));
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if (error.code === 'ESRCH') return;
+        throw error;
+      }
+      execFileSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}";` +
+        `if($p -and $p.CommandLine.Contains('${root.replaceAll("'", "''")}')){Stop-Process -Id ${pid} -Force}`],
+      { windowsHide: true, timeout: 10000, stdio: 'pipe' });
+    });
+    const f = fixture(t);
+    root = f.root;
+    childPath = join(f.directory, 'descendant.json');
+    const leaf = join(f.directory, 'descendant.mjs');
+    writeFileSync(leaf, `import {writeFileSync} from 'node:fs';
+writeFileSync(${JSON.stringify(childPath)},JSON.stringify(process.pid));
+setInterval(()=>{},1000);`);
+    copyFileSync(fileURLToPath(new URL('../src/native-command.ps1', import.meta.url)), f.m.nativeCommandPath);
+    writeFileSync(f.m.profilePath, `
+$child = Start-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @('${leaf.replaceAll("'", "''")}') -NoNewWindow -PassThru
+while (!(Test-Path -LiteralPath '${childPath.replaceAll("'", "''")}')) {
+    if ($child.HasExited) { throw 'Synthetic descendant exited before starting' }
+    Start-Sleep -Milliseconds 10
+}
+exit ${exitCode}
+`);
+    f.m.executable = join(process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe');
+    const result = await runLoopStage(f.m, 'test', 0, f.m.baseRevision);
+    assert.equal(result.exitCode, exitCode, readFileSync(join(f.directory, result.log), 'utf8'));
+    assert.equal(result.ownedProcessesExited, true);
+    assert.throws(() => process.kill(JSON.parse(readFileSync(childPath, 'utf8')), 0),
+      error => error.code === 'ESRCH');
   });
 
 test('OA compile profile admits only its approved unchanged fitness source, never an ordinary gate or unrelated edit',

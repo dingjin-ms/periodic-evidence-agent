@@ -3,7 +3,7 @@ import {
   readFileSync, readdirSync, readSync, realpathSync, renameSync, writeFileSync
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { stripTypeScriptTypes } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -739,15 +739,16 @@ function runProfileStage(m, stage, round, candidate, signal, fitnessSourcePath) 
     .then(record => fitnessSourcePath === undefined ? record : { ...record, fitnessSourcePath });
 }
 
-function runManagedCommand(m, request, stage, round, candidate, signal, environment, retainOutput = true) {
+async function runManagedCommand(m, request, stage, round, candidate, signal, environment, retainOutput = true) {
   const timeout = Math.min(m.stageTimeoutMs, Date.parse(m.deadline) - Date.now());
   check(timeout > 0, 'The remote runner budget expired before validation.');
   const log = `round-${round}-${stage}.log`;
   const command = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', m.nativeCommandPath];
+  const jobName = `Local\\PilotNative-${randomUUID()}`;
   const startedAt = new Date().toISOString();
-  return new Promise((resolveStage, reject) => {
+  const completed = new Promise((resolveStage, reject) => {
     const child = spawn(m.executable, command, { cwd: m.workspace, windowsHide: true, signal,
-      env: { ...environment, PILOT_NATIVE_COMMAND: JSON.stringify(request) } });
+      env: { ...environment, PILOT_NATIVE_COMMAND: JSON.stringify({ ...request, jobName }) } });
     const chunks = [];
     let size = 0, stopped = null;
     const timer = setTimeout(() => { stopped = 'Validation timed out; its process tree was terminated.'; child.kill(); }, timeout);
@@ -775,6 +776,27 @@ function runManagedCommand(m, request, stage, round, candidate, signal, environm
         ...(!retainOutput ? { providerDiagnosticsRetained: false } : {}) });
     });
   });
+  let result, failure;
+  try { result = await completed; }
+  catch (error) { failure = error; }
+  try {
+    await new Promise((resolveDrain, reject) => {
+      execFile(m.executable, command, { cwd: m.workspace, windowsHide: true,
+        timeout: 20000, maxBuffer: 1024 * 1024,
+        env: { ...environment, PILOT_NATIVE_COMMAND: JSON.stringify({ action: 'drain', jobName }) } },
+      error => error ? reject(error) : resolveDrain());
+    });
+  } catch (error) {
+    const containedFailure = failure ?? error;
+    containedFailure.containmentFailure = true;
+    throw containedFailure;
+  }
+  if (failure) {
+    failure.ownedProcessesExited = true;
+    throw failure;
+  }
+  return { ...result, finishedAt: new Date().toISOString(),
+    supervisorJobName: jobName, ownedProcessesExited: true };
 }
 
 const fitnessScript = 'docs/skills/Integration-test-core/scripts/probe-fitness.mjs';

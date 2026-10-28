@@ -142,7 +142,8 @@ try {
   try {
     if (report.status === 'passed') {
       unlinkSync(join(baselineRoot, 'node_modules'));
-      await git(repository, ['worktree', 'remove', '--', baselineRoot]);
+      await command('git', ['-c', 'core.hooksPath=.git/no-hooks',
+        'worktree', 'remove', '--', baselineRoot], repository);
       rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       report.cleanup = 'removed-only-own-benchmark-worktree-and-fixture';
     } else if (root) {
@@ -151,7 +152,8 @@ try {
     }
   } catch (error) {
     report.status = 'failed';
-    report.cleanup = { code: error.code };
+    report.retainedRoot = root;
+    report.cleanup = { message: error.message, code: error.code };
     throw error;
   } finally {
     report.completedAt = new Date().toISOString();

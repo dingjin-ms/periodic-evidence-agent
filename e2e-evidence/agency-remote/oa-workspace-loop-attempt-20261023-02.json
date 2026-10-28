@@ -1,0 +1,68 @@
+{
+  "schema": "agency-remote-nonqualifying-attempt-v1",
+  "repository": "office-agent",
+  "executionMode": "same-workspace-loop",
+  "qualification": "not-verified",
+  "date": "2026-10-23",
+  "controllerRevision": "a3e65957808a1fdf8ec30f6c6eeb1a980cf818ff",
+  "jobId": "office-89cdae62-9b9a-4568-a836-83aee7d0849b",
+  "buildId": 57934435,
+  "pipelineRevision": "c22f7af82a9481033c3338d75685897fd0b08cd8",
+  "baseRevision": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "terminal": {
+    "agency": "Completed/Failure",
+    "build": "completed/failed",
+    "finishedAt": "2026-10-23T05:24:09.0019659Z",
+    "controllerAccepted": false
+  },
+  "observed": {
+    "pinnedFileLoaderExecuted": true,
+    "preparationExitCodes": {
+      "fingerprint": 0,
+      "authentication-check": 0,
+      "authentication": 0,
+      "dependencies": 0
+    },
+    "modelStarted": true,
+    "nativeSkillFilesRead": 5,
+    "validationStartedAt": "2026-10-23T05:19:32.700Z",
+    "validationRpcEndedAt": "2026-10-23T05:22:32.736Z",
+    "validationRpcError": "MCP server 'loop': McpError: MCP error -32001: Request timed out",
+    "failureCategory": "validation-rpc-timeout",
+    "persistedRounds": 1,
+    "persistedStageExitRecords": 0,
+    "repairPlans": 0,
+    "productEdits": 0,
+    "loopFinished": false
+  },
+  "interpretation": [
+    "The pinned file loader and real preparation succeeded on the remote Windows runner.",
+    "The synchronous MCP validation request exceeded its 180-second request budget.",
+    "No complete product-gate exit record was returned; this is not evidence of a product assertion failure.",
+    "The model did not restart the uncertain validation, edit source or claim a passing loop.",
+    "The independent controller rejected the incomplete result.",
+    "This attempt establishes neither a passing repair loop nor production enablement."
+  ],
+  "privateEvidence": {
+    "collection": "agency-workspace-loop-file-bootstrap-20261023",
+    "files": [
+      {
+        "basename": "progress-1792737325992.json",
+        "sha256": "b31a5ba562807c54d7720b14e27e00f42dba4209bde2ef7a640f9942bf2556b0"
+      },
+      {
+        "basename": "loop-state.json",
+        "sha256": "984d8ad58eb9c277bc94630c5258b40f4a1a529a831a0f57c666e751b83072c6"
+      },
+      {
+        "basename": "events.jsonl",
+        "sha256": "39bd4d448d17533285196e657b2020509ba0861e67234d1271e9ef2c3f343444"
+      },
+      {
+        "basename": "result.json",
+        "sha256": "e759ca91facd76e3604a1fc96a3d02d58f7a2584ea72df22dc93e723c7785660"
+      }
+    ]
+  }
+}

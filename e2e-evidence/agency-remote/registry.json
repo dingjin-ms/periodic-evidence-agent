@@ -1,0 +1,38 @@
+{
+  "schema": "agency-remote-qualification-registry-v1",
+  "repositories": [
+    {
+      "repoId": "office-agent",
+      "repository": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "ISS",
+        "repositoryIds": ["OfficeAgent", "61458d25-9f75-41c3-be29-e63727145257"]
+      },
+      "qualifications": [
+        {
+          "mode": "remote-validation",
+          "file": "oa-validation-20261022.json",
+          "sha256": "b63a3144170d3e7c6a35e8690b4db54d09ee50a0d01a1de67ea34151ee6ee208"
+        },
+        {
+          "mode": "same-workspace-loop",
+          "file": "oa-workspace-loop-20261023.json",
+          "sha256": "0506b21074b2bc9d6d1a85821f819ea50684b1e8e57ba992b490daf02ae1d563"
+        },
+        {
+          "mode": "live-business-e2e",
+          "file": "oa-native-business-20261028.json",
+          "sha256": "a1c615e032c1def3731e662367a2d2aba607d2ae477928e8e282b7a9bf9d4f22"
+        }
+      ],
+      "preflights": [
+        {
+          "mode": "live-business-e2e",
+          "file": "oa-live-business-preflight-20261026.json",
+          "sha256": "b35ded01802c38e443f55576bd48e1efada1b6b78ee00a63e02e800a93343b30"
+        }
+      ]
+    }
+  ]
+}

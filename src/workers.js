@@ -37,6 +37,7 @@ import { agencyTaskId, bindAgencyAssignment, requireAgencyQualification, reserve
   activeRepositoryWorkerCount } from './agency-executor.js';
 import { runAgencyLocal } from './agency-local-authoring.js';
 import { executeAgencyRemoteJob } from './agency-remote-authoring.js';
+import { runAgencyRemoteValidation } from './agency-remote-validation.js';
 import { workerToolDefinitions } from './worker-tool-contract.js';
 import {
   parseValidationAuthEvidence, parseValidationAuthPreflight, validationAuthAction,
@@ -3447,6 +3448,18 @@ export class WorkerTools {
 export async function runValidation(config, ledger, job, repo, revision, execute = command,
   cleanup = removeValidationPath, prepared = null, options = {}) {
   const { skillExecution = null } = options;
+  if (repo.remoteValidation) {
+    requireThat(options.attemptNamespace === undefined,
+      'Local committed-validation recovery cannot be moved to a remote executor', 'blocked-reconciliation');
+    requireThat(await git(job.workspace, ['rev-parse', 'HEAD']) === revision &&
+      !(await git(job.workspace, ['status', '--porcelain'])),
+    'Authored workspace is not clean at the remote validation revision', 'blocked-validation');
+    const results = await runAgencyRemoteValidation(config, ledger, job, repo, revision, options);
+    requireThat(await git(job.workspace, ['rev-parse', 'HEAD']) === revision &&
+      !(await git(job.workspace, ['status', '--porcelain'])),
+    'Authored workspace changed during remote validation', 'blocked-validation');
+    return results;
+  }
   requireThat(options.attemptNamespace === undefined ||
     /^[a-f0-9]{64}$/.test(options.attemptNamespace),
   'Validation attempt namespace must be a SHA-256 binding', 'blocked-reconciliation');
@@ -4382,6 +4395,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     dependencies[nativeSourceContinuationPermit] === true ||
     (dependencies[validationContinuationPermit] === true && continuationOperation?.state === 'prepared'),
     'Worker dispatch is disabled');
+  const requireOrdinaryDispatch = () => requireThat(!ledger.db.prepare(
+    "SELECT id FROM operations WHERE job_id=? AND kind='agency-workspace-authoring' LIMIT 1").get(id),
+  'A reserved remote authoring qualification requires reconciliation; ordinary dispatch cannot duplicate it',
+  'blocked-reconciliation');
+  requireOrdinaryDispatch();
   const job = ledger.job(id);
   const committedRecovery = dependencies[committedRecoveryPermit];
   const recovery = dependencies[precommitRecoveryPermit] ?? committedRecovery;
@@ -4496,6 +4514,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         currentConfig, currentJob, currentRepo, currentRevision, continuation)
     : (dependencies.prepareValidation ?? prepareValidation);
   try {
+    requireOrdinaryDispatch();
     if (continuation?.nativeTestProfile)
       Object.assign(toolUsage, structuredClone(continuation.priorResult.toolUsage));
     if (committedRecovery) {
@@ -4539,7 +4558,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       positive(config.limits.maxWorkersPerRepository ?? 1,
         'maxWorkersPerRepository'),
     `Repository worker limit reached for ${assignment.repoId}`, 'overlap');
-    if (assignment.execution !== 'hosted') {
+    if (assignment.execution !== 'hosted' && !repo.remoteValidation) {
       const baseRevision = await resolvedBaseRevision(repo, qualification);
       let authenticationActions =
         await (dependencies.preflightValidationAuthentication ??
@@ -4656,7 +4675,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       });
     }
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
-    const preparationPromise = continuation?.nativeBusinessRevalidation || continuation?.nativeCampaignRevalidation
+    const preparationPromise = repo.remoteValidation
+      ? Promise.resolve({})
+      : continuation?.nativeBusinessRevalidation || continuation?.nativeCampaignRevalidation
       ? Promise.resolve({ [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } })
       : prePreparedValidation
       ? Promise.resolve(prePreparedValidation)

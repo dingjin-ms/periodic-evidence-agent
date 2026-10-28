@@ -1,0 +1,52 @@
+{
+  "schema": "agency-validation-reconciliation-observation-v1",
+  "id": "oa-validation-reconciliation-20261026",
+  "repoId": "office-agent",
+  "attemptId": "oa-validation-attempt-20261026",
+  "observedAt": "2026-10-26T09:14:30.933Z",
+  "result": "submission-still-uncertain",
+  "qualifying": false,
+  "controllerCommit": "397d0340fd581191658940779fadfe20eee2355d",
+  "candidate": "f69c5497e0f260b04289c4615ffdf7dc9347645a",
+  "requestSha256": "d8563d954f3be97bd56f286c5f19507e973b458c55cdcaec31fd54b383068bdf",
+  "apiContract": {
+    "source": "first-party-repository-openapi",
+    "revision": "68cd9681de64452fad5264d797d9820697b7a0d4",
+    "contentSha256": "82be3200d6f51257cc956a5cbccab0d1912043a4fd34a6df5e03c54872ca2d5e",
+    "listOperation": "ListJobsAsync",
+    "queryParametersUsed": ["pageSize", "continuationToken"],
+    "unsupportedEarlierQueryParametersRemoved": ["requesterId", "$top"],
+    "sourceContentPublished": false
+  },
+  "readOnlyReconciliation": {
+    "startedAt": "2026-10-26T09:14:23.098Z",
+    "methods": ["GET"],
+    "pageSize": 25,
+    "pageCounts": [25, 5, 2],
+    "recordsExamined": 32,
+    "recordsWithMetadata": 32,
+    "visibleListExhausted": true,
+    "newestVisibleCreatedAt": "2026-10-23T15:20:50.7205302Z",
+    "matchingReservationRecords": 0,
+    "provesNoJobWasCreated": false,
+    "replacementAuthorized": false
+  },
+  "privateEvidence": {
+    "collection": "agency-controller-validation-20261026-397d034",
+    "artifact": "read-only-reconciliation-6-paged.json",
+    "sha256": "2610b108da544deb7d432c308404312934a131f5e4a2b94cd8b13cd67d362a33"
+  },
+  "jobCreationPosts": 0,
+  "originalControllerAndReservationModified": false,
+  "productGatesExecuted": false,
+  "controllerAcceptance": false,
+  "qualificationRegistryUpdated": false,
+  "publicationPerformed": false,
+  "limitations": [
+    "This observation follows the actual continuation tokens to the end of the caller-visible list; it does not establish production persistence or visibility guarantees.",
+    "A negative visible-list result is not authoritative proof that the original creation POST did not commit.",
+    "Resume still requires the original job identity or authoritative service-side reconciliation; no replacement was submitted.",
+    "The previously recorded attempt and historical successful qualifications remain unchanged.",
+    "No new source-driven authoring, native fitness, independent review or business E2E was completed."
+  ]
+}

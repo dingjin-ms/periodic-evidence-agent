@@ -28,6 +28,8 @@ test('CI partitions preserve native discovery for nested, typed and newly added 
   const { root, write, options } = fixture(t);
   const paths = [
     'test/pilot.test.js', 'test/demo.test.js', 'test/helpers.cjs', 'nested/test/helper.mjs',
+    'test/pilot-validation.test.js', 'test/pilot-preparation.test.js', 'test/pilot-lifecycle.test.js',
+    'nested/pilot-validation.test.js', 'test/pilotish.test.js', 'scripts/test-fixtures/pilot.mjs',
     'nested/a.test.js', 'nested/a-test.mjs', 'nested/a_test.cjs',
     'nested/test-a.js', 'test.js', 'types/a.test.ts', 'types/a-test.mts',
     'types/a_test.cts', '.hidden/a.test.js',
@@ -44,17 +46,25 @@ test('CI partitions preserve native discovery for nested, typed and newly added 
   assert.ok(!selected.some(path => path.includes('node_modules')));
   assert.deepEqual(catalogue.files, selected);
   assert.deepEqual(Object.values(catalogue.groups).flat().sort(), selected);
-  assert.deepEqual(catalogue.groups.pilot, [join('test', 'pilot.test.js')]);
+  assert.deepEqual(catalogue.groups.pilot, [
+    'pilot.test.js', 'pilot-validation.test.js', 'pilot-preparation.test.js', 'pilot-lifecycle.test.js'
+  ].map(name => join('test', name)).sort());
+  assert.ok(catalogue.groups.remaining.includes(join('nested', 'pilot-validation.test.js')));
+  assert.ok(catalogue.groups.remaining.includes(join('test', 'pilotish.test.js')));
+  assert.ok(!catalogue.files.includes(join('scripts', 'test-fixtures', 'pilot.mjs')));
   assert.deepEqual(catalogue.groups.demo, [join('test', 'demo.test.js')]);
   write('new/nested.test.js', "console.log('new test');\n");
+  write('test/pilot-new.test.js', "console.log('new pilot partition');\n");
   const updated = discoverCiGroups(root);
   assert.ok(updated.groups.remaining.includes(join('new', 'nested.test.js')));
+  assert.ok(updated.groups.pilot.includes(join('test', 'pilot-new.test.js')));
   assert.notEqual(updated.sha256, catalogue.sha256);
 });
 
 test('CI groups preserve failures and write complete reports for both outcomes', async t => {
   const { root, write, options } = fixture(t);
   write('test/pilot.test.js', "require('node:test')('passing fixture', () => {});\n");
+  write('test/pilot-validation.test.js', "require('node:test')('passing pilot partition', () => {});\n");
   write('test/demo.test.js', "require('node:test')('isolated demo fixture', () => {});\n");
   write('test/remaining.test.js',
     "require('node:test')('failing fixture', () => { throw new Error('fixture assertion'); });\n");
@@ -69,7 +79,9 @@ test('CI groups preserve failures and write complete reports for both outcomes',
   const demo = JSON.parse(readFileSync(join(demoDirectory, 'summary.json')));
   const failed = JSON.parse(readFileSync(join(remainingDirectory, 'summary.json')));
   assert.equal(passed.status, 'passed');
-  assert.equal(passed.counts.pass, 1);
+  assert.equal(passed.counts.pass, 2);
+  assert.deepEqual(passed.selectedFiles,
+    ['pilot-validation.test.js', 'pilot.test.js'].map(name => join('test', name)));
   assert.equal(failed.status, 'failed');
   assert.equal(failed.exitCode, 1);
   assert.equal(failed.counts.fail, 1);
@@ -78,7 +90,18 @@ test('CI groups preserve failures and write complete reports for both outcomes',
   assert.equal(demo.status, 'passed');
   assert.equal(demo.counts.pass, 1);
   assert.deepEqual(demo.selectedFiles, [join('test', 'demo.test.js')]);
-  for (const report of [passed, failed, demo]) {
+  write('test/pilot-validation.test.js',
+    "require('node:test')('failing pilot partition', () => { throw new Error('pilot assertion'); });\n");
+  const failedPilotDirectory = join(root, 'failed-pilot-report');
+  await assert.rejects(exec(process.execPath, [runner, 'pilot', failedPilotDirectory], options),
+    error => error.code === 1 && error.stdout.includes('pilot assertion'));
+  const failedPilot = JSON.parse(readFileSync(join(failedPilotDirectory, 'summary.json')));
+  assert.equal(failedPilot.status, 'failed');
+  assert.equal(failedPilot.counts.pass, 1);
+  assert.equal(failedPilot.counts.fail, 1);
+  assert.deepEqual(failedPilot.selectedFiles, passed.selectedFiles);
+  assert.equal(failedPilot.catalogue.sha256, passed.catalogue.sha256);
+  for (const report of [passed, failed, demo, failedPilot]) {
     assert.ok(report.elapsedMs > 0);
     assert.ok(report.finishedAt);
     assert.ok(report.resourcesBefore.totalMemoryBytes > 0);
@@ -94,6 +117,12 @@ test('CI rejects missing isolated files and invalid groups instead of reporting 
   await assert.rejects(exec(process.execPath, [runner, 'remaining'], options),
     error => error.code === 1 && /cover every discovered file/.test(error.stderr));
   write('test/pilot.test.js', "console.log('must not execute without demo');\n");
+  assert.throws(() => discoverCiGroups(root), /cover every discovered file/);
+  await assert.rejects(exec(process.execPath, [runner, 'pilot'], options),
+    error => error.code === 1 && /cover every discovered file/.test(error.stderr));
+  rmSync(join(root, 'test', 'pilot.test.js'));
+  write('test/demo.test.js', "console.log('must not execute without pilot entry');\n");
+  write('test/pilot-validation.test.js', "console.log('orphaned pilot partition');\n");
   assert.throws(() => discoverCiGroups(root), /cover every discovered file/);
   await assert.rejects(exec(process.execPath, [runner, 'pilot'], options),
     error => error.code === 1 && /cover every discovered file/.test(error.stderr));

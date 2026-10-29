@@ -121,6 +121,12 @@ npm run demo
 if ($LASTEXITCODE -ne 0) { throw 'Standalone synthetic demo failed' }
 ```
 
+The pilot group includes `test/pilot.test.js` and the adjacent
+`test/pilot-*.test.js` files. They run in separate test-file processes under the
+same four-file concurrency limit; cases within each file remain sequential.
+The shared module at `scripts/test-fixtures/pilot.mjs` defines fixture factories,
+not shared workspaces: every case retains its own setup, teardown and budgets.
+
 Keep each group's `summary.json`, `tests.tap` and process snapshot, including
 failed attempts. A successful subset or focused rerun is not complete local CI:
 all three complete groups must pass, with no failed or cancelled tests. Check

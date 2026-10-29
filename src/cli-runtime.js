@@ -1,0 +1,678 @@
+#!/usr/bin/env node
+import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { configAt, readJson, safeError, requireThat, proposerExecutorFlight } from './common.js';
+import { Ledger } from './ledger.js';
+import { collect, acceptReview, reviewPending, route, report, reconcile, tick, runOnce, nextDailyWake } from './coordinator.js';
+import { smokeRuntime, withWorkiq, principalPath, verifyPrincipal } from './runtime.js';
+import { adoTransport } from './sources.js';
+import { dryRun } from './dry-run.js';
+import { beginApp, openApp, appendApp, blockApp, unavailableApp, appStatus, finishApp, appReview, appWorker, appPlanImprovement, collectAppAdo, reconcileAppAdo, listAppRuns, importParentReceipts, prepareWorkiqContinuation, threadContext } from './app-native.js';
+import { assertRsiProducerNamespace, rsiAutomationPolicy, rsiErrorHandoff, rsiPolicy, rsiWork } from './rsi-flow.js';
+import { runRsiPending } from './rsi-execution.js';
+import { collectCliWorkiq, reconcileCliWorkiq } from './cli-collection.js';
+import { persistIcmReplay } from './icm-replay.js';
+import { prepareStage2, checkStage2Files } from './stage2.js';
+import { prepareTitleIndex, materializeTitleScreen } from './filter.js';
+import { prepareFilterBatches, sizeFilterGroups, checkFilterBatchFiles, consolidateFilterBatches } from './filter-batches.js';
+import { reconcileFilterExecutionCohort } from './filter-execution.js';
+import { localFilterPreflight, executeLocalFilterBatch } from './local-filter.js';
+import { planImprovement } from './improvements.js';
+import { qualifyRepositorySkill, skillQualificationId } from './repository-skills.js';
+import { bootstrapLocalRepository } from './local-settings.js';
+import { setupLocalEnvironment } from './setup.js';
+import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
+import { acceptReviewedHandoff } from './reviewed-handoff.js';
+import { acceptFilterProposerHandoff } from './filter-handoff.js';
+import { cleanupWorkspaces } from './workspace-gc.js';
+import { schedulePreparedAssignments } from './assignment-scheduler.js';
+import { cleanupAgencyTransports } from './agency-transport-gc.js';
+import { reconcileAgencyRemoteJob } from './agency-remote-authoring.js';
+import { describeAgent, describeAgents, agentInvocation, agentOperationResult, agentOperationError } from './agents.js';
+import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
+import { continueRoleValidation } from './role-continuation.js';
+import { prepareLocalValidationDiagnostic, dispatchLocalValidationDiagnostic } from './local-diagnostic.js';
+import { prepareLocalAuthoringSuccessor, dispatchLocalAuthoringSuccessor } from './local-authoring-successor.js';
+import { prepareRuntimeContinuation } from './runtime-continuation.js';
+import { dispatchRuntimeContinuation } from './workers.js';
+import { prepareAuthoringToolContinuation } from './authoring-tool-continuation.js';
+import { dispatchAuthoringToolContinuation } from './workers.js';
+import { prepareNativePreparationContinuation } from './native-preparation-continuation.js';
+import { dispatchLocalValidationContinuation } from './workers.js';
+import { prepareNativeSourceContinuation } from './native-source-continuation.js';
+import { dispatchNativeSourceContinuation } from './workers.js';
+import { exportE2eProof, checkE2eProof } from './e2e-proof.js';
+import { assertStateDirectoryIgnored, pruneState } from './state-retention.js';
+import { beginOneShotCollection, advanceOneShotCollection, oneShotCollectionStatus,
+  stopOneShotCollection } from './one-shot-collection.js';
+import { prepareOneShotFilterBudget, reserveOneShotFilterRequest, advanceOneShotHandoff } from './one-shot-handoff.js';
+import { advanceLocalE2E } from './local-e2e.js';
+import { prepareLocalFilterRetry } from './local-filter-retry.js';
+import { runCodingTask, closeCodingTask, monitorResourceLifecycle } from './task-lifecycle.js';
+import { abandonPreflight } from './resource-lifecycle.js';
+import { help } from './cli-help.js';
+
+const invocationArgs = process.argv.slice(2);
+const roleInvocation = invocationArgs[0] === 'agent';
+const role = roleInvocation ? invocationArgs[1] : null;
+const [action = 'help', ...args] = roleInvocation ? invocationArgs.slice(2) : invocationArgs;
+const configIndex = args.indexOf('--config');
+const configFile = configIndex >= 0 ? args[configIndex + 1] :
+['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
+  'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring',
+  'task-run', 'task-close', 'resource-abandon-preflight'].includes(action)
+    ? 'pilot.local.json' : 'pilot.example.json';
+function option(name) {
+  const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
+}
+function options(name) {
+  return args.flatMap((value, index) => value === name && args[index + 1] ? [args[index + 1]] : []);
+}
+function failedOutcome(result) {
+  if (Array.isArray(result)) return result.some(failedOutcome);
+  if (!result || typeof result !== 'object') return false;
+  return Boolean(result.error) ||
+    result.state === 'failed' ||
+    (Array.isArray(result.resources) && result.resources.some(resource => resource.status === 'blocked')) ||
+    ['action-required-auth', 'action-required-budget', 'blocked', 'blocked-auth', 'partial', 'partial-or-blocked',
+      'draft-pr-validation-failed'].includes(result.state) ||
+    ['blocked', 'draft-pr-validation-failed', 'diagnostic-failed'].includes(result.outcome) ||
+    ['collection', 'reviews', 'workers', 'result', 'results', 'workspaces', 'resources', 'rsi', 'execution']
+      .some(key => failedOutcome(result[key]));
+}
+let ledger, agent;
+let automaticPruneConfig;
+try {
+  requireThat(!(roleInvocation && action === 'self-improvement'),
+    'Self-improvement is not an evidence-role operation', 'blocked-scope');
+  if (roleInvocation) agent = agentInvocation(role, action);
+  if (action === 'filter-local-retry-prepare') requireThat(
+    ['--config', '--file', '--output'].every(key => option(key) && !option(key).startsWith('--')),
+    'Retry preparation requires explicit --config, --file and --output', 'blocked-authorization');
+  if (action === 'local-e2e') {
+    const values = new Set(['--config', '--file', '--review']);
+    const flags = new Set(['--check', '--filter', '--execute', '--resume-auth',
+      '--authorize-commit', '--authorize-push', '--authorize-draft-pr']);
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat((values.has(key) || flags.has(key)) && !seen.has(key),
+        'Unknown or duplicate local E2E option', 'blocked-authorization');
+      seen.add(key);
+      if (values.has(key)) requireThat(args[++index] && !args[index].startsWith('--'),
+        `Local E2E option ${key} requires a value`, 'blocked-authorization');
+    }
+    requireThat(option('--config') && !option('--config').startsWith('--') &&
+      option('--file') && !option('--file').startsWith('--'),
+    'Local E2E requires explicit --config and --file', 'blocked-authorization');
+    requireThat(['--check', '--filter', '--execute'].filter(flag => args.includes(flag)).length === 1 &&
+      (!args.includes('--resume-auth') || args.includes('--execute')),
+    'Local E2E requires exactly one of --check, --filter or --execute', 'blocked-authorization');
+    if (args.includes('--execute')) requireThat(
+      ['--authorize-commit', '--authorize-push', '--authorize-draft-pr'].every(flag => args.includes(flag)),
+      'Local E2E execution requires explicit commit, push and Draft PR flags', 'blocked-authorization');
+  }
+  if (action.startsWith('one-shot-')) {
+    requireThat(option('--config') && !option('--config').startsWith('--'),
+      'One-shot controls require an explicit --config', 'blocked-authorization');
+    const runAction = ['one-shot-collect', 'one-shot-status', 'one-shot-stop'].includes(action);
+    requireThat(option(runAction ? '--run' : '--file') &&
+      !option(runAction ? '--run' : '--file').startsWith('--'),
+    'One-shot controls require their explicit run or input file', 'blocked-authorization');
+    if (action === 'one-shot-collect') requireThat(args.includes('--collect'),
+      'One-shot source reads require explicit --collect', 'blocked-authorization');
+    if (action === 'one-shot-handoff') {
+      requireThat(args.includes('--check') !== args.includes('--execute') &&
+        (!args.includes('--resume-auth') || args.includes('--execute')),
+      'One-shot handoff requires exactly one of --check or --execute; auth resume requires execution',
+      'blocked-authorization');
+      if (args.includes('--execute')) requireThat(
+        ['--authorize-commit', '--authorize-push', '--authorize-draft-pr'].every(flag => args.includes(flag)),
+        'One-shot execution requires explicit commit, push and draft authorization flags', 'blocked-authorization');
+    }
+    if (action === 'one-shot-filter-reserve') requireThat(option('--task') && option('--request'),
+      'One-shot FILTER reservation requires --task and --request', 'blocked-authorization');
+  }
+  if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action)) {
+    const allowed = new Set(['--config',
+      ...(action.startsWith('app-') ? ['--run', '--production'] : []),
+      ...(action.endsWith('-work') ? ['--operation', '--file'] : []),
+      ...(action.endsWith('-run') ? ['--file'] : [])]);
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(allowed.has(key) && !seen.has(key), 'Unknown or duplicate RSI option', 'blocked-scope');
+      seen.add(key);
+      if (key !== '--production') requireThat(args[++index] && !args[index].startsWith('--'),
+        'RSI option requires a value', 'blocked-scope');
+    }
+    requireThat(seen.has('--config') && (!action.startsWith('app-') || seen.has('--run')),
+      'RSI flow commands require explicit --config and the app run when applicable', 'blocked-authorization');
+    if (action.endsWith('-work')) {
+      const operation = option('--operation');
+      requireThat(['status', 'inspect', 'read-event', ...(action === 'rsi-work' ? ['capture'] : []),
+        'claim', 'propose', 'reserve-publication', 'result'].includes(operation),
+        'Unknown RSI work operation', 'blocked-scope');
+      requireThat((operation === 'status') !== seen.has('--file'),
+        'RSI status takes no file; all other operations require one', 'blocked-scope');
+    }
+  }
+  if (action === 'continue-local-validation')
+    requireThat(args.includes('--prepare') !== args.includes('--execute') &&
+      option('--file') && option('--config'),
+    'Role continuation requires explicit --file, --config and exactly one of --prepare or --execute',
+    'blocked-authorization');
+  if (['diagnose-local-validation', 'continue-local-authoring'].includes(action)) {
+    const label = action === 'diagnose-local-validation' ? 'Local diagnostic' : 'Authoring successor';
+    requireThat(args.filter(arg => ['--prepare', '--execute'].includes(arg)).length === 1 &&
+      ['--file', '--config'].every(name => option(name) && !option(name).startsWith('--')),
+    `${label} requires explicit --file, --config and exactly one of --prepare or --execute`,
+    'blocked-authorization');
+  }
+  if (action === 'help') console.log(agent
+    ? JSON.stringify(agentOperationResult(agent, describeAgent(role)), null, 2)
+    : help);
+  else if (action === 'agents') console.log(JSON.stringify(describeAgents(), null, 2));
+  else if (action === 'self-improvement') {
+    // Keep the judge out of this process's normal worker imports and automatic pruning.
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./self-improvement-cli.js', import.meta.url)), ...args
+    ], { stdio: 'inherit', windowsHide: true, shell: false, timeout: 3660000 });
+    requireThat(!result.error && result.status !== null,
+      'RSI command did not finish; inspect retained state without retrying execution',
+      'blocked-reconciliation');
+    process.exitCode = result.status;
+  }
+  else if (action === 'setup') {
+    const result = await setupLocalEnvironment({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoIds: options('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root'),
+      allowClone: args.includes('--allow-clone')
+    });
+    const setupConfig = configAt(resolve(configFile));
+    ledger = new Ledger(setupConfig.stateDirectory);
+    for (const qualification of result.qualifications)
+      ledger.qualify(skillQualificationId(qualification.repoId, qualification.bindingId), qualification);
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'bootstrap-repo') {
+    requireThat(option('--repo'), 'bootstrap-repo requires --repo');
+    const result = await bootstrapLocalRepository({
+      settingsPath: configFile,
+      templatePath: option('--template') ?? 'pilot.example.json',
+      repoId: option('--repo'),
+      searchRoots: options('--search-root'),
+      cloneRoot: option('--clone-root'),
+      allowClone: true
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'pr-review-publish') {
+    requireThat(option('--repo') && option('--pr') && option('--file'),
+      'pr-review-publish requires --repo, --pr and --file');
+    const result = await publishReviewReceipt({
+      repository: option('--repo'),
+      number: Number(option('--pr')),
+      receipt: readJson(resolve(option('--file'))),
+      approveOtherAuthor: args.includes('--approve-other-author')
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else if (action === 'pr-review-verify') {
+    requireThat(option('--repo') && option('--pr'), 'pr-review-verify requires --repo and --pr');
+    const result = await verifyReviewReceipt({
+      repository: option('--repo'),
+      number: Number(option('--pr'))
+    });
+    console.log(JSON.stringify(result, null, 2));
+  }
+  else {
+    const config = configAt(resolve(configFile));
+    if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiPolicy(config).enabled, 'RSI is disabled for this configuration', 'blocked-authorization');
+    if (config.rsi?.enabled || ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action))
+      assertRsiProducerNamespace(config);
+    if (['rsi-run', 'app-rsi-run'].includes(action))
+      requireThat(rsiAutomationPolicy(config), 'RSI automation is not authorized', 'blocked-authorization');
+    if (config.statePolicy.accessApproved) assertStateDirectoryIgnored(config);
+    const resources = args.includes('--dry-run') ? [] : await monitorResourceLifecycle(config);
+    if (resources.length) {
+      console.error(JSON.stringify({ resourceLifecycle: resources }));
+      if (resources.some(resource => resource.status === 'blocked') || failedOutcome(resources))
+        process.exitCode = 2;
+    }
+    if (action !== 'state-prune') {
+      automaticPruneConfig = config;
+      pruneState(config);
+    }
+    const appAction = action.startsWith('app-');
+    if (config.executionMode === 'app-native' && !appAction &&
+      ['auth-check', 'dry-run', 'collect', 'run', 'dispatch', 'continue-local-validation', 'diagnose-local-validation',
+        'continue-local-authoring', 'continue-runtime-launch', 'continue-authoring-tools',
+        'continue-native-preparation', 'continue-native-source', 'review-pending', 'tick', 'serve',
+        'runtime-smoke', 'filter-local-run', 'local-e2e'].includes(action)) {
+      requireThat(option('--execution-mode') === 'standalone-sdk',
+        'App-native mode does not launch SDK gates/workers/schedules. Use app-* commands; legacy SDK requires explicit --execution-mode standalone-sdk');
+    }
+    if (!appAction && !['dry-run', 'icm-replay', 'stage2-handoff', 'stage2-proposal-check', 'state-prune',
+      'filter-title-index', 'filter-title-materialize', 'filter-batches', 'filter-batch-size',
+      'filter-batch-check', 'filter-consolidate', 'filter-execution-check', 'filter-local-preflight',
+      'e2e-proof-export', 'e2e-proof-check',
+      'one-shot-filter-prepare', 'one-shot-filter-reserve'].includes(action))
+      ledger = new Ledger(config.stateDirectory);
+    if (appAction && !['app-begin', 'app-runs', 'app-workiq-continue'].includes(action)) {
+      requireThat(option('--run'), 'App commands require --run');
+      ({ ledger } = openApp(config, option('--run'), !args.includes('--production')));
+    }
+    const input = () => { requireThat(option('--file'), 'Command requires --file'); return readJson(resolve(option('--file'))); };
+    let result;
+    switch (action) {
+      case 'task-run': result = await runCodingTask(config, input()); break;
+      case 'task-close': result = { resources: await closeCodingTask(config, input()) }; break;
+      case 'resource-abandon-preflight':
+        result = { resources: [await abandonPreflight(config.stateDirectory, option('--resource'))] }; break;
+      case 'filter-local-retry-prepare': {
+        const output = resolve(option('--output'));
+        requireThat(output.endsWith('.local.json') && dirname(output) === dirname(resolve(configFile)),
+          'Retry config must be a new .local.json file beside the original config to preserve relative paths');
+        requireThat(!existsSync(output),
+          'Retry config output already exists; preserve it and choose a new path', 'blocked-reconciliation');
+        const prepared = prepareLocalFilterRetry(config, ledger, input());
+        const next = readJson(resolve(configFile));
+        next.localFilter = prepared.localFilter;
+        writeFileSync(output, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });
+        result = { state: prepared.state, attemptId: prepared.attemptId, output,
+          executionAcceptanceVerifiedByHelper: prepared.executionAcceptanceVerifiedByHelper,
+          action: prepared.action };
+        break;
+      }
+      case 'local-e2e':
+        result = await advanceLocalE2E(config, ledger, input(), {
+          filter: args.includes('--filter'), execute: args.includes('--execute'),
+          review: option('--review') ? readJson(resolve(option('--review'))) : null,
+          resumeAuth: args.includes('--resume-auth'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        }); break;
+      case 'one-shot-begin': result = beginOneShotCollection(config, ledger, input()); break;
+      case 'one-shot-status': result = oneShotCollectionStatus(ledger, option('--run')); break;
+      case 'one-shot-stop': result = stopOneShotCollection(ledger, option('--run')); break;
+      case 'one-shot-collect':
+        result = await advanceOneShotCollection(config, ledger, option('--run'), {
+          resume: args.includes('--resume')
+        }); break;
+      case 'one-shot-filter-prepare':
+      case 'one-shot-filter-reserve': {
+        const request = input();
+        requireThat(typeof request?.filter?.executionLedgerPath === 'string',
+          'One-shot FILTER requires its explicit execution ledger path');
+        ledger = new Ledger(dirname(resolve(request.filter.executionLedgerPath)));
+        result = action === 'one-shot-filter-prepare'
+          ? prepareOneShotFilterBudget(config, ledger, request)
+          : reserveOneShotFilterRequest(config, ledger, request, option('--task'),
+            readJson(resolve(option('--request'))));
+        break;
+      }
+      case 'one-shot-handoff':
+        result = await advanceOneShotHandoff(config, ledger, input(), {
+          execute: args.includes('--execute'), resumeAuth: args.includes('--resume-auth')
+        }); break;
+      case 'app-end': result = await finishApp(config, ledger, option('--run')); break;
+      case 'rsi-run':
+      case 'app-rsi-run':
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI host action must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = await runRsiPending(config, ledger, {
+          runId: action === 'app-rsi-run' ? option('--run') : null,
+          hostAction: option('--file') ? input() : null
+        });
+        break;
+      case 'rsi-work':
+      case 'app-rsi-work': {
+        requireThat(option('--operation'), 'RSI work requires --operation');
+        if (option('--file')) {
+          const file = lstatSync(resolve(option('--file')));
+          requireThat(file.isFile() && !file.isSymbolicLink() && file.nlink === 1 &&
+            file.size <= Math.min(65536, config.rsi.maxObservationBytes),
+          'RSI input must be a bounded regular JSON file', 'blocked-scope');
+        }
+        result = rsiWork(config, ledger, option('--operation'),
+          option('--file') ? input() : {},
+          { runId: action === 'app-rsi-work' ? option('--run') : null });
+        break;
+      }
+      case 'filter-local-preflight':
+        result = localFilterPreflight(config); break;
+      case 'filter-local-run':
+        requireThat(option('--manifest') && option('--batch') && option('--output'),
+          'Local FILTER requires --manifest, --batch and --output');
+        requireThat(!existsSync(resolve(option('--output'))),
+          'Local FILTER output already exists; reconcile the original attempt');
+        result = await executeLocalFilterBatch(config, ledger, readJson(option('--manifest')), option('--batch'));
+        if (result.state === 'complete-held') writeFileSync(resolve(option('--output')),
+          `${JSON.stringify(result.result, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        break;
+      case 'replay-evidence': result = await replayRecordedEvidence(config, ledger, input()); break;
+      case 'replay-review': result = await replayRecordedReview(config, ledger, input()); break;
+      case 'continue-local-validation':
+        result = await continueRoleValidation(config, ledger, input(),
+          args.includes('--prepare') ? 'prepare' : 'execute'); break;
+      case 'diagnose-local-validation': {
+        const request = input();
+        if (args.includes('--prepare')) result = await prepareLocalValidationDiagnostic(config, ledger, request);
+        else {
+          requireThat(typeof request?.diagnosticId === 'string' && request.diagnosticId.length > 0 &&
+            Object.keys(request).length === 1,
+          'Local diagnostic execution requires only its prepared diagnosticId', 'blocked-reconciliation');
+          result = await dispatchLocalValidationDiagnostic(config, ledger, request.diagnosticId);
+        }
+        break;
+      }
+      case 'continue-local-authoring': {
+        const request = input();
+        if (args.includes('--prepare')) result = await prepareLocalAuthoringSuccessor(config, ledger, request);
+        else {
+          requireThat(typeof request?.assignmentId === 'string' && request.assignmentId.length > 0 &&
+            Object.keys(request).length === 1,
+          'Authoring successor execution requires only its prepared assignmentId', 'blocked-reconciliation');
+          result = await dispatchLocalAuthoringSuccessor(config, ledger, request.assignmentId);
+        }
+        break;
+      }
+      case 'state-prune':
+        result = pruneState(config, { dryRun: args.includes('--dry-run') });
+        break;
+      case 'filter-batch-size':
+        requireThat(option('--output'), 'Batch measurement requires --output');
+        result = sizeFilterGroups(config, input(), option('--output')); break;
+      case 'filter-batches':
+        requireThat(option('--output'), 'Batch preparation requires --output');
+        result = await prepareFilterBatches(config, input(), option('--output')); break;
+      case 'filter-batch-check':
+        requireThat(option('--file') && option('--manifest'), 'Batch check requires --file and --manifest');
+        result = checkFilterBatchFiles(config, option('--manifest'), option('--file')); break;
+      case 'filter-consolidate': {
+        requireThat(option('--manifest') && option('--output'), 'Consolidation requires --manifest and --output');
+        const files = input();
+        requireThat(Array.isArray(files) && files.every(p => typeof p === 'string'),
+          'Consolidation --file must contain an array of result paths');
+        result = consolidateFilterBatches(config, readJson(option('--manifest')),
+          files.map(p => readJson(resolve(p))), option('--output')); break;
+      }
+      case 'filter-execution-check': {
+        requireThat(option('--manifest') && option('--ledger'), 'Execution check requires --manifest and --ledger');
+        const files = input();
+        requireThat(Array.isArray(files) && files.every(p => typeof p === 'string'),
+          'Execution check --file must contain an array of result paths');
+        const db = new DatabaseSync(resolve(option('--ledger')), { readOnly: true });
+        try {
+          result = reconcileFilterExecutionCohort(config, { db }, readJson(option('--manifest')),
+           files.map(p => readFileSync(resolve(p), 'utf8')),
+           option('--policy') ? readJson(option('--policy')) : null);
+        } finally { db.close(); }
+        break;
+      }
+      case 'e2e-proof-export':
+        requireThat(option('--output'), 'E2E proof export requires --output');
+        result = exportE2eProof(config, input(), option('--output')); break;
+      case 'e2e-proof-check':
+        requireThat(option('--bundle'), 'E2E proof check requires --bundle');
+        result = checkE2eProof(config, input(), option('--bundle')); break;
+      case 'filter-title-index':
+        requireThat(option('--output'), 'Title index requires an explicit private output path');
+        result = prepareTitleIndex(config, input(), option('--output')); break;
+      case 'filter-title-materialize':
+        requireThat(option('--file') && option('--index') && option('--output'),
+          'Title materialization requires --file, --index and --output');
+        result = materializeTitleScreen(config, option('--index'), option('--file'), option('--output')); break;
+      case 'icm-replay':
+        requireThat(!args.includes('--collect'), 'IcM replay is offline only; it does not launch a live connector');
+        result = persistIcmReplay(config, input()); break;
+      case 'stage2-handoff':
+        requireThat(option('--output'), 'Stage2 requires an explicit private output path');
+        result = prepareStage2(config, input(), option('--output')); break;
+      case 'stage2-proposal-check':
+        requireThat(option('--file') && option('--handoff'), 'Proposal check requires --file and --handoff');
+        result = checkStage2Files(config, option('--file'), option('--handoff')); break;
+      case 'app-begin': result = beginApp(config, input()); break;
+      case 'app-runs': result = listAppRuns(config); break;
+      case 'app-import-parent': result = await importParentReceipts(config, ledger, option('--run'), input()); break;
+      case 'app-append': result = await appendApp(config, ledger, option('--run'), input()); break;
+      case 'app-block': {
+        result = blockApp(config, ledger, option('--run'), input());
+        if (config.rsi?.enabled) result = await finishApp(config, ledger, option('--run'));
+        break;
+      }
+      case 'app-unavailable': result = unavailableApp(ledger, option('--run'), input()); break;
+      case 'app-status': result = appStatus(ledger, option('--run')); break;
+      case 'app-review': result = appReview(config, ledger, option('--run'), input()); break;
+      case 'app-plan-improvement': result = appPlanImprovement(config, ledger, option('--run'), input()); break;
+      case 'app-worker': {
+        result = appWorker(config, ledger, option('--run'), option('--operation'), input());
+        if (config.rsi?.enabled && ['result', 'agency-result'].includes(option('--operation')))
+          result = { ...result, rsi: (await finishApp(config, ledger, option('--run'))).rsi };
+        break;
+      }
+      case 'app-ado':
+        requireThat(args.includes('--collect'), 'Live ADO reads require explicit --collect');
+        result = await collectAppAdo(config, ledger, option('--run'), option('--pass')); break;
+      case 'app-ado-reconcile':
+        result = await reconcileAppAdo(config, ledger, option('--run'), option('--pass')); break;
+      case 'app-workiq-cli':
+        requireThat(args.includes('--collect'), 'Live CLI reads require explicit --collect');
+        result = await collectCliWorkiq(config, ledger, option('--run'), undefined, option('--pass') ?? 'workiq:created'); break;
+      case 'app-workiq-cli-reconcile':
+        result = await reconcileCliWorkiq(config, ledger, option('--run'), option('--pass') ?? 'workiq:created'); break;
+      case 'app-workiq-continue':
+        requireThat(!args.includes('--production'), 'Continuation currently supports collection-only dry runs');
+        result = await prepareWorkiqContinuation(config, { fromRunId: option('--from-run'), runId: option('--run'),
+          pass: option('--pass') ?? 'workiq:created', additionalBudgetApproved: args.includes('--authorize-additional-budget') }); break;
+      case 'app-thread-context':
+        result = threadContext(ledger, option('--run'), option('--pass') ?? 'workiq:created'); break;
+      case 'doctor':
+        result = {
+          node: process.version, activation: config.activation, initialWindow: config.window,
+          identityConfigured: Boolean(config.identity.designatedUser && config.identity.tenantId && config.identity.objectId),
+          workiqSeeds: config.sources.workiq.seeds.length, repositoryMappings: config.repositories.length,
+          proposerExecutors: config.repositories.map(repo => ({
+            repoId: repo.id, selection: proposerExecutorFlight(repo) ?? 'legacy-per-task',
+            readinessVerified: false
+          })),
+          reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
+          icm: 'Explicit incident-created mode supports app-append receipt ingestion. Offline icm-replay remains audit-only. Legacy owner exports require saved-query verification; no helper launches an IcM connector.',
+          validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',
+          liveAccessVerified: false
+        };
+        break;
+      case 'runtime-smoke': result = await smokeRuntime(config, process.cwd()); break;
+      case 'continue-runtime-launch':
+      case 'continue-authoring-tools':
+      case 'continue-native-source':
+      case 'continue-native-preparation': {
+        const toolRecovery = action === 'continue-authoring-tools';
+        const preparationRecovery = action === 'continue-native-preparation';
+        const sourceRecovery = action === 'continue-native-source';
+        requireThat(Boolean(option('--config')) && args.includes('--prepare') !== args.includes('--execute'),
+          'Runtime continuation requires explicit --config and exactly one of --prepare or --execute',
+          'blocked-authorization');
+        const request = input();
+        if (args.includes('--prepare')) {
+          requireThat(Object.keys(request).sort().join(',') ===
+            'authorization,previousAssignmentId,previousConfigPath' &&
+            typeof request.previousAssignmentId === 'string' &&
+            typeof request.previousConfigPath === 'string' &&
+            resolve(request.previousConfigPath) === request.previousConfigPath,
+          'Runtime continuation requires the exact predecessor config, assignment and authorization');
+          const previousConfig = configAt(request.previousConfigPath);
+          const previous = new Ledger(previousConfig.stateDirectory);
+          try {
+            const sourcePreparation = sourceRecovery &&
+              ['native-business-revalidation', 'native-environment-revalidation']
+                .includes(request.authorization?.kind)
+              ? (await import('./native-business-revalidation.js')).prepareNativeBusinessRevalidation
+              : prepareNativeSourceContinuation;
+            result = await (sourceRecovery ? sourcePreparation :
+              preparationRecovery ? prepareNativePreparationContinuation :
+              toolRecovery ? prepareAuthoringToolContinuation : prepareRuntimeContinuation)(previousConfig, previous,
+              request.previousAssignmentId, config, ledger, request.authorization);
+          } finally { previous.close(); }
+        } else {
+          requireThat(Object.keys(request).join(',') === 'assignmentId' &&
+            typeof request.assignmentId === 'string',
+          'Runtime continuation execution requires only its prepared assignmentId');
+          result = await (sourceRecovery ? dispatchNativeSourceContinuation :
+            preparationRecovery ? dispatchLocalValidationContinuation :
+            toolRecovery ? dispatchAuthoringToolContinuation : dispatchRuntimeContinuation)(
+            config, ledger, request.assignmentId);
+        }
+        break;
+      }
+      case 'dry-run': result = await dryRun(config, {
+        collectRequested: args.includes('--collect'), authRefreshed: args.includes('--auth-refreshed')
+      }); break;
+      case 'auth-check': {
+        result = [];
+        if (!option('--source') || option('--source') === 'workiq') try {
+          await withWorkiq(config, async read => verifyPrincipal(config, await read(principalPath)));
+          result.push({ source: 'workiq', state: 'authenticated', principalMatched: true, evidenceAccessVerified: false });
+        } catch (error) { result.push({ source: 'workiq', state: 'blocked', error: safeError(error) }); }
+        if (!option('--source') || option('--source') === 'ado') try {
+          const request = await adoTransport(config);
+          await request('wiql', { query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'OC' AND [System.Id] = 0" });
+          result.push({ source: 'ado', state: 'authenticated', principalMatched: true, evidenceAccessVerified: false });
+        } catch (error) { result.push({ source: 'ado', state: 'blocked', error: safeError(error) }); }
+        if (!option('--source') || option('--source') === 'icm')
+          result.push({ source: 'icm', state: 'blocked', error: { code: 'blocked-scope',
+            message: 'No IcM authentication call made. Helpers do not launch the connector; incident-created app-append requires captured identity and exact scoped receipts.' } });
+        break;
+      }
+      case 'status': result = ledger.status(); break;
+      case 'workspace-gc':
+        result = await cleanupWorkspaces(config, ledger, { execute: args.includes('--execute') });
+        break;
+      case 'collect': result = await collect(config, ledger); break;
+      case 'run': result = await runOnce(config, ledger); break;
+      case 'review':
+        requireThat(option('--file'), 'review requires --file');
+        result = acceptReview(config, ledger, readJson(resolve(option('--file')))); break;
+      case 'review-pending': result = await reviewPending(config, ledger); break;
+      case 'plan-improvement': result = planImprovement(ledger, input()); break;
+      case 'qualify-skill': {
+        requireThat(option('--repo') && option('--capability'), 'qualify-skill requires --repo and --capability');
+        result = await qualifyRepositorySkill(config, option('--repo'), option('--capability'), option('--binding'));
+        ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
+        break;
+      }
+      case 'submit-reviewed-handoff': {
+        requireThat(args.includes('--prepare') !== args.includes('--execute'),
+          `${action} requires exactly one of --prepare or --execute`);
+        const handoff = input();
+        const handoffOptions = {
+          execute: args.includes('--execute'),
+          authorizeSynthetic: args.includes('--authorize-synthetic'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        };
+        result = await acceptReviewedHandoff(config, ledger, handoff, {
+          ...handoffOptions,
+          source: 'submit-reviewed-handoff'
+        });
+        break;
+      }
+      case 'submit-filter-handoff': {
+        requireThat(args.includes('--prepare') !== args.includes('--execute'),
+          `${action} requires exactly one of --prepare or --execute`);
+        const intent = option('--intent') ?? 'improvement';
+        requireThat(['improvement', 'defect-fix'].includes(intent),
+          `${action} --intent must be improvement or defect-fix`);
+        result = await acceptFilterProposerHandoff(config, ledger, input(), {
+          intent,
+          execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        });
+        break;
+      }
+      case 'dispatch-ready':
+        result = await schedulePreparedAssignments(config, ledger, {
+          execute: args.includes('--execute'),
+          limit: option('--limit') === null ? null : Number(option('--limit')),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        });
+        break;
+      case 'transport-gc':
+        result = await cleanupAgencyTransports(config, ledger, {
+          execute: args.includes('--execute')
+        });
+        break;
+      case 'reconcile-remote-authoring':
+        requireThat(option('--assignment') && /^\d+$/.test(option('--round') ?? ''),
+          'Remote reconciliation requires --assignment ID and --round N');
+        result = await reconcileAgencyRemoteJob(config, ledger,
+          option('--assignment'), Number(option('--round')));
+        break;
+      case 'dispatch': result = await route(config, ledger, option('--intent') ?? 'rca-only'); break;
+      case 'report': result = report(ledger); break;
+      case 'reconcile': result = reconcile(ledger); break;
+      case 'recover-lock':
+        requireThat(option('--name') && option('--owner'), 'Exact lock name and owner are required');
+        ledger.recoverLock(option('--name'), option('--owner')); result = { recovered: option('--name') }; break;
+      case 'unblock-source':
+        requireThat(option('--source'), 'Exact source:lane key is required');
+        ledger.unblockSource(option('--source'), option('--reason')); result = { unblocked: option('--source') }; break;
+      case 'tick': result = await tick(config, ledger); break;
+      case 'serve': {
+        requireThat(config.schedule.enabled, 'Schedule is disabled');
+        nextDailyWake(config.schedule);
+        let stopped = false;
+        process.once('SIGINT', () => { stopped = true; });
+        process.once('SIGTERM', () => { stopped = true; });
+        while (!stopped) {
+          const current = configAt(resolve(configFile));
+          if (!current.schedule.enabled) break;
+          const until = nextDailyWake(current.schedule).getTime();
+          while (!stopped && Date.now() < until) await new Promise(done => setTimeout(done, Math.min(1000, until - Date.now())));
+          if (stopped) break;
+          const refreshed = configAt(resolve(configFile));
+          if (!refreshed.schedule.enabled) break;
+          try { console.log(JSON.stringify(await tick(refreshed, ledger))); }
+          catch (error) { console.error(JSON.stringify(safeError(error))); process.exitCode = 2; break; }
+        }
+        result = { state: 'stopped' }; break;
+      }
+      default: throw new Error(`Unknown command: ${action}`);
+    }
+    console.log(JSON.stringify(agent ? agentOperationResult(agent, result) : result, null, 2));
+    if (failedOutcome(result)) process.exitCode = 2;
+  }
+} catch (error) {
+  const failure = safeError(error);
+  const rsi = rsiErrorHandoff(error);
+  if (rsi) failure.rsi = rsi;
+  console.error(JSON.stringify(agent ? agentOperationError(agent, failure) : failure, null, 2));
+  process.exitCode = 1;
+} finally {
+  ledger?.close();
+  if (automaticPruneConfig) {
+    try { pruneState(automaticPruneConfig); }
+    catch (error) {
+      console.error(JSON.stringify(safeError(error), null, 2));
+      process.exitCode = 1;
+    }
+  }
+}

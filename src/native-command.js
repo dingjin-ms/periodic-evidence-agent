@@ -1,12 +1,32 @@
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { hash, requireThat, PilotError } from './common.js';
 
-const exec = promisify(execFile);
 const supervisor = fileURLToPath(new URL('./native-command.ps1', import.meta.url));
+
+function exec(executable, args, options) {
+  let child, streamError;
+  const result = new Promise((resolve, reject) => {
+    child = execFile(executable, args, options, (error, stdout, stderr) => {
+      const failure = streamError ?? error;
+      if (failure) {
+        Object.assign(failure, { stdout, stderr });
+        if (streamError && error) Object.assign(failure, { killed: error.killed, signal: error.signal });
+        reject(failure);
+      } else resolve({ stdout, stderr });
+    });
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      stream?.once('error', error => {
+        streamError ??= error;
+        child.kill();
+      });
+    }
+  });
+  result.child = child;
+  return result;
+}
 
 export function nativeTemporaryDirectory(stateDirectory, key) {
   const path = join(stateDirectory, 'nt', hash(key).slice(0, 24));

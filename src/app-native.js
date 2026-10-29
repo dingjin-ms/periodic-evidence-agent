@@ -660,8 +660,13 @@ export function appWorker(config, ledger, runId, action, input) {
     'Native worker activation is disabled for this run');
   noCredentials(input);
   if (action === 'prepare') {
-    object(input, ['investigationId', 'repoId', 'intent', 'testCoveragePlanId', 'requestedOutcome'],
+    object(input, ['investigationId', 'repoId', 'intent', 'testCoveragePlanId', 'requestedOutcome', 'executionTarget'],
       ['investigationId', 'repoId', 'intent']);
+    const qualificationOnly = input.executionTarget === 'agency-workspace-authoring';
+    requireThat(input.executionTarget === undefined || qualificationOnly,
+      'Unsupported native assignment execution target', 'blocked-scope');
+    requireThat(!qualificationOnly || (input.intent === 'improvement' && input.testCoveragePlanId),
+      'Remote authoring qualification requires a planned test-coverage improvement', 'blocked-scope');
     const investigation = ledger.get('investigation', input.investigationId);
     requireThat(investigation && !['closed', 'blocked', 'waiting'].includes(investigation.state), 'Investigation is not dispatchable');
     const assignment = input.testCoveragePlanId
@@ -672,6 +677,13 @@ export function appWorker(config, ledger, runId, action, input) {
       'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
     requireCurrentSourceEligibility(ledger, assignment);
     requireCurrentAssignment(config, ledger, investigation, assignment);
+    if (qualificationOnly) {
+      const binding = config.repositories.find(repo => repo.id === assignment.repoId)
+        .skillBindings.find(binding => binding.id === assignment.skillBindingId);
+      requireThat(assignment.execution === 'local' && assignment.skillQualification &&
+        ['commit', 'push', 'createDraftPR'].every(key => binding.sideEffects[key] === false),
+      'Remote authoring qualification cannot publish or replace hosted execution', 'blocked-scope');
+    }
     const latest = new Set(ledger.latestEvidence().map(e => e.id));
     requireThat(assignment.evidenceIds.every(id => latest.has(id) &&
       ['authenticated-source', 'app-tool-reported', 'workiq-cli-verified'].includes(ledger.get('evidence', id).source.provenance) &&
@@ -681,13 +693,21 @@ export function appWorker(config, ledger, runId, action, input) {
     if (assignment.execution === 'hosted') requireAgencyQualification(config, ledger, agencyTaskId(assignment));
     return ledger.transaction(() => {
       const job = ledger.prepare(assignment, { bucket: json(run.window), maxNew: config.limits.maxAssignments });
+      requireThat(!qualificationOnly || job.state === 'prepared',
+        'Remote authoring qualification must reconcile an existing non-prepared assignment', 'blocked-reconciliation');
       const value = { id: job.id, agentId: `repo-owner:${job.repo}`, coordinatorAgentId: run.agentId,
-        state: 'prepared', projectId: assignment.execution === 'hosted' ? null : config.repositories.find(r => r.id === job.repo).projectId,
+        state: 'prepared', projectId: assignment.execution === 'hosted' || qualificationOnly
+          ? null : config.repositories.find(r => r.id === job.repo).projectId,
         repoId: job.repo, runId, assignment, sessionId: null, claimId: null,
-        execution: assignment.execution === 'hosted' ? 'agency' : 'external-app-native-session' };
-      requireThat(assignment.execution === 'hosted' || value.projectId, 'Native repository project binding is missing');
+        execution: qualificationOnly ? 'agency-workspace-authoring-qualification'
+          : assignment.execution === 'hosted' ? 'agency' : 'external-app-native-session' };
+      requireThat(qualificationOnly || assignment.execution === 'hosted' || value.projectId,
+        'Native repository project binding is missing');
       ledger.db.prepare('INSERT OR IGNORE INTO app_workers VALUES(?,?)').run(job.id, json(value));
-      return worker(ledger, job.id);
+      const prepared = worker(ledger, job.id);
+      requireThat(prepared.runId === runId && prepared.execution === value.execution,
+        'Prepared assignment belongs to a different run or execution target', 'blocked-reconciliation');
+      return prepared;
     });
   }
   return ledger.transaction(() => {
@@ -695,6 +715,9 @@ export function appWorker(config, ledger, runId, action, input) {
       'baseRevision', 'outcome', 'evidenceRef', 'agencyRequest', 'agencySubmission', 'agencyResult'], ['assignmentId', 'claimId']);
     identifier(input.claimId);
     const value = worker(ledger, input.assignmentId);
+    requireThat(value.execution !== 'agency-workspace-authoring-qualification',
+      'Use qualify-remote-authoring for this publication-free experiment; native session actions are forbidden',
+      'blocked-scope');
     const before = value.state;
     requireThat(value.runId === runId, 'Assignment belongs to another app run');
     if (action === 'claim') {

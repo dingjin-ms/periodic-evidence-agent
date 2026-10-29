@@ -2,8 +2,9 @@
 
 > This document describes hosted Agency task reservation and reconciliation.
 > The opt-in [local and remote Agency authoring providers](AGENCY-LOCAL-AUTHORING.md)
-> are separate transports that keep final validation and publication on the
-> Controller path. Neither model is a merge authority.
+> are separate transports that keep final acceptance and publication on the
+> Controller path. The opt-in remote validation adapter below can delegate actual
+> product commands without delegating acceptance. Neither model is a merge authority.
 
 The local runtime and SQLite ledger remain the scheduler and state owner.
 `collector`, `filter`, and `proposer` are the only selectable roles. Agency is
@@ -697,3 +698,106 @@ only terminal derived evidence to result reconciliation, not polling snapshots.
 A blocked terminal receipt remains a recorded blocker; do not overwrite it or
 launch a replacement automatically. Source/evidence amendments require explicit
 owner reconciliation, not a second invocation with conflicting terminal facts.
+
+## Candidate-bound remote product validation
+
+Before enablement, check the repository-specific
+[E2E qualification register](e2e-evidence/agency-remote/README.md) and `doctor`.
+Historical proof applies only to its recorded scope; missing, inaccessible or
+changed-source/configuration proof must be disclosed as not yet verified.
+The register is an audit index, never an acceptance receipt or execution grant.
+
+Product repositories may opt into `remoteValidation` independently of their
+authoring provider. The default remains local. This first adapter accepts the
+qualified OA Windows pipeline's `agency-real-validation-probe-v1` output; it is
+not a generic 1JS/Office runner or an automatic pipeline publisher.
+
+```json
+{
+  "remoteValidation": {
+    "type": "agency-remote",
+    "contractPath": "oa-validation-contract.local.json",
+    "contractSha256": "<sha256-of-exact-private-contract-bytes>"
+  }
+}
+```
+
+The private `agency-oa-validation-contract-v1` contract pins `repoId`,
+`candidate`, `gateId`, `profileSha256`, the exact Agency `request`, and
+`pipeline` (`organization`, `project`, `repositoryId`, `definitionId`,
+`definitionRevision`, `revision`, `ref`, `yamlPath`, `yamlSha256`,
+`artifactPrefix`). It also declares `prepareTask`, `validationTask`,
+`requiredTasks` (including tool/provider seals and native prerequisites),
+`sourceInputs`, the remote profile `executable`/`profilePath`, exact
+`testPopulation` (`suites`, `tests`, `path`), and finite
+`maximumRunnerMinutes` (at most 60), `queueMinutes` (at most 15),
+`cancellationMinutes` (at most 5), `pollSeconds` (1 through 60), and
+`maximumArtifactBytes` (positive integer, at most 16 GiB, sized from qualified
+real output rather than assuming a small fixture).
+The local gate still needs its original approved hash-bound profile.
+The controller uses the existing designated Azure CLI tenant/user identity.
+Tokens are cached only in memory for HTTP polling; they are never written to
+transport inputs or evidence. Azure CLI is retained for artifact transfer.
+Set explicit `activation.dispatch: true`. There is no default cumulative remote
+job or project-wide monetary ceiling. Omit `limits.maxRemoteValidationJobs` or
+set it to `null` for no aggregate job limit. An operator may opt into a positive
+safe-integer cap; only then are durable reservations in this configuration's
+ledger counted against it, including uncertain/failed submissions. There is no
+hard-coded upper bound of ten. Fixed validation and both workspace qualification
+entries share this optional cap; a qualification does not require a one-job
+ledger.
+
+This does not remove per-task identity, source/write permissions, finite
+execution deadlines, concurrency controls or independent acceptance. Each
+reservation may submit only one job; an uncertain submission must still be
+reconciled, never retried as a replacement. The bounded workspace contract's
+`maximumNewJobs: 1` describes that one attempt, not a lifetime PEA allowance.
+
+For a publication-free validation-segment E2E, supply a private
+`controller-validation-revision-v1` request with `id`, `repoId`, exact
+`revision` and absolute, clean `workspace`:
+
+```powershell
+node src\cli.js validate-revision --file validation.local.json --config pilot.local.json --execute
+node src\cli.js validate-revision --file validation.local.json --config pilot.local.json --resume
+```
+
+Both commands call the normal `runValidation` routing. This entry does not request
+candidate authoring, manufacture an evidence assignment, push a product branch or
+create a PR. The qualified Agency pipeline still includes its read-only agent
+availability step; this is not a claim of zero model usage or cost.
+Normal worker dispatch retains its existing authoring and publication rules.
+Remote dispatch skips local product authentication/dependency preparation;
+it does not silently fall back after a remote failure.
+
+The controller reserves before POST, persists the accepted job ID, independently
+waits for both Agency and the actual ADO build, reads pinned pipeline source,
+fetches logs from the exact producer task IDs, and hashes every downloaded file.
+It verifies checkout/input/profile identity, ordered commands and exit codes,
+log hashes, required native/seal tasks, clean final source and the exact Jest
+population before creating a **new controller acceptance** artifact. Green jobs,
+model prose, remote self-reported acceptance and local dependency receipts are
+not acceptance. The pipeline/ADO identity and its pinned trusted post-agent
+steps are the trust boundary, not a claim of a new sandbox.
+
+`--resume` never submits. Unknown creation identities need external
+reconciliation; a saved creation response can recover an accepted identity.
+New submissions preserve immutable, request-hash-bound phase records before
+request validation, after validation and before job creation. Sanitized ledger
+errors distinguish request validation, job creation and creation-response
+recording; only allowlisted network error codes are retained, never library
+messages or credentials. These records diagnose a failed attempt, not acceptance
+or permission to replace an uncertain job. A partial submission cannot be sent
+again through the transport, even without a saved job ID.
+Accepted-job observation can resume after disconnect. Interrupted downloads
+are preserved, not overwritten. Completed resume rechecks artifact hashes.
+Cancellation targets Agency and its actual build, with finite terminal
+observation. Authentication/environment/protocol problems remain blocked;
+real build/policy/test assertion failures remain failed.
+
+A different authored revision requires a newly qualified, candidate-bound
+pipeline contract. This release does not prove a same-workspace
+author/validate/repair loop or native-skill completion. To roll back before
+dispatch, remove the opt-in and use a fresh explicitly local configuration;
+never switch executor/configuration under an existing operation. Frozen A/B
+assignments should finish on their original controller version.

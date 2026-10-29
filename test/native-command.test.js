@@ -14,6 +14,23 @@ function fixture(t, cleanup = true) {
   return root;
 }
 
+for (const stream of ['stdin', 'stdout', 'stderr']) {
+  test(`native ${stream} transport failure rejects after draining the supervisor`, async t => {
+    const root = fixture(t);
+    const run = nativeCommand(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
+      root, 15000, minimalEnvironment());
+    const child = run.child;
+    const failure = new Error('Synthetic native transport failure');
+    failure.code = 'ENOTCONN';
+    const rejected = assert.rejects(run, error => error === failure && error.code === 'ENOTCONN' &&
+      typeof error.stdout === 'string' && typeof error.stderr === 'string');
+    child[stream].emit('error', failure);
+    await rejected;
+    assert.ok(child.killed);
+    assert.throws(() => process.kill(child.pid, 0), error => error.code === 'ESRCH');
+  });
+}
+
 test('contained native command preserves arguments, cwd, output and environment boundaries',
   { skip: process.platform !== 'win32' }, async t => {
     const root = fixture(t), script = join(root, 'child.mjs');

@@ -1,4 +1,8 @@
 export const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js validate-revision --file validation.local.json --config pilot.local.json --execute|--resume
+  node src\\cli.js reconcile-remote-validation --file recovery.local.json --config pilot.local.json
+  node src\\cli.js qualify-remote-loop --file loop.local.json --config pilot.local.json --execute|--resume
+  node src\\cli.js qualify-remote-authoring --file authoring.local.json --config pilot.local.json --execute|--resume
   node src\\cli.js self-improvement init|observe|prepare|evaluate|decision|status|report --policy rsi.local.json [--file request.json]
   node src\\cli.js agents
   node src\\cli.js agent collector|filter|proposer|rsi help

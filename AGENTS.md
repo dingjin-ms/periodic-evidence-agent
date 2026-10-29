@@ -85,3 +85,26 @@ runtime files are local or CI artifacts, not source-controlled fixtures.
 Preserve failed-run evidence until investigation is complete; do not delete
 it merely because it is temporary. Commit only intentional sanitized synthetic
 inputs and expected contracts, never real accounts, secrets or workbook data.
+
+## Remote Agency enablement requires scoped E2E evidence
+
+Before recommending or enabling remote Agency for a product repository, read
+[the qualification register](e2e-evidence/agency-remote/README.md) and run
+`node src\cli.js doctor --config pilot.local.json`. Match evidence to the actual
+repository, skill, execution topology, candidate/configuration and real gates.
+Selecting `agency-remote`, passing fixtures, a successful Agency job or model
+self-report does not establish product E2E qualification.
+
+Track remote authoring with local validation, remote product validation, and
+same-job/workspace author/validate/repair separately. Proof of one does not
+qualify the others or another repository. If matching E2E proof is absent,
+inaccessible or stale, explicitly tell the user **this remote path has not yet
+been verified for the requested configuration** before execution. An authorized
+bounded qualification probe is not general enablement.
+
+Store sanitized evidence summaries and their scoped index under
+`e2e-evidence/agency-remote/`; retain raw logs, full artifacts, receipts and
+credentials only in approved private storage. Update the register after
+independent controller acceptance, not from an agent's completion message.
+Match each recorded OA fixed-candidate, same-workspace repair or bounded native
+authoring proof to its own scope; none qualifies another topology or repository.

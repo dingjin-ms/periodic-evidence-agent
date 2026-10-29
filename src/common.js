@@ -399,6 +399,19 @@ export function configAt(path) {
         repo.commitTrailers.every(trailer => typeof trailer === 'string' &&
           /^[A-Za-z][A-Za-z-]+: [^\r\n\0]+$/.test(trailer)),
       `Repository ${repo.id} commitTrailers must contain single-line Git trailers`);
+    if (repo.remoteValidation !== undefined) {
+      const selection = repo.remoteValidation;
+      requireThat(selection?.type === 'agency-remote' &&
+        Object.keys(selection).every(key => ['type', 'contractPath', 'contractSha256'].includes(key)) &&
+        typeof selection.contractPath === 'string' && !isAbsolute(selection.contractPath) &&
+        /^[a-f0-9]{64}$/.test(selection.contractSha256 ?? ''),
+      `Repository ${repo.id} remote validation requires a relative, hash-pinned private contract`);
+      selection.contractPath = resolve(dirname(resolve(path)), selection.contractPath);
+      requireThat(lstatSync(selection.contractPath).isFile() &&
+        !lstatSync(selection.contractPath).isSymbolicLink() &&
+        hash(readFileSync(selection.contractPath)) === selection.contractSha256,
+      `Repository ${repo.id} remote validation contract is missing or changed`);
+    }
   }
   if (config.repositories.some(repo => repo.skillBindings?.some(binding =>
     config.authoringProviders?.[binding.authoringProvider]?.type === 'agency-local'))) {

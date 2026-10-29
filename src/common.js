@@ -128,6 +128,35 @@ function repositoryRelativePath(value, label) {
     `${label} must not escape its repository`);
   return parts.join('/');
 }
+export function externalSkillBundle(binding) {
+  if (binding.externalBundle === undefined) return null;
+  const bundle = binding.externalBundle;
+  validateRecord(bundle, 'externalSkillBundle');
+  requireThat(isAbsolute(bundle.root), 'External skill bundle root must be absolute');
+  const path = value => {
+    const normalized = repositoryRelativePath(value, 'External skill bundle path');
+    requireThat(normalized === value && !/[?[\]\r\n]/.test(value) &&
+      value.split('/').every(part => !/[. ]$/.test(part)),
+    'External skill bundle paths must be canonical slash-separated paths', 'blocked-scope');
+    return normalized;
+  };
+  requireThat(path(bundle.source.path) === binding.skillPath,
+    'External skill source path must match skillPath', 'blocked-scope');
+  let remote;
+  try { remote = new URL(bundle.source.remote); } catch {}
+  requireThat(remote?.protocol === 'https:' && !remote.username && !remote.password &&
+    !remote.search && !remote.hash, 'External skill provenance requires a credential-free HTTPS remote');
+  const files = bundle.files.map(file => ({ path: path(file.path), sha256: file.sha256 }))
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  requireThat(new Set(files.map(file => file.path.toLowerCase())).size === files.length &&
+    files.some(file => file.path === bundle.source.path),
+  'External skill bundle needs unique files including its source path');
+  return {
+    root: resolve(bundle.root),
+    source: { remote: bundle.source.remote, revision: bundle.source.revision, path: bundle.source.path },
+    files
+  };
+}
 export function configAt(path) {
   const config = readJson(path);
   requireThat(config.version === 1, 'Unsupported configuration version');
@@ -337,6 +366,16 @@ export function configAt(path) {
       requireThat(binding.authoringProvider === 'copilot-sdk' ||
         Object.hasOwn(config.authoringProviders, binding.authoringProvider),
       `Repository ${repo.id} skill binding ${binding.id} references an unknown authoring provider`);
+      if (binding.externalBundle !== undefined) {
+        requireThat(typeof binding.externalBundle?.root === 'string',
+          'External skill bundle root is required');
+        if (!isAbsolute(binding.externalBundle.root))
+          binding.externalBundle.root = boundedPath(dirname(resolve(path)), binding.externalBundle.root);
+        binding.externalBundle = externalSkillBundle(binding);
+        requireThat(repo.execution === 'local' &&
+          config.authoringProviders?.[binding.authoringProvider]?.type !== 'agency-remote',
+        'External skill bundles require local execution and a local authoring provider');
+      }
     }
     for (const gate of repo.validationGates ?? []) {
       configureDeclarativeGate(gate, path);
@@ -377,6 +416,9 @@ export function collectionPreflight(config) {
   positive(config.limits.maxItems, 'maxItems'); positive(config.limits.maxCalls, 'maxCalls');
 }
 export function modelPreflight(config) {
+  requireThat(config.runtime?.authoringModel === undefined ||
+    (typeof config.runtime.authoringModel === 'string' && config.runtime.authoringModel.trim().length > 0),
+  'Configured authoring model must be a nonempty model identifier');
   requireThat(Number.isFinite(config.limits.maxAiCreditsPerSession) && config.limits.maxAiCreditsPerSession > 0,
     'A positive per-session AI credit ceiling must be approved before model execution');
 }

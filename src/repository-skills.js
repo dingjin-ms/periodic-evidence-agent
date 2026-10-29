@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { existsSync, readFileSync, statSync, lstatSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { boundedPath, hash, json, requireThat, validateRecord, validationPackageAuth, validationLfsPaths } from './common.js';
+import { boundedPath, externalSkillBundle, hash, json, requireThat, validateRecord, validationPackageAuth, validationLfsPaths } from './common.js';
 import { adoAccessToken, adoGitEnvironment } from './ado-auth.js';
 
 const exec = promisify(execFile);
@@ -67,6 +67,8 @@ export function repositoryValidationContract(repo) {
     ...(gate.profile !== undefined ? {
       profile: gate.profile, declarativeE2E: gate.declarativeE2E
     } : {}),
+    ...(gate.testRebuiltOutputPaths !== undefined
+      ? { testRebuiltOutputPaths: gate.testRebuiltOutputPaths } : {}),
     ...(gate.packageAuth !== undefined ? { packageAuth: validationPackageAuth(gate) } : {}),
     ...(gate.lfsPaths !== undefined ? { lfsPaths: validationLfsPaths(gate) } : {})
   }));
@@ -89,6 +91,14 @@ export function resolveSkillBinding(config, repoId, capability, bindingId = null
   requireThat(matches.length === 1, `Repository ${repoId} needs one unambiguous ${capability} skill binding`,
     'blocked-owner');
   const binding = matches[0];
+  if (externalSkillBundle(binding)) {
+    requireThat(repo.execution === 'local' &&
+      config.authoringProviders?.[binding.authoringProvider]?.type !== 'agency-remote',
+    'External skill bundles require local execution and a local authoring provider');
+    requireThat(binding.externalBundle.source.remote.replace(/\/$/, '').toLowerCase() ===
+      repo.remote.replace(/\/$/, '').toLowerCase(),
+    'External skill provenance remote must match the configured repository', 'blocked-scope');
+  }
   if (requireEnabled)
     requireThat(binding.enabled === true, `Repository skill binding ${binding.id} is disabled`, 'blocked-config');
   if (requireQualified)
@@ -120,6 +130,7 @@ export function pinSkillQualification(receipt) {
     skillPath: receipt.skillPath,
     remote: receipt.remote,
     qualificationSource: receipt.qualificationSource,
+    ...(receipt.externalBundle ? { externalBundle: structuredClone(receipt.externalBundle) } : {}),
     validationContractVersion: receipt.validationContractVersion,
     validationContractSha256: receipt.validationContractSha256
   };
@@ -131,6 +142,45 @@ function failSkillGit(operation, error) {
   const status = Number.isInteger(error.status) ? error.status : 'unavailable';
   requireThat(false, `Repository skill Git ${operation} failed (${reason}; exit status ${status}); content drift is not established`,
     'blocked-repository-git');
+}
+
+function readExternalBundle(bundle, maxBytes) {
+  // boundedPath protects descendants; also reject a linked bundle root or ancestor.
+  for (let current = bundle.root; ; current = dirname(current)) {
+    requireThat(existsSync(current), 'External skill bundle root is missing', 'unavailable');
+    requireThat(!lstatSync(current).isSymbolicLink(),
+      'Symlink/reparse bundle roots are not allowed', 'blocked-scope');
+    if (dirname(current) === current) break;
+  }
+  requireThat(statSync(bundle.root).isDirectory(), 'External skill bundle root must be a directory');
+  const contents = new Map();
+  let total = 0;
+  for (const file of bundle.files) {
+    const target = boundedPath(bundle.root, file.path);
+    const stat = statSync(target);
+    requireThat(stat.isFile() && stat.nlink === 1,
+      'External skill bundle requires regular, non-hard-linked files', 'blocked-scope');
+    requireThat(stat.size <= maxBytes && total + stat.size <= maxBytes,
+      'External skill bundle exceeds the configured read limit', 'blocked-budget');
+    const bytes = readFileSync(target);
+    total += bytes.length;
+    requireThat(total <= maxBytes, 'External skill bundle exceeds the configured read limit', 'blocked-budget');
+    requireThat(hash(bytes) === file.sha256,
+      'External skill bundle content changed or hash mismatch', 'blocked-reconciliation');
+    contents.set(file.path, bytes);
+  }
+  return contents;
+}
+
+export const externalSkillReadPrefix = 'skill-bundle:';
+
+export function readExternalSkill(loaded, path) {
+  requireThat(loaded?.externalBundle && typeof path === 'string' &&
+    path.startsWith(externalSkillReadPrefix), 'External skill read is not available', 'blocked-scope');
+  const name = path.slice(externalSkillReadPrefix.length);
+  requireThat(loaded.externalBundle.files.some(file => file.path === name),
+    'External skill read requires an exact manifest path', 'blocked-scope');
+  return loaded.verifyExternalBundle().get(name).toString('utf8');
 }
 
 export function loadRepositorySkill(config, assignment, workspace, sourceRevision, qualification) {
@@ -162,6 +212,25 @@ export function loadRepositorySkill(config, assignment, workspace, sourceRevisio
     'Repository skill write policy changed after assignment preparation', 'blocked-reconciliation');
   requireThat(json(allowedWriteFiles) === json(assignment.allowedWriteFiles ?? []),
     'Repository skill write policy changed after assignment preparation', 'blocked-reconciliation');
+  const external = externalSkillBundle(binding);
+  requireThat(json(external) === json(qualification.externalBundle ?? null),
+    'External skill binding changed after qualification', 'blocked-reconciliation');
+  if (external) {
+    const verifyExternalBundle = () => {
+      requireThat(json(externalSkillBundle(binding)) === json(external),
+        'External skill binding changed during execution', 'blocked-reconciliation');
+      return readExternalBundle(external, config.limits.maxFileBytes);
+    };
+    const contents = verifyExternalBundle();
+    requireThat(hash(contents.get(binding.skillPath)) === qualification.skillSha256,
+      'External skill content differs from qualification', 'blocked-reconciliation');
+    return {
+      binding, instructions: contents.get(binding.skillPath).toString('utf8'),
+      allowedWritePrefixes, allowedWriteFiles,
+      skillRevision: external.source.revision, skillPath: binding.skillPath,
+      externalBundle: external, verifyExternalBundle
+    };
+  }
   const path = boundedPath(workspace, binding.skillPath);
   requireThat(statSync(path).isFile() && statSync(path).size <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
@@ -238,6 +307,7 @@ export function verifyRepositorySkillWorkspace(config, assignment, workspace, so
 }
 
 export function normalizeSkillResult(loaded, result) {
+  loaded.verifyExternalBundle?.();
   requireThat(result && typeof result === 'object' &&
     ['succeeded', 'failed', 'needs-input', 'blocked'].includes(result.status),
   'Repository skill returned an invalid status', 'blocked-result');
@@ -250,6 +320,7 @@ export function normalizeSkillResult(loaded, result) {
   const normalized = {
     bindingId: loaded.binding.id, capability: loaded.binding.capability,
     skillPath: loaded.skillPath, skillRevision: loaded.skillRevision,
+    ...(loaded.externalBundle ? { externalBundle: structuredClone(loaded.externalBundle) } : {}),
     status: result.status, classification: result.classification ?? null,
     changedFiles: [...new Set((result.changedFiles ?? []).map(path => path.replaceAll('\\', '/')))].sort(),
     testsAddedOrUpdated: [...new Set(result.testsAddedOrUpdated ?? [])].sort(),
@@ -339,8 +410,35 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
   const revisionRef = refresh === 'fetch' ? 'FETCH_HEAD' : repo.baseRef;
   const baseRevision = (await run(['rev-parse', '--verify', `${revisionRef}^{commit}`])).stdout.trim();
   requireThat(/^[a-f0-9]{40,64}$/.test(baseRevision), 'Repository skill qualification resolved an invalid base revision');
-  await run(['cat-file', '-e', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`]);
-  const content = (await run(['show', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`])).stdout;
+  const external = externalSkillBundle(binding);
+  let content;
+  if (external) {
+    const contents = readExternalBundle(external, config.limits.maxFileBytes);
+    // Verify declared provenance against local Git objects, without merging or checking out the skill.
+    const sourceGit = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.longpaths=true', ...args], {
+      cwd: repo.referenceCheckout, windowsHide: true, stdio: 'pipe',
+      timeout: 30000, maxBuffer: Math.max(config.limits.maxFileBytes, 4096)
+    });
+    try {
+      sourceGit(['cat-file', '-e', `${external.source.revision}^{commit}`]);
+      for (const file of external.files) {
+        const entry = sourceGit(['ls-tree', external.source.revision, '--', file.path]).toString('utf8');
+        requireThat(/^100(644|755) blob [a-f0-9]+\t/.test(entry),
+          'External skill provenance must identify regular Git blobs', 'blocked-scope');
+        const bytes = sourceGit(['show', `${external.source.revision}:${file.path}`]);
+        requireThat(hash(bytes) === file.sha256,
+          'External skill file does not match its source provenance', 'blocked-reconciliation');
+      }
+    } catch (error) {
+      if (error.code?.startsWith?.('blocked-')) throw error;
+      failSkillGit('external-provenance', error);
+    }
+    content = contents.get(binding.skillPath);
+  } else {
+    await run(['cat-file', '-e', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`]);
+    content = (await run(['show', `${baseRevision}:${binding.skillPath.replaceAll('\\', '/')}`])).stdout;
+  }
   requireThat(Buffer.byteLength(content) <= config.limits.maxFileBytes,
     'Repository skill exceeds the configured read limit', 'blocked-budget');
   const validationContract = repositoryValidationContract(repo);
@@ -349,6 +447,7 @@ export async function qualifyRepositorySkill(config, repoId, capability, binding
     referenceCheckout: repo.referenceCheckout, remote, baseRef: repo.baseRef, baseRevision,
     skillPath: binding.skillPath.replaceAll('\\', '/'), skillSha256: hash(content),
     qualificationSource: refresh === 'fetch' ? 'trusted-remote' : 'local-reference',
+    ...(external ? { externalBundle: external } : {}),
     validationContractVersion: validationContract.version,
     validationContractSha256: validationContract.sha256,
     state: 'qualified-read-only', sideEffects: binding.sideEffects

@@ -99,7 +99,7 @@ export async function requireCleanRevision(workspace, revision, timeoutMs) {
 
 export async function prepareValidationWorkspace({
   source, workspace, revision, timeoutMs, sparseCheckoutPaths = [], timings = [],
-  persist = () => {}, seed, hydrate = async () => {}
+  persist = () => {}, seed, hydrate = async () => {}, lifecycle = null
 }) {
   source = realpathSync(source);
   workspace = resolve(workspace);
@@ -121,8 +121,20 @@ export async function prepareValidationWorkspace({
   const stage = (id, operation) => preparationStage(timings, id, operation, persist);
   await stage('source-check', () => requireCleanRevision(source, revision, timeoutMs));
   mkdirSync(dirname(workspace), { recursive: true });
+  let resource = null;
+  if (lifecycle) {
+    const { createOwnedResource } = await import('./resource-lifecycle.js');
+    resource = await createOwnedResource(lifecycle.stateDirectory, {
+      ...lifecycle, source, workspace, revision
+    }, timeoutMs);
+    lifecycle.created(resource);
+  }
   await stage('worktree-create', () => preparationGit(source,
     ['worktree', 'add', '--detach', '--no-checkout', '--', workspace, revision], timeoutMs));
+  if (resource) {
+    const { bindResourceGit } = await import('./resource-lifecycle.js');
+    await bindResourceGit(lifecycle.stateDirectory, resource.id, timeoutMs);
+  }
   if (sparseCheckoutPaths.length) {
     // Sparse checkout upgrades only config storage; reject legacy global settings
     // that would otherwise change the source worktree during that upgrade.
@@ -135,18 +147,59 @@ export async function prepareValidationWorkspace({
       { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' });
     });
   }
+
   await stage('checkout', () => preparationGit(workspace,
     ['checkout', '--detach', revision], timeoutMs,
     { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' }));
   await stage('head-clean-check', () => requireCleanRevision(workspace, revision, timeoutMs));
   await stage('lfs', hydrate);
   const dependencySeed = seed ? await stage('dependencies', () => seed(source, workspace)) : null;
+  if (resource && dependencySeed?.paths) {
+    const { updateResource } = await import('./resource-lifecycle.js');
+    await updateResource(lifecycle.stateDirectory, resource.id, {
+      cachePaths: dependencySeed.paths.filter(path => /(^|\/)(node_modules|\.store)$/.test(path))
+    });
+  }
   await stage('final-source-check', async () => {
     await requireCleanRevision(source, revision, timeoutMs);
     await requireCleanRevision(workspace, revision, timeoutMs);
   });
   return { strategy: 'detached-worktree', workspace, sourceRevision: revision,
-    sparseCheckoutPaths, dependencySeed, timings };
+    sparseCheckoutPaths, dependencySeed, timings,
+    ...(resource ? { resourceId: resource.id } : {}) };
+}
+
+export async function unregisterValidationWorktree(source, workspace, timeoutMs, ownership) {
+  requireThat(!existsSync(workspace),
+    'Git unregister requires an already archived workspace', 'blocked-resource-cleanup');
+  const common = realpathSync(await preparationGit(source,
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'], timeoutMs));
+  requireThat(common === ownership.commonDirectory,
+    'Cannot unregister using another Git common owner', 'blocked-resource-cleanup');
+  const listed = await preparationGit(source, ['worktree', 'list', '--porcelain', '-z'], timeoutMs);
+  if (!listed.split('\0').some(entry =>
+    entry.startsWith('worktree ') && resolve(entry.slice(9)) === resolve(workspace))) return;
+  const admin = ownership.adminDirectory;
+  if (admin) {
+    for (let path = dirname(admin); ; path = dirname(path)) {
+      requireThat(lstatSync(path).isDirectory() && !lstatSync(path).isSymbolicLink(),
+        'Git unregister administration parent cannot be a link', 'blocked-resource-cleanup');
+      if (dirname(path) === path) break;
+    }
+  }
+  const metadata = admin ? lstatSync(admin, { bigint: true }) : null;
+  requireThat(admin && dirname(admin) === join(common, 'worktrees') &&
+    metadata.isDirectory() && !metadata.isSymbolicLink() &&
+    String(metadata.ino) === ownership.adminIdentity.ino &&
+    String(metadata.dev) === ownership.adminIdentity.dev &&
+    String(metadata.birthtimeNs) === ownership.adminIdentity.birth &&
+    resolve(readFileSync(join(admin, 'gitdir'), 'utf8').trim()) === join(resolve(workspace), '.git'),
+  'Git registration identity does not match the archived resource', 'blocked-resource-cleanup');
+  await preparationGit(source, ['worktree', 'remove', '--force', '--', resolve(workspace)], timeoutMs);
+  const remaining = await preparationGit(source, ['worktree', 'list', '--porcelain', '-z'], timeoutMs);
+  requireThat(!remaining.split('\0').some(entry =>
+    entry.startsWith('worktree ') && resolve(entry.slice(9)) === resolve(workspace)),
+  'Exact Git registration remains after cleanup', 'blocked-resource-cleanup');
 }
 
 export async function removeValidationWorktree(source, workspace, timeoutMs) {

@@ -31,11 +31,12 @@ export function createClient(config, workingDirectory, workplace = false) {
     useLoggedInUser: true
   });
 }
-export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '' } = {}) {
+export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '', model } = {}) {
   const { ToolSet } = loadSdk();
   const names = new Set(tools.map(t => t.name));
   return {
     sessionId, workingDirectory, tools,
+    ...(model ? { model } : {}),
     availableTools: tools.reduce((set, tool) => set.addCustom(tool.name), new ToolSet()),
     onPermissionRequest: () => ({ kind: 'denied-by-rules' }),
     hooks: {

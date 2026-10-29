@@ -19,6 +19,19 @@ product-repository dependencies, enable write permissions or create a PR.
 Use `npm run setup:repos -- --repo <id>` only when intentionally rerunning the
 repository layer without reinstalling dependencies or repeating all checks.
 
+## Hosted CI budget fallback
+
+When GitHub Actions cannot start because of an account budget, spending-limit
+or payment restriction, run complete local CI instead of repeatedly retrying
+the blocked hosted jobs. Follow the
+[README procedure](README.md#local-ci-when-hosted-actions-is-budget-blocked):
+run all three full groups sequentially, preserve runner concurrency and budgets,
+and include syntax, package and standalone demo checks. Preserve failed reports
+and record the validated revision and complete results. An actual test failure
+still requires investigation and correction. Report local success separately
+from the hosted account blocker; never override required checks or infer
+permission to publish or merge a Draft.
+
 ## Validation authentication recovery
 
 When a controller command returns `state: "action-required-auth"`:
@@ -39,6 +52,23 @@ When a controller command returns `state: "action-required-auth"`:
 
 Dependency-cache hits do not require authentication preflight. Never delete a
 trusted dependency receipt merely to force authentication.
+
+## Draft PR publication and merge authorization
+
+Controller and worker deliveries remain Draft PRs. Creating, updating, testing,
+reviewing or completing an assignment does not authorize publishing a draft,
+enabling auto-complete or merging it.
+
+A separate user instruction must explicitly identify the PR by repository and
+number or URL and authorize the requested publication or merge. Do not interpret
+"merge this PR", "merge first" or similar wording as authorization when multiple
+PRs are in scope. Ask which PR the user means; if the user is unavailable, leave
+all drafts unchanged. Authorization for a controller PR never extends to its
+generated product-repository PRs, or vice versa.
+
+Keep draft publication and merge outside the autonomous agentic loop. Passing
+validation, a clean mergeability result, no blocking policies, and a prior merge
+authorization for another PR are not permission to merge.
 
 ## Controller E2E test ownership
 

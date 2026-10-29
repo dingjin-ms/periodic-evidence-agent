@@ -73,6 +73,72 @@ setup, the periodic agent or default CI, and is not real OfficeAgent E2E proof.
 See the [measurements, limits and guardian decision](scripts/validation/FINGERPRINT-PERFORMANCE.md)
 and the `local-fingerprint-benchmark` skill before running it.
 
+### Local CI when hosted Actions is budget-blocked
+
+If GitHub Actions cannot start jobs because the account has exhausted its
+Actions budget, reached its spending limit or has a payment restriction, use
+**complete local CI as the validation fallback**. Confirm the job annotation
+and whether any steps executed; do not keep retrying an unchanged account
+restriction or stop the code task solely because hosted runners are unavailable.
+An actual test failure is not a budget fallback: investigate and fix it.
+
+Run from the task's own clean worktree at the committed revision being validated;
+never reset another task's checkout. Use Windows with PowerShell 7 (`pwsh.exe`),
+Node.js 24, npm and Git on PATH, and the locked dependencies.
+On a fresh checkout, restore them with `npm ci --ignore-scripts`;
+reuse an existing valid installation rather than reinstalling unnecessarily.
+The workflow reference is [offline.yml](.github/workflows/offline.yml).
+
+Run the matrix groups **sequentially on the local machine**, not simultaneously
+as separate jobs sharing that machine. Keep the runner's file concurrency,
+timeouts and assertions unchanged. The commands below run the complete discovered
+test catalogue and keep reports outside the checkout:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$env:GITHUB_SHA = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the validation revision' }
+$reports = Join-Path ([IO.Path]::GetTempPath()) "periodic-evidence-ci-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $reports | Out-Null
+Write-Output "Local CI reports: $reports"
+
+node --check src\cli.js
+if ($LASTEXITCODE -ne 0) { throw 'CLI syntax check failed' }
+npm run check:package
+if ($LASTEXITCODE -ne 0) { throw 'Package check failed' }
+
+foreach ($group in @('pilot', 'remaining', 'demo')) {
+    $directory = Join-Path $reports $group
+    node scripts\ci-tests.mjs $group $directory
+    $exitCode = $LASTEXITCODE
+    Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64 |
+        ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $directory 'processes.json') -Encoding utf8
+    if ($exitCode -ne 0) { throw "Local CI group failed: $group; preserve $directory" }
+}
+
+npm run demo
+if ($LASTEXITCODE -ne 0) { throw 'Standalone synthetic demo failed' }
+```
+
+Keep each group's `summary.json`, `tests.tap` and process snapshot, including
+failed attempts. A successful subset or focused rerun is not complete local CI:
+all three complete groups must pass, with no failed or cancelled tests. Check
+that their source revision and catalogue hashes agree and their selected files
+cover the discovered catalogue exactly once. Explain existing conditional skips;
+do not add skips, extend budgets or weaken checks to obtain a green result.
+Investigate any failure, fix its cause and rerun the affected complete group.
+After a source fix, complete the full local CI at the updated revision before
+final acceptance; do not combine passing reports from different source revisions.
+
+Record the validated commit, Node version, per-group counts and exit status,
+standalone demo, syntax and package results in the PR or handover. Keep raw
+runtime reports local; publish only sanitized aggregate evidence. Report
+**local CI passed; hosted CI blocked by account budget** when applicable, not
+"GitHub Actions passed." This fallback does not override required branch
+checks or authorize Draft publication, auto-complete or merge. Retry hosted CI
+when runner eligibility is restored, not in an unbounded billing-error loop.
+
 ## Offline self-improvement qualification
 
 The opt-in `self-improvement` command qualifies one recovery harness and renders
@@ -110,8 +176,11 @@ The receipt persists each preparation phase, exact source/profile/controller
 hashes, dependency byte verification and native loading, typecheck and case
 selection. Optional repeated `--sparse-path <directory>` arguments evaluate a
 bounded checkout closure; they do not change the formal live configuration.
-Preflight retains its detached worktree and evidence for inspection, and cannot
-count toward the five native product passes or authorize publication. Git objects
+New preflights require a fresh direct child of
+`<stateDirectory>\preflight-workspaces`. A passed preflight retains its exact
+detached worktree through a persistent validation-handoff reference; passing is
+not permission to release it. It cannot count toward the five native product
+passes or authorize publication. Git objects
 are shared, while the validation worktree has its own HEAD/index and independently
 copied, link-rebased dependency outputs. Windows preparation commands use the
 owned Job Object boundary and confirm process-tree exit before cleanup; failures
@@ -121,6 +190,61 @@ with `--prepared-receipt <previous-receipt.json>`, the same `--workspace` and a
 fresh `--output`. This rereads source and isolated dependency bytes, checks the
 unchanged sealed assignment, and reruns native preparation checks; no previous
 pass or byte hash is trusted without revalidation.
+
+### Owned resource lifecycle
+
+New detached declarative validation worktrees and preflights carry durable
+assignment/attempt ownership, namespace/directory/Git-owner identities, references
+and a phase journal under `<stateDirectory>\resource-lifecycle`. Validation
+claims the exact preflight once and releases it only after the complete native
+batch, runner-tree exit and external execution evidence. Failed preflights release
+only their own unconsumed handoff. To explicitly abandon a successful unused
+handoff, use `resource-abandon-preflight --resource <receipt-resource-id> --config
+pilot.local.json`. Legacy receipts without lifecycle ownership remain usable but
+their workspaces are retained, never automatically adopted.
+
+CLI startup and each coordinator tick reconcile the declared namespaces, including
+owned residual directories without `.git` or Git registration. Unknown ownership,
+live references, unconfirmed process exit, replacement directories, linked parents
+and wrong Git owners remain blocked with a separate reconciliation/cleanup record.
+Interrupted moves, exact Git deregistration and cache deletion resume by directory
+identity; no global Git prune or recursive workspace-root deletion is used.
+The primary execution error is retained separately from cleanup failures.
+
+Retirement first preserves hashed evidence outside the workspace, moves the
+directory into a private same-volume `resource-archives\<resource-id>\snapshot`,
+and unregisters only the original secondary worktree. Only explicitly declared,
+ignored, untracked regenerable cache directories are removed without following
+links. Validation declarations come from the verified dependency seed; other
+files, including undeclared cache-shaped directories, remain in the snapshot.
+The archive has an independent recovery manifest; coding tasks additionally
+retain a verified `history.bundle`. Nonterminal lifecycle references protect
+ordinary run evidence from retention pruning. Existing sealed/native receipts
+are not rewritten or adopted.
+
+The repository previously had no callback for arbitrary host CLI task completion:
+worker `finally` and the author-clone `workspace-gc` are not such callbacks.
+For **Controller-owned coding tasks**, `task-run --file task.local.json --config
+pilot.local.json` creates a fresh task worktree and runs the requested coding
+command under native process containment. The request provides absolute `source`
+and `executable`, exact `revision`, new `branch`, `args`, `timeoutMs`, and optionally
+explicit relative `cachePaths`. Choose a state directory outside that source
+checkout. The runner receives `PILOT_TASK_RESOURCE_ID` and an external
+`PILOT_TASK_CLOSE_REQUEST` path. A handoff written there is consumed automatically
+after process-tree exit; a later host close can instead call
+`task-close --file task-close.local.json --config pilot.local.json`.
+
+Task close binds `resourceId`, GitHub `repository`, PR `number`, delivered
+`revision`, and external `{ path, sha256 }` validation/handover receipts. These
+receipts respectively use formats `coding-task-validation-v1` (`status: passed`)
+and `coding-task-handover-v1` (`status: complete`), with matching repository,
+number and revision. Close retains a merge reference while the PR remains open
+or Draft. Startup/tick monitors perform **read-only** `gh pr view`; only a merged,
+same-head PR with successful checks, completed handoff, confirmed runner exit and
+clean exact-revision task worktree can be archived/unregistered automatically.
+No command publishes, merges or enables auto-complete. Unregistered host CLI
+sessions, pre-existing task worktrees, product test Draft PRs, shared seeds and
+other tasks remain outside this lifecycle's authority.
 
 This optional full product-development setup is not a prerequisite for the
 local controller's existing-Agency FILTER path. Account-free pilot checks above
@@ -735,6 +859,77 @@ blocked; assignments must pin the repo-relative owner project. A changed skill
 or validation profile requires a new qualification and is used only by new
 assignments; an in-progress repair loop never changes contracts mid-run.
 
+### Opt-in local external skill bundles
+
+An unmerged skill can be used without putting its files in the product baseline.
+Add `externalBundle` to an existing `skillBindings[]` entry in **local,
+uncommitted configuration only**. Omit it to retain the existing native,
+exact-product-commit behavior. Store the files under the controller's already
+ignored `private-runtime/` directory, mirroring their original repository paths:
+
+```json
+{
+  "skillPath": "docs/skills/test-authoring/SKILL.md",
+  "externalBundle": {
+    "root": "private-runtime/test-authoring",
+    "source": {
+      "remote": "https://example.invalid/project/_git/product",
+      "revision": "<full source commit SHA>",
+      "path": "docs/skills/test-authoring/SKILL.md"
+    },
+    "files": [
+      {
+        "path": "docs/skills/test-authoring/SKILL.md",
+        "sha256": "<SHA-256 of the exact local file bytes>"
+      },
+      {
+        "path": "docs/skills/test-authoring/references/testing.md",
+        "sha256": "<SHA-256 of the exact local companion bytes>"
+      }
+    ]
+  }
+}
+```
+
+This is a binding fragment, not a complete configuration; replace the placeholders
+with real hashes. The root is relative to the configuration file (or absolute).
+Paths inside the bundle must be canonical, slash-separated repository paths,
+with no traversal, aliases or duplicates. Include the entrypoint and every
+companion needed by the skill. Hash actual bytes, not normalized text: line
+ending changes are drift. Each file and the entire bundle must fit within
+`limits.maxFileBytes`; at most 128 explicitly listed files are accepted.
+Symlinks/reparse paths, linked roots/ancestors and hard-linked files are rejected.
+
+Run the ordinary `qualify-skill` command. Qualification first binds the product
+base as before, then independently verifies **every** manifest file against
+regular Git blobs at `externalBundle.source.revision` in the reference
+checkout's object database. That commit must already be available locally; the
+controller does not fetch the skill revision, merge it or change the product
+checkout. The provenance remote must be the same credential-free HTTPS remote
+as the product repository. A local commit's presence is not proof it was
+published or approved: obtain the exact source revision through your normal
+trusted process. `qualificationRefresh` still controls only the product base.
+
+Qualification receipts and assignment pins contain the root, original
+remote/revision/path, and complete file/hash manifest. Runtime rejects changed
+bindings, missing files and byte drift; it rechecks before prompts, bundled
+reads, accepting results and publication. Worker results retain the external
+binding and original skill revision separately from the product source revision.
+Changing a bundle requires requalification and a new assignment.
+
+Only local execution with SDK or bounded local authoring is supported; hosted
+execution and remote authoring fail closed. The AL workflow is narrower:
+its Proposer permits only `copilot-sdk`, with the pinned model and expiring
+allocation enforced at execution boundaries. The existing `pilot_read` tool
+accepts `skill-bundle:<exact manifest path>` (including line ranges); it cannot
+read arbitrary controller files. The prompt lists these paths and distinguishes
+skill-relative companion links from repository-relative guidance, which still
+targets the isolated **product** workspace. Search/list and write tools remain
+product-only. No bundle file is copied into the workspace, no write allowlist
+is expanded, and all existing test-only, validation and publication gates remain.
+Unlisted/missing guidance is a blocker, not permission to substitute another file.
+Keep private contents, provenance and generated receipts out of public fixtures.
+
 Local wrappers that spawn the proposer CLI must use
 `localProposerEnvironment()` from `src/workers.js`, not the native runner's
 `minimalEnvironment()`. The former preserves only the documented
@@ -955,6 +1150,45 @@ Do not print the token, save it to a script/receipt, pass it on a command line,
 or run interactive setup inside a validation gate. Provider installation,
 sign-in and account consent are separate, explicit setup operations. The
 controller's `npm run setup` does not perform them.
+
+Authentication preflight uses a unique authentication-only workspace containing
+the exact-revision Yarn configuration. It never reuses or deletes a dependency
+snapshot workspace, including an incomplete preparation or a forced recovery.
+
+Local SDK authoring may pin a verified model identifier with
+`runtime.authoringModel`; omission preserves the SDK default. The configured
+per-session AI credit ceiling remains a soft runtime limit.
+Sequential, separately ledgered attempts may explicitly share an absolute
+`runtime.validationCacheDirectory`. Native input hashes, source cleanliness and
+output verification still apply. Do not run concurrent preparations or workers
+against that directory.
+An explicitly authorized successor can also bind prior diagnostic data with
+`runtime.authoringFeedback: { path, sha256 }`. The absolute-path JSON is
+hash-verified before model creation and included as untrusted predecessor
+evidence; it grants no tools, writes, or publication permissions.
+For native runners that rebuild their owning compiled tests on every test-stage
+invocation, a gate may declare `testRebuiltOutputPaths` as exact roots already
+listed in its profile's `preparedOutputPaths`. Those generated roots are not
+immutable cache artifacts. The qualification and compile-cache key bind this
+declaration; tracked source, dependency roots and overlapping snapshot roots
+cannot be excluded. The qualified test stage must freshly compile the exact
+candidate before normal discovery; all other cached outputs remain verified.
+A separately authorized `native-jest-cache-isolation` validation continuation
+handles the narrow case where the full native suite passed but cleanup rejected
+`rename:node_modules/.cache/jest`. It preserves the clean model-authored commit
+and original captured evidence, requalifies the profile, and permits only an
+explicit Jest `--cacheDirectory` plus durable private result location. Its
+zero-model dispatch verifies the terminal predecessor, configuration, profile
+and controller-source hashes, prepares or verifies the original native
+snapshots, and records a test-only profile rebind before rerunning every gate.
+The predecessor's passing output is diagnostic evidence, never publication
+acceptance; fresh exact-head validation and cache cleanup must both pass.
+Authentication remediation is selected from the qualified feed contract.
+The existing pinned-provider setup supports the AL single AugmentationLoop feed
+through `-RepositoryProfile AugmentationLoop`; its default still requires both
+OfficeAgent feeds. SDX continues to use its repository `yarn auth` broker.
+An unknown feed combination fails closed instead of receiving unrelated setup
+instructions. Baseline test success alone is not isolation qualification.
 
 For example, in a dedicated PowerShell process after approved private provider
 installation, capture the documented standalone response without displaying it:
@@ -1518,6 +1752,14 @@ coverage facts remain in the audit/handoff rather than being excluded.
   unauthorized validation retry/cancel/requeue or implicit scheduling.
   Follow-up is separately bounded to at most one level, not a paging-budget escape.
 
+Draft publication and merge are outside the autonomous loop. A separate user
+instruction must explicitly identify the repository and PR number or URL and
+authorize the requested action. An ambiguous "merge this PR" is not authorization
+when multiple PRs are in scope: clarify the exact PR, or leave drafts unchanged
+if the user is unavailable. Approval for a controller PR does not authorize
+publishing or merging generated product PRs. Passing validation, assignment
+completion and server mergeability do not change this boundary.
+
 Null limits are unresolved, not unlimited. Instructions alone are not runtime
 enforcement; app permissions and native validation boundaries must also be
 qualified. The app helpers track external worker outcomes but do not assert
@@ -1799,6 +2041,62 @@ an operator prerequisite: the proposer adapter checks structural consolidation
 and source/skill pins, but does not itself load or regrade Agency execution
 receipts. Its acceptance is not proof of accepted FILTER execution, and downstream
 authorization flags do not replace that check.
+
+For AL setup and day-to-day operation, start with the
+[AL Agentic Loop Setup and Operations Guide](scaffold/AL-AGENTIC-LOOP.md).
+It covers the separate FILTER/authoring skills, four-owner native scope,
+finite recurring actions and operator-owned deployment boundaries.
+
+The AL-specific [`scripts\augloop.mjs`](scripts/validation/AUGLOOP.md) entrypoint
+enforces that original-ledger reconciliation before its `prepare`/`propose`
+operations. It composes the same collection, exact batching, local FILTER,
+skill-qualified handoff and source-preserving continuation APIs. Its native profile
+supports all four AL discovery owners, retaining Session Protocol's Gulp/Mocha
+runner and the other owners' Jest configurations. Use `qualify` for real isolated
+backend/baseline qualification and `replay` for an original model-authored candidate;
+neither is a fresh evidence/model E2E. The
+[`augloop.repository.example.json`](scaffold/augloop.repository.example.json)
+is disabled until private paths, identity, source/skill pins and actual qualification
+are supplied. New AL authoring uses the merged repository-native skill
+`utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md`
+(`excel-agent-in-container-proxy-integration-tests`). Explicitly invoke that path
+or name in the task; controller authoring and repair prompts name the configured
+path. Its `references/suites.md` companion is read from the pinned product
+workspace using normal `pilot_read`. Use a newly qualified exact product base
+containing the skill; old baseline qualifications do not transfer. FILTER still
+uses native-main `.github/skills/tests/SKILL.md`. Explicitly pinned historical
+external bundles remain supported for old runs/replay, without implicit fallback
+or changes to original receipts. This migration grants no new provider, model,
+remote-execution or publication capability.
+
+For explicit sparse AL checkouts, configure the exact revision's read-only
+build/dependency/fixture/skill closure, not just the test write scopes. Native
+preparation preserves those paths and binds cache reuse to their effective set.
+Sparse installs use the product's derived-lock contract; full checkouts remain
+immutable. A changed native profile needs fresh qualification, not updated hashes
+on old receipts. See [sparse native preparation](scripts/validation/AUGLOOP.md#sparse-native-preparation)
+and the operating guide's blocker/recovery table.
+
+For reusable AL operation, `capabilities` inventories the pinned repository's
+actual workspace contracts, distinguishing supported/qualified owners from
+discovered but unsupported families. The opt-in `cycle` command composes existing
+one-shot collection, complete-cohort FILTER and native handoff with durable
+windows, overlap locks, evidence deduplication and finite per-cycle authorization.
+[`augloop.recurring.example.json`](scaffold/augloop.recurring.example.json) is
+inactive: operators must configure cadence and new expiring source/model/Draft
+budgets. No scheduler is installed, and a completed one-run authorization is
+never a recurring grant. See the [operator contract](scripts/validation/AUGLOOP.md).
+
+For large local-SDK cohorts, opt-in `localFilter.evidencePaging: true` sends
+the exact index/policy and exposes original records through
+`pilot_filter_evidence(index, offset)` instead of duplicating all bodies in the
+initial prompt. Each retained detail decision requires byte-zero-through-EOF
+delivery of that record and its lossless capture representation. Reconciliation
+reconstructs every page from the original manifest and rejects altered or missing
+pages. Title-only exclusions retain the original title policy. Contextual batches
+are not supported by this option and fail closed. Enabling it after a failed
+session requires a new explicitly authorized successor; prior receipts and
+configuration remain immutable.
 
 The input contains the immutable FILTER binding and the repository capability
 used for routing, plus optional structured skill input and a source-bound

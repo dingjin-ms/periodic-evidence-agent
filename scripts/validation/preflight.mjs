@@ -9,6 +9,7 @@ import { nativeCommand, nativeTemporaryDirectory } from '../../src/native-comman
 import { prepareValidationWorkspace, preparationStage, preparationFailure,
   requireCleanRevision } from '../../src/validation-workspace.js';
 import { OPERATION_REFS_V1, ledgerSnapshotHash } from '../../src/operation-evidence.js';
+import { claimPreflight, updateResource, retireResource } from '../../src/resource-lifecycle.js';
 
 const args = process.argv.slice(2);
 const allowed = ['--config', '--assignment', '--output', '--workspace', '--sparse-path',
@@ -69,7 +70,7 @@ const files = ['src/workers.js', 'src/validation-workspace.js', 'src/native-comm
   'src/output-fingerprint.js', 'src/output-fingerprint-worker.js', 'src/retained-dependency-copy.js',
   'scripts/validation/preflight.mjs', 'scripts/validation/native-preflight.cjs',
   'src/native-preparation-continuation.js', 'src/native-source-continuation.js',
-  'src/operation-evidence.js'];
+  'src/operation-evidence.js', 'src/resource-lifecycle.js'];
 const receipt = {
   format: 'validation-preflight-v1', id: uuid(), status: 'running', startedAt: now(),
   assignmentId, priorAttemptId: job.session_id, priorResultId: result.id,
@@ -91,7 +92,13 @@ const persist = () => {
   writeFileSync(temporary, `${json(receipt)}\n`, { mode: 0o600, flag: 'wx' });
   renameSync(temporary, output);
 };
+let resourceId = null;
 try {
+  if (prior?.preparation?.resourceId) {
+    const resource = await claimPreflight(config.stateDirectory,
+      prior.preparation.resourceId, workspace, revision, 'validation-handoff');
+    resourceId = resource.id;
+  }
   receipt.preparation = prior ? {
     ...prior.preparation,
     dependencySeed: await preparationStage(receipt.timings, 'verify-prepared-dependencies',
@@ -104,6 +111,13 @@ try {
     sparseCheckoutPaths: values('--sparse-path').length
       ? values('--sparse-path') : repo.sparseCheckoutPaths ?? [],
     timings: receipt.timings, persist,
+    lifecycle: { stateDirectory: config.stateDirectory, kind: 'preflight',
+      assignmentId, attemptId: receipt.id, references: ['validation-handoff'],
+      created: resource => {
+        resourceId = resource.id;
+        receipt.resourceId = resourceId;
+        persist();
+      } },
     hydrate: () => hydrateValidationLfs(config, repo, gate, workspace, revision),
     seed: (source, target) => seedDeclarativeDependencies(source, target, revision,
       gate.timeoutMs, { retainedCopy, timings: receipt.timings, persist })
@@ -149,6 +163,19 @@ try {
   receipt.completedAt = now();
   persist();
   ledger.close();
+  if (resourceId) {
+    await updateResource(config.stateDirectory, resourceId, {
+      references: receipt.status === 'passed' ? ['validation-handoff'] : [],
+      processesExited: receipt.failure?.containmentFailure !== true,
+      releaseRequested: receipt.status !== 'passed',
+      primaryError: receipt.failure ?? null,
+      evidence: [{ path: output, sha256: hash(readFileSync(output)) }]
+    });
+    if (receipt.status !== 'passed') {
+      const cleanup = await retireResource(config.stateDirectory, resourceId);
+      if (cleanup.status === 'blocked') process.exitCode = 1;
+    }
+  }
 }
 console.log(json({ status: receipt.status, receipt: output,
   stage: receipt.failure?.stage, nativeCaseInvocations: 0, publicationEligible: false }));

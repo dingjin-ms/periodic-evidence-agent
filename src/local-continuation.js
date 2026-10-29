@@ -138,6 +138,9 @@ export async function prepareLocalPreModelContinuation(config, ledger, id, nextC
 
 export async function prepareLocalValidationContinuation(config, ledger, id, nextConfig,
   nextLedger, authorization, proposal) {
+  if (authorization?.kind === 'native-jest-cache-isolation')
+    return (await import('./local-jest-cache-continuation.js')).prepareNativeJestCacheContinuation(
+      config, ledger, id, nextConfig, nextLedger, authorization, proposal);
   if (authorization?.kind === 'native-workspace-bin-path')
     return (await import('./local-native-bin-continuation.js')).prepareNativeBinContinuation(
       config, ledger, id, nextConfig, nextLedger, authorization, proposal);

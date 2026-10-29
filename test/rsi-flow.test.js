@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { configAt, hash, json } from '../src/common.js';
 import { beginApp, openApp, endApp, appendApp } from '../src/app-native.js';
-import { bindRsiProducer, isCleanRsiHead, rsiWork, rsiPolicy, readRsiEvent } from '../src/rsi-flow.js';
+import { bindRsiProducer, isCleanRsiHead, pinRsiController, rsiWork, rsiPolicy, readRsiEvent } from '../src/rsi-flow.js';
 import { principalPath } from '../src/runtime.js';
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -77,6 +78,70 @@ function proposal(ctx, request) {
     artifacts: [{ role: 'analysis', ref: 'fixture:analysis', sha256: hash('fixture analysis') }]
   };
 }
+
+test('controller pins freshly read opened file bytes on every check', t => {
+  const target = fileURLToPath(new URL('../src/hash.js', import.meta.url));
+  const open = fs.openSync, close = fs.closeSync, read = fs.readFileSync;
+  const descriptors = new Set();
+  let reads = 0, changed = false;
+  t.mock.method(fs, 'openSync', (path, ...args) => {
+    const fd = open(path, ...args);
+    if (path === target) descriptors.add(fd);
+    return fd;
+  });
+  t.mock.method(fs, 'closeSync', fd => { descriptors.delete(fd); return close(fd); });
+  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+    const bytes = read(path, ...args);
+    if (!descriptors.has(path)) return bytes;
+    reads++;
+    return changed ? Buffer.concat([bytes, Buffer.from('\n// synthetic source change\n')]) : bytes;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.deepEqual(pinRsiController(), pinRsiController());
+  assert.equal(reads, 2);
+  changed = true;
+  assert.throws(() => pinRsiController(), { code: 'blocked-reconciliation' });
+  assert.equal(reads, 3);
+});
+
+test('controller pins reject fresh directory-entry links before opening them', t => {
+  const directory = fileURLToPath(new URL('../src', import.meta.url));
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (path, options) => {
+    const entries = readdir(path, options);
+    return path === directory && options?.withFileTypes ? entries.map(entry =>
+      entry.name === 'hash.js' ? Object.assign(Object.create(entry), { isSymbolicLink: () => true }) : entry) : entries;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.throws(() => pinRsiController(), { code: 'blocked-scope' });
+});
+
+test('controller pins reject hard-linked opened files without reading their bytes', t => {
+  const target = fileURLToPath(new URL('../src/hash.js', import.meta.url));
+  const open = fs.openSync, close = fs.closeSync, stat = fs.fstatSync, read = fs.readFileSync;
+  const descriptors = new Set();
+  let reads = 0;
+  t.mock.method(fs, 'openSync', (path, ...args) => {
+    const fd = open(path, ...args);
+    if (path === target) descriptors.add(fd);
+    return fd;
+  });
+  t.mock.method(fs, 'closeSync', fd => { descriptors.delete(fd); return close(fd); });
+  t.mock.method(fs, 'fstatSync', (fd, ...args) => {
+    const value = stat(fd, ...args);
+    return descriptors.has(fd) ? Object.assign(Object.create(value), { nlink: 2 }) : value;
+  });
+  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+    if (descriptors.has(path)) reads++;
+    return read(path, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.throws(() => pinRsiController(), { code: 'blocked-scope' });
+  assert.equal(reads, 0);
+});
 
 test('RSI status snapshots require one exact HEAD and no changed or unknown entries', () => {
   const revision = 'a'.repeat(40);

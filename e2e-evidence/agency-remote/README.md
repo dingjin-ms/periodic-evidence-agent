@@ -14,7 +14,7 @@ qualification probe may establish that proof; provider selection alone cannot.
 | OA (`office-agent`) | Fixed candidate -> real remote validation -> local controller acceptance | **Passed within the recorded scope**, 2026-10-22, build `57844822`; [sanitized evidence](oa-validation-20261022.json). |
 | OA (`office-agent`) | Remote authoring + remote validation (composed transports) | Requires composition E2E proof; not implied by the individual capabilities. |
 | OA (`office-agent`) | Native skills -> validate -> bounded type repair -> revalidate in one remote job/workspace | **Passed within the recorded scope**, 2026-10-23, build `57969048`; [sanitized evidence](oa-workspace-loop-20261023.json). Real TS2322 failure, one repair, original gates and trusted final gates passed; independently accepted by the local controller. |
-| OA (`office-agent`) | Real evidence -> new authoring -> validation / repair -> controller acceptance (`live-business-e2e`) | **Passed within the bounded qualification scope**, 2026-10-28 r7, build `58299935`; [sanitized evidence](oa-native-business-20261028.json). New native authoring, real gates, fitness, fresh independent review, final remote gates and controller acceptance completed in one run. First-pass success, not an observed candidate repair or product PR. |
+| OA (`office-agent`) | Real evidence -> new authoring -> validation / repair -> controller acceptance (`live-business-e2e`) | **Passed within the bounded qualification scope**, 2026-10-29 r8, build `58391519`; [sanitized evidence](oa-native-business-20261029-r8.json). Master-integrated controller, full local CI, new native authoring, real gates, fitness, fresh independent review, final remote gates and controller acceptance completed. First-pass success, not an observed candidate repair or product PR. The [r7 proof](oa-native-business-20261028.json) remains unchanged. |
 | OA (`office-agent`) | Hosted Agency executor (separate task/result contract) | Requires its own proof; not qualified by the validation-only run. |
 | 1JS / Office src / other repositories | Any remote path | No E2E proof registered here; do not infer support or qualification from OA. |
 
@@ -23,6 +23,36 @@ fixed-candidate validation experiment. A diagram, implementation, another
 session's unreviewed result, or combining two individually tested capabilities
 does not establish an E2E run of their composition. A genuinely verified run
 can be added when its authoritative evidence is available.
+
+## Master-integrated replay: 2026-10-29 r8
+
+Controller `1d115db378bc442007274bfb7646085ac2938348` includes master
+`28e4542719228c2784036563cc6b46146a82e89d`. Integration retained the current
+native supervisor's named-job/drain protocol, deferred unused Azure SDK loading,
+and public-ledger dispatch guards. Complete local CI at that clean revision
+covered all 91 discovered files exactly once: 1,811 passing tests, one conditional
+skip, zero failures or cancellations; syntax, package and standalone demo passed.
+The `remaining` group took about 51m48s. This is local fallback CI, not proof that
+the hosted Actions 45-minute job limit or required branch checks have passed.
+
+The one new Agency job `office-335b524d-43c2-4fcc-a7a2-c73a4b51008c`, ADO build
+`58391519`, used pipeline `814573cc35d5376f7c584d1a6f336ed16017f07d`, the same
+saved evidence, OA base, model, gates and budgets as r7. Native authoring committed
+candidate `206c0291e75c983c2af8941bfc9586f6816342e3` remotely. Its first candidate
+passed real compile/policy/integration gates, mutation/refactor fitness, a fresh
+independent reviewer and trusted final remote gates. The exact suite passed all
+four cases, preserving the original two and adding two. No candidate repair was
+needed. Initial inspection rejected the build identity; read-only lookup and
+standard resume continued the original job, without a replacement or new budget.
+
+At `2026-10-29T02:58:58.157Z`, the standard local controller independently accepted
+the candidate bundle, actual job/build/source/commands, reviewer and 3,517 files
+covering 5,099,807,078 bytes. It ran no local product gates and imported no old
+receipt. The original remote result remains `pending-external`; the separate
+controller receipt is acceptance authority. The new JSON is sanitized audit
+metadata, not a receipt or enablement grant. The controller source is frozen
+before this audit-only commit; no product PR, default activation or merge was
+performed. Existing A/B conditions remain frozen for a separate follow-up.
 
 The accepted same-workspace qualification used controller commit
 `0ee3fa9cb7956446905d7a4122dec290a73e423f`, base `9dcc7b441f8883edf96bc2357ecd289948f660ff`

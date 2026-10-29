@@ -39,6 +39,13 @@ Agency configuration blocks the assignment instead of silently switching to
 the SDK path. Qualify both paths against the same repository skill and
 validation contract before enabling Agency for that binding.
 
+Before remote enablement, check the repository-specific
+[E2E qualification register](e2e-evidence/agency-remote/README.md) and `doctor`.
+The Remote Agency architecture described below is not itself run evidence.
+Remote authoring followed by local validation needs its own real source-bound
+E2E proof; an OA remote-validation-only run does not qualify this path.
+Disclose missing or stale proof before an authorized qualification probe.
+
 ## Local Agency configuration
 
 The SDK provider remains the default. An omitted

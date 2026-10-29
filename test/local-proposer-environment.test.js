@@ -24,12 +24,16 @@ import { registerHooks } from 'node:module';
 import Ajv2020 from ${JSON.stringify(new URL('../node_modules/ajv/dist/2020.js', import.meta.url).href)};
 Ajv2020.prototype.compile = () => { throw new Error('unused-filter-schema-bootstrap'); };
 registerHooks({ resolve(specifier, context, nextResolve) {
+  if (['./coordinator.js', './rsi-flow.js', './workers.js'].includes(specifier) &&
+      /\\/src\\/cli(?:-runtime)?\\.js$/.test(context.parentURL))
+    throw new Error('unused-operation-bootstrap');
   if (['@github/copilot-sdk', '@azure/identity'].includes(specifier))
     throw new Error('unused-service-sdk-bootstrap');
   return nextResolve(specifier, context);
 } });
 `);
   for (const args of [
+    [fileURLToPath(new URL('../src/cli.js', import.meta.url))],
     [fileURLToPath(new URL('../src/cli.js', import.meta.url)), 'help'],
     ['--input-type=module', '-e',
       `await import(${JSON.stringify(new URL('../src/workers.js', import.meta.url).href)});`],

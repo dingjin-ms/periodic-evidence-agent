@@ -1,0 +1,84 @@
+{
+  "schema": "agency-remote-qualification-attempt-v1",
+  "repositoryId": "office-agent",
+  "mode": "same-workspace-loop",
+  "result": "blocked-bootstrap",
+  "controllerAcceptance": false,
+  "controllerCommit": "67aaeac3bcdd943991d6312195830c8595f3508c",
+  "jobId": "office-3b5c847f-af42-4748-afa2-9aac5558ab07",
+  "build": {
+    "id": 57932573,
+    "definitionId": 38920,
+    "definitionRevision": 2,
+    "sourceVersion": "4ee62e8d3f0cfdfbbb4b7652a8b47e9d7cdfd139",
+    "status": "completed",
+    "result": "failed",
+    "queueTime": "2026-10-23T04:29:23.9477035Z",
+    "startTime": "2026-10-23T04:29:45.0305928Z",
+    "finishTime": "2026-10-23T04:37:01.1067223Z"
+  },
+  "intendedScope": {
+    "baseCommit": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+    "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+    "model": "gpt-5.6-sol",
+    "suiteCount": 1,
+    "testCount": 3,
+    "additionalRepairsAfterInitialEdit": 2,
+    "runnerTimeoutMinutes": 60,
+    "newJobBudget": 1,
+    "automaticResubmissions": 0
+  },
+  "observed": {
+    "failedTask": "Loop prepare real gates and remove credentials before restricted agent",
+    "failureClass": "windows-task-input-materialization",
+    "inputEnvironmentVariable": "INPUT_SCRIPT",
+    "inputCharacters": 123143,
+    "maximumSupportedCharacters": 32766,
+    "taskIssue": "Capacity exceeds maximum capacity. Parameter name: capacity",
+    "runAgencyTaskResult": "skipped",
+    "modelStarted": false,
+    "realValidationGatesExecuted": false,
+    "repairsExecuted": 0,
+    "finalCandidateCommit": null,
+    "finalSealAvailable": false,
+    "preparationCommandExitCode": null
+  },
+  "lifecycle": {
+    "agencyStateObserved": "ComputeInvoked",
+    "agencyResultObserved": "Pending",
+    "failedBuildSourceBindingChecked": true,
+    "cancellationRequestedOnce": true,
+    "terminalCancellationConfirmed": false,
+    "localObserverStopped": true,
+    "remoteLifecycleReconciliation": "unresolved"
+  },
+  "privateEvidence": {
+    "collection": "agency-workspace-loop-plugin-v2-resolved-spec-20261023",
+    "files": [
+      {
+        "name": "progress-1792730378390.json",
+        "sha256": "df2be218e9f973caa0829af512361b89a61549275724aba17d5fea232987b0c9",
+        "purpose": "Source-bound terminal build and structured task issues"
+      },
+      {
+        "name": "progress-1792730519081.json",
+        "sha256": "40c56ee703efd9c4185ccca0f6f57b7eb3999a48ad23ffc37e8da4ea733a407b",
+        "purpose": "Repeated read-only confirmation before cancellation"
+      },
+      {
+        "name": "cancel-failed-build-response.json",
+        "sha256": "7885a4f4bcf6762faa7ad4759cd9d2f697dfa46ef5eab2476da11378a881ca7a",
+        "purpose": "Cancellation request acknowledgement, not terminal cancellation proof"
+      }
+    ]
+  },
+  "limitations": [
+    "This is a failed attempt record, not a qualification or reusable validation receipt.",
+    "The task failed before script execution; no product gate command exit code exists.",
+    "No remote model-authored change, failed-gate repair or passing post-agent validation was observed.",
+    "Agency job status and actual build status did not converge during observation; do not treat Pending as acceptance.",
+    "The one-job execution budget was consumed. A replacement requires an additional explicit authorization.",
+    "The intended native workflow and product profile remain unverified for this topology.",
+    "Keep the independent A/B session on its frozen baseline."
+  ]
+}

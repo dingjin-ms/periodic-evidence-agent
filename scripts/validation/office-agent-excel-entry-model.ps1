@@ -170,6 +170,21 @@ if ($stage -in @('all', 'dependencies')) {
 }
 
 if ($stage -in @('all', 'compile')) {
+    $fitnessSource = $env:PILOT_VALIDATION_FITNESS_SOURCE
+    $fitnessSourceHash = $null
+    if ($fitnessSource) {
+        if ($fitnessSource -notmatch '^(agents|modules)/[^/]+/src/.+\.ts$' -or
+            $fitnessSource.Split('/') -contains '..') {
+            throw 'PILOT_VALIDATION_PROFILE_ERROR: invalid native fitness source path'
+        }
+        $trackedFitnessSource = @(& git ls-files -- $fitnessSource)
+        if ($LASTEXITCODE -ne 0 -or $trackedFitnessSource.Count -ne 1 -or
+            $trackedFitnessSource[0] -cne $fitnessSource) {
+            throw 'PILOT_VALIDATION_PROFILE_ERROR: native fitness source must be one exact tracked file'
+        }
+        $fitnessSourceHash = (Get-FileHash -LiteralPath $fitnessSource -Algorithm SHA256).Hash
+        Write-Output "PILOT_VALIDATION_FITNESS_SOURCE:$fitnessSource"
+    }
     $compileFailure = $null
     try {
         Invoke-Checked $corepack yarn compile --to '@officeagent-agent/office-agent'
@@ -187,12 +202,16 @@ if ($stage -in @('all', 'compile')) {
         throw "git ls-files exited with code $LASTEXITCODE"
     }
     $unexpectedChanges = @($changedFiles + $untrackedFiles | Where-Object {
-        $_ -and $_ -notin $knownCompileOutputs
+        $_ -and $_ -notin $knownCompileOutputs -and $_ -cne $fitnessSource
     })
     if ($unexpectedChanges.Count -gt 0) {
         throw "Scoped compile changed unexpected files: $($unexpectedChanges -join ', ')"
     }
-    if ($changedFiles.Count -gt 0) {
+    if ($fitnessSource -and
+        (Get-FileHash -LiteralPath $fitnessSource -Algorithm SHA256).Hash -cne $fitnessSourceHash) {
+        throw 'PILOT_VALIDATION_PROFILE_ERROR: compile changed the approved native fitness source'
+    }
+    if (@($changedFiles | Where-Object { $_ -in $knownCompileOutputs }).Count -gt 0) {
         & git restore --worktree -- @knownCompileOutputs
         if ($LASTEXITCODE -ne 0) {
             throw "git restore exited with code $LASTEXITCODE"

@@ -1,0 +1,194 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "oa-native-evidence-authoring-validation-review-20261029-r8",
+  "mode": "live-business-e2e",
+  "result": "passed-scoped",
+  "observedAt": "2026-10-29T02:58:58.157Z",
+  "scope": "Approved saved real evidence -> qualified native skill -> two new OA caller tests and behavior card -> real remote gates -> mutation/refactor fitness -> fresh independent review -> trusted final remote gates -> independent local controller acceptance. One publication-free qualification after integrating master and passing complete local CI.",
+  "controllerCommit": "1d115db378bc442007274bfb7646085ac2938348",
+  "remoteProducerControllerCommit": "1d115db378bc442007274bfb7646085ac2938348",
+  "upstreamCommit": "28e4542719228c2784036563cc6b46146a82e89d",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "61458d25-9f75-41c3-be29-e63727145257",
+    "repositoryName": "OfficeAgent"
+  },
+  "repoId": "office-agent",
+  "project": "agents/office-agent",
+  "baseRevision": "46299221b14698dbe21ac87167b21083612279cc",
+  "candidate": "206c0291e75c983c2af8941bfc9586f6816342e3",
+  "gateId": "oa-excel-user-skill-ingress",
+  "profileSha256": "dad91945c58e0765ed01a85009f835e1d0c33b1ae9c1f755e8fb7772863dc5ab",
+  "pipeline": {
+    "definitionId": 38920,
+    "definitionRevision": 2,
+    "revision": "814573cc35d5376f7c584d1a6f336ed16017f07d",
+    "result": "succeeded",
+    "queuedAt": "2026-10-29T02:10:30.3687644Z",
+    "startedAt": "2026-10-29T02:10:53.668158Z",
+    "finishedAt": "2026-10-29T02:49:52.8615697Z"
+  },
+  "jobId": "office-335b524d-43c2-4fcc-a7a2-c73a4b51008c",
+  "actualBuildId": 58391519,
+  "jobState": "Completed",
+  "jobResult": "Success",
+  "executionLocation": "agency-remote",
+  "workspace": "F:\\1\\s",
+  "runnerSha256": "c299d9551e8501bf9933a439073f4d8381dc1d82be82a0d12a079d3b7cdad219",
+  "nativeCommandSha256": "19d693f72ac9263f568762ac42b371993793e4e7961377f4cfc949e2493d6aa3",
+  "sourceAuthorization": {
+    "mode": "reviewed-assignment",
+    "assignmentId": "assignment-25ade02c914fec74a95c75689a67badfd18e3c80c760dbae522dbbb90d2629a5",
+    "evidenceSha256": "3e270aa8fbc09859e1ba22f7d8417f3e32dd63e09be598d4a58940b50f76d98b",
+    "sourceApprovalSha256": "89c200c911b6ca97d2d4b0a239956458bf7731509c2dfdfbd9b8a37bb842831a",
+    "freshSourceCollection": false,
+    "coverageGoal": "Public nonempty user-skill package acknowledgement, real staging, classifier bypass and completed turn through the final orchestrator request; empty package acknowledgement followed by normal classification and final model request. Preserve both original slot-redirect cases byte-for-byte.",
+    "historicalDefectResolutionClaimed": false
+  },
+  "nativeSkill": {
+    "entry": ".github/skills/integration-test-authoring/SKILL.md",
+    "workflow": "docs/skills/Integration-test-core/workflow.md",
+    "revision": "46299221b14698dbe21ac87167b21083612279cc",
+    "requiredSourceReadsIndependentlyVerified": true
+  },
+  "command": {
+    "cwd": "F:\\1\\s",
+    "stageSelector": "PILOT_VALIDATION_STAGE",
+    "compile": "corepack yarn compile --to '@officeagent-agent/office-agent'",
+    "policy": [
+      "corepack yarn validate:integration-test-layout",
+      "node '..\\..\\docs\\skills\\Integration-test-core\\scripts\\validate-card-scores.mjs' --strict --floor 6"
+    ],
+    "policyCardScoreCwd": "F:\\1\\s\\agents\\office-agent",
+    "testWrapper": "node docs\\skills\\Integration-test-core\\scripts\\run-integration-tests.mjs --runDir <private-run-directory> -- corepack yarn workspace @officeagent-agent/office-agent test:integration --testMatch=**/tests/integration/**/*.test.ts --runTestsByPath tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts --runInBand",
+    "testArgumentsPassedAsArray": true
+  },
+  "rounds": [
+    {
+      "index": 0,
+      "candidate": "206c0291e75c983c2af8941bfc9586f6816342e3",
+      "passed": true,
+      "stages": [
+        {"stage": "compile", "exitCode": 0, "logSha256": "603f1eb56aae6648261cc7f2ee30a86c96481e7109b8ed75ec5f2f1eabd78e8a"},
+        {"stage": "policy", "exitCode": 0, "logSha256": "5028f08f0493d835ef22fad137eebda7363dce5b463a0a1795fd1f625e155104"},
+        {"stage": "test", "exitCode": 0, "logSha256": "a95199fb5c964c8fcfdd3028f222a3a406061b9df484d3d79779117e85d167ca"}
+      ]
+    }
+  ],
+  "candidateRepairsObserved": 0,
+  "fitness": {
+    "mutation": "killed",
+    "refactor": "robust",
+    "sourceRestoredSha256": "6b1737e8e0d7b554e30dc67b044172df53c1789a69957719459f7b0b5ee5fed2",
+    "notCandidateRepairs": true
+  },
+  "review": {
+    "sessionId": "c17227f3-ba51-4f5b-9bdf-62116d4addf3",
+    "model": "gpt-5.6-sol",
+    "completed": true,
+    "exitCode": 0,
+    "verdict": "approved",
+    "findings": [],
+    "residuals": [
+      {"path": "modules/agent-runtime/src/config/materialize.ts", "line": 201, "scope": "Plugin-only and mixed-provenance behavior remains outside the two approved public-package caller cases."}
+    ]
+  },
+  "trustedFinal": {
+    "candidate": "206c0291e75c983c2af8941bfc9586f6816342e3",
+    "stages": [
+      {"stage": "compile", "exitCode": 0, "startedAt": "2026-10-29T02:47:41.031Z", "finishedAt": "2026-10-29T02:48:12.098Z", "logSha256": "c24f06c44effafa57c91afe79562c7dfafb36a0970df906c29e56b6b15543749"},
+      {"stage": "policy", "exitCode": 0, "startedAt": "2026-10-29T02:48:12.101Z", "finishedAt": "2026-10-29T02:48:16.979Z", "logSha256": "5028f08f0493d835ef22fad137eebda7363dce5b463a0a1795fd1f625e155104"},
+      {"stage": "test", "exitCode": 0, "startedAt": "2026-10-29T02:48:16.982Z", "finishedAt": "2026-10-29T02:48:47.970Z", "logSha256": "ab02a3943fd59eb35bb326df2fd5a38cd318f3e6a564b5f8b3e038bc9fab3977"}
+    ]
+  },
+  "testPopulation": {
+    "suites": 1,
+    "tests": 4,
+    "originalTests": 2,
+    "newTests": 2,
+    "path": "tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts"
+  },
+  "sourceControls": {
+    "allowedPaths": [
+      "agents/office-agent/tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts",
+      "agents/office-agent/tests/integration/behavior-cards/apps/excel/omni-excel-app-composition.behavior-card.md"
+    ],
+    "appendOnlyTests": true,
+    "productionSourceEdits": false,
+    "sourceCleanAfter": true,
+    "gitBundleIndependentlyVerified": true,
+    "originalBundleUnchangedDuringImport": true
+  },
+  "localCI": {
+    "sourceRevision": "1d115db378bc442007274bfb7646085ac2938348",
+    "nodeVersion": "v24.22.1",
+    "completedAt": "2026-10-28T12:40:34.1332971Z",
+    "fileConcurrency": 4,
+    "discoveredFiles": 91,
+    "catalogueSha256": "563e509b0ea7596f0628a829d0b7037fdf81fdaa99c11f5552d1772043485543",
+    "catalogueCoveredExactlyOnce": true,
+    "completionSha256": "5cd37c04a8ddb7e85ce80ac3beaee6933ed76a2918b27458daca3fd98d72d6fa",
+    "syntax": "passed",
+    "package": "passed",
+    "groups": {
+      "remaining": {"tests": 1572, "passed": 1571, "failed": 0, "cancelled": 0, "skipped": 1},
+      "pilot": {"tests": 238, "passed": 238, "failed": 0, "cancelled": 0, "skipped": 0},
+      "demo": {"tests": 2, "passed": 2, "failed": 0, "cancelled": 0, "skipped": 0}
+    },
+    "standaloneDemo": "passed",
+    "hostedActionsVerified": false
+  },
+  "remoteCompletion": {
+    "remoteWorkComplete": true,
+    "controllerAcceptance": false,
+    "controllerAcceptanceStatus": "pending-external",
+    "remoteResultUnmodifiedAfterDownload": true
+  },
+  "controllerAcceptance": true,
+  "localProductGatesExecuted": false,
+  "oldReceiptImported": false,
+  "qualificationOnly": true,
+  "productionAssignment": false,
+  "publicationPerformed": false,
+  "budget": {
+    "maximumNewJobs": 1,
+    "maximumRepairs": 2,
+    "automaticReplacementJobs": 0,
+    "gateMinutes": 20,
+    "reviewerMinutes": 10,
+    "runnerMinutes": 60,
+    "aggregateJobOrMonetaryCeiling": null
+  },
+  "artifactFilesHashed": 3517,
+  "artifactBytesHashed": 5099807078,
+  "privateEvidence": {
+    "collection": "agency-live-business-e2e-20261024",
+    "runDirectory": "native-excel-qualification-20261028-r8",
+    "operation": "fef6e6534ad3493eea45d53c85f58ade41cd1b0afa6f4004507b413197b601a8",
+    "outcomeArtifact": "controller-resume-01.stdout.json",
+    "outcomeSha256": "856f123df9b6252fbfefa4dd0e483d10135939edf7e9e6e4d13b88566397fd11",
+    "acceptanceArtifact": "controller-acceptance-1793242738286.json",
+    "acceptanceSha256": "dc7d8079e111ae9c9dcf948217abcacb46627c769ecff6ad9444da34ec45befa",
+    "observationArtifact": "observation-1793242314747.json",
+    "observationSha256": "6c069d90bbcf44444479c171130af7f2fc1c7b6b60a686ff41ab8dd73a043075",
+    "remoteJobRequestSha256": "c87b9fe2669749c28b926a3ef39408df3e9298ab9a5584ad6c4ec6c04b069a4f",
+    "contractSha256": "524a6d981830c0533a2189c332cb9fbffbbf2c8e554adb256bf237caedb1ee4a",
+    "loopResultSha256": "1673bba6dc0bf91385d23c22b9947e303667e38fb6014d94a8f914aa5608b8d2",
+    "reviewSha256": "fc42e9dd756b67bf246d6dc32f845ecd3c7165e8371c1bdafad0e0396643bcc4",
+    "candidateBundleSha256": "75fc78d5a335facbb1ae10062f276b76dc93029b04abae4dd5bf2cac3c2a3a99",
+    "protocolVerifierSha256": "5085f365ec374a591d93e854256f8df6093ef43fcef3f025205d826495d0f710"
+  },
+  "limitations": [
+    "Bounded qualification on saved approved real evidence, not fresh source collection, general production native-assignment dispatch or evidence-to-Draft-PR publication.",
+    "First candidate passed: this run does not prove a candidate repair; no prior run's repairs are attributed to r8.",
+    "The two approved public-package caller cases do not establish plugin-only/mixed provenance, standalone runTurn, all OA suites, desktop/UI E2E, 1JS or Office src support.",
+    "Initial inspection rejected the actual build identity. A later read-only lookup confirmed numeric build 58391519; standard resume followed the same original job, reservation and deadlines without resubmission.",
+    "Complete local CI passed; the remaining group took about 51 minutes 48 seconds, exceeding the hosted Actions job's 45-minute limit. Hosted CI and branch-required checks are not claimed passed; no timeout, assertion or concurrency was relaxed.",
+    "The controller independently checked 3517 files and 5099807078 bytes. The original remote result remains pending-external and is not an acceptance receipt.",
+    "The remote MCP allowlist is not an operating-system sandbox. This summary grants no execution or publication authority and does not enable default production behavior.",
+    "The source/controller revision is frozen before this audit-only proof commit. Model token usage and monetary cost were not measured.",
+    "The separate Local/Remote A/B baseline and experiment conditions were unchanged. Compare remote-authoring/local-validation and same-workspace remote validation only in a separately frozen follow-up experiment."
+  ]
+}

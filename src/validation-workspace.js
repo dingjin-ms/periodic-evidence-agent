@@ -92,8 +92,14 @@ export async function preparationStage(timings, id, operation, persist = () => {
 }
 
 export async function requireCleanRevision(workspace, revision, timeoutMs) {
-  requireThat(await preparationGit(workspace, ['rev-parse', 'HEAD'], timeoutMs) === revision &&
-    !await preparationGit(workspace, ['status', '--porcelain'], timeoutMs),
+  // One contained Git process witnesses both invariants at every existing checkpoint.
+  const status = await preparationGit(workspace,
+    ['status', '--porcelain=v2', '--branch', '--no-ahead-behind', '-z'], timeoutMs);
+  const records = status.split('\0');
+  requireThat(records.pop() === '' &&
+    records.filter(record => record.startsWith('# branch.oid ')).length === 1 &&
+    records.includes(`# branch.oid ${revision}`) &&
+    records.every(record => record.startsWith('# ')),
   'Preparation requires clean source at the exact revision', 'blocked-validation');
 }
 

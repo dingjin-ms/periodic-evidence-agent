@@ -39,6 +39,37 @@ bound semantic review and releases one normal local Proposer through Draft PR.
 Explicit retry-config preparation and durable resume replace per-run private
 scripts; collection, qualification and authentication gates remain separate.
 
+Remote Agency enablement is repository- and topology-specific: consult the
+[E2E qualification register](e2e-evidence/agency-remote/README.md) and the
+`doctor` report before enabling it. OA has scoped historical proof for real
+fixed-candidate remote validation and a native-skill-guided same-workspace
+type-repair loop, not a blanket qualification of general remote authoring or
+production native-assignment dispatch. Missing or mismatched proof must be
+disclosed as **not yet verified**, not inferred from provider configuration.
+The bounded `live-business-e2e` r7 qualification passed on 2026-10-28 using
+saved approved real evidence, new native authoring, real remote gates, fitness,
+fresh review and independent controller acceptance. It did not publish a PR,
+collect fresh evidence or qualify general production dispatch. `doctor` retains
+the earlier blocked Stage2 preflight separately from this passing proof.
+An experimental `qualify-remote-authoring` entry now separates new-test authoring
+from the existing type-only qualification. It requires qualified source/assignment
+inputs and explicit bounded execution authorization; its offline protocol tests
+are not live OA proof and do not enable ordinary business dispatch.
+Held Stage2 inputs retain their mandatory analyzer; a separately reviewed native
+test-coverage assignment can use the independent, record-pinned authorization
+route without pretending a blocked Stage2 handoff succeeded.
+Its opt-in `nativeWorkflow` contract additionally pins one behavior card, a
+single-site mutation and behavior-preserving refactor, and an independent
+read-only reviewer. Trusted fitness execution rebuilds before each targeted
+test and verifies byte-identical source restoration; compilation or environment
+failures cannot count as mutant kills. The reviewer uses a new Agency CLI
+session, immutable agent Spec, isolated profile and review-only MCP tools.
+The controller separately checks the candidate, commands, exits, complete reads,
+reports and post-review product gates. Provider diagnostics stay private.
+The recorded pass applies only to its exact source, two-case caller scope and
+validation profile. Fitness or reviewer failures stop this qualification;
+they do not silently expand the existing type/assertion repair authorization.
+
 ## Account-free quick start
 
 Prerequisites: **Node.js 24 LTS**, npm and Git on PATH. Windows PowerShell is
@@ -120,6 +151,12 @@ foreach ($group in @('pilot', 'remaining', 'demo')) {
 npm run demo
 if ($LASTEXITCODE -ne 0) { throw 'Standalone synthetic demo failed' }
 ```
+
+The pilot group includes `test/pilot.test.js` and the adjacent
+`test/pilot-*.test.js` files. They run in separate test-file processes under the
+same four-file concurrency limit; cases within each file remain sequential.
+The shared module at `scripts/test-fixtures/pilot.mjs` defines fixture factories,
+not shared workspaces: every case retains its own setup, teardown and budgets.
 
 Keep each group's `summary.json`, `tests.tap` and process snapshot, including
 failed attempts. A successful subset or focused rerun is not complete local CI:

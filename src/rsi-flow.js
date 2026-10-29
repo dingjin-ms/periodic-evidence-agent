@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { join, relative, resolve, isAbsolute, dirname, basename } from 'node:path';
@@ -18,23 +18,14 @@ const protectedPaths = [
 
 function controllerIdentity() {
   const files = [];
-  function add(path, name, stat = lstatSync(path)) {
+  function add(path, name) {
+    const stat = lstatSync(path);
     requireThat(!stat.isSymbolicLink(), 'Linked RSI controller inputs are unsupported', 'blocked-scope');
     if (stat.isDirectory()) {
-      const entries = readdirSync(path, { withFileTypes: true })
-        .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-      for (const child of entries) add(join(path, child.name), `${name}/${child.name}`, child);
+      for (const child of readdirSync(path).sort()) add(join(path, child), `${name}/${child}`);
     } else {
-      requireThat(stat.isFile(), 'RSI controller input is not a regular file', 'blocked-scope');
-      const fd = openSync(path, 'r');
-      try {
-        const opened = fstatSync(fd);
-        requireThat(opened.isFile() && opened.nlink === 1,
-          'RSI controller input is not a regular file', 'blocked-scope');
-        files.push({ path: name, sha256: hash(readFileSync(fd)) });
-      } finally {
-        closeSync(fd);
-      }
+      requireThat(stat.isFile() && stat.nlink === 1, 'RSI controller input is not a regular file', 'blocked-scope');
+      files.push({ path: name, sha256: hash(readFileSync(path)) });
     }
   }
   for (const name of ['src', '.github/skills', 'scaffold/contracts.schema.json',

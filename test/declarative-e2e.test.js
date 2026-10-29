@@ -491,6 +491,10 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
     const scenarioFile = join(root, file);
     mkdirSync(dirname(scenarioFile), { recursive: true });
     writeFileSync(scenarioFile, 'synthetic L3 declaration');
+    const validator = join(root, 'ooui', '.devops', 'scripts',
+      'declarative-e2e-reliability', 'validate-excel-agent-case-tags.cjs');
+    mkdirSync(dirname(validator), { recursive: true });
+    writeFileSync(validator, '// Synthetic source-owned validator.\n');
     const declarationSha = hash(readFileSync(scenarioFile));
     const outputRoot = join(root, 'output');
     const yarnEntryPoint = join(root, 'yarn.cjs');
@@ -520,7 +524,7 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
         return { sanitizeDiagnosticText: () => '[sanitized synthetic diagnostic]' };
       throw new Error(`Unexpected synthetic module: ${name}`);
     };
-    let inventories = 0;
+    let inventories = 0, caseTagChecks = 0;
     const context = {
       module: { exports: {} }, process: runtime, Buffer, URL, AbortSignal,
       console: { log() {} },
@@ -536,6 +540,11 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
         return { execFileSync: (executable, args) => {
           if (executable === 'git')
             return args.includes('rev-parse') ? request.sourceRevision : '';
+          if (args[0] === validator) {
+            caseTagChecks++;
+            assert.equal(inventories, 0);
+            return '';
+          }
           if (!args.includes('declarative:local')) return '';
           const batch = join(outputRoot, 'batch');
           mkdirSync(batch);
@@ -573,6 +582,7 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
       await assert.rejects(context.module.exports.main(), /Native attempt failed/);
       assert(!existsSync(join(outputRoot, 'receipt.json')));
     }
+    assert.equal(caseTagChecks, 1);
     assert.equal(inventories, 2);
   });
 }

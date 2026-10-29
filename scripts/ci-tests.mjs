@@ -6,19 +6,6 @@ import { availableParallelism, cpus, freemem, totalmem } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const remainingPriority = [
-  join('test', 'resource-lifecycle.test.js'),
-  join('test', 'self-improvement-evaluation.test.js'),
-  join('test', 'rsi-execution.test.js')
-];
-
-export function orderCiFiles(group, files) {
-  if (group !== 'remaining') return [...files];
-  const priorities = new Map(remainingPriority.map((path, index) => [path, index]));
-  return [...files].sort((left, right) =>
-    (priorities.get(left) ?? priorities.size) - (priorities.get(right) ?? priorities.size));
-}
-
 export function discoverCiGroups(cwd = process.cwd()) {
   const extensions = process.features.typescript
     ? 'js,mjs,cjs,ts,mts,cts' : 'js,mjs,cjs';
@@ -70,7 +57,6 @@ export async function runCiTests(group, directory = join('.state', `ci-tests-${g
     group, sourceRevision: process.env.GITHUB_SHA ?? null,
     nodeVersion: process.version, fileConcurrency: 4, catalogue,
     selectedFiles: catalogue.groups[group],
-    executionFiles: orderCiFiles(group, catalogue.groups[group]),
     startedAt: new Date().toISOString(), status: 'running',
     exitCode: null, signal: null, counts: null, resourcesBefore: resources()
   };
@@ -83,7 +69,7 @@ export async function runCiTests(group, directory = join('.state', `ci-tests-${g
       '--test', '--test-concurrency=4',
       '--test-reporter=tap', '--test-reporter-destination=stdout',
       '--test-reporter=tap', `--test-reporter-destination=${tapPath}`,
-      ...summary.executionFiles
+      ...summary.selectedFiles
     ], { stdio: 'inherit', windowsHide: true });
     summary.childPid = child.pid;
     save();

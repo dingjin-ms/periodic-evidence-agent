@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { discoverCiGroups, orderCiFiles } from '../scripts/ci-tests.mjs';
+import { discoverCiGroups } from '../scripts/ci-tests.mjs';
 
 const exec = promisify(execFile);
 const runner = resolve('scripts', 'ci-tests.mjs');
@@ -61,21 +61,6 @@ test('CI partitions preserve native discovery for nested, typed and newly added 
   assert.notEqual(updated.sha256, catalogue.sha256);
 });
 
-test('remaining CI starts measured long-tail files first without changing coverage', () => {
-  const files = [
-    join('test', 'alpha.test.js'), join('test', 'resource-lifecycle.test.js'),
-    join('test', 'rsi-execution.test.js'), join('test', 'self-improvement-evaluation.test.js'),
-    join('test', 'omega.test.js')
-  ];
-  const ordered = orderCiFiles('remaining', files);
-  assert.deepEqual(ordered.slice(0, 3), [
-    join('test', 'resource-lifecycle.test.js'), join('test', 'self-improvement-evaluation.test.js'),
-    join('test', 'rsi-execution.test.js')
-  ]);
-  assert.deepEqual([...ordered].sort(), [...files].sort());
-  assert.deepEqual(orderCiFiles('pilot', files), files);
-});
-
 test('CI groups preserve failures and write complete reports for both outcomes', async t => {
   const { root, write, options } = fixture(t);
   write('test/pilot.test.js', "require('node:test')('passing fixture', () => {});\n");
@@ -97,7 +82,6 @@ test('CI groups preserve failures and write complete reports for both outcomes',
   assert.equal(passed.counts.pass, 2);
   assert.deepEqual(passed.selectedFiles,
     ['pilot-validation.test.js', 'pilot.test.js'].map(name => join('test', name)));
-  assert.deepEqual(passed.executionFiles, passed.selectedFiles);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.exitCode, 1);
   assert.equal(failed.counts.fail, 1);

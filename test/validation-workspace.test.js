@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync,
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync,
   appendFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { command } from '../src/workers.js';
 import { prepareValidationWorkspace, removeValidationWorktree,
-  preparationStage, preparationFailure, readDependencyCopyProgress,
+  gitDirectories, preparationStage, preparationFailure, readDependencyCopyProgress,
   requireCleanRevision } from '../src/validation-workspace.js';
 import { nativeCommand } from '../src/native-command.js';
 
@@ -29,6 +29,21 @@ async function fixture(t) {
   await git(['commit', '-qm', 'synthetic baseline']);
   return { root, source, workspace, git, revision: await git(['rev-parse', 'HEAD']) };
 }
+
+test('Git directory query returns the exact common and per-worktree administration roots', async t => {
+  const ctx = await fixture(t);
+  const source = await gitDirectories(ctx.source, 30000);
+  assert.equal(source.common, source.admin);
+  await ctx.git(['worktree', 'add', '--detach', '--', ctx.workspace, ctx.revision]);
+  const workspace = await gitDirectories(ctx.workspace, 30000);
+  assert.equal(workspace.common, source.common);
+  assert.notEqual(workspace.admin, source.admin);
+  const worktreeGit = async args => (await command('git', args, ctx.workspace)).stdout.trim();
+  assert.equal(realpathSync(await worktreeGit(
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'])), workspace.common);
+  assert.equal(realpathSync(await worktreeGit(
+    ['rev-parse', '--path-format=absolute', '--absolute-git-dir'])), workspace.admin);
+});
 
 test('clean revision witness rejects tracked, staged, renamed, deleted and untracked changes', async t => {
   for (const change of ['modified', 'staged', 'renamed', 'deleted', 'untracked']) {

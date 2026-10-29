@@ -10,6 +10,15 @@ export async function preparationGit(cwd, args, timeoutMs, env = process.env) {
     ...args], cwd, timeoutMs, env)).stdout.trim();
 }
 
+export async function gitDirectories(cwd, timeoutMs) {
+  const paths = (await preparationGit(cwd,
+    ['rev-parse', '--path-format=absolute', '--git-common-dir', '--absolute-git-dir'], timeoutMs))
+    .split(/\r?\n/);
+  requireThat(paths.length === 2 && paths.every(Boolean),
+    'Git directory query returned an unexpected result', 'blocked-validation');
+  return { common: realpathSync(paths[0]), admin: realpathSync(paths[1]) };
+}
+
 export function preparationFailure(error) {
   return {
     code: typeof error.code === 'number' || /^[A-Z_]+$/.test(error.code ?? '')

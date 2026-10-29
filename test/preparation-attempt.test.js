@@ -44,6 +44,21 @@ test('shared command re-export preserves the caller abort signal', async () => {
   { name: 'AbortError', code: 'ABORT_ERR' });
 });
 
+test('a pre-cancelled command rejects before resolving or launching its executable', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'cancelled-command-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cause = new Error('Synthetic caller cancellation');
+  const signal = AbortSignal.abort(cause);
+  const marker = join(root, 'started');
+  for (const [executable, args] of [
+    [join(root, 'missing-executable'), []],
+    [process.execPath, ['-e',
+      'require("node:fs").writeFileSync(process.argv[1], "unexpected launch")', marker]]
+  ]) await assert.rejects(command(executable, args, root, undefined, undefined, signal),
+    { name: 'AbortError', code: 'ABORT_ERR', cause });
+  assert.equal(existsSync(marker), false);
+});
+
 test('controller progress failure preserves an already raised primary rejection', async () => {
   const primary = new PilotError('blocked-validation', 'original content rejection');
   const marker = 'fixture-sensitive-progress-exception';

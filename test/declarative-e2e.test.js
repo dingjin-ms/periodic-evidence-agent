@@ -235,7 +235,8 @@ test('final-SHA validation stops catalog drift before native loading or success 
     execFileSync: (executable, args) => {
       if (executable === 'git') return args.includes('rev-parse') ? revision : '';
       calls.push('case-tags');
-      throw Object.assign(new Error('synthetic catalog drift'), { status: 7 });
+      throw Object.assign(new Error('synthetic catalog drift SECRET_MUST_NOT_PERSIST'),
+        { status: 7 });
     }
   } : name === 'node:module' ? {
     createRequire: () => { calls.push('native-load'); throw new Error('Unexpected native load'); }
@@ -243,13 +244,20 @@ test('final-SHA validation stops catalog drift before native loading or success 
   mockedRequire.main = module;
   runInNewContext(readFileSync(new URL('../scripts/validation/1js-declarative-e2e.cjs',
     import.meta.url), 'utf8'), {
-    require: mockedRequire, module, process: runtime, URL,
+    require: mockedRequire, module, process: runtime, URL, Buffer,
     console: { log: line => lines.push(line), error: line => lines.push(line) }
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['case-tags']);
   assert.equal(runtime.exitCode, 1);
-  assert(lines.some(line => line.includes('synthetic catalog drift')));
+  const prefix = 'PILOT_VALIDATION_PROFILE_ERROR: ';
+  const failures = lines.filter(line => line.startsWith(prefix));
+  assert.equal(failures.length, 1);
+  const diagnostic = JSON.parse(failures[0].slice(prefix.length));
+  assert.equal(diagnostic.stage, 'profile');
+  assert.equal(diagnostic.exitCode, 7);
+  assert.equal(diagnostic.message.sha256, hash('synthetic catalog drift SECRET_MUST_NOT_PERSIST'));
+  assert(!lines.join('\n').includes('SECRET_MUST_NOT_PERSIST'));
   assert(!lines.some(line => /PILOT_DECLARATIVE_(?:REGISTRATION|RECEIPT):/.test(line)));
 });
 

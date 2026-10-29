@@ -1,0 +1,74 @@
+{
+  "schema": "agency-remote-preflight-attempt-v1",
+  "id": "oa-live-business-preflight-20261026",
+  "mode": "live-business-e2e",
+  "result": "blocked-before-dispatch",
+  "observedAt": "2026-10-26T02:20:39.990Z",
+  "controllerCommit": "ee6c1147ffabdce7474a1aa03d3caa9d455e7f9f",
+  "repoId": "office-agent",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "61458d25-9f75-41c3-be29-e63727145257"
+  },
+  "scope": "Real ADO collection and complete retained-record review followed by the required held Stage2 preflight; not a product validation run or a qualified coverage gap.",
+  "collection": {
+    "runId": "oa-live-source-refresh-20261024",
+    "provenance": "authenticated-source",
+    "identityVerified": true,
+    "sourceReadCalls": 6,
+    "uniqueEvidenceRecords": 14,
+    "titleDecisions": 14,
+    "screenedOut": 4,
+    "retainedBodiesRead": 10,
+    "retainedCaptureHashesVerified": 10,
+    "inlineImagesInspected": 2,
+    "externalAttachmentsRead": 0,
+    "window": {
+      "start": "2026-10-12T00:00:00Z",
+      "endExclusive": "2026-10-13T00:00:00Z"
+    },
+    "coverage": "Current enumeration of the approved historical date window; not reconstruction of historical source state or collection of today's cohort."
+  },
+  "code": "blocked-skill",
+  "entryPoint": "stage2-handoff",
+  "preflightExitCode": 1,
+  "handoffCreated": false,
+  "requiredSkill": "analyze-excel-agent-test-coverage",
+  "requiredReference": "references\\coverage-map.md",
+  "coverageGapQualified": false,
+  "businessLoopImplemented": false,
+  "assignmentCreated": false,
+  "remoteJobsReserved": 0,
+  "remoteJobsSubmitted": 0,
+  "candidate": null,
+  "validationExecuted": false,
+  "controllerAcceptance": false,
+  "publicationPerformed": false,
+  "scheduleEnabled": false,
+  "privateEvidence": {
+    "collection": "agency-live-business-e2e-20261024",
+    "statusArtifact": "live-e2e-status.json",
+    "statusSha256": "62ae2b2433f9268071f14c2208c4dfc161cac487938ac31dcda98527d5f3592c",
+    "preflightArtifact": "coverage-preflight-20261026.json",
+    "preflightSha256": "96ce7286c2e4cd595b4ad3c4ce17cd328d007d57e394fcdfd4cc857f0cd5fa2f",
+    "titleIndexSha256": "a3f4d019a550c0ededd82c1498f69d314ad6d14145968e8e698034a2d5c100a6",
+    "titleDecisionsSha256": "ebea5438851d67f764d6953327f936e38ffaec589a269806a79f6d2093788041",
+    "retainedDetailsSha256": "14cf1207b67cbff0a6f96dc84c2adc699228be14beaa41d096fc3091aa79d484"
+  },
+  "remainingWork": [
+    "Locate the approved genuine coverage-analysis skill and bundled reference, bind a new private configuration, and run the required source-bound analysis.",
+    "Qualify an actual remaining coverage gap, exact target revision, native project validation profile and durable assignment.",
+    "Implement a separate business-loop contract supporting newly authored candidate SHAs and first-pass success without weakening the bounded type-repair qualifier.",
+    "Reconcile execution permissions, source sharing, token and monetary budgets before any remote submission.",
+    "Run an authorized real business E2E and independently verify its terminal job, candidate, command exits and complete artifacts."
+  ],
+  "limitations": [
+    "This is a local preflight observation, not an Agency failure, passing product test, remote execution proof, receipt or enablement grant.",
+    "The accepted 2026-10-23 bounded type-repair proof remains unchanged and does not qualify this business path.",
+    "The missing analysis skill is the observed first blocker, not proof that all subsequent implementation and execution requirements are satisfied.",
+    "No synthetic skill, substituted evidence, imported validation receipt or replacement job was used.",
+    "The separate A/B baseline, product workspaces and shared environment configuration were not modified."
+  ]
+}

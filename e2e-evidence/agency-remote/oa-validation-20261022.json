@@ -1,0 +1,86 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "oa-fixed-candidate-remote-validation-20261022",
+  "mode": "remote-validation",
+  "result": "passed-scoped",
+  "observedAt": "2026-10-22T08:14:22.898Z",
+  "scope": "Publication-free fixed-candidate validation-segment E2E via normal controller runValidation routing, with independent controller acceptance.",
+  "controllerCommit": "d9a7a39a6c545b7e7121ec310844af685ef5d2e7",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "61458d25-9f75-41c3-be29-e63727145257",
+    "repositoryName": "OfficeAgent"
+  },
+  "repoId": "office-agent",
+  "project": "agents/office-agent",
+  "candidate": "f69c5497e0f260b04289c4615ffdf7dc9347645a",
+  "gateId": "oa-onenote-bootstrap-progress",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "pipeline": {
+    "definitionId": 38920,
+    "definitionRevision": 2,
+    "revision": "cab40c5d9e99797176194b90d20894ad0cc4e184"
+  },
+  "jobId": "office-aacaf920-0201-4d4b-8760-19d20e28764f",
+  "actualBuildId": 57844822,
+  "executionLocation": "agency-remote",
+  "environment": {
+    "os": "Microsoft Windows Server 2025 Datacenter",
+    "osVersion": "10.0.26100",
+    "logicalProcessors": 8,
+    "physicalMemoryBytes": 68719005696,
+    "node": "v24.14.0",
+    "pwsh": "7.4.13"
+  },
+  "command": {
+    "executable": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "arguments": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "F:\\1\\a\\agency-logs\\validation-probe\\validation-profile.ps1"],
+    "cwd": "F:\\1\\s",
+    "stageSelector": "PILOT_VALIDATION_STAGE"
+  },
+  "stages": [
+    {"stage": "fingerprint", "exitCode": 0, "logSha256": "97b004785b6d873db6848d7ed64151a3ae6e87016412fef67c6b83d73e661863"},
+    {"stage": "authentication-check", "exitCode": 0, "logSha256": "c82e04b8c882554e22c4bf3ecb4a1bf6ea6cd8eabf53f292a00bf7e78c1356fc"},
+    {"stage": "authentication", "exitCode": 0, "logSha256": "e86fca27bc5e1c69d6e57ca95e6dcab1bd70a21df5e44342608b2fd75ac74580"},
+    {"stage": "dependencies", "exitCode": 0, "logSha256": "ce71d16651319ebd83ab416bfc46009c59459cbf0b77c958f6ed28de2e849028"},
+    {"stage": "compile", "exitCode": 0, "logSha256": "f42040f52bf135ac87079a7a708a94912d16c4838f358ce4d608659910dbe500"},
+    {"stage": "policy", "exitCode": 0, "logSha256": "f185a97e28c110071e0893636c1fe37fe147573697022148097b93a9267ffb60"},
+    {"stage": "test", "exitCode": 0, "logSha256": "67056becdf073c32a6d24b079ad94e426fc0ed61bd76b1f1ab3f96245bfc72ed"}
+  ],
+  "testPopulation": {
+    "suites": 1,
+    "tests": 3,
+    "path": "tests/integration/contracts/apps/onenote/omni-onenote-bootstrap-progress.contract.test.ts"
+  },
+  "runnerSeconds": 1059.942,
+  "queueSeconds": 22.807,
+  "artifactFilesHashed": 3478,
+  "artifactBytesHashed": 5106403890,
+  "controllerAcceptance": true,
+  "sourceUnchanged": true,
+  "oldReceiptImported": false,
+  "privateEvidence": {
+    "collection": "agency-controller-validation-e2e-v3",
+    "outcomeArtifact": "outcome.json",
+    "outcomeSha256": "d9e4ffff3d5de0084572022ce3c422692b264420bd39710bf3455f94c4c7f116",
+    "operation": "0ddb5f223a3b75aebb0e49eaac505ee1a407c30179d0d25714cbe1712d5ea91f",
+    "acceptanceArtifact": "controller-acceptance-1792656862901.json",
+    "acceptanceSha256": "3a49dc4b444a23ef6b230b7d0b7da0eb9d129b88c553eca3b5ab656db135f250",
+    "observationArtifact": "observation-1792656783123.json",
+    "observationSha256": "c4daa1cd68b173365a64a7df91c49dfd380256992843c3e030d39787f995faad",
+    "requestSha256": "bda5cd98b06f4db5cb35f276f4cf133abfcca52d4b26a506b5ee8be4b5f674e8",
+    "contractSha256": "65379cfddec413d8260e2353d18d5e8498f175456041a0bf45333736f6224478"
+  },
+  "limitations": [
+    "The model read the native skill but did not author or repair product code.",
+    "Not evidence for remote authoring with local validation or a same-job/workspace author/validate/repair loop.",
+    "Not qualification for all OA gates, desktop/UI E2E, other repositories or arbitrary authored candidates.",
+    "Initial execute exited 1 on unavailable build identity; reconciliation and resume accepted the same single job without replacement or gate rerun.",
+    "Controller feature commit is isolated and is not claimed to be merged or production-ready.",
+    "Complete offline controller suite: 1131 tests, 1119 passed, 8 failed, 3 cancelled, 1 skipped; all failure causes remain unresolved.",
+    "Model tokens and credits were not measured; no monetary hard cap is established by this evidence.",
+    "Committed summary is audit metadata; original private evidence must remain accessible and independently rechecked."
+  ]
+}

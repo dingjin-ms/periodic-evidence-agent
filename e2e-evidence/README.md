@@ -35,3 +35,8 @@ for the original FILTER format); it is not a replacement for them.
 Do not manually mark a run successful. Generate the bundle only from a terminal
 `draft-pr-validated` controller result and retain the private request or artifact
 index required by its checker.
+
+The separate [remote Agency qualification register](agency-remote/README.md)
+indexes narrower execution-path evidence, including publication-free product
+validation. Those records are **not** evidence-to-Draft-PR proof bundles and
+must not be promoted to one or supplied as an acceptance receipt.

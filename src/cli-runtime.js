@@ -31,6 +31,8 @@ import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
 import { cleanupAgencyTransports } from './agency-transport-gc.js';
 import { reconcileAgencyRemoteJob } from './agency-remote-authoring.js';
+import { remoteAgencyQualification } from './agency-remote-qualification.js';
+import { runValidation } from './workers.js';
 import { describeAgent, describeAgents, agentInvocation, agentOperationResult, agentOperationError } from './agents.js';
 import { replayRecordedEvidence, replayRecordedReview } from './role-replay.js';
 import { continueRoleValidation } from './role-continuation.js';
@@ -63,7 +65,9 @@ const configIndex = args.indexOf('--config');
 const configFile = configIndex >= 0 ? args[configIndex + 1] :
 ['setup', 'bootstrap-repo', 'submit-reviewed-handoff', 'submit-filter-handoff',
   'workspace-gc', 'transport-gc', 'dispatch-ready', 'reconcile-remote-authoring',
-  'task-run', 'task-close', 'resource-abandon-preflight'].includes(action)
+  'task-run', 'task-close', 'resource-abandon-preflight',
+  'reconcile-remote-validation', 'validate-revision',
+  'qualify-remote-loop', 'qualify-remote-authoring'].includes(action)
     ? 'pilot.local.json' : 'pilot.example.json';
 function option(name) {
   const index = args.indexOf(name); return index < 0 ? null : args[index + 1];
@@ -301,6 +305,67 @@ try {
           authorizePush: args.includes('--authorize-push'),
           authorizeDraftPR: args.includes('--authorize-draft-pr')
         }); break;
+      case 'qualify-remote-authoring': {
+        requireThat(args.includes('--execute') !== args.includes('--resume'),
+          'Authoring qualification requires exactly one of --execute or --resume');
+        const request = input();
+        const repo = config.repositories.find(repository => repository.id === request?.repoId);
+        const { runAgencyWorkspaceAuthoring } = await import('./agency-workspace-authoring.js');
+        const validation = await runAgencyWorkspaceAuthoring(config, ledger, repo, request,
+          { resume: args.includes('--resume') });
+        result = {
+          schema: 'controller-workspace-authoring-result-v1', id: request.id,
+          state: validation.every(gate => gate.status === 'passed') ? 'completed' : 'blocked',
+          executionLocation: 'agency-remote', baseRevision: request.baseRevision,
+          sourceRevision: validation[0]?.sourceRevision, validation,
+          qualificationOnly: true, productionAssignment: false, publicationPerformed: false
+        };
+        break;
+      }
+      case 'qualify-remote-loop': {
+        requireThat(args.includes('--execute') !== args.includes('--resume'),
+          'Loop qualification requires exactly one of --execute or --resume');
+        const request = input();
+        const repo = config.repositories.find(repository => repository.id === request?.repoId);
+        const { runAgencyWorkspaceLoop } = await import('./agency-workspace-loop.js');
+        const validation = await runAgencyWorkspaceLoop(config, ledger, repo, request,
+          { resume: args.includes('--resume') });
+        result = {
+          schema: 'controller-workspace-loop-result-v1', id: request.id,
+          state: validation.every(gate => gate.status === 'passed') ? 'completed' : 'blocked',
+          executionLocation: 'agency-remote', baseRevision: request.baseRevision,
+          sourceRevision: validation[0]?.sourceRevision, validation,
+          qualificationOnly: true, productionAssignment: false, publicationPerformed: false
+        };
+        break;
+      }
+      case 'reconcile-remote-validation': {
+        const { reconcileAgencyRemoteValidation } = await import('./agency-remote-validation.js');
+        result = await reconcileAgencyRemoteValidation(config, ledger, input());
+        break;
+      }
+      case 'validate-revision': {
+        requireThat(args.includes('--execute') !== args.includes('--resume'),
+          'Validation-only execution requires exactly one of --execute or --resume');
+        const request = input();
+        const repo = config.repositories.find(repository => repository.id === request.repoId);
+        requireThat(request.schema === 'controller-validation-revision-v1' &&
+          typeof request.id === 'string' && /^[a-zA-Z0-9_.-]+$/.test(request.id) &&
+          /^[a-f0-9]{40}$/.test(request.revision ?? '') &&
+          typeof request.workspace === 'string' && resolve(request.workspace) === request.workspace &&
+          repo?.remoteValidation?.type === 'agency-remote',
+        'Validation-only entry requires an explicit remote repository, exact candidate and absolute workspace');
+        const validation = await runValidation(config, ledger,
+          { id: `validation-only:${request.id}`, workspace: request.workspace },
+          repo, request.revision, undefined, undefined, null, { resume: args.includes('--resume') });
+        result = {
+          schema: 'controller-validation-revision-result-v1', id: request.id,
+          state: validation.every(gate => gate.status === 'passed') ? 'completed' : 'blocked',
+          executionLocation: 'agency-remote', sourceRevision: request.revision, validation,
+          authoringPerformed: false, publicationPerformed: false
+        };
+        break;
+      }
       case 'one-shot-begin': result = beginOneShotCollection(config, ledger, input()); break;
       case 'one-shot-status': result = oneShotCollectionStatus(ledger, option('--run')); break;
       case 'one-shot-stop': result = stopOneShotCollection(ledger, option('--run')); break;
@@ -489,6 +554,7 @@ try {
             repoId: repo.id, selection: proposerExecutorFlight(repo) ?? 'legacy-per-task',
             readinessVerified: false
           })),
+          remoteAgencyQualification: remoteAgencyQualification(config),
           reviewMethod: config.reviewMethod, scheduleEnabled: config.schedule.enabled,
           icm: 'Explicit incident-created mode supports app-append receipt ingestion. Offline icm-replay remains audit-only. Legacy owner exports require saved-query verification; no helper launches an IcM connector.',
           validation: 'Fixed configured repo-native runners in isolated task workspaces; none assumed from repository names.',

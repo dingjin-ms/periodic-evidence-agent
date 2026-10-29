@@ -1,0 +1,83 @@
+{
+  "schema": "agency-submission-path-diagnostic-observation-v1",
+  "id": "oa-submission-path-diagnostic-20261026",
+  "repoId": "office-agent",
+  "result": "request-validation-and-historical-inspection-succeeded",
+  "qualifying": false,
+  "originalAttempt": "oa-validation-attempt-20261026",
+  "candidate": "f69c5497e0f260b04289c4615ffdf7dc9347645a",
+  "requestSha256": "d8563d954f3be97bd56f286c5f19507e973b458c55cdcaec31fd54b383068bdf",
+  "originalTransportReplay": {
+    "observedAt": "2026-10-26T10:36:04.728Z",
+    "finishedAt": "2026-10-26T10:36:33.102Z",
+    "controllerCommit": "397d0340fd581191658940779fadfe20eee2355d",
+    "committedTransportSha256": "00335c4cc2f6dfdccee4e8ce0e18e5601a4b1fc26191ea23f8ec0351453d7aac",
+    "checkoutTransportSha256": "bea9338ab6ad68d2d38b8923209b7a5cbb20ece6ee3b966fbc9d22927a11b1a2",
+    "checkoutDifferenceLimitedToLineEndings": true,
+    "sameReservedRequestBytes": true,
+    "validationRequests": 1,
+    "validationHttpStatus": 200,
+    "creationBoundaryReached": true,
+    "creationInterceptedBeforeNetworkDispatch": true,
+    "creationRequestsSent": 0,
+    "creationResponseFabricated": false,
+    "result": "validation-returned-and-creation-blocked"
+  },
+  "historicalInspection": {
+    "observedAt": "2026-10-26T10:39:02.714Z",
+    "finishedAt": "2026-10-26T10:39:19.312Z",
+    "controllerCommit": "4a34e9813f3c7526d343c2baf33d16bd823194bb",
+    "historicalQualification": "oa-fixed-candidate-remote-validation-20261022",
+    "methods": ["GET"],
+    "jobGetHttpStatus": 200,
+    "buildGetHttpStatus": 200,
+    "jobId": "office-aacaf920-0201-4d4b-8760-19d20e28764f",
+    "jobState": "Completed",
+    "jobResult": "Success",
+    "actualBuildId": 57844822,
+    "buildStatus": "completed",
+    "buildResult": "succeeded",
+    "pipelineDefinitionId": 38920,
+    "pipelineDefinitionRevision": 2,
+    "pipelineSourceVersion": "cab40c5d9e99797176194b90d20894ad0cc4e184",
+    "result": "historical-task-and-build-read"
+  },
+  "privateEvidence": [
+    {
+      "collection": "session-private-diagnostics-20261026",
+      "artifact": "diagnose-original-validation-transport-20261026.mjs",
+      "sha256": "1bde8119a13129cc3fddfcd01446b3269cd3a59b88ff9eaf1e3870c210ed6cea"
+    },
+    {
+      "collection": "agency-original-transport-validation-20261026-u4Ulsa",
+      "artifact": "outcome.json",
+      "sha256": "5328b302b692978f187d1ed63f5ac383d67c3d310c5435e8d2a4132b373fa00d"
+    },
+    {
+      "collection": "session-private-diagnostics-20261026",
+      "artifact": "inspect-accepted-validation-task-20261026.mjs",
+      "sha256": "f8e9c767b7a2e069e45cbf0f40e3966411101bac200d3cd9c2dc58e73ac4dc8a"
+    },
+    {
+      "collection": "session-private-diagnostics-20261026",
+      "artifact": "agency-historical-validation-inspection-20261026.json",
+      "sha256": "c15efa9bfe6bf01913dc4ca3464cb64db0e2e3d44ab0ecd08f266336dcfb6a57"
+    }
+  ],
+  "originalReservationModified": false,
+  "originalSubmissionReconciled": false,
+  "productGatesExecuted": false,
+  "controllerAcceptancePerformed": false,
+  "freshValidationProof": false,
+  "qualificationRegistryUpdated": false,
+  "productSourceEdited": false,
+  "publicationPerformed": false,
+  "tokenRecorded": false,
+  "limitations": [
+    "The replay exercised the original transport only through its request-validation phase; creation was deliberately intercepted before network dispatch.",
+    "The original TypeError did not recur in that exercised phase. Its original failure phase and cause remain unknown.",
+    "A currently successful request validation does not prove that a new creation request would succeed or that the original submission did not create a job.",
+    "The current transport could inspect the real historical successful job and pinned build. This corroborates the historical result but does not rerun product gates, reaccept its artifacts or establish fresh qualification.",
+    "No support request, replacement validation, new business assignment or live business E2E was performed."
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "schema": "agency-remote-nonqualifying-attempt-v1",
+  "repository": "office-agent",
+  "executionMode": "same-workspace-loop",
+  "qualification": "not-verified",
+  "date": "2026-10-23",
+  "controllerRevision": "1e328551b79e54f3539bf515480252acb9d39b68",
+  "jobId": "office-711a85bc-84f1-4460-8de9-6fc0959c4b49",
+  "buildId": 57942357,
+  "pipelineRevision": "26f825e966c86195b2843504c2b5e8b1e5d4c017",
+  "pipelineYamlSha256": "1978003a277bdcefd022a86a32f5ee744f63a7551260d53afaa41d5ec9679c70",
+  "runnerSha256": "804cc4e67b500e41ab7d2dde092c1b35f24ffb020bee704ad0496f431426e166",
+  "baseRevision": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+  "candidateRevision": "bceaf4c7b8ecb3f08f932bbdfbda3307804a4ecb",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "observed": {
+    "committedRefYamlPreviewHttpStatus": 200,
+    "yamlOverrideSupplied": false,
+    "additionalEditBuildPermissionGranted": false,
+    "requestSpecValidationHttpStatus": 200,
+    "agency": "Completed/Failure",
+    "actualBuild": "completed/succeeded",
+    "startTime": "2026-10-23T07:11:48.254129Z",
+    "finishTime": "2026-10-23T07:36:29.0093527Z",
+    "requiredNativeSkillsRead": 5,
+    "nativePlansRecorded": 1,
+    "baseline": {
+      "compileExitCode": 1,
+      "diagnostic": "TS2322",
+      "validationId": "880c859a54cef4d5ee5f646f0593497e8b0950836b76349fe83581802a53ddc2"
+    },
+    "candidate": {
+      "compileExitCode": 0,
+      "policyExitCode": 0,
+      "integrationTestExitCode": 0,
+      "validationId": "4c771f5a0894b60c644da8f134838d52a95680a72301de9e2b0a2fcfac3bd418"
+    },
+    "trustedPostAgent": {
+      "compileExitCode": 0,
+      "policyExitCode": 0,
+      "integrationTestExitCode": 0,
+      "suitesPassed": 1,
+      "testsPassed": 3,
+      "loopResultExported": true
+    },
+    "agentSessionTaskComplete": true,
+    "outerResultClassification": "failed",
+    "controllerAccepted": false,
+    "controllerError": "blocked-result",
+    "failureCategory": "remote-completion-versus-external-acceptance-contract"
+  },
+  "rootCause": {
+    "component": "remote task completion contract",
+    "cause": "The outer Agency result interpreted pending external controller acceptance as remote task failure. The controller correctly requires a successful terminal job before independent acceptance, creating a circular success condition.",
+    "remoteProductGateFailure": false,
+    "mcpTimeout": false,
+    "controllerVerifierBypassed": false
+  },
+  "limitations": [
+    "Actual repair and gates are recorded, but independent controller acceptance did not pass; this is not a qualifying E2E result.",
+    "No original result, Agency state, receipt, source or sealed artifact was rewritten to claim success.",
+    "A successful build and model task_complete do not override Agency Failure or the controller's rejection.",
+    "The correction must be independently tested and run with an explicit ordered remote-completion/local-acceptance contract.",
+    "Scope remains a bounded test-type repair, not general production authoring, all OA tests, desktop/UI or other repositories."
+  ],
+  "privateEvidence": {
+    "collection": "agency-workspace-loop-ticket-yaml-20261023",
+    "files": [
+      {
+        "basename": "committed-yaml-preview.json",
+        "sha256": "82b0fd6858729312f47411e77910d14e63e2e6c62be3ae26a84e64ca27a6e2f5"
+      },
+      {
+        "basename": "observation-1792741132400.json",
+        "sha256": "bb1d518047f81c90791e45bc655e705d6c613698b93731898b5340728e0baf81"
+      },
+      {
+        "basename": "loop-result.json",
+        "sha256": "383805646f83a5dab6b5a0194d44994fa6a0be3adc8157be1eeb6179144c4696"
+      },
+      {
+        "basename": "result.json",
+        "sha256": "194219209826c0ceef584b637e3d5e601822656c6ab9a5ac1e25dd2e0a9e9e61"
+      },
+      {
+        "basename": "events.jsonl",
+        "sha256": "ff62e351919ab5486f129f39506170786ade621ad795b78d909973b762dbe2c7"
+      },
+      {
+        "basename": "resume-2-stderr.log",
+        "sha256": "2557f32415ca4b66a684773c8bbe101ab21d9ba3a08d726caed793879823fa5f"
+      }
+    ]
+  }
+}

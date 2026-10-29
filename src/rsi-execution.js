@@ -311,21 +311,27 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     'RSI candidate needs a complete bounded skill decision', 'blocked-result');
   }
   async function phase(name, perform, reconcile = null) {
-    check();
+    remaining(execution);
     const operationId = `${id}:${name}`, file = join(directory, `${name}.json`);
     const original = row(ledger, operationId);
     if (existsSync(file)) {
       if (hostAction?.phase === name) requireThat(
         json(readHostResult(name)) === json(hostAction),
         'Host continuation conflicts with its completed phase', 'blocked-reconciliation');
-      const receipt = JSON.parse(readFileSync(file, 'utf8'));
+      const bytes = readFileSync(file), receipt = JSON.parse(bytes.toString('utf8')), sha256 = hash(bytes);
       requireThat(original && receipt.executionId === id && receipt.phase === name &&
         receipt.observationSha256 === execution.observationSha256 &&
-        (!original.sha256 || original.sha256 === hash(readFileSync(file))),
+        (!original.sha256 || original.sha256 === sha256),
       'RSI phase receipt changed', 'blocked-reconciliation');
-      ledger.finishOperation(operationId, 'completed', { file, sha256: hash(readFileSync(file)) });
+      // Completed replay is read-only; fresh admission still guards recovery and new work below.
+      if (original.state !== 'completed') {
+        check();
+        ledger.finishOperation(operationId, 'completed', { file, sha256 });
+      }
+      remaining(execution);
       return receipt.value;
     }
+    check();
     requireThat(!original || reconcile, 'RSI phase has an unknown prior effect; no automatic repeat',
       'blocked-reconciliation');
     const deadline = original?.deadline ?? Math.min(execution.deadline,
@@ -553,6 +559,7 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     }
     const baseline = await evaluate('baseline-evaluation', execution.baselineWorkspace, automation.baselineRevision);
     const updated = await evaluate('candidate-evaluation', execution.workspace, candidate.revision);
+    check();
     const comparison = compareRsiFlows(automation.evaluation, baseline, updated, {
       baselineRevision: automation.baselineRevision, candidateRevision: candidate.revision,
       observationSha256: execution.observationSha256, controller: execution.controller

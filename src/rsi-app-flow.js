@@ -171,21 +171,21 @@ export async function runAppRoleFlow(input, { admit, persist, hostInput, execute
     let unknown = false, failed = false;
     for (const step of selected.steps) {
       if (failed && step.operation !== 'app-end') continue;
-      admit();
       const key = hash(json([executionId, phase, selected.id, step.id]));
       const operationId = `rsi-app-flow:${key}`;
       const receiptFile = join(caseDirectory, `${step.id}.json`);
       const existing = ledger.db.prepare('SELECT state,detail FROM operations WHERE id=?').get(operationId);
       let result;
       if (existsSync(receiptFile)) {
-        const receipt = JSON.parse(readFileSync(receiptFile, 'utf8'));
+        const bytes = readFileSync(receiptFile), receipt = JSON.parse(bytes.toString('utf8'));
         requireThat(existing?.state === 'completed' && JSON.parse(existing.detail).sha256 ===
-          hash(readFileSync(receiptFile)) && receipt.revision === revision &&
+          hash(bytes) && receipt.revision === revision &&
           receipt.profileSha256 === hash(json(profile)) && receipt.observationSha256 === observationSha256,
         'App flow step receipt changed', 'blocked-reconciliation');
         result = roleResult(readRaw(receipt.artifact), step);
         artifacts.push(receipt.artifact);
       } else {
+        admit();
         requireThat(!existing, 'App flow step has an unknown prior effect; do not repeat it', 'blocked-reconciliation');
         let stepInput = step.input;
         const skill = describeAgent(step.role).skill;

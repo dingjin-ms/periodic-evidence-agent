@@ -1,6 +1,6 @@
-import test, { describe } from 'node:test';
+import test, { after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync,
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync,
   rmSync, renameSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,20 +13,39 @@ import { DatabaseSync } from 'node:sqlite';
 import { runCodingTask, closeCodingTask, monitorResourceLifecycle } from '../src/task-lifecycle.js';
 import { persistRunArtifact, completeRunEvidence, pruneState } from '../src/state-retention.js';
 
+const fixtureTemplateRoot = mkdtempSync(join(tmpdir(), 'f6-28cce0a9-template-'));
+const fixtureTemplateSource = join(fixtureTemplateRoot, 'source');
+let fixtureTemplate;
+
+after(() => rmSync(fixtureTemplateRoot, { recursive: true, force: true }));
+
+async function prepareFixtureTemplate() {
+  if (!fixtureTemplate) fixtureTemplate = (async () => {
+    mkdirSync(fixtureTemplateSource);
+    const git = async args => (await command('git',
+      ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args],
+      fixtureTemplateSource, 30000)).stdout.trim();
+    await git(['init', '-q']);
+    await git(['config', 'user.name', 'Synthetic']);
+    await git(['config', 'user.email', 'synthetic@example.test']);
+    writeFileSync(join(fixtureTemplateSource, '.gitignore'), 'node_modules/\n.store/\n');
+    writeFileSync(join(fixtureTemplateSource, 'source.txt'), 'synthetic');
+    await git(['add', '.']);
+    await git(['commit', '-qm', 'baseline']);
+    return { revision: await git(['rev-parse', 'HEAD']) };
+  })();
+  return fixtureTemplate;
+}
+
 async function fixture(t, kind = 'validation') {
+  const template = await prepareFixtureTemplate();
   const root = mkdtempSync(join(tmpdir(), 'f6-28cce0a9-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, 'source'), state = join(root, 'state');
-  mkdirSync(source);
+  cpSync(fixtureTemplateSource, source, { recursive: true });
   const git = async args => (await command('git',
     ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], source, 30000)).stdout.trim();
-  await git(['init', '-q']);
-  await git(['config', 'user.name', 'Synthetic']);
-  await git(['config', 'user.email', 'synthetic@example.test']);
-  writeFileSync(join(source, '.gitignore'), 'node_modules/\n.store/\n');
-  writeFileSync(join(source, 'source.txt'), 'synthetic');
-  await git(['add', '.']); await git(['commit', '-qm', 'baseline']);
-  const revision = await git(['rev-parse', 'HEAD']);
+  const revision = template.revision;
   const workspace = join(state, `${kind}-workspaces`, 'attempt');
   const resource = await createOwnedResource(state, { source, workspace, revision,
     kind, assignmentId: 'assignment', attemptId: 'attempt',

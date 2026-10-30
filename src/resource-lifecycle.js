@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { hash, json, now, requireThat, safeError, uuid } from './common.js';
-import { preparationGit, unregisterValidationWorktree } from './validation-workspace.js';
+import { gitDirectories, preparationGit, unregisterValidationWorktree } from './validation-workspace.js';
 
 const format = 'owned-resource-v1';
 const queues = new Map();
@@ -181,11 +181,8 @@ async function inspectGit(record, timeoutMs, checkClean = true) {
       check(record.kind !== 'task', 'Coding task lost registration before clean-source verification');
       return;
     }
-    const common = realpathSync(await preparationGit(record.workspace,
-      ['rev-parse', '--path-format=absolute', '--git-common-dir'], timeoutMs));
+    const { common, admin } = await gitDirectories(record.workspace, timeoutMs);
     check(common === record.commonDirectory, 'Resource belongs to a different Git owner');
-    const admin = realpathSync(await preparationGit(record.workspace,
-      ['rev-parse', '--absolute-git-dir'], timeoutMs));
     check(dirname(admin) === join(common, 'worktrees'), 'Unexpected resource Git administration path');
     if (record.adminDirectory) {
       check(admin === record.adminDirectory, 'Resource Git registration changed');

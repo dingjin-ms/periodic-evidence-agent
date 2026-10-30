@@ -249,6 +249,10 @@ test('app-hosted RSI claims and resumes in the existing app without a provider p
   assert.equal(first.modelExecuted, false);
   assert.equal(first.invocation.request.model, 'existing-copilot-app-model');
   assert.equal(first.invocation.launchAnotherModel, false);
+  const completedClones = () => ctx.ledger.db.prepare(
+    "SELECT id,state,detail,updated_at FROM operations WHERE kind IN ('rsi-candidate-clone','rsi-baseline-clone') ORDER BY id").all();
+  const originalClones = completedClones();
+  assert.equal(originalClones.length, 2);
   const request = first.invocation.request;
   const claim = { executionId: first.executionId, phase: 'authoring',
     requestSha256: first.invocation.sha256, hostSessionId: 'existing-app-session', action: 'claim' };
@@ -261,6 +265,7 @@ test('app-hosted RSI claims and resumes in the existing app without a provider p
   assert.equal(claimed.state, 'awaiting-host', JSON.stringify(claimed));
   assert.equal(claimed.invocation.hostSessionId, claim.hostSessionId);
   assert.equal(claimed.invocation.sha256, first.invocation.sha256);
+  assert.deepEqual(completedClones(), originalClones, 'host resumption must not relabel completed clone receipts');
   const foreign = await invoke({ ...claim, hostSessionId: 'different-app-session' });
   assert.equal(foreign.state, 'blocked');
   assert.equal(foreign.error.code, 'blocked-reconciliation');

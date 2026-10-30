@@ -11,7 +11,8 @@ const REGISTRATION_FILES = [
   `${APP}/declarative/catalog/reviewed-cases.json`,
   `${APP}/lifecycle/catalog.json`,
   `${APP}/declarative/excel-agent-capability-matrix.json`,
-  `${APP}/package.json`
+  `${APP}/package.json`,
+  'ooui/packages/declarative-e2e-reliability/src/support/excel-agent-case-tags.json'
 ];
 const FORMAT = '1js-declarative-e2e-v1';
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -102,6 +103,16 @@ function runYarn(root, request, args, cwd = root, environment = process.env) {
     windowsHide: true, timeout: commandBudget(request),
     maxBuffer: 16 * 1024 * 1024,
     env: { ...environment, PATH: `${path.dirname(process.execPath)}${path.delimiter}${environment.PATH ?? environment.Path ?? ''}` }
+  });
+}
+
+function validateCaseTags(root, request) {
+  const validator = inside(root,
+    'ooui/.devops/scripts/declarative-e2e-reliability/validate-excel-agent-case-tags.cjs');
+  return execFileSync(process.execPath, [validator], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true, timeout: request.options.commandTimeoutMs ?? 600000,
+    maxBuffer: 4 * 1024 * 1024
   });
 }
 
@@ -201,7 +212,10 @@ function selectCases(root, request, api) {
 function registrationUpdates(documents, selected, policy) {
   check(policy?.approved === true && ['P0', 'P1', 'P2'].includes(policy.priority),
     'Controller-owned registration requires an explicit repository policy approval.');
-  const [catalog, lifecycle, matrix, pkg] = structuredClone(documents);
+  check(policy.reason === undefined ||
+    (typeof policy.reason === 'string' && policy.reason.trim() && policy.reason.length <= 1024),
+  'An optional registration reason must be a bounded, non-empty owner explanation.');
+  const [catalog, lifecycle, matrix, pkg, suiteCatalog] = structuredClone(documents);
   check(catalog.schemaVersion === 1 && lifecycle.schemaVersion === 1 &&
     matrix.schemaVersion === 1 && Array.isArray(matrix.cases) &&
     catalog.packageName === '@1js/excel-agent-declarative-e2e' &&
@@ -210,6 +224,8 @@ function registrationUpdates(documents, selected, policy) {
   'Unsupported repository catalog/lifecycle schema; request an owner capability handoff.');
   assert.deepEqual(catalog, lifecycle,
     'Existing lifecycle/catalog drift must be resolved by its owner before registration.');
+  assert.deepEqual(catalog, suiteCatalog,
+    'Existing suite-owned catalog drift must be resolved by its owner before registration.');
   let number = Math.max(0, ...[...catalog.cases, ...(catalog.disabledCases ?? [])]
     .map(item => item.number));
   check(Number.isInteger(number), 'Catalog case numbers are invalid.');
@@ -227,13 +243,20 @@ function registrationUpdates(documents, selected, policy) {
         scenario.tags.includes('omni-observing') &&
         !scenario.tags.includes('omni-blocking'),
       'New regression cases must be explicitly observing, not production-blocking.');
+      const needsReason = ['omni', 'arcadia'].some(group =>
+        (catalog.tagGroups?.[group] ?? []).some(tag =>
+          tag !== `${group}-supported` && scenario.tags.includes(tag)));
+      check(!needsReason || policy.reason,
+        `Registration needs an explicit owner reason for unsupported experience tags: ${scenario.id}`);
       const item = {
         number: ++number, semanticId: scenario.id, priority: policy.priority,
         topology: 'AAD', title: scenario.name, command,
-        tags: scenario.tags, caseKey: scenario.id
+        tags: scenario.tags, caseKey: scenario.id,
+        ...(policy.reason === undefined ? {} : { reason: policy.reason })
       };
       catalog.cases.push(item);
       lifecycle.cases.push(structuredClone(item));
+      suiteCatalog.cases.push(structuredClone(item));
     }
     const nativeCommand = `cross-env EXCEL_AGENT_DECLARATIVE_SCENARIO=${scenario.id} yarn test:e2e`;
     check(!pkg.scripts[command] || pkg.scripts[command] === nativeCommand,
@@ -252,7 +275,7 @@ function registrationUpdates(documents, selected, policy) {
       matrix.cases.push(contract);
     }
   }
-  return [catalog, lifecycle, matrix, pkg];
+  return [catalog, lifecycle, matrix, pkg, suiteCatalog];
 }
 
 function assertExecution(summary, selected, readAttachment) {
@@ -550,6 +573,7 @@ async function main() {
     'Workspace does not match the exact requested revision.');
   check(git(root, ['merge-base', '--is-ancestor', request.baseRevision, request.sourceRevision]) === '',
     'Requested validation revision is not descended from the qualified source.');
+  if (action === 'validate') validateCaseTags(root, request);
   Object.assign(process.env, {
     DONT_UPDATE_ENV: 'true', XLO_OMNI_FLIGHT: 'true',
     XLO_SHARED_AGENT_SHELL_FLIGHT: 'true',
@@ -574,6 +598,7 @@ async function main() {
       runYarn(root, request, ['prettier', '--write',
         ...changed.map(file => path.relative(path.join(root, 'ooui'), path.join(root, file)))],
       path.join(root, 'ooui'));
+    validateCaseTags(root, request);
     console.log(`PILOT_DECLARATIVE_REGISTRATION:${JSON.stringify({
       caseIds: selected.map(item => item.scenario.id), changedFiles: sorted(changed),
       fileSha256: Object.fromEntries(changed.map(file =>
@@ -640,7 +665,7 @@ async function main() {
 module.exports = {
   APP, SCENARIOS, REGISTRATION_FILES, FORMAT, changedScenarios, validateRequest,
   registrationUpdates, assertExecution, assertBrowserCleanup, selectCases, nativeApi,
-  assertAdditiveShared, nativeUnitEnvironment, runNativeAttempt, nativeProgress,
+  assertAdditiveShared, nativeUnitEnvironment, validateCaseTags, runNativeAttempt, nativeProgress,
   recordControllerInterruption, main, profileFailure
 };
 if (require.main === module) {

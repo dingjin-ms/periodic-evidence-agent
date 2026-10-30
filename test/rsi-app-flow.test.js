@@ -192,6 +192,21 @@ test('semantic yields resume completed role steps without executing them twice',
   assert.equal(request.task.role, 'filter');
   assert.equal(request.task.publicationAllowed, false);
   assert.equal(request.task.deadline, ctx.input.deadline);
+  const readRaw = ctx.dependencies.readRaw;
+  let changedAfterReplay = false;
+  ctx.dependencies.readRaw = reference => {
+    const value = readRaw(reference);
+    changedAfterReplay = true;
+    return value;
+  };
+  ctx.dependencies.admit = () => {
+    if (changedAfterReplay) throw new PilotError('blocked-reconciliation', 'Source changed during receipt replay');
+    return 10000;
+  };
+  await assert.rejects(runAppRoleFlow(ctx.input, ctx.dependencies), { code: 'blocked-reconciliation' });
+  assert.equal(ctx.calls.length, 1, 'replaying a receipt cannot admit new work without a fresh guard');
+  ctx.dependencies.readRaw = readRaw;
+  ctx.dependencies.admit = () => 10000;
   ctx.dependencies.hostInput = async () => ({});
   const result = await runAppRoleFlow(ctx.input, ctx.dependencies);
   assert.equal(ctx.calls.length, 9);

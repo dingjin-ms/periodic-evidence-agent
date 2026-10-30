@@ -44,15 +44,18 @@ const selected = [{ file, sha256: 'b'.repeat(64), scenario, entry }];
 function documents() {
   const catalog = {
     schemaVersion: 1, packageName: '@1js/excel-agent-declarative-e2e',
+    tagGroups: { omni: ['omni-supported', 'omni-capability-gap'],
+      arcadia: ['arcadia-supported', 'arcadia-ongoing'] },
     sourceTestVerb: 'test:e2e:excel-agent:declarative', cases: [],
     disabledCases: [{ number: 7, semanticId: 'excel-agent.aad.disabled', title: 'Keep disabled' }]
   };
-  return [catalog, structuredClone(catalog), { schemaVersion: 1, cases: [] }, { scripts: {} }];
+  return [catalog, structuredClone(catalog), { schemaVersion: 1, cases: [] },
+    { scripts: {} }, structuredClone(catalog)];
 }
 const policy = { approved: true, priority: 'P1' };
 
-for (const failure of [false, true]) {
-  test(`standalone native preflight ${failure ? 'stops with sanitized typecheck evidence' :
+for (const failure of [null, 'case-tags', 'typecheck']) {
+  test(`standalone native preflight ${failure ? `stops with sanitized ${failure} evidence` :
     'loads and selects before existing checks without executing cases'}`, () => {
     const calls = [], lines = [];
     const request = { options: { installDependencies: false, yarnEntryPoint: 'synthetic-yarn.cjs' } };
@@ -63,6 +66,12 @@ for (const failure of [false, true]) {
     const profile = {
       APP: native.APP,
       validateRequest: value => value,
+      validateCaseTags: () => {
+        calls.push('case-tags');
+        if (failure === 'case-tags') throw Object.assign(new Error('SECRET_MUST_NOT_PERSIST'), {
+          status: 1, stderr: 'SECRET_MUST_NOT_PERSIST'
+        });
+      },
       nativeApi: () => {
         calls.push('load');
         assert.equal(runtime.env.EXCELAGENT_CDP_ENDPOINT, undefined);
@@ -77,23 +86,23 @@ for (const failure of [false, true]) {
         name === 'node:child_process' ? {
           execFileSync: (_executable, args) => {
             calls.push(args.at(-1));
-            if (failure) throw Object.assign(new Error('SECRET_MUST_NOT_PERSIST'), {
+            if (failure === 'typecheck') throw Object.assign(new Error('SECRET_MUST_NOT_PERSIST'), {
               status: 2, stdout: 'SECRET_MUST_NOT_PERSIST error TS2307'
             });
           }
         } : require(name),
       process: runtime, console: { log: line => lines.push(line) }
     });
-    assert.deepEqual(calls, failure
-      ? ['load', 'select', 'typecheck']
-      : ['load', 'select', 'typecheck', 'declarative:validate-repair']);
+    assert.deepEqual(calls, failure === 'case-tags' ? ['case-tags'] : failure
+      ? ['case-tags', 'load', 'select', 'typecheck']
+      : ['case-tags', 'load', 'select', 'typecheck', 'declarative:validate-repair']);
     assert(!lines.join('\n').includes('SECRET_MUST_NOT_PERSIST'));
     if (failure) {
       const diagnostic = JSON.parse(lines.find(line =>
         line.startsWith('PILOT_PREFLIGHT_FAILURE:')).split('PILOT_PREFLIGHT_FAILURE:')[1]);
-      assert.equal(diagnostic.stage, 'typecheck');
-      assert.equal(diagnostic.exitCode, 2);
-      assert.deepEqual(diagnostic.typeErrors, ['TS2307']);
+      assert.equal(diagnostic.stage, failure);
+      assert.equal(diagnostic.exitCode, failure === 'case-tags' ? 1 : 2);
+      assert.deepEqual(diagnostic.typeErrors, failure === 'typecheck' ? ['TS2307'] : []);
       assert.equal(runtime.exitCode, 1);
       assert(!lines.includes('PILOT_PREFLIGHT_NATIVE:passed'));
     } else {
@@ -129,6 +138,8 @@ test('registration enrolls only the selected scenario and preserves disabled his
   const result = native.registrationUpdates(original, selected, policy);
   assert.equal(original[0].cases.length, 0);
   assert.deepEqual(result[0], result[1]);
+  assert.deepEqual(result[0], result[4]);
+  assert.deepEqual(result[4].disabledCases, original[4].disabledCases);
   assert.deepEqual(result[0].disabledCases, original[0].disabledCases);
   assert.equal(result[0].cases[0].number, 8);
   assert.equal(result[0].cases[0].priority, 'P1');
@@ -149,10 +160,105 @@ test('registration rejects unapproved metadata, blocking newcomers and disabled 
   const disabled = documents();
   disabled[0].disabledCases[0].semanticId = CASE;
   disabled[1] = structuredClone(disabled[0]);
+  disabled[4] = structuredClone(disabled[0]);
   assert.throws(() => native.registrationUpdates(disabled, selected, policy), /re-enable/);
   const drift = documents();
   drift[1].cases.push({ semanticId: CASE });
   assert.throws(() => native.registrationUpdates(drift, selected, policy), /drift/);
+});
+
+test('registration fails closed on missing or divergent suite-owned catalogs', () => {
+  for (const mutate of [
+    docs => docs.pop(),
+    docs => { docs[4].schemaVersion = 2; },
+    docs => { docs[4].packageName = '@1js/foreign-suite'; },
+    docs => { docs[4].sourceTestVerb = 'test:e2e'; },
+    docs => { docs[4].cases.push({ semanticId: 'excel-agent.aad.unregistered' }); },
+    docs => { docs[4].disabledCases[0].title = 'Changed history'; }
+  ]) {
+    const docs = documents();
+    mutate(docs);
+    const before = structuredClone(docs);
+    assert.throws(() => native.registrationUpdates(docs, selected, policy), /suite-owned.*drift/);
+    assert.deepEqual(docs, before);
+  }
+});
+
+test('registration requires an explicit bounded owner reason for unsupported experiences', () => {
+  const ongoing = structuredClone(selected);
+  ongoing[0].scenario.tags = ['omni-supported', 'arcadia-ongoing', 'omni-observing'];
+  assert.throws(() => native.registrationUpdates(documents(), ongoing, policy), /owner reason/);
+  for (const reason of ['', ' ', false, 'x'.repeat(1025)])
+    assert.throws(() => native.registrationUpdates(documents(), ongoing,
+      { ...policy, reason }), /owner explanation/);
+  const reason = 'Secondary experience has not been qualified.';
+  const registered = native.registrationUpdates(documents(), ongoing, { ...policy, reason });
+  for (const index of [0, 1, 4]) assert.equal(registered[index].cases[0].reason, reason);
+  const retained = native.registrationUpdates(registered, ongoing, { ...policy, reason: 'Changed' });
+  for (const index of [0, 1, 4]) assert.equal(retained[index].cases[0].reason, reason);
+});
+
+test('case-tag gate invokes the source-owned validator and propagates its failure', t => {
+  const root = mkdtempSync(join(tmpdir(), 'onejs-case-tags-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const validator = join(root, 'ooui', '.devops', 'scripts',
+    'declarative-e2e-reliability', 'validate-excel-agent-case-tags.cjs');
+  mkdirSync(dirname(validator), { recursive: true });
+  writeFileSync(validator, 'console.log("synthetic catalog parity passed");\n');
+  assert.match(String(native.validateCaseTags(root, { options: {} })), /catalog parity passed/);
+  writeFileSync(validator, 'console.error("synthetic catalog drift"); process.exitCode = 7;\n');
+  assert.throws(() => native.validateCaseTags(root, { options: {} }),
+    error => error.status === 7 && String(error.stderr).includes('catalog drift'));
+});
+
+test('final-SHA validation stops catalog drift before native loading or success receipts', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'onejs-case-tags-main-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const validator = join(root, 'ooui', '.devops', 'scripts',
+    'declarative-e2e-reliability', 'validate-excel-agent-case-tags.cjs');
+  mkdirSync(dirname(validator), { recursive: true });
+  writeFileSync(validator, '// Synthetic source-owned validator.\n');
+  const revision = 'a'.repeat(40), calls = [], lines = [];
+  const runtime = {
+    execPath: process.execPath, cwd: () => root,
+    env: { PILOT_DECLARATIVE_REQUEST: json({
+      format: native.FORMAT, assignmentId: 'synthetic', baseRevision: revision,
+      sourceRevision: revision, evidenceIds: ['evidence'], inputItemIds: ['item'],
+      changedFiles: [file], options: {
+        maxCases: 1, yarnEntryPoint: join(root, 'yarn.cjs'),
+        cdpEndpoint: 'http://127.0.0.1:9222', installDependencies: true
+      }
+    }) }
+  };
+  const module = { exports: {} };
+  const mockedRequire = name => name === 'node:child_process' ? {
+    execFileSync: (executable, args) => {
+      if (executable === 'git') return args.includes('rev-parse') ? revision : '';
+      calls.push('case-tags');
+      throw Object.assign(new Error('synthetic catalog drift SECRET_MUST_NOT_PERSIST'),
+        { status: 7 });
+    }
+  } : name === 'node:module' ? {
+    createRequire: () => { calls.push('native-load'); throw new Error('Unexpected native load'); }
+  } : require(name);
+  mockedRequire.main = module;
+  runInNewContext(readFileSync(new URL('../scripts/validation/1js-declarative-e2e.cjs',
+    import.meta.url), 'utf8'), {
+    require: mockedRequire, module, process: runtime, URL, Buffer,
+    console: { log: line => lines.push(line), error: line => lines.push(line) }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['case-tags']);
+  assert.equal(runtime.exitCode, 1);
+  const prefix = 'PILOT_VALIDATION_PROFILE_ERROR: ';
+  const failures = lines.filter(line => line.startsWith(prefix));
+  assert.equal(failures.length, 1);
+  const diagnostic = JSON.parse(failures[0].slice(prefix.length));
+  assert.equal(diagnostic.stage, 'profile');
+  assert.equal(diagnostic.exitCode, 7);
+  assert.equal(diagnostic.message.sha256, hash('synthetic catalog drift SECRET_MUST_NOT_PERSIST'));
+  assert(!lines.join('\n').includes('SECRET_MUST_NOT_PERSIST'));
+  assert(!lines.some(line => /PILOT_DECLARATIVE_(?:REGISTRATION|RECEIPT):/.test(line)));
 });
 
 test('registration cannot weaken prior assertions, cleanup, tags or identity', () => {
@@ -385,6 +491,10 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
     const scenarioFile = join(root, file);
     mkdirSync(dirname(scenarioFile), { recursive: true });
     writeFileSync(scenarioFile, 'synthetic L3 declaration');
+    const validator = join(root, 'ooui', '.devops', 'scripts',
+      'declarative-e2e-reliability', 'validate-excel-agent-case-tags.cjs');
+    mkdirSync(dirname(validator), { recursive: true });
+    writeFileSync(validator, '// Synthetic source-owned validator.\n');
     const declarationSha = hash(readFileSync(scenarioFile));
     const outputRoot = join(root, 'output');
     const yarnEntryPoint = join(root, 'yarn.cjs');
@@ -414,7 +524,7 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
         return { sanitizeDiagnosticText: () => '[sanitized synthetic diagnostic]' };
       throw new Error(`Unexpected synthetic module: ${name}`);
     };
-    let inventories = 0;
+    let inventories = 0, caseTagChecks = 0;
     const context = {
       module: { exports: {} }, process: runtime, Buffer, URL, AbortSignal,
       console: { log() {} },
@@ -430,6 +540,11 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
         return { execFileSync: (executable, args) => {
           if (executable === 'git')
             return args.includes('rev-parse') ? request.sourceRevision : '';
+          if (args[0] === validator) {
+            caseTagChecks++;
+            assert.equal(inventories, 0);
+            return '';
+          }
           if (!args.includes('declarative:local')) return '';
           const batch = join(outputRoot, 'batch');
           mkdirSync(batch);
@@ -467,6 +582,7 @@ for (const condition of ['timeout-leftover', 'failed-restored', 'passed-leftover
       await assert.rejects(context.module.exports.main(), /Native attempt failed/);
       assert(!existsSync(join(outputRoot, 'receipt.json')));
     }
+    assert.equal(caseTagChecks, 1);
     assert.equal(inventories, 2);
   });
 }
@@ -559,6 +675,15 @@ test('built-in profile is packaged once, content-bound and qualification include
   assert.equal(raw.profileSha256, hash(readFileSync(ctx.gate.profilePath)));
   assert.deepEqual(raw.args, ['{profile}']);
   configureDeclarativeGate(raw, join(ctx.root, 'config.json'));
+  const withoutReason = repositoryValidationContract(ctx.repo).sha256;
+  raw.declarativeE2E.registration.reason = 'Secondary experience is not qualified.';
+  configureDeclarativeGate(raw, join(ctx.root, 'config.json'));
+  assert.notEqual(repositoryValidationContract(ctx.repo).sha256, withoutReason);
+  for (const reason of ['', ' ', false, 'x'.repeat(1025)])
+    assert.throws(() => configureDeclarativeGate({
+      ...raw, declarativeE2E: { ...raw.declarativeE2E,
+        registration: { ...raw.declarativeE2E.registration, reason } }
+    }, join(ctx.root, 'config.json')), /bounded.*policy/);
   assert.throws(() => configureDeclarativeGate({ ...raw, args: ['arbitrary'] },
     join(ctx.root, 'config.json')), /owns its profile/);
 });

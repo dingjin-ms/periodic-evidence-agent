@@ -827,8 +827,10 @@ test('remote completion is not controller acceptance and cannot override a faile
   f.contract.request.metadata.completionPolicySha256 = hash(loopCompletionInstructions);
   assert.doesNotThrow(() => workspaceLoopContract(f.repo, f.request()));
   f.observation.job.result = 'Failure';
-  await assert.rejects(f.verify(), /identity is not independently qualified/);
+  f.observation.build.result = 'failed';
+  await assert.rejects(f.verify(), /qualified remote job failed: job=Failure, build=failed/);
   f.observation.job.result = 'Success';
+  f.observation.build.result = 'succeeded';
   f.result.controllerAcceptance = true;
   await f.seal();
   await assert.rejects(f.verify(), /trusted loop manifest/);

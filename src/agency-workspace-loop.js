@@ -147,8 +147,8 @@ async function verifyProductLoop(contract, directory, observation, expectedJobId
   const { job, build, timeline, logs, artifacts } = observation, p = contract.pipeline;
   const native = authoring ? contract.loop.authoring.nativeWorkflow : undefined;
   const allowedPaths = [contract.loop.allowedPath, ...(native ? [native.cardPath] : [])];
-  requireThat(job?.jobId === expectedJobId && job.state === 'Completed' && job.result === 'Success' &&
-    build?.status === 'completed' && build.result === 'succeeded' &&
+  requireThat(job?.jobId === expectedJobId && job.state === 'Completed' &&
+    build?.status === 'completed' &&
     job.pipelineRun?.runId === build.id && job.pipelineRun.definitionId === p.definitionId &&
     build.definitionId === p.definitionId && build.definitionRevision === p.definitionRevision &&
     build.sourceVersion === p.revision && build.sourceBranch === p.ref &&
@@ -156,6 +156,9 @@ async function verifyProductLoop(contract, directory, observation, expectedJobId
     Array.isArray(artifacts) && Array.isArray(timeline) && Array.isArray(logs) &&
     artifacts.filter(artifact => artifact.name === `${p.artifactPrefix}${build.id}`).length === 1,
   'The loop job/build/source/artifact identity is not independently qualified', 'blocked-result');
+  requireThat(job.result === 'Success' && build.result === 'succeeded',
+    `The qualified remote job failed: job=${job.result ?? 'unknown'}, build=${build.result ?? 'unknown'}`,
+    'blocked-result');
   const elapsed = Date.parse(build.finishTime) - Date.parse(build.startTime);
   requireThat(Number.isFinite(elapsed) && elapsed > 0 && elapsed <= contract.maximumRunnerMinutes * 60000 &&
     Date.parse(build.queueTime ?? build.startTime) >= Date.parse(reservedAt) - 120000,

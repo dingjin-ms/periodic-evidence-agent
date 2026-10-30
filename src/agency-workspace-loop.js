@@ -259,16 +259,6 @@ async function verifyProductLoop(contract, directory, observation, expectedJobId
     baseline.baseRevision === contract.candidate && Array.isArray(baseline.changedFiles) &&
     cards.strict === false && cards.scoreGateResult === 'passed',
   'The required source-bound native skill inspections did not complete', 'blocked-result');
-  for (const path of contract.sourceInputs) {
-    requireThat(/^[a-f0-9]{64}$/.test(prepared.inputs?.[path] ?? '') &&
-      prepared.sourceBlobs?.[path] === (await git(workspace, ['rev-parse', `${contract.candidate}:${path}`])).trim(),
-    'Prepared native skill, dependency or validation input is not bound to the base tree', 'blocked-result');
-    if (authoring && contract.loop.requiredSkillPaths.includes(path)) {
-      const source = await git(workspace, ['show', `${contract.candidate}:${path}`]);
-      requireThat(completeSourceRead(state.skillReadRanges?.[path], source.split('\n').length),
-        'The complete pinned native skill documents were not read', 'blocked-result');
-    }
-  }
   const checkStages = (records, names, candidate, fitnessSourcePath) => {
     requireThat(Array.isArray(records) && records.length === names.length &&
       records.every((record, index) => record.stage === names[index] &&
@@ -285,6 +275,56 @@ async function verifyProductLoop(contract, directory, observation, expectedJobId
   };
   checkStages(prepared.stages, preparationStages, contract.candidate);
   checkStages(result.stages, gateStages, result.candidate);
+  if (native) for (const [index, round] of result.rounds.entries()) {
+    if (!round.passed) continue;
+    requireThat(Array.isArray(round.nativeFitness) && round.nativeFitness.length === native.fitness.length &&
+      round.nativeReview?.completed === true,
+    'A green baseline cannot replace both native fitness probes and independent coverage review',
+    'blocked-result');
+    for (const [probeIndex, record] of round.nativeFitness.entries()) {
+      const probe = native.fitness[probeIndex], command = record.command;
+      checkStages(record.stages, ['compile', 'test'], round.candidate, probe.path);
+      requireThat(json(read(join(root, `fitness-${index}-${probe.kind}-stages.json`))) === json(record.stages),
+        'Native fitness stages did not execute inside the corresponding approved probe', 'blocked-result');
+      requireThat(record.kind === probe.kind && record.path === probe.path &&
+        /^[a-f0-9]{64}$/.test(record.sourceBeforeSha256 ?? '') &&
+        record.sourceAfterSha256 === record.sourceBeforeSha256 &&
+        json(command.arguments) === json([
+          win32.join(m.workspace, ...'docs/skills/Integration-test-core/scripts/probe-fitness.mjs'.split('/')),
+          '--file', probe.path, '--kind', probe.kind, '--find', probe.find,
+          '--replace', probe.replace, '--no-baseline', '--json', '--',
+          ...fitnessTargetCommand(m, index, probe.kind, command.executable)
+        ]),
+      'Native fitness source, exact approved patch, trusted command, native result or provenance changed',
+      'blocked-result');
+      requireFitnessOutcome(record, contract.testPopulation,
+        stage => readFileSync(join(root, stage.log), 'utf8'));
+    }
+    const review = round.nativeReview, command = review.command;
+    const request = read(join(root, `review-request-${index}.json`));
+    const privateDirectory = win32.join(win32.dirname(m.directory), `pilot-native-review-private-${review.sessionId}`);
+    const diagnosticDirectory = win32.join(privateDirectory, 'logs');
+    requireThat(review.sessionId !== m.sessionId && request.sessionId === review.sessionId &&
+      request.round === index && request.candidate === round.candidate &&
+      review.completed === true && review.candidate === round.candidate &&
+      json(command.arguments) === json(nativeReviewArguments(m, review.sessionId, diagnosticDirectory)) &&
+      m.requiredSkillPaths.every(path => /^[a-f0-9]{64}$/.test(review.reads?.[path]?.sha256 ?? '')) &&
+      review.reads?.[m.allowedPath]?.sha256 === fileHash('candidate.test.ts') &&
+      review.reads?.[native.cardPath]?.sha256 === fileHash('candidate.card.md') &&
+      Date.parse(result.stages[0].startedAt) >= Date.parse(command.finishedAt),
+    'Independent native review process, new session, exact model/tools, source-bound report or exit changed',
+    'blocked-result');
+  }
+  for (const path of contract.sourceInputs) {
+    requireThat(/^[a-f0-9]{64}$/.test(prepared.inputs?.[path] ?? '') &&
+      prepared.sourceBlobs?.[path] === (await git(workspace, ['rev-parse', `${contract.candidate}:${path}`])).trim(),
+    'Prepared native skill, dependency or validation input is not bound to the base tree', 'blocked-result');
+    if (authoring && contract.loop.requiredSkillPaths.includes(path)) {
+      const source = await git(workspace, ['show', `${contract.candidate}:${path}`]);
+      requireThat(completeSourceRead(state.skillReadRanges?.[path], source.split('\n').length),
+        'The complete pinned native skill documents were not read', 'blocked-result');
+    }
+  }
   requireThat([...prepared.stages, ...result.stages].every(record => record.exitCode === 0) &&
     result.rounds.length >= (authoring ? 1 : 2) &&
     result.rounds.length <= contract.loop.maximumRepairs + (authoring ? 1 : 2) &&

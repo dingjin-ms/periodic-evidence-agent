@@ -151,8 +151,8 @@ test('test-only profile continuation rejects content drift in either profile', t
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const original = readFileSync('scripts/validation/1js-sdx-excel-integration.ps1', 'utf8');
   const preparationChange = original.replace(
-    "Invoke-Checked $yarn workspace '@1js/jest-config' build",
-    "Invoke-Checked $yarn workspace '@1js/jest-config' different-build");
+    "'lib/tsconfig.tsbuildinfo'",
+    "'lib/different.tsbuildinfo'");
   assert.notEqual(preparationChange, original);
   const corrected = preparationChange.replace(
     '--runInBand --passWithNoTests=false',
@@ -166,7 +166,7 @@ test('test-only profile continuation rejects content drift in either profile', t
   writeFileSync(previous.profilePath, preparationChange);
   assert.throws(() => verifyTestOnlyProfileChange(previous, next), /unchanged content-bound profiles/);
   previous.profileSha256 = hash(preparationChange);
-  writeFileSync(next.profilePath, `${corrected}\n`);
+  writeFileSync(next.profilePath, `${corrected}# content drift\n`);
   assert.throws(() => verifyTestOnlyProfileChange(previous, next), /unchanged content-bound profiles/);
 });
 test('test-only profile continuation verifies outputs and preserves the original receipt', async t => {

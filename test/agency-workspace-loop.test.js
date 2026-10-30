@@ -153,7 +153,7 @@ console.log(JSON.stringify({ matchCount: 1, matches: [{ project: 'agents/${proje
       replace: kind === 'mutation' ? 'const route = false;' : 'const route = Boolean(1);'
     })),
     reviewerAgentPath: 'plugins/native/agents/reviewer.md', reviewerAgentSha256: loopDigest(nativeReviewerAgent),
-    reviewerModel: 'synthetic-fixture-only',
+    reviewerModel: 'synthetic-fixture-only', reviewerReasoningEffort: 'medium', reviewerContext: 'default',
     coverageGoal: 'Append the approved caller regression case; preserve existing owner coverage.'
   } : undefined;
   if (nativeWorkflow) {
@@ -365,6 +365,8 @@ test('independent native review cannot write or submit without complete fresh so
   assert.ok(args.includes('--available-tools') && args.includes('review/*'));
   assert.equal(args[args.indexOf('--agent') + 1], f.m.reviewAgentSpec);
   assert.equal(args[args.indexOf('--source') + 1], 'spec');
+  assert.equal(args[args.indexOf('--reasoning-effort') + 1], 'medium');
+  assert.equal(args[args.indexOf('--context') + 1], 'default');
   assert.equal(args[args.indexOf('--allow-tool') + 1], 'review');
   assert.throws(() => nativeReviewArguments(f.m, f.m.sessionId, 'private'), /new session/);
 });

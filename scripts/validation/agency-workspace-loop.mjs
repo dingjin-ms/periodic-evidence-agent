@@ -181,6 +181,9 @@ export function requireNativeWorkflow(value, projectPath) {
     sourcePath(value.reviewerAgentPath) && value.reviewerAgentPath.includes('/agents/') &&
     value.reviewerAgentPath.endsWith('.md') && value.reviewerAgentSha256 === loopDigest(nativeReviewerAgent) &&
     typeof value.reviewerModel === 'string' && /^[a-zA-Z0-9_.-]{1,100}$/.test(value.reviewerModel) &&
+    (value.reviewerReasoningEffort === undefined ||
+      ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.reviewerReasoningEffort)) &&
+    (value.reviewerContext === undefined || ['default', 'long_context'].includes(value.reviewerContext)) &&
     (value.coverageGoal === undefined ||
       typeof value.coverageGoal === 'string' && value.coverageGoal.trim().length > 0 &&
       value.coverageGoal.length <= 8000) &&
@@ -895,10 +898,15 @@ function authoringScope(m) {
 export function nativeReviewArguments(m, sessionId, diagnosticDirectory) {
   check(/^[a-f0-9-]{36}$/.test(sessionId) && sessionId !== m.sessionId,
     'The independent reviewer requires a new session identity.');
+  const modelArguments = ['--model', m.authoring.nativeWorkflow.reviewerModel];
+  if (m.authoring.nativeWorkflow.reviewerReasoningEffort)
+    modelArguments.push('--reasoning-effort', m.authoring.nativeWorkflow.reviewerReasoningEffort);
+  if (m.authoring.nativeWorkflow.reviewerContext)
+    modelArguments.push('--context', m.authoring.nativeWorkflow.reviewerContext);
   return ['--no-aec', '--log-dir', diagnosticDirectory, 'copilot',
     '--profile-only', `controller-native-review-${sessionId}`, '--no-default-mcps', '--no-config-plugins',
     '--source', 'spec', '--agent', m.reviewAgentSpec,
-    '--session-id', sessionId, '--model', m.authoring.nativeWorkflow.reviewerModel,
+    '--session-id', sessionId, ...modelArguments,
     '--no-custom-instructions', '--no-ask-user', '--no-auto-update',
     '--available-tools', 'review/*', '--allow-tool', 'review', '--deny-tool', 'shell', '--deny-tool', 'write',
     '--output-format', 'json', '-p',

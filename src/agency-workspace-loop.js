@@ -112,8 +112,12 @@ function productLoopContract(repo, request, authoring) {
       `\n<approved-evidence-base64>\n${readFileSync(request.evidencePath).toString('base64')}\n</approved-evidence-base64>\n`),
     'Request-tool authoring must carry the complete approved evidence in the private request', 'blocked-validation');
     requireNativeWorkflow(a.nativeWorkflow, a.projectPath);
-    if (a.nativeWorkflow) requireThat(a.nativeWorkflow.reviewerModel === contract.request.modelConfiguration?.model,
-      'The independent reviewer must use the explicitly pinned approved model', 'blocked-validation');
+    if (a.nativeWorkflow) requireThat(a.nativeWorkflow.reviewerModel === contract.request.modelConfiguration?.model &&
+      (a.nativeWorkflow.reviewerReasoningEffort === undefined ||
+        a.nativeWorkflow.reviewerReasoningEffort === contract.request.modelConfiguration?.reasoningEffort) &&
+      (a.nativeWorkflow.reviewerContext === undefined ||
+        a.nativeWorkflow.reviewerContext === contract.request.modelConfiguration?.context),
+    'The independent reviewer must use the explicitly pinned approved model configuration', 'blocked-validation');
     if (a.nativeWorkflow) requireThat([
       a.nativeWorkflow.cardPath, 'docs/skills/Integration-test-core/scripts/probe-fitness.mjs',
       ...a.nativeWorkflow.fitness.map(probe => probe.path)

@@ -50,7 +50,8 @@ async function fixture(t, withLedger = false, {
     fitness: ['mutation', 'refactor'].map(kind => ({ kind, path: 'modules/runtime/src/policy.ts',
       find: 'const route = true;', replace: kind === 'mutation' ? 'const route = false;' : 'const route = Boolean(1);' })),
     reviewerAgentPath: 'plugins/native/agents/reviewer.md',
-    reviewerAgentSha256: hash(nativeReviewerAgent), reviewerModel: 'synthetic-fixture-only'
+    reviewerAgentSha256: hash(nativeReviewerAgent), reviewerModel: 'synthetic-fixture-only',
+    reviewerReasoningEffort: 'medium', reviewerContext: 'default'
   } : undefined;
   mkdirSync(dirname(join(remote, allowedPath)), { recursive: true });
   writeFileSync(join(remote, allowedPath), original);
@@ -155,7 +156,8 @@ async function fixture(t, withLedger = false, {
       completionPolicySha256: hash(completion),
       profileSha256: manifest.profileSha256, pipelineYamlSha256: contract.pipeline.yamlSha256,
       productPullRequests: 'forbidden' } };
-  if (nativeOptions) contract.request.modelConfiguration = { model: nativeOptions.reviewerModel };
+  if (nativeOptions) contract.request.modelConfiguration = { model: nativeOptions.reviewerModel,
+    reasoningEffort: nativeOptions.reviewerReasoningEffort, context: nativeOptions.reviewerContext };
   const started = Date.now(), date = seconds => new Date(started + seconds * 1000).toISOString();
   let second = 0;
   const record = (stage, round, revision, exitCode = 0) => {
@@ -325,6 +327,17 @@ test('controller accepts a complete synthetic native workflow with source-bound 
   assert.equal(accepted.controllerAcceptance, true);
   assert.equal(accepted.sourceRevision, f.result.candidate);
   assert.equal(accepted.authoring.nativeWorkflow.reviewerModel, 'synthetic-fixture-only');
+});
+
+test('native authoring rejects a reviewer model configuration that differs from the frozen workflow', async t => {
+  const f = await fixture(t, false, { authoring: true, nativeWorkflow: true });
+  f.contract.request.modelConfiguration.reasoningEffort = 'high';
+  assert.throws(() => workspaceAuthoringContract(f.repo, f.request()),
+    /explicitly pinned approved model configuration/);
+  f.contract.request.modelConfiguration.reasoningEffort = 'medium';
+  f.contract.request.modelConfiguration.context = 'long_context';
+  assert.throws(() => workspaceAuthoringContract(f.repo, f.request()),
+    /explicitly pinned approved model configuration/);
 });
 
 test('independent authoring acceptance imports a long-path bundle without changing the original bytes', async t => {

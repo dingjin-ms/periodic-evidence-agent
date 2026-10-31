@@ -14,7 +14,7 @@ export function generateAnalysisRequest(spec) {
   const collector=configAt(bundle.collectorConfig),proposer=configAt(bundle.proposerConfig);
   requireThat(collector.schedule.enabled===false && proposer.schedule.enabled===false,'Inner schedules must already be disabled');
   requireThat(bundle.collection?.dryRun===true && collector.dryRun.collectionOnly,'Existing collection-only namespace required');
-  requireThat(Date.parse(spec.deadlineAt)>Date.now() && Date.parse(bundle.collection.authorization?.deadlineAt)>=Date.parse(spec.deadlineAt),'Current bounded request and collection authorization deadlines required');
+  requireThat(Date.parse(spec.deadlineAt)>Date.now() && Date.parse(bundle.collection.authorization?.deadlineAt)>Date.now() && Date.parse(bundle.collection.authorization.deadlineAt)<=Date.parse(spec.deadlineAt),'Current bounded request and collection authorization deadlines required');
   const configuration=[spec.bundlePath,bundle.collectorConfig,bundle.proposerConfig].map(fileArtifact);
   const input={format:'evidence-loop-v1',origin:'manual',workflowId:spec.workflowId,occurrence:spec.occurrence,timeZone:spec.timeZone,
     ...(spec.window?{window:spec.window}:{}),stateOwner:spec.stateOwner,configuration,deadlineAt:spec.deadlineAt,rsiMode:'capture-only',

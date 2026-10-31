@@ -87,8 +87,8 @@ export function prepareControllerAnalysis({runId,occurrence,pins,receipts,readAr
       const data=o.payload.data;
       selectors=['/0/payload/data/run/runId','/0/payload/data/summary/state','/0/payload/data/summary/collection'];
       broadAppStatus=allowed(data.summary?.state,['partial-or-blocked','complete']);
-      projection={broadAppStatus,passes:(data.summary?.collection??[]).map(p=>({pass:allowed(p.pass,['ado:created','ado:changed','workiq:created','icm:created']),
-        state:allowed(p.state,['complete','partial','blocked','not-started']),error:!Object.hasOwn(p,'error')?'missing':p.error===null?'explicit-null':'withheld'}))};
+      projection={broadAppStatus,passes:(data.summary?.collection??[]).map(p=>({pass:allowed(p.pass,['ado:created','ado:changed','workiq:created','workiq:changed','icm:created']),
+        state:allowed(p.state,['complete','partial','blocked','not-started','blocked-auth','unavailable','failed-source']),error:!Object.hasOwn(p,'error')?'missing':p.error===null?'explicit-null':'withheld'}))};
     } else if(s.profile==='proposer-result'){
       selectors=['/assignment','/result/outcome','/result/draftPR/isDraft'];
       const executed=receipts.find(r=>r.operationId===runId+':proposer')?.outcome==='proposed';

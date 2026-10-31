@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,readFileSync,writeFileSync,realpathSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fixture,providerResponse} from './loop-analysis-fixture.js';
 import {configAt,json,hash} from '../src/common.js';
-import {beginApp,openApp} from '../src/app-native.js';
+import {beginApp,openApp,appStatus,unavailableApp} from '../src/app-native.js';
 import {createNativeLoopAdapter,nativeLoopSettings} from '../src/loop-native-adapter.js';
 import {normalizeLoopRequest,fileArtifact,digest,runEvidenceLoop,readLoopArtifact,loopOperation,roleReceipt,captureArtifact} from '../src/loop-controller.js';
 import {prepareControllerAnalysis} from '../src/loop-analysis.js';
@@ -13,7 +14,7 @@ globalThis.fetch=()=>{throw Error('Live network forbidden');};
 // Upstream source/FILTER/proposer receipts are synthetic boundaries. RSI execution,
 // producer binding/capture, artifact selection and controller analysis are production code.
 for(const proposed of [false,true])test('normal native RSI capture to analysis report '+proposed,async()=>{
- const directory=mkdtempSync(join(process.env.P63_TEST_ROOT,'native-'));let calls=0,rsiCalls=0,proposerCalls=0;
+ const directory=mkdtempSync(join(realpathSync.native(process.env.P63_TEST_ROOT??tmpdir()),'native-'));let calls=0,rsiCalls=0,proposerCalls=0;
  const f=fixture(directory,async(_url,r)=>{calls++;return providerResponse(r.body);});
  try{
  const c=configAt('pilot.example.json');c.statePolicy.accessApproved=true;
@@ -70,6 +71,39 @@ for(const proposed of [false,true])test('normal native RSI capture to analysis r
  const resumed=await runEvidenceLoop(f.input,f.ledger,f.adapters);assert.deepEqual(resumed,report);
  assert.equal(calls,1);assert.equal(rsiCalls,1);assert.equal(proposerCalls,Number(proposed));
  assert.equal(f.ledger.db.prepare("SELECT count(*) AS n FROM operations WHERE kind='loop-trigger-audit'").get().n,2);
- writeFileSync(join(process.env.P63_TEST_ROOT,'native-proof-'+proposed+'.json'),JSON.stringify({runId,proposed,calls,rsiCalls,proposerCalls,reservations,artifact:report.receipts[3].artifacts[0],bindingSha256:hash(json(binding)),observationSha256:observation.payloadSha256,preparedManifest:prepared.manifest,report,resumed},null,2));
- }finally{f.ledger.close();}
+ writeFileSync(join(directory,'native-proof-'+proposed+'.json'),JSON.stringify({runId,proposed,calls,rsiCalls,proposerCalls,reservations,artifact:report.receipts[3].artifacts[0],bindingSha256:hash(json(binding)),observationSha256:observation.payloadSha256,preparedManifest:prepared.manifest,report,resumed},null,2));
+ }finally{f.ledger.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('partial app status preserves public pass enums and citations while withholding diagnostics',()=>{
+ const directory=mkdtempSync(join(realpathSync.native(process.env.P63_TEST_ROOT??tmpdir()),'projection-'));
+ const c=configAt('pilot.example.json');c.stateDirectory=directory;c.statePolicy.accessApproved=true;
+ const runId='synthetic-projection';beginApp(c,{runId,dryRun:true,provenance:'synthetic'});
+ const {ledger}=openApp(c,runId,true);
+ try {
+   unavailableApp(ledger,runId,{pass:'icm:created',reason:'no-approved-connector'});
+   for(const [pass,state] of [['ado:created','complete'],['ado:changed','failed-source'],['workiq:created','partial'],['workiq:changed','blocked-auth']])
+     ledger.db.prepare('INSERT INTO app_passes VALUES(?,?,?)').run(runId,pass,JSON.stringify({pass,state,error:{message:'PRIVATE secret diagnostic'},reason:'PRIVATE'}));
+   const summary=appStatus(ledger,runId);
+   assert.equal(summary.state,'partial-or-blocked');
+   const payload={data:{run:{runId},summary}};
+   const observation={payload,payloadSha256:hash(JSON.stringify(payload))};
+   const bytes=Buffer.from(JSON.stringify({observation})),artifact={sha256:hash(bytes)};
+   const pins={analysis:{maxInputBytes:2000000,producerRelease:'a'.repeat(40),implementation:{},sources:[{stage:'rsi',index:0,profile:'app-observation'}]}};
+   const project=()=>prepareControllerAnalysis({runId,occurrence:'2026-10-30T00:00:00Z',pins,receipts:[{operationId:runId+':rsi',artifacts:[artifact]}],readArtifact:()=>bytes});
+   const prepared=project(),projection=JSON.parse(prepared.suppliedBytes['component-0']);
+   assert.deepEqual(projection.passes.map(p=>[p.pass,p.state]),summary.collection.map(p=>[p.pass,p.state]));
+   assert.ok(!prepared.suppliedBytes['component-0'].toString().includes('PRIVATE'));
+   assert.equal(projection.provenance.artifactSha256,artifact.sha256);
+   assert.equal(prepared.manifest.evidence[0].sha256,hash(prepared.suppliedBytes['component-0']));
+   assert.ok(projection.provenance.selectors.includes('/0/payload/data/summary/collection'));
+   // Unknown values stay withheld; missing/null diagnostics stay distinguishable.
+   summary.collection=[{pass:'PRIVATE unknown',state:'PRIVATE unknown',error:'PRIVATE'}, {pass:'ado:created',state:'not-started'}, {pass:'ado:changed',state:'blocked',error:null}];
+   observation.payloadSha256=hash(JSON.stringify(payload));
+   const unknown=Buffer.from(JSON.stringify({observation}));
+   const result=prepareControllerAnalysis({runId,occurrence:'2026-10-30T00:00:00Z',pins,receipts:[{operationId:runId+':rsi',artifacts:[{sha256:hash(unknown)}]}],readArtifact:()=>unknown});
+   const rows=JSON.parse(result.suppliedBytes['component-0']).passes;
+   assert.deepEqual(rows[0],{pass:'withheld-unrecognized',state:'withheld-unrecognized',error:'withheld'});
+   assert.equal(rows[1].state,'not-started');assert.equal(rows[1].error,'missing');assert.equal(rows[2].error,'explicit-null');
+ }finally{ledger.close();rmSync(directory,{recursive:true,force:true});}
 });

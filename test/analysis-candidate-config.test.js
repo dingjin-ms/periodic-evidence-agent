@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
+import {join} from 'node:path';
+import {generateAnalysisRequest,generateMain} from '../scripts/generate-analysis-request.mjs';
+import {loadLoopRequest} from '../src/loop-cli.js';
+import {normalizeLoopRequest} from '../src/loop-controller.js';
+import {analysisImplementation} from '../src/loop-analysis.js';
+globalThis.fetch=()=>{throw Error('Live network forbidden');};
+test('offline generator, actual manual/scheduled loaders, inactive defaults and bounded native pins',()=>{
+ const dir=mkdtempSync(join(process.env.P63_TEST_ROOT,'generator-'));
+ const config=JSON.parse(readFileSync('pilot.example.json'));config.schedule.enabled=false;config.dryRun.collectionOnly=true;
+ const collector=join(dir,'collector.json'),proposer=join(dir,'proposer.json'),bundlePath=join(dir,'bundle.json');
+ writeFileSync(collector,JSON.stringify(config));writeFileSync(proposer,JSON.stringify(config));
+ const deadlineAt=new Date(Date.now()+60000).toISOString();
+ const bundle={format:'loop-native-settings-v1',collectorConfig:collector,proposerConfig:proposer,executeProposer:false,collection:{dryRun:true,passes:['ado:created'],authorization:{deadlineAt}}};
+ writeFileSync(bundlePath,JSON.stringify(bundle));
+ const spec={authorizationRef:'synthetic-only',bundlePath,workflowId:'new-synthetic-release',producerRelease:'b'.repeat(40),occurrence:new Date().toISOString(),timeZone:'UTC',deadlineAt,
+ stateOwner:{id:'fixture',directory:dir,accessApproved:true,retentionDays:7},budgets:Object.fromEntries(['collect','filter','proposer','rsi'].map(s=>[s,{maxEffects:1,timeoutMs:1000}]))};
+ const specPath=join(dir,'spec.json'),out=join(dir,'request.json');writeFileSync(specPath,JSON.stringify(spec));
+ assert.equal(generateMain(['--spec',specPath,'--check']).state,'inactive');assert.equal(existsSync(out),false);assert.equal(existsSync(join(dir,'ledger.sqlite')),false);
+ generateMain(['--spec',specPath,'--out',out]);assert.throws(()=>generateMain(['--spec',specPath,'--out',out]),/EEXIST/);
+ const request=loadLoopRequest('manual',['--request',out]);assert.equal(request.rsiMode,'capture-only');assert.deepEqual(request.analysis.implementation,analysisImplementation());
+ assert.deepEqual(request.analysis.sources.map(s=>[s.stage,s.index]),[['collect',0],['filter',4],['proposer',0],['rsi',0]]);
+ const scheduled=loadLoopRequest('scheduled',['--request',out,'--occurrence',new Date().toISOString()]);
+ assert.equal(normalizeLoopRequest(request).runId,normalizeLoopRequest(scheduled).runId);
+ assert.equal(readFileSync(bundlePath,'utf8'),JSON.stringify(bundle));
+ for(const mode of ['evaluated','full-cycle'])assert.throws(()=>normalizeLoopRequest({...request,rsiMode:mode}),/capture-only/);
+ const old=structuredClone(request);delete old.analysis;assert.equal(normalizeLoopRequest(old).pins.analysis,undefined);
+ for(const change of [{analysisTimeoutMs:95001},{maxInputBytes:2000001},{producerRelease:'stale'}])assert.throws(()=>generateAnalysisRequest({...spec,...change}));
+ writeFileSync(bundlePath,JSON.stringify({...bundle,executeProposer:true}));assert.throws(()=>generateAnalysisRequest(spec),/publication/);
+ assert.ok(readFileSync('scripts/loop-manual.mjs','utf8').includes("printLoopMain('manual')"));
+ assert.ok(readFileSync('scripts/loop-scheduled.mjs','utf8').includes("printLoopMain('scheduled')"));
+});

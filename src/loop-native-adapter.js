@@ -17,6 +17,14 @@ import { repositoryValidationContract, qualifyRepositorySkill, skillQualificatio
 import { canonical, digest, fileArtifact, captureArtifact, readLoopArtifact, roleReceipt, loopOperation, normalizeLoopRequest } from './loop-controller.js';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
+// Preserve the actual bounded app observation, not the status descriptor that omits payload.
+export function nativeAnalysisObservation(source,observationId,runId,maxBytes){
+  const observation=source.get('rsiFlowObservation',observationId);
+  requireThat(observation?.payload?.kind==='app-flow' && observation.payload.data.run.runId===runId &&
+    hash(json(observation.payload))===observation.payloadSha256,'Native analysis observation changed','blocked-reconciliation');
+  requireThat(Buffer.byteLength(json(observation))<=maxBytes,'Native analysis observation exceeds bound','blocked-budget');
+  return {...observation,payloadJson:json(observation.payload)};
+}
 export function loopAdapterRevision() {
   return digest(readdirSync(sourceDirectory).filter(name => name.endsWith('.js')).sort()
     .map(name => [name, hash(readFileSync(join(sourceDirectory, name)))]));
@@ -301,7 +309,7 @@ export function createNativeLoopAdapter({ collectionDependencies = {}, dispatchD
       if (request.pins.rsiMode === 'capture-only') {
         const status = rsiWork(s.collector, source, 'status', {}, { runId: s.collectionRunId });
         requireThat(status.observations.length > 0, 'RSI capture did not create an observation');
-        return complete('captured', { collector: status.observations, upstream: request.upstream,
+        return complete('captured', { ...(request.pins.analysis ? {observation:nativeAnalysisObservation(source,observation.observationId,request.runId,request.pins.analysis.maxInputBytes)} : {}), collector: status.observations, upstream: request.upstream,
           scope: 'connected loop observation; manual analysis pending' },
         status.observations.map(o => o.id));
       }

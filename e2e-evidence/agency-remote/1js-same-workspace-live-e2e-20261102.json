@@ -4,7 +4,7 @@
   "mode": "same-workspace-live-e2e",
   "result": "passed-scoped",
   "controllerAcceptance": true,
-  "observedAt": "2026-11-02T10:58:38.520Z",
+  "observedAt": "2026-11-02T10:58:38.52Z",
   "scope": "One official 1JS Agency workspace read the repository-native authoring skill, authored and committed a new L3 BizChat-to-Excel scenario, sealed a candidate bundle, authenticated with TRIPS FIC, executed the native real-product browser flow, and produced evidence independently accepted by the PEA controller.",
   "controllerCommit": "c0da8ac0e72f08456813745cbd5659967eaa187b",
   "controllerTree": "0c8893cc10148678a43fd970d13409eb2c8b599c",
@@ -64,12 +64,27 @@
     "reader": "independent OpenXML ZIP/XML",
     "readerStatus": "passed"
   },
-  "controllerAcceptanceSha256": "856ae2dd37f80b5532e0d5b042bae781bf1f31ad5a7883f0fb0e20229f9a64f4",
+  "controllerAcceptanceSha256": "d78cc6cca53ade1ac2276ba747140ebce3d226042cc3e373596cacf85bf4bec0",
   "localCI": {
     "package": "passed",
-    "pilot": { "tests": 238, "pass": 238, "fail": 0, "skipped": 0 },
-    "remaining": { "tests": 1592, "pass": 1591, "fail": 0, "skipped": 1 },
-    "demo": { "tests": 2, "pass": 2, "fail": 0, "skipped": 0 },
+    "pilot": {
+      "tests": 238,
+      "pass": 238,
+      "fail": 0,
+      "skipped": 0
+    },
+    "remaining": {
+      "tests": 1592,
+      "pass": 1591,
+      "fail": 0,
+      "skipped": 1
+    },
+    "demo": {
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "skipped": 0
+    },
     "standaloneDemo": "synthetic-demo-passed"
   },
   "privateEvidence": {

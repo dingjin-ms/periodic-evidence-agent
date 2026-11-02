@@ -7,7 +7,10 @@
         "provider": "ado",
         "organization": "office",
         "project": "Office",
-        "repositoryIds": ["1JS", "49b0c9f4-555f-4624-8157-a57e6df513b3"]
+        "repositoryIds": [
+          "1JS",
+          "49b0c9f4-555f-4624-8157-a57e6df513b3"
+        ]
       },
       "qualifications": [
         {
@@ -18,7 +21,7 @@
         {
           "mode": "same-workspace-live-e2e",
           "file": "1js-same-workspace-live-e2e-20261102.json",
-          "sha256": "31e7681133bdbcbdc8c18fc63398aacf91d3b7f16942765d63af1c53fb1225dd"
+          "sha256": "4806f43c349bda48e965d0bed6bd522335e620fa906aba53e66dad968c9b4967"
         }
       ],
       "preflights": []
@@ -29,7 +32,10 @@
         "provider": "ado",
         "organization": "office",
         "project": "ISS",
-        "repositoryIds": ["OfficeAgent", "61458d25-9f75-41c3-be29-e63727145257"]
+        "repositoryIds": [
+          "OfficeAgent",
+          "61458d25-9f75-41c3-be29-e63727145257"
+        ]
       },
       "qualifications": [
         {

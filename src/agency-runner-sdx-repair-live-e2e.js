@@ -143,11 +143,15 @@ export function verifyAgencyRunnerSdxRepairLiveE2e(contract, observation, agency
     jest.numFailedTests === 0, 'SDX bounded-repair E2E has no nonzero passing final Jest population', 'blocked-result');
 
   const inventory = read(join(root, 'inventory.json'));
+  requireThat(Array.isArray(inventory) && inventory.every(entry => typeof entry?.path === 'string') &&
+    new Set(inventory.map(entry => entry.path)).size === inventory.length,
+  'SDX bounded-repair inventory paths must be unique', 'blocked-result');
   const actual = files(root).filter(path => !path.endsWith(`${sep}inventory.json`)).map(path => {
     const bytes = readFileSync(path);
     return { path: relative(root, path).split(sep).join('/'), bytes: bytes.length, sha256: hash(bytes) };
   });
-  requireThat(JSON.stringify(inventory) === JSON.stringify(actual),
+  const byPath = (left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+  requireThat(JSON.stringify([...inventory].sort(byPath)) === JSON.stringify([...actual].sort(byPath)),
     'SDX bounded-repair inventory differs from downloaded bytes', 'blocked-result');
   return { status: 'passed', controllerAcceptance: true, proofKind: 'controlled-repair-path',
     executionLocation: 'agency-remote', jobId: job.jobId, buildId: build.id,

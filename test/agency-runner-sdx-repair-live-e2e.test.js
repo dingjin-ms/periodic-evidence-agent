@@ -151,3 +151,18 @@ test('rejects review performed by the author session', t => {
   writeFileSync(path, JSON.stringify(review));
   assert.throws(() => verify(value), /Fresh independent SDX review/);
 });
+
+test('accepts a complete inventory regardless of producer sort semantics', t => {
+  const value = fixture(t), path = join(value.root, 'inventory.json');
+  const inventory = JSON.parse(readFileSync(path));
+  writeFileSync(path, JSON.stringify(inventory.reverse()));
+  assert.equal(verify(value).controllerAcceptance, true);
+});
+
+test('rejects duplicate inventory paths', t => {
+  const value = fixture(t), path = join(value.root, 'inventory.json');
+  const inventory = JSON.parse(readFileSync(path));
+  inventory.push(inventory[0]);
+  writeFileSync(path, JSON.stringify(inventory));
+  assert.throws(() => verify(value), /inventory paths must be unique/);
+});

@@ -14,6 +14,11 @@
           "mode": "native-product-validation",
           "file": "1js-native-product-validation-20261102.json",
           "sha256": "24bfe1949aa3456be4d8df267f0dcca9d3439d1082d2412a3a38cc6989766694"
+        },
+        {
+          "mode": "same-workspace-live-e2e",
+          "file": "1js-same-workspace-live-e2e-20261102.json",
+          "sha256": "31e7681133bdbcbdc8c18fc63398aacf91d3b7f16942765d63af1c53fb1225dd"
         }
       ],
       "preflights": []

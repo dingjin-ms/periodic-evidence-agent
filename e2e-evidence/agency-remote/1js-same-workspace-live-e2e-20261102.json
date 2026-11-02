@@ -1,0 +1,87 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "1js-bizchat-excel-five-by-four-same-workspace-20261102",
+  "mode": "same-workspace-live-e2e",
+  "result": "passed-scoped",
+  "controllerAcceptance": true,
+  "observedAt": "2026-11-02T10:58:38.520Z",
+  "scope": "One official 1JS Agency workspace read the repository-native authoring skill, authored and committed a new L3 BizChat-to-Excel scenario, sealed a candidate bundle, authenticated with TRIPS FIC, executed the native real-product browser flow, and produced evidence independently accepted by the PEA controller.",
+  "controllerCommit": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+  "controllerTree": "0c8893cc10148678a43fd970d13409eb2c8b599c",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "Office",
+    "repositoryId": "49b0c9f4-555f-4624-8157-a57e6df513b3",
+    "repositoryName": "1JS"
+  },
+  "repoId": "1js",
+  "sourceBase": "22000241f771c99955eef8519e2dc27e1489c9ee",
+  "candidate": "5ca4963b32cbc1939099d5aa543cbf9e7d8f4db1",
+  "profile": "bizchat-excel-five-by-four-v1",
+  "scenario": "bizchat-create-excel-five-by-four",
+  "pipeline": {
+    "orchestratorDefinitionId": 37948,
+    "orchestratorRunId": 58677587,
+    "runnerDefinitionId": 35960,
+    "runnerRunId": 58679076
+  },
+  "jobId": "office-3f9070d3-4164-4890-837b-a81d1068f712",
+  "agent": "wxp-copilot-tester",
+  "authentication": {
+    "mechanism": "TRIPS FIC",
+    "status": "passed",
+    "attempts": 1,
+    "storageStateBytes": 76640
+  },
+  "authoring": {
+    "skillSha256": "162410208de157435b0b4553ba1718db5640f93be705bf99c5369abfb08f8f7a",
+    "scenarioSha256": "11f54e92f9afb705215a0499efe9a7f7d23d886b06bb05e4009ca46a376e8e86",
+    "bundleSha256": "0ee40aa0f95d2f47c9a5cf8eef6cda5e08899d26b5337c5a0b5db9068989420f",
+    "candidateParent": "22000241f771c99955eef8519e2dc27e1489c9ee",
+    "changedFiles": [
+      "ooui/apps/cross-office-client-e2e/failure-lifecycle/case-lifecycle-catalog.json",
+      "ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-excel-five-by-four/scenario.yaml"
+    ]
+  },
+  "nativeResult": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "workbook": {
+    "fileName": "AgencyLive.xlsx",
+    "sha256": "e99cccb947f783a76779ce6818725c245180beb494ef4b5964c1f0ef2808f8c2",
+    "byteLength": 5557,
+    "worksheet": "AgencyLive",
+    "table": "AgencyLiveTable",
+    "range": "A1:D5",
+    "rowCount": 5,
+    "columnCount": 4,
+    "headerRowCount": 1,
+    "dataRowCount": 4,
+    "reader": "independent OpenXML ZIP/XML",
+    "readerStatus": "passed"
+  },
+  "controllerAcceptanceSha256": "856ae2dd37f80b5532e0d5b042bae781bf1f31ad5a7883f0fb0e20229f9a64f4",
+  "localCI": {
+    "package": "passed",
+    "pilot": { "tests": 238, "pass": 238, "fail": 0, "skipped": 0 },
+    "remaining": { "tests": 1592, "pass": 1591, "fail": 0, "skipped": 1 },
+    "demo": { "tests": 2, "pass": 2, "fail": 0, "skipped": 0 },
+    "standaloneDemo": "synthetic-demo-passed"
+  },
+  "privateEvidence": {
+    "ledger": "live-same-workspace-final/state/ledger.sqlite",
+    "controllerAcceptance": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/controller-acceptance.json",
+    "runnerArtifact": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/runner-artifact"
+  },
+  "limitations": [
+    "This qualifies only the recorded PEA controller, 1JS base, runner definition, authoring profile, Agency agent, TRIPS FIC configuration and BizChat-to-Excel scenario.",
+    "The product flow passed on its first execution; the product repair path was not exercised.",
+    "The controller was repaired locally to accept namespace-prefixed OpenXML and to revalidate an already terminal job after its polling deadline; these repairs did not rerun or alter the remote product execution.",
+    "No product PR was created or merged, no periodic task was enabled, and no local-browser fallback occurred.",
+    "The register is audit evidence only and does not enable remote dispatch without explicit configuration and qualification binding."
+  ]
+}

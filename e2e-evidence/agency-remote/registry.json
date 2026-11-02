@@ -2,6 +2,23 @@
   "schema": "agency-remote-qualification-registry-v1",
   "repositories": [
     {
+      "repoId": "1js",
+      "repository": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "Office",
+        "repositoryIds": ["1JS", "49b0c9f4-555f-4624-8157-a57e6df513b3"]
+      },
+      "qualifications": [
+        {
+          "mode": "native-product-validation",
+          "file": "1js-native-product-validation-20261102.json",
+          "sha256": "24bfe1949aa3456be4d8df267f0dcca9d3439d1082d2412a3a38cc6989766694"
+        }
+      ],
+      "preflights": []
+    },
+    {
       "repoId": "office-agent",
       "repository": {
         "provider": "ado",

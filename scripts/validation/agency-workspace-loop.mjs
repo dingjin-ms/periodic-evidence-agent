@@ -152,8 +152,9 @@ export function requireTypeOnlyChange(before, after) {
     'A bounded UTF-8 source file is required.');
   check(!/@ts-(?:ignore|nocheck|expect-error)\b/.test(after),
     'Suppressing TypeScript diagnostics is not an authorized repair.');
-  check(stripTypeScriptTypes(before, { mode: 'transform' }) ===
-    stripTypeScriptTypes(after, { mode: 'transform' }),
+  const executable = source => stripTypeScriptTypes(source, { mode: 'strip' })
+    .replace(/(?<=[\w$.)\]])[ \t]+(?=\()/g, '');
+  check(executable(before) === executable(after),
   'Only type-level changes preserving the entire executable test are authorized.');
 }
 
@@ -162,7 +163,7 @@ export function requireAppendOnlyTestChange(before, after) {
     after.startsWith(before), 'Authoring must preserve every byte of the original test and append bounded new cases.');
   check(!/@ts-(?:ignore|nocheck|expect-error)\b/.test(after.slice(before.length)),
     'Suppressing TypeScript diagnostics is not authorized.');
-  stripTypeScriptTypes(after, { mode: 'transform' });
+  stripTypeScriptTypes(after, { mode: 'strip' });
 }
 
 export function requireNativeWorkflow(value, projectPath) {

@@ -1,0 +1,70 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "1js-bizchat-excel-six-by-five-20261102",
+  "mode": "native-product-validation",
+  "result": "passed-scoped",
+  "controllerAcceptance": true,
+  "observedAt": "2026-11-02T03:18:08.346Z",
+  "scope": "Official 1JS Agency orchestrator reserved a TRIPS FIC account, created an approved wxp-copilot-tester child job, authenticated M365, and ran the repository-native BizChat to Excel declarative Playwright scenario with an independently inspected real XLSX contract.",
+  "controllerCommit": "99e5cf29448e78b7f12397cc2f69eced936512a7",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "Office",
+    "repositoryId": "49b0c9f4-555f-4624-8157-a57e6df513b3",
+    "repositoryName": "1JS"
+  },
+  "repoId": "1js",
+  "sourceBase": "0410fa7e90e72307c319d7086d55d7e6b8bbda11",
+  "candidate": "79e1131e6ddacf5dcfafc8c1bbb13ed0b1f16723",
+  "scenario": "bizchat-create-excel-six-by-five",
+  "pipeline": {
+    "orchestratorDefinitionId": 37948,
+    "orchestratorRunId": 58660325,
+    "runnerDefinitionId": 35960,
+    "runnerRunId": 58660451
+  },
+  "jobId": "office-de7aa101-e8e4-4023-8c40-09b6a840f7d1",
+  "agent": "wxp-copilot-tester",
+  "authentication": {
+    "mechanism": "TRIPS FIC",
+    "status": "passed",
+    "attempts": 1,
+    "storageStateBytes": 76313
+  },
+  "nativeCommand": "cd ooui && CROSS_OFFICE_STORAGE_STATE=/tmp/m365-storage-state.json CROSS_OFFICE_SCENARIO=bizchat-create-excel-six-by-five CI=1 yarn workspace @1js/cross-office-client-e2e test:e2e:cross-office",
+  "nativeResult": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "testName": "BizChat creates and previews a six-by-five Excel workbook",
+    "durationSeconds": 53.213
+  },
+  "workbook": {
+    "fileName": "Test_Table.xlsx",
+    "sha256": "15ae38deb2028933eef8b1d55c4cf3b5e2a1e949ee46ba14ec12a435f2b37e75",
+    "byteLength": 6011,
+    "worksheet": "Test",
+    "table": "TestTable",
+    "rowCount": 6,
+    "columnCount": 5,
+    "headerRowCount": 1,
+    "dataRowCount": 5,
+    "reader": "xlsx",
+    "readerStatus": "passed"
+  },
+  "privateEvidence": {
+    "junit": "drop/agency-artifacts/native-cross-office/e2e.test-results.xml",
+    "workbookData": "drop/agency-artifacts/native-cross-office/playwright-output/configured-scenarios.e2e-B-dd735--six-by-five-Excel-workbook-chromium/generated-workbook-data.json",
+    "authStatus": "drop/m365-auth-status.json",
+    "trace": "drop/agency-artifacts/playwright-trace/session.trace.zip"
+  },
+  "limitations": [
+    "This qualifies only the recorded 1JS revision, runner candidate, TRIPS FIC profile and BizChat-to-Excel scenario.",
+    "It does not qualify arbitrary 1JS scenarios, headed Edge/CDP, local-browser control, authoring, repair, product PR creation or merge.",
+    "The native scenario passed after the agent installed the missing Chromium binary; the product assertion itself passed on its first executed browser attempt and no product repair occurred.",
+    "The runner candidate and PEA controller commit are isolated and are not claimed merged or production-enabled.",
+    "The register is audit evidence only and does not enable remote dispatch without explicit configuration and qualification binding."
+  ]
+}

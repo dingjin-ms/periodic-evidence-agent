@@ -112,6 +112,24 @@ test('unknown, 1JS and Office repositories default to unverified rather than uns
   }
 });
 
+test('1JS native product validation requires explicit opt-in and exposes scoped proof', () => {
+  const config = fixture({
+    id: '1js',
+    pr: {
+      provider: 'ado', organization: 'office', project: 'Office',
+      repositoryId: '49b0c9f4-555f-4624-8157-a57e6df513b3'
+    },
+    nativeProductValidation: { type: 'agency-1js-native' }
+  });
+  const native = mode(remoteAgencyQualification(config), 'native-product-validation');
+  assert.equal(native.configured, true);
+  assert.equal(native.status, 'historical-scoped-proof');
+  assert.equal(native.configurationVerified, false);
+  assert.equal(native.evidence.candidate, '79e1131e6ddacf5dcfafc8c1bbb13ed0b1f16723');
+  delete config.repositories[0].nativeProductValidation;
+  assert.equal(mode(remoteAgencyQualification(config), 'native-product-validation').configured, false);
+});
+
 test('default SDK and Local Agency remain warning-free and config is not mutated', () => {
   for (const type of ['copilot-sdk', 'agency-local']) {
     const config = fixture();

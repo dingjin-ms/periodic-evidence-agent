@@ -112,7 +112,13 @@ function selectedItem(item, id, policy) {
     fields: Object.fromEntries(sourceFields.filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]])) };
 }
 
-export async function readTestRequest(config, id, { getToken = adoAccessToken, fetchResponse = fetch } = {}) {
+export function readTestRequest(config, id, dependencies = {}) {
+  return readRequest(config, id, dependencies, false);
+}
+export function readCurrentTestRequest(config, id, dependencies = {}) {
+  return readRequest(config, id, dependencies, true);
+}
+async function readRequest(config, id, { getToken = adoAccessToken, fetchResponse = fetch }, current) {
   const policy = testRequestPolicy(config);
   requireThat(Number.isSafeInteger(id) && id > 0, 'Test-request ID must be a positive integer');
   const token = await getToken(config, 'ADO test-request read');
@@ -139,11 +145,11 @@ export async function readTestRequest(config, id, { getToken = adoAccessToken, f
   requireThat(candidates.workItems?.length === 1 && candidates.workItems[0].id === id,
     'Test-request ID was not returned by its approved scope query; details were not fetched', 'blocked-scope');
   const batch = await request('workitemsbatch?api-version=7.1', {
-    ids: [id], fields: sourceFields, asOf: candidates.asOf, errorPolicy: 'Fail'
+    ids: [id], fields: sourceFields, ...(!current ? { asOf: candidates.asOf } : {}), errorPolicy: 'Fail'
   });
   requireThat(batch.value?.length === 1 && batch.value[0].id === id,
     'Test-request batch is incomplete or mismatched', 'partial');
-  return { ...selectedItem(batch.value[0], id, policy), snapshotAt: candidates.asOf };
+  return { ...selectedItem(batch.value[0], id, policy), ...(!current ? { snapshotAt: candidates.asOf } : {}) };
 }
 
 function intakeOperation(ledger, id) {
@@ -193,10 +199,13 @@ export async function collectTestRequest(config, ledger, id, { read = readTestRe
   });
 }
 
-function requireTestRequestExecution(assignment) {
+function requireTestRequestExecution(config, assignment) {
   requireThat(assignment.execution === 'local' && !assignment.authoringProvider,
     'ADO test requests require the final local executor (SDK only); external authoring and hosted Agency execution are not supported',
     'blocked-config');
+  const repo = config.repositories.find(repo => repo.id === assignment.repoId);
+  requireThat(repo && !repo.remoteValidation,
+    'ADO test requests do not support remote validation', 'blocked-config');
 }
 
 export function requireTestRequestAssignment(config, ledger, assignment) {
@@ -207,7 +216,7 @@ export function requireTestRequestAssignment(config, ledger, assignment) {
   const record = evidence[0];
   const intake = intakeOperation(ledger, record.scopeId);
   const policy = testRequestPolicy(config);
-  requireTestRequestExecution(assignment);
+  requireTestRequestExecution(config, assignment);
   requireThat(intake.policySha256 === hash(json(policy)) && intake.evidenceId === record.id &&
     intake.state === 'needs-review' && record.source.provenance === 'authenticated-source' &&
     assignment.repoId === policy.repoId && assignment.capability === policy.capability &&
@@ -274,7 +283,7 @@ export function prepareTestRequest(config, ledger, input) {
     });
     const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
       planned.testCoveragePlan.id, policy.requestedOutcome);
-    requireTestRequestExecution(assignment);
+    requireTestRequestExecution(config, assignment);
     const job = ledger.prepare(assignment);
     ledger.operation(reviewId, assignment.id, 'ado-test-request-review', { handoffSha256 });
     ledger.finishOperation(reviewId, 'complete', { handoffSha256, assignmentId: assignment.id });
@@ -283,7 +292,16 @@ export function prepareTestRequest(config, ledger, input) {
   });
 }
 
-export async function verifyCurrentTestRequest(config, ledger, id, read = readTestRequest) {
+export function requireTestRequestPublication(config, ledger, assignment, action) {
+  if (!assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request')) return;
+  requireTestRequestAssignment(config, ledger, assignment);
+  const grant = { commit: 'commit', push: 'push', build: 'push', draft: 'createDraftPR' }[action];
+  const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability, assignment.skillBindingId);
+  requireThat(grant && assignment.publicationGrants?.[grant] === true && binding.sideEffects[grant] === true,
+    `Test-request repository binding does not authorize ${action}`, 'blocked-authorization');
+}
+
+export async function verifyCurrentTestRequest(config, ledger, id, read = readCurrentTestRequest) {
   const assignment = ledger.get('assignment', id);
   requireThat(assignment, 'Unknown test-request assignment', 'blocked-reconciliation');
   requireTestRequestAssignment(config, ledger, assignment);
@@ -301,7 +319,7 @@ export async function verifyCurrentTestRequest(config, ledger, id, read = readTe
 
 export async function acceptTestRequest(config, ledger, input, {
   execute = false, authorizeCommit = false, authorizePush = false, authorizeDraftPR = false,
-  read = readTestRequest, dispatchDependencies = {}
+  read = readCurrentTestRequest, dispatchDependencies = {}
 } = {}) {
   if (execute) {
     requireThat(authorizeCommit && authorizePush && authorizeDraftPR,

@@ -7,7 +7,7 @@ import { alReference } from '../src/al-adapter.js';
 import { bindAlModelExecution } from '../src/al-workflow.js';
 import { configAt } from '../src/common.js';
 import { requireExecutionAuthorization, authorizedModelTimeout } from '../src/execution-authorization.js';
-import { commitRepositoryChanges, pushDraftBranch, createAdoDraft } from '../src/workers.js';
+import { commitRepositoryChanges, pushDraftBranch, createAdoDraft, queueAdoDraftBuild } from '../src/workers.js';
 
 function setup(t, standalone = false) {
   const root = mkdtempSync(join(tmpdir(), 'execution-authority-'));
@@ -76,6 +76,25 @@ for (const standalone of [false, true]) {
     assert.deepEqual(calls, ['GET']);
   });
 }
+
+for (const standalone of [false, true]) for (const interruption of ['expired', 'authentication', 'override'])
+  test(`${standalone ? 'standalone' : 'recurring'} Draft build rejects authority expiry at ${interruption}`, async t => {
+    const f = setup(t, standalone);
+    let time = f.started;
+    t.mock.method(Date, 'now', () => time);
+    const repo = { ...f.repo, draftBuild: { enabled: true, provider: 'ado', id: 'synthetic', definitionId: 2 } };
+    let reads = 0, mutations = 0, reservations = 0;
+    const ledger = { get: () => null, operation: () => { reservations++; }, finishOperation: () => {} };
+    if (interruption !== 'authentication') time += 1001;
+    await assert.rejects(queueAdoDraftBuild(f.config, ledger, { id: 'synthetic' }, repo, 'b'.repeat(40),
+      interruption === 'override' ? async () => { mutations++; } : undefined, {
+        getToken: async () => { reads++; if (interruption === 'authentication') time += 1001; return 'synthetic-token'; },
+        fetchResponse: async () => { mutations++; }
+      }), error => error.code === 'blocked-authorization');
+    assert.equal(mutations, 0);
+    assert.equal(reservations, 0);
+    assert.equal(reads, interruption === 'override' ? 0 : 1);
+  });
 
 test('standalone allocation is content-, repository-, source-, run-, purpose- and model-bound', t => {
   const f = setup(t, true);

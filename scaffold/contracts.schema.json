@@ -1313,6 +1313,15 @@
         "skillBindingId": { "$ref": "#/$defs/text" },
         "authoringProvider": { "$ref": "#/$defs/text" },
         "authoringProviderSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "publicationGrants": {
+          "type": "object", "additionalProperties": false,
+          "required": ["commit", "push", "createDraftPR"],
+          "properties": {
+            "commit": { "type": "boolean" },
+            "push": { "type": "boolean" },
+            "createDraftPR": { "type": "boolean" }
+          }
+        },
         "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
         "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
         "allowedWriteFiles": { "$ref": "#/$defs/texts" },

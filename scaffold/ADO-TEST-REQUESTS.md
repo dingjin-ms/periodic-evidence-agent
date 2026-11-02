@@ -100,8 +100,21 @@ The transports refresh admission after awaited lookup/authentication, immediatel
 before Git push, build queueing or Draft creation. Withdrawal or revision drift
 blocks publication and retains authored work and validation evidence for explicit
 reconciliation; it does not automatically replay uncertain effects.
-Only the final local SDK executor is supported for this lane. New or previously
-persisted ADO requests cannot use external Agency authoring or hosted execution.
+Intake details remain bound to WIQL's snapshot; final admission instead fetches
+current details for that explicitly scoped ID, without the earlier `asOf` value.
+Publication pushes the exact validated commit, never a mutable `HEAD` after an
+await. Agency seed pushes likewise use their captured base commit. Build queueing
+rechecks the applicable push/publication authority after authentication and source
+refresh, including injected provider boundaries.
+
+Prepared ADO assignments capture their repository binding's commit, push and
+Draft grants. Reconstruction compares those grants with the current binding;
+each mutation also checks its specific grant (build queueing uses the push grant).
+Commit rechecks after staging. Revoked grants or older assignments lacking the
+captured grants require explicit reconciliation, not silent permission updates.
+Only the final local SDK executor and local validation are supported for this lane.
+New or previously persisted ADO requests cannot use remote validation, external
+Agency authoring or hosted execution.
 Other evidence lanes retain their existing provider contracts.
 Ordinary `dispatch` and `dispatch-ready` cannot bypass this source recheck. No synthetic override exists for request evidence. The worker
 gets scenario data, not ticket-defined authority. Same-receipt preparation is

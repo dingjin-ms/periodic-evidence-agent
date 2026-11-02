@@ -12,7 +12,7 @@ import {
 } from '../src/reviewed-handoff.js';
 import {
   dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation,
-  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment
+  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment, commitRepositoryChanges, requireCurrentAssignment
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
@@ -25,8 +25,10 @@ import {
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
 import { beginApp, openApp, appWorker } from '../src/app-native.js';
+import { remoteValidationContract } from '../src/agency-remote-validation.js';
 
-import { collectTestRequest, prepareTestRequest, acceptTestRequest } from '../src/ado-test-request.js';
+import { collectTestRequest, prepareTestRequest, acceptTestRequest, readCurrentTestRequest,
+  requireTestRequestPublication } from '../src/ado-test-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
@@ -484,6 +486,243 @@ test('app-native rejects new and persisted ADO execution paths', async t => {
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'bind', claim), /app-native execution is not supported/);
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'result', { ...claim, outcome: 'draft-reported' }), /app-native execution is not supported/);
 });
+
+function finishRequestFixture(toolkit) {
+  toolkit.write('test/behavior.test.js', formulaTest);
+  toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
+  toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+    description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
+      changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
+      behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+}
+
+for (const drift of ['none', 'source-refresh', 'push-auth'])
+  test(`ADO supported publication pins the validated revision through ${drift}`, async t => {
+    const ctx = await requestFixture(t);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    const repo = ctx.config.repositories[0];
+    repo.draftBuild = { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 };
+    await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+    const transportRepo = { ...repo, remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' } };
+    let validated, workspace, advanced, pushed, build, draft, posts = 0;
+    const advance = async () => {
+      if (advanced) return;
+      writeFileSync(join(workspace, 'unvalidated.txt'), 'This content has not passed validation.\n');
+      await command('git', ['add', '--', 'unvalidated.txt'], workspace);
+      await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'Unvalidated checkout advance'], workspace);
+      advanced = (await command('git', ['rev-parse', 'HEAD'], workspace)).stdout.trim();
+      assert.notEqual(advanced, validated);
+    };
+    const read = async () => {
+      if (validated && drift === 'source-refresh') await advance();
+      return ctx.item;
+    };
+    const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read,
+      dispatchDependencies: {
+        runModel: async (_c, _l, _j, _a, _i, toolkit) => finishRequestFixture(toolkit),
+        runValidation: async (...args) => {
+          const output = await runValidation(...args);
+          validated = args[4]; workspace = args[2].workspace;
+          return output;
+        },
+        pushBranch: async (config, path, _repo, refspec, admission) => {
+          assert.equal(refspec.split(':')[0], validated);
+          await pushDraftBranch(config, path, transportRepo, refspec, { ...admission,
+            getToken: async () => { if (drift === 'push-auth') await advance(); return 'fixture-token'; },
+            execute: async (cwd, args) => command('git', args, cwd) });
+          pushed = (await command('git', ['--git-dir', ctx.remote, 'rev-parse', refspec.split(':').slice(1).join(':')], ctx.root)).stdout.trim();
+        },
+        queueDraftBuild: (config, ledger, job, _repo, revision, _request, admission) =>
+          queueAdoDraftBuild(config, ledger, job, transportRepo, revision, undefined, { ...admission,
+            getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+              assert.equal(options.method, 'POST'); build = JSON.parse(options.body);
+              return Response.json({ id: 5 });
+            } }),
+        createDraft: (config, ledger, job, _repo, revision, proposal, _request, allow, admission) =>
+          createAdoDraft(config, ledger, job, transportRepo, revision, proposal, undefined, allow, { ...admission,
+            getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+              if (options.method === 'GET') return Response.json({ value: [] });
+              posts++; draft = JSON.parse(options.body);
+              return Response.json({ ...draft, pullRequestId: 9, status: 'active', lastMergeSourceCommit: { commitId: pushed } });
+            } })
+      }
+    });
+    assert.equal(result.result.outcome, 'draft-pr-validated');
+    assert.equal(pushed, validated);
+    assert.equal(build.sourceVersion, validated);
+    assert.equal(result.result.draftPR.headRevision, validated);
+    assert.equal(result.result.sourceRevision, validated);
+    assert.equal(result.result.validation[0].sourceRevision, validated);
+    assert.equal(posts, 1);
+    const push = ctx.ledger.status().operations.find(row => row.id === `${result.assignment.id}:push`);
+    assert.equal(JSON.parse(push.detail).revision, validated);
+    assert.equal(draft.sourceRefName, build.sourceBranch);
+    if (drift !== 'none') {
+      assert.notEqual(pushed, advanced);
+      assert.equal((await command('git', ['--git-dir', ctx.remote, 'ls-tree', pushed, '--', 'unvalidated.txt'], ctx.root)).stdout, '');
+    }
+  });
+
+for (const change of ['withdrawal', 'revision'])
+  test(`ADO final admission reads current details after WIQL during ${change}`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const original = structuredClone(ctx.item);
+    let calls = 0, mutations = 0;
+    const read = (config, id) => readCurrentTestRequest(config, id, {
+      getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+        calls++;
+        const body = JSON.parse(options.body);
+        if (body.query) return Response.json({ asOf: original.snapshotAt, workItems: [{ id }] });
+        withdrawRequest(ctx, change === 'revision');
+        // A historical request would return the old, still-eligible revision.
+        return Response.json({ value: [body.asOf ? original : ctx.item] });
+      }
+    });
+    await assert.rejects(pushDraftBranch(ctx.config, ctx.root, ctx.config.repositories[0],
+      `${ctx.baseRevision}:refs/heads/fixture`, { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+        readTestRequest: read, execute: async () => { mutations++; } }), /approved test-request|changed or was withdrawn/);
+    assert.equal(calls, 2);
+    assert.equal(mutations, 0);
+  });
+
+for (const phase of ['new', 'prepared', 'validation'])
+  test(`ADO rejects remote validation at ${phase} before any Agency request`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = phase === 'new' ? null : prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const contractPath = join(ctx.root, 'remote-contract.json');
+    const profilePath = join(ctx.root, 'remote-profile.ps1');
+    writeFileSync(profilePath, 'exit 0\n');
+    const repo = ctx.config.repositories[0], gate = repo.validationGates[0];
+    gate.profilePath = profilePath;
+    gate.profileSha256 = hash(readFileSync(profilePath));
+    const pipeline = { revision: 'b'.repeat(40), yamlSha256: hash('synthetic pipeline'), definitionId: 10,
+      definitionRevision: 2, ref: 'refs/heads/fixture', yamlPath: '/pipeline.yml',
+      organization: 'https://dev.azure.com/fixture', project: 'Fixture', repositoryId: 'fixture', artifactPrefix: 'Fixture-' };
+    const contract = { schema: 'agency-oa-validation-contract-v1', repoId: repo.id, candidate: ctx.baseRevision,
+      gateId: gate.id, profileSha256: gate.profileSha256, pipeline,
+      requiredTasks: ['prepare', 'validate'], prepareTask: 'prepare', validationTask: 'validate',
+      testPopulation: { suites: 1, tests: 1, path: 'test/behavior.test.js' }, sourceInputs: ['src/value.js'],
+      executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      profilePath: 'F:\\fixture\\profile.ps1', maximumRunnerMinutes: 10, maximumArtifactBytes: 1024,
+      queueMinutes: 1, cancellationMinutes: 1, pollSeconds: 1,
+      request: { prompt: 'Synthetic validation only.', compute: { $type: 'pipeline', pipelineId: 10, pipelineRefOverride: pipeline.ref },
+        context: { repository: { $type: 'ado', organization: 'fixture', project: 'Fixture' } },
+        additionalOptions: { pluginOptions: { includeDefaults: false } },
+        metadata: { candidate: ctx.baseRevision, pipelineCommit: pipeline.revision,
+          profileSha256: gate.profileSha256, pipelineYamlSha256: pipeline.yamlSha256, productPullRequests: 'forbidden' } } };
+    writeFileSync(contractPath, json(contract));
+    repo.remoteValidation = { type: 'agency-remote', contractPath, contractSha256: hash(json(contract)) };
+    assert.deepEqual(remoteValidationContract(repo, ctx.baseRevision), contract);
+    let effects = 0;
+    if (phase === 'new') assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /remote validation/);
+    else if (phase === 'prepared') await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, prepared.assignment.id,
+      { readTestRequest: async () => { effects++; }, runModel: async () => { effects++; } }), /remote validation/);
+    else await assert.rejects(runValidation(ctx.config, ctx.ledger, { ...prepared.job, workspace: ctx.root }, repo,
+      ctx.baseRevision, async () => { effects++; }, undefined, null,
+      { transport: async () => { effects++; } }), /remote validation/);
+    assert.equal(effects, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind.startsWith('agency-')), false);
+    if (phase === 'new') assert.equal(ctx.ledger.status().jobs.length, 0);
+  });
+
+for (const grant of ['commit', 'push', 'createDraftPR'])
+  test(`ADO assignment reconstruction retains ${grant} and rejects prepared revocation`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    assert.equal(prepared.assignment.publicationGrants[grant], true);
+    ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false;
+    const investigation = ctx.ledger.get('investigation', prepared.assignment.investigationId);
+    const rebuilt = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation,
+      prepared.assignment.testCoveragePlanId, prepared.assignment.requestedOutcome);
+    assert.equal(rebuilt.publicationGrants[grant], false);
+    assert.throws(() => requireCurrentAssignment(ctx.config, ctx.ledger, investigation, prepared.assignment), /changed after preparation/);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, prepared.assignment.id,
+      { readTestRequest: ctx.read, runModel: async () => assert.fail('Revoked assignment must not author') }), /changed after preparation/);
+  });
+
+for (const action of ['commit', 'push', 'build', 'draft'])
+  for (const interruption of action === 'commit' ? ['staging'] : ['authentication', 'source-read'])
+  test(`ADO ${action} transport rejects grant revocation during ${interruption}`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const grant = action === 'draft' ? 'createDraftPR' : action === 'build' ? 'push' : action;
+    const revoke = () => { ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false; };
+    const repo = { ...ctx.config.repositories[0], remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    let mutations = 0;
+    const admission = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+      readTestRequest: async () => { if (interruption === 'source-read') revoke(); return ctx.item; },
+      getToken: async () => { if (interruption === 'authentication') revoke(); return 'fixture-token'; },
+      execute: async () => { mutations++; }, fetchResponse: async (_url, options) => {
+        if (options.method === 'GET') return Response.json({ value: [] });
+        mutations++; return Response.json({});
+      } };
+    const failure = /changed after preparation|does not authorize/;
+    if (action === 'commit') await assert.rejects(commitRepositoryChanges(ctx.config, ctx.root, repo, 'Fixture',
+      async (_exe, args) => { assert.ok(args.includes('add')); revoke(); }, admission), failure);
+    if (action === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.root, repo,
+      `${ctx.baseRevision}:refs/heads/fixture`, admission), failure);
+    if (action === 'build') await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, undefined, admission), failure);
+    if (action === 'draft') await assert.rejects(createAdoDraft(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, { title: 'Fixture', description: 'Fixture' }, undefined, true, admission), failure);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => ['draft-pr', 'draft-build'].includes(row.kind)), false);
+  });
+
+for (const transport of ['native', 'override'])
+  test(`ADO ${transport} build rechecks expiry after the final source refresh`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const repo = { ...ctx.config.repositories[0], baseRef: ctx.baseRevision,
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    const started = Date.now(), authorityPath = join(ctx.root, 'authority.json');
+    const authority = { format: 'al-recurring-authorization-v1', planSha256: 'c'.repeat(64),
+      approvedAt: new Date(started - 1000).toISOString(), expiresAt: new Date(started + 1000).toISOString(),
+      allowModels: true, allowPublication: true };
+    writeFileSync(authorityPath, json(authority));
+    ctx.config.runtime.executionAuthorization = { repoId: repo.id, baseRevision: repo.baseRef,
+      planSha256: authority.planSha256, reference: { path: authorityPath, sha256: hash(json(authority)) } };
+    let time = started, reads = 0, mutations = 0;
+    t.mock.method(Date, 'now', () => time);
+    await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo, ctx.baseRevision,
+      transport === 'override' ? async () => { mutations++; } : undefined, {
+        getToken: async () => 'fixture-token',
+        readTestRequest: async () => { reads++; time += 1001; return ctx.item; },
+        fetchResponse: async () => { mutations++; }
+      }), /authorization expired/);
+    assert.equal(reads, 1);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
+  });
+
+test('ADO legacy assignment without captured publication grants cannot resume effects', async t => {
+  const ctx = await requestFixture(t);
+  const { assignment } = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+  const legacy = structuredClone(assignment);
+  delete legacy.publicationGrants;
+  assert.throws(() => requireCurrentAssignment(ctx.config, ctx.ledger,
+    ctx.ledger.get('investigation', assignment.investigationId), legacy), /changed after preparation/);
+  assert.throws(() => requireTestRequestPublication(ctx.config, ctx.ledger, legacy, 'push'), /does not authorize/);
+});
+
+for (const action of ['commit', 'push', 'build', 'draft'])
+  test(`ADO publication needs the action-specific ${action} grant even with a matching assignment`, async t => {
+    const ctx = await requestFixture(t);
+    const grant = action === 'draft' ? 'createDraftPR' : action === 'build' ? 'push' : action;
+    ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false;
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    assert.throws(() => requireTestRequestPublication(ctx.config, ctx.ledger, prepared.assignment, action), /does not authorize/);
+  });
 
 async function addOneJsRepository(ctx, {
   enableDraftBuild = false, validationScript = null
@@ -2126,6 +2365,11 @@ test('Agency remote authoring imports only the remote diff into the local repair
       },
       agencyRemote: {
         getToken: async () => 'synthetic-token',
+        pushBranch: async (currentConfig, workspace, repo, refspec, admission) => {
+          assert.match(refspec, /^[a-f0-9]{40}:refs\/heads\/pilot-agency-base\//);
+          assert.equal(admission.ledger, ledger);
+          await pushDraftBranch(currentConfig, workspace, repo, refspec, admission);
+        },
         executeRemoteJob: async (currentConfig, currentLedger, current, repo,
           provider, input) => {
           assert.equal(validationPrepared, true);

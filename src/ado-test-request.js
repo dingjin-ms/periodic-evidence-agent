@@ -193,6 +193,12 @@ export async function collectTestRequest(config, ledger, id, { read = readTestRe
   });
 }
 
+function requireTestRequestExecution(assignment) {
+  requireThat(assignment.execution === 'local' && !assignment.authoringProvider,
+    'ADO test requests require the final local executor (SDK only); external authoring and hosted Agency execution are not supported',
+    'blocked-config');
+}
+
 export function requireTestRequestAssignment(config, ledger, assignment) {
   const evidence = assignment.evidenceIds.map(id => ledger.get('evidence', id));
   if (!evidence.some(record => record?.source.kind === 'ado-test-request')) return;
@@ -201,6 +207,7 @@ export function requireTestRequestAssignment(config, ledger, assignment) {
   const record = evidence[0];
   const intake = intakeOperation(ledger, record.scopeId);
   const policy = testRequestPolicy(config);
+  requireTestRequestExecution(assignment);
   requireThat(intake.policySha256 === hash(json(policy)) && intake.evidenceId === record.id &&
     intake.state === 'needs-review' && record.source.provenance === 'authenticated-source' &&
     assignment.repoId === policy.repoId && assignment.capability === policy.capability &&
@@ -267,6 +274,7 @@ export function prepareTestRequest(config, ledger, input) {
     });
     const assignment = makePlannedImprovementAssignment(config, ledger, investigation,
       planned.testCoveragePlan.id, policy.requestedOutcome);
+    requireTestRequestExecution(assignment);
     const job = ledger.prepare(assignment);
     ledger.operation(reviewId, assignment.id, 'ado-test-request-review', { handoffSha256 });
     ledger.finishOperation(reviewId, 'complete', { handoffSha256, assignmentId: assignment.id });

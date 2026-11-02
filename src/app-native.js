@@ -654,6 +654,11 @@ function saveWorker(ledger, value) {
   ledger.db.prepare('UPDATE app_workers SET body=? WHERE id=?').run(json(value), value.id);
   return value;
 }
+function requireAppWorkerEvidence(ledger, assignment) {
+  requireThat(!assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request'),
+    'ADO test requests require the dedicated source-rechecking controller; app-native execution is not supported',
+    'blocked-authorization');
+}
 export function appWorker(config, ledger, runId, action, input) {
   const run = getRun(ledger, runId);
   requireThat(!run.dryRun && run.provenance === 'app-tool' && config.activation.dispatch,
@@ -675,6 +680,7 @@ export function appWorker(config, ledger, runId, action, input) {
       : makeAssignment(config, investigation, input.repoId, input.intent);
     requireThat(assignment.repoId === input.repoId && assignment.intent === input.intent,
       'Prepared assignment does not match the requested repository or intent', 'blocked-scope');
+    requireAppWorkerEvidence(ledger, assignment);
     requireCurrentSourceEligibility(ledger, assignment);
     requireCurrentAssignment(config, ledger, investigation, assignment);
     if (qualificationOnly) {
@@ -715,6 +721,7 @@ export function appWorker(config, ledger, runId, action, input) {
       'baseRevision', 'outcome', 'evidenceRef', 'agencyRequest', 'agencySubmission', 'agencyResult'], ['assignmentId', 'claimId']);
     identifier(input.claimId);
     const value = worker(ledger, input.assignmentId);
+    requireAppWorkerEvidence(ledger, value.assignment);
     requireThat(value.execution !== 'agency-workspace-authoring-qualification',
       'Use qualify-remote-authoring for this publication-free experiment; native session actions are forbidden',
       'blocked-scope');

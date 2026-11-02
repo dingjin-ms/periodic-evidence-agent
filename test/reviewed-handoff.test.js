@@ -11,7 +11,8 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import {
-  dispatch, dispatchReviewedHandoff, command, provision, queueAdoDraftBuild, runValidation
+  dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation,
+  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
@@ -23,6 +24,7 @@ import {
 } from '../src/repository-skills.js';
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
+import { beginApp, openApp, appWorker } from '../src/app-native.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest } from '../src/ado-test-request.js';
 
@@ -310,6 +312,177 @@ test('sample request exercises intake through real validation and local push, wi
   const failure = spawnSync(process.execPath, ['--test', 'test/behavior.test.js'], { cwd: bad, encoding: 'utf8', env });
   assert.notEqual(failure.status, 0);
   assert.match(failure.stdout, /deduplication preserves formulas/);
+});
+
+function withdrawRequest(ctx, revisionOnly = false) {
+  ctx.item.rev++;
+  if (!revisionOnly) ctx.item.fields['System.State'] = 'Closed';
+}
+function supersedeRequestReview(ctx, assignment) {
+  const investigation = ctx.ledger.get('investigation', assignment.investigationId);
+  ctx.ledger.put({ ...investigation, version: investigation.version + 1, state: 'blocked' });
+}
+
+for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'validation-withdrawal',
+  'push-withdrawal', 'draft-lookup-withdrawal', 'draft-auth-withdrawal', 'draft-read-review'])
+  test(`ADO coverage publication blocks ${interruption} and retains authored work`, async t => {
+    const ctx = await requestFixture(t);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    let pushes = 0, drafts = 0;
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
+      dispatchDependencies: {
+        runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
+          toolkit.write('test/behavior.test.js', formulaTest);
+          toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
+          toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+            description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
+              changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
+              behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+          if (interruption.startsWith('authoring-')) withdrawRequest(ctx, interruption === 'authoring-revision');
+        },
+        runValidation: async (...args) => {
+          const result = await runValidation(...args);
+          if (interruption === 'validation-withdrawal') withdrawRequest(ctx);
+          return result;
+        },
+        pushBranch: async (_config, _workspace, _repo, _refspec, admission) => {
+          assert.equal(admission.ledger, ctx.ledger);
+          assert.ok(admission.assignmentId);
+          assert.equal(admission.readTestRequest, ctx.read);
+          pushes++;
+          if (interruption === 'push-withdrawal') withdrawRequest(ctx);
+        },
+        createDraft: async (config, ledger, job, repo, revision, proposal, _request, _allow, admission) => {
+          assert.equal(admission.readTestRequest, ctx.read);
+          assert.ok(interruption.startsWith('draft-'), 'Draft must not be entered after withdrawal');
+          const transportRepo = { ...repo, remote: 'https://dev.azure.com/fixture/project/_git/repo',
+            pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' } };
+          let tokens = 0;
+          return createAdoDraft(config, ledger, job, transportRepo, revision, proposal, undefined, true, {
+            getToken: async () => {
+              if (++tokens === 2 && interruption === 'draft-auth-withdrawal') withdrawRequest(ctx);
+              return 'fixture-token';
+            },
+            readTestRequest: async () => {
+              if (interruption === 'draft-read-review') supersedeRequestReview(ctx, ledger.get('assignment', job.id));
+              return ctx.item;
+            },
+            fetchResponse: async (_url, options) => {
+              if (options.method === 'GET') {
+                if (interruption === 'draft-lookup-withdrawal') withdrawRequest(ctx);
+                return Response.json({ value: [] });
+              }
+              drafts++;
+              assert.fail('Draft POST must not be sent after changed admission');
+            }
+          });
+        }
+      }
+    }), /approved test-request|changed or was withdrawn|superseded/);
+    assert.equal(pushes, interruption === 'push-withdrawal' || interruption.startsWith('draft-') ? 1 : 0);
+    assert.equal(drafts, 0);
+    const job = ctx.ledger.status().jobs[0];
+    assert.equal(job.state, 'blocked');
+    assert.ok(existsSync(join(job.workspace, 'test/behavior.test.js')));
+    const result = ctx.ledger.all('workerResult').at(-1);
+    assert.equal(result.outcome, 'blocked');
+    assert.ok(result.sourceRevision);
+    assert.equal(result.validation[0].status, 'passed');
+  });
+
+for (const transport of ['push', 'build']) for (const interruption of ['auth-withdrawal', 'source-read-review'])
+  test(`ADO ${transport} transport rechecks admission after ${interruption}`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const repo = { ...ctx.config.repositories[0], remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    let mutations = 0;
+    const dependencies = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+      getToken: async () => { if (interruption === 'auth-withdrawal') withdrawRequest(ctx); return 'fixture-token'; },
+      readTestRequest: async () => {
+        if (interruption === 'source-read-review') supersedeRequestReview(ctx, prepared.assignment);
+        return ctx.item;
+      },
+      execute: async () => { mutations++; assert.fail('Push after changed admission'); },
+      fetchResponse: async () => { mutations++; assert.fail('Build POST after changed admission'); } };
+    if (transport === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.config.repositories[0].referenceCheckout,
+      repo, 'HEAD:refs/heads/fixture', dependencies), /approved test-request|superseded/);
+    else await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, undefined, dependencies), /approved test-request|superseded/);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
+  });
+
+for (const provider of ['agency-remote', 'agency-local'])
+  test(`ADO coverage rejects persisted ${provider} before authoring or seed publication`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath,
+      profile: 'fixture-provider', ...(provider === 'agency-remote' ? { pollSeconds: 1 } : {}) } };
+    ctx.config.repositories[0].skillBindings[0].authoringProvider = 'external';
+    const investigation = ctx.ledger.get('investigation', prepared.assignment.investigationId);
+    const external = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation,
+      prepared.assignment.testCoveragePlanId, prepared.assignment.requestedOutcome);
+    ctx.ledger.put(external);
+    const reviewId = `${ctx.intake.id}:review`;
+    const review = JSON.parse(ctx.ledger.status().operations.find(row => row.id === reviewId).detail);
+    ctx.ledger.finishOperation(reviewId, 'complete', { ...review, assignmentId: external.id });
+    assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /final local executor/);
+    let pushes = 0, launches = 0;
+    await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, external.id, {
+      readTestRequest: ctx.read,
+      agencyRemote: { pushBranch: async () => { pushes++; }, executeRemoteJob: async () => { launches++; } },
+      runAgencyLocal: async () => { launches++; }
+    }), /final local executor/);
+    assert.equal(pushes, 0);
+    assert.equal(launches, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'agency-remote-seed'), false);
+  });
+
+for (const provider of ['agency-remote', 'agency-local'])
+  test(`new ADO coverage preparation cannot select ${provider}`, async t => {
+    const ctx = await requestFixture(t);
+    ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath, profile: 'fixture-provider' } };
+    ctx.config.repositories[0].skillBindings[0].authoringProvider = 'external';
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read
+    }), /final local executor/);
+    assert.equal(ctx.ledger.all('assignment').length, 0);
+    assert.equal(ctx.ledger.status().jobs.length, 0);
+  });
+
+test('app-native rejects new and persisted ADO execution paths', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.activation.collect = true;
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxCalls = 10;
+  const runId = 'ado-app-boundary';
+  beginApp(ctx.config, { runId, executorSessionId: 'fixture-session', dryRun: false, provenance: 'app-tool' });
+  const { ledger } = openApp(ctx.config, runId, false);
+  ctx.additionalLedgers.push(ledger);
+  for (const binding of ctx.config.repositories[0].skillBindings) {
+    const key = skillQualificationId('office-agent', binding.id);
+    ledger.qualify(key, ctx.ledger.qualification(key));
+  }
+  const intake = await collectTestRequest(ctx.config, ledger, 123, { read: ctx.read });
+  const handoff = { ...ctx.handoff, intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() };
+  const { assignment } = prepareTestRequest(ctx.config, ledger, handoff);
+  const prepareInput = { investigationId: assignment.investigationId, repoId: assignment.repoId,
+    intent: assignment.intent, testCoveragePlanId: assignment.testCoveragePlanId };
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'prepare', prepareInput), /app-native execution is not supported/);
+  // Simulate an app worker persisted before this guard existed.
+  ledger.db.prepare('INSERT INTO app_workers VALUES(?,?)').run(assignment.id, json({ id: assignment.id,
+    runId, state: 'prepared', assignment, claimId: null, execution: 'external-app-native-session' }));
+  const claim = { assignmentId: assignment.id, claimId: 'fixture-claim', coordinatorAgentId: ctx.config.agent.id };
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
+  ledger.db.prepare('UPDATE app_workers SET body=? WHERE id=?').run(json({ id: assignment.id,
+    runId, state: 'claimed', assignment, claimId: claim.claimId, execution: 'external-app-native-session' }), assignment.id);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'bind', claim), /app-native execution is not supported/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'result', { ...claim, outcome: 'draft-reported' }), /app-native execution is not supported/);
 });
 
 async function addOneJsRepository(ctx, {

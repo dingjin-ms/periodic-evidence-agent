@@ -95,9 +95,15 @@ node src/cli.js submit-test-request --file handoff.local.json --execute --author
 ```
 
 Execution re-reads the exact ADO ID and checks the captured revision/fields,
-policy and current review before calling the existing planner/worker/validation/
-Draft PR machinery. Ordinary `dispatch` and `dispatch-ready` cannot bypass this
-source recheck. No synthetic override exists for request evidence. The worker
+policy and current review before dispatch and again at publication boundaries.
+The transports refresh admission after awaited lookup/authentication, immediately
+before Git push, build queueing or Draft creation. Withdrawal or revision drift
+blocks publication and retains authored work and validation evidence for explicit
+reconciliation; it does not automatically replay uncertain effects.
+Only the final local SDK executor is supported for this lane. New or previously
+persisted ADO requests cannot use external Agency authoring or hosted execution.
+Other evidence lanes retain their existing provider contracts.
+Ordinary `dispatch` and `dispatch-ready` cannot bypass this source recheck. No synthetic override exists for request evidence. The worker
 gets scenario data, not ticket-defined authority. Same-receipt preparation is
 idempotent; completed/uncertain workers are not relaunched. Updates after review
 require explicit reconciliation, not automatic second PRs. Configuring RSI

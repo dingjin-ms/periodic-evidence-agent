@@ -16,13 +16,39 @@ qualification probe may establish that proof; provider selection alone cannot.
 | OA (`office-agent`) | Native skills -> validate -> bounded type repair -> revalidate in one remote job/workspace | **Passed within the recorded scope**, 2026-10-23, build `57969048`; [sanitized evidence](oa-workspace-loop-20261023.json). Real TS2322 failure, one repair, original gates and trusted final gates passed; independently accepted by the local controller. |
 | OA (`office-agent`) | Real evidence -> new authoring -> validation / repair -> controller acceptance (`live-business-e2e`) | **Passed within the bounded qualification scope**, 2026-10-29 r8, build `58391519`; [sanitized evidence](oa-native-business-20261029-r8.json). Master-integrated controller, full local CI, new native authoring, real gates, fitness, fresh independent review, final remote gates and controller acceptance completed. First-pass success, not an observed candidate repair or product PR. The [r7 proof](oa-native-business-20261028.json) remains unchanged. |
 | OA (`office-agent`) | Hosted Agency executor (separate task/result contract) | Requires its own proof; not qualified by the validation-only run. |
-| 1JS / Office src / other repositories | Any remote path | No E2E proof registered here; do not infer support or qualification from OA. |
+| 1JS SDX (`midgard/packages/officeaicopilot-agent-excel`) | Native skill -> authoring -> candidate -> pre-review gates -> independent review -> final gates -> local controller acceptance (`live-business-e2e`) | **Passed within the bounded qualification scope**, 2026-10-30, build `58531234`; [sanitized evidence](1js-sdx-native-business-20261030.json). One focused preserved-behavior integration case passed 11/11 tests. No product repair, push, PR, merge or publication occurred. |
+| Office src / other repositories | Any remote path | No E2E proof registered here; do not infer support or qualification from OA or SDX. |
 
 The first row is the existing remote-authoring architecture, **not** the
 fixed-candidate validation experiment. A diagram, implementation, another
 session's unreviewed result, or combining two individually tested capabilities
 does not establish an E2E run of their composition. A genuinely verified run
 can be added when its authoritative evidence is available.
+
+## 1JS SDX native live E2E: 2026-10-30
+
+Agency job `office-31b2c17d-5bac-46b7-9780-7d5409ac1174`, ADO build
+`58531234`, used pipeline `35960` against exact 1JS base
+`653989a82e29120978d7e1dc33e739aec6eeae1e`. The pinned Excel integration
+skill authored one contract case, updated its behavior card, generated one
+changefile and committed candidate `97795c027ca58e74e91311fb5b289a47d35b4e45`.
+The complete seven-stage pre-review gate round passed, a separate read-only
+review approved the exact candidate with no findings, and the complete final
+gate round passed again. The focused Jest population passed 11/11 tests.
+
+The independent local controller accepted the original Agency event stream and
+downloaded artifact inventory, binding the job, build, base, skill, profile,
+candidate parent, changed paths, review and final gates. Complete controller CI
+at revision `23b3104dbde7ce9fac4ff8e6f0f686dd5aa0044f` covered all 96 discovered
+files exactly once; remaining tests passed 1,598 with one existing skip, demo
+passed 2/2, and standalone demo exited zero.
+
+This is historical scoped proof, not current-configuration acceptance or an
+authorization grant. The product candidate passed first try, so product repair
+remains untested; the earlier dependency rehydration was infrastructure
+bootstrap repair only. No product push, PR, merge or publication occurred. Raw
+Agency logs, events and artifacts remain in ignored private storage and are not
+committed.
 
 ## Master-integrated replay: 2026-10-29 r8
 

@@ -130,6 +130,115 @@ test('SDX authentication rejects missing sparse bootstrap before requesting sign
   });
 });
 
+test('SDX authentication ignores untracked broker outputs but rejects tracked broker changes', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+  const { root, reference, repo, write, git } = await fixture(t);
+  for (const path of [
+    'packages/fast-script-runner/bin/fast-runner.mjs',
+    'packages/fast-script-runner/dist/index.mjs',
+    'midgard/package.json',
+    'packages/node-azure-auth/package.json',
+    'packages/node-azure-auth/bin/index.cjs',
+    'packages/node-azure-auth/dist/main.cjs',
+    '.npmrc'
+  ]) write(path, path.endsWith('.json') ? '{}\n' : 'pinned\n');
+  await git(['add', '--all']);
+  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Authentication bootstrap']);
+  const revision = await git(['rev-parse', 'HEAD']);
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'yarn.cmd'), '@exit /b 0\r\n');
+  write('packages/node-azure-auth/generated/provider-cache.txt', 'runner output\n');
+  const profile = resolve('scripts/validation/1js-sdx-excel-integration.ps1');
+  const env = { ...process.env, Path: `${bin};${process.env.Path ?? process.env.PATH}`,
+    PATH: `${bin};${process.env.Path ?? process.env.PATH}`,
+    PILOT_VALIDATION_STAGE: 'authentication-check', PILOT_VALIDATION_REVISION: revision };
+  const execute = () => command('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', profile
+  ], reference, 30000, env);
+  assert.match((await execute()).stdout, /"state":"ready"/);
+  write('.npmrc', 'changed\n');
+  await assert.rejects(execute(), error => {
+    assert.match(error.stderr, /Authentication broker inputs differ/);
+    assert.match(error.stderr, /\.npmrc/);
+    return true;
+  });
+  assert.equal(repo.baseRef.length, 40);
+});
+
+test('SDX authentication validates runner-preauthenticated user npmrc without exposing it', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows native validation profile');
+  const { root, reference, write, git } = await fixture(t);
+  for (const path of [
+    'packages/fast-script-runner/bin/fast-runner.mjs',
+    'packages/fast-script-runner/dist/index.mjs',
+    'midgard/package.json',
+    'packages/node-azure-auth/package.json',
+    'packages/node-azure-auth/bin/index.cjs',
+    'packages/node-azure-auth/dist/main.cjs',
+    '.npmrc'
+  ]) write(path, path.endsWith('.json') ? '{}\n' : 'pinned\n');
+  await git(['add', '--all']);
+  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '-m', 'Authentication bootstrap']);
+  const revision = await git(['rev-parse', 'HEAD']);
+  const bin = join(root, 'bin');
+  const home = join(root, 'home');
+  mkdirSync(bin);
+  mkdirSync(home);
+  writeFileSync(join(home, '.npmrc'), '//example.invalid/:_password=synthetic-secret\n');
+  writeFileSync(join(bin, 'yarn.cmd'), '@exit /b 1\r\n');
+  writeFileSync(join(bin, 'npm.cmd'), '@exit /b 0\r\n');
+  const result = await command('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+    resolve('scripts/validation/1js-sdx-excel-integration.ps1')
+  ], reference, 30000, {
+    ...process.env, HOME: home, CI: 'true',
+    Path: `${bin};${process.env.Path ?? process.env.PATH}`,
+    PATH: `${bin};${process.env.Path ?? process.env.PATH}`,
+    PILOT_VALIDATION_STAGE: 'authentication-check', PILOT_VALIDATION_REVISION: revision
+  });
+  assert.match(result.stdout, /"state":"ready"/);
+  assert.match(result.stdout, /"credentialSource":"runner-preauthenticated-user-npmrc"/);
+  assert.doesNotMatch(result.stdout + result.stderr, /synthetic-secret/);
+});
+
+test('SDX dependency stage never reruns install or postinstall scripts', () => {
+  const profile = readFileSync('scripts/validation/1js-sdx-excel-integration.ps1', 'utf8');
+  assert.match(profile, /yarn fast '@1js\/officeaicopilot-agent-excel'[\s\S]*--no-scripts/);
+  assert.doesNotMatch(profile, /--allowed-packages-with-install-scripts/);
+});
+
+test('SDX compile builds Jest outputs without runner-generated references', () => {
+  const profile = readFileSync('scripts/validation/1js-sdx-excel-integration.ps1', 'utf8');
+  assert.match(profile, /Candidate changes Jest config sources and requires a source-complete build closure/);
+  assert.match(profile, /Prepared Jest config outputs differ from the exact requested revision/);
+  assert.match(profile, /jest-config\.validation\.tsconfig\.json/);
+  assert.match(profile, /jest-config\.validation-globals\.d\.ts/);
+  assert.match(profile, /declare function afterAll/);
+  assert.match(profile, /Split-Path -Parent \$env:PILOT_VALIDATION_ARTIFACT_DIRECTORY/);
+  assert.match(profile, /officeaicopilot-agent-excel\/jest\.integration\.config\.js/);
+  assert.match(profile, /officeaicopilot-agent-excel\/package\.json/);
+  assert.match(profile, /require\.resolve\('typescript\/bin\/tsc'/);
+  assert.match(profile, /'--project'/);
+  assert.match(profile, /defaultJestConfig\.js/);
+  assert.match(profile, /jest\.integration\.config\.js/);
+  assert.match(profile, /Invoke-Checked -Executable node -Arguments/);
+  assert.match(profile, /workspace-source-resolver\.cjs/);
+  assert.match(profile, /customExportConditions: \['source', 'browser'\]/);
+  assert.match(profile, /request\.match\(\/\^@1js/);
+  assert.match(profile, /match\[2\]\.startsWith\('lib\/'\)/);
+  assert.match(profile, /conversation-history-bridge\.cjs/);
+  assert.match(profile, /require\(implementation\)\.getCopilotReferenceIdFromUrl/);
+  assert.match(profile, /token-provider-bridge\.cjs/);
+  assert.match(profile, /require\(implementation\)\.getUserInfoCached/);
+  assert.match(profile, /Invoke-Checked -Executable git -Arguments @\('clean', '-fd'\)/);
+  assert.doesNotMatch(profile, /@1js\/jest-config\/swc-transform/);
+  assert.doesNotMatch(profile, /@1js\/jest-config\/source-resolver/);
+  assert.doesNotMatch(profile, /update-project-references/);
+});
+
 async function nativeTestFixture(t) {
   const ctx = await fixture(t);
   const { root, reference, repo, write, git } = ctx;
@@ -149,9 +258,9 @@ async function nativeTestFixture(t) {
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const args = process.argv.slice(2), value = flag => args[args.indexOf(flag) + 1];
 const configuration = fs.readFileSync(value('--config'), 'utf8');
-assert.ok(configuration.includes('@1js/jest-config/source-resolver'));
-assert.ok(configuration.includes('@1js/jest-config/swc-transform'));
+assert.ok(configuration.includes("fromPackage('./jest.integration.config.js')"));
 assert.ok(configuration.includes('...original'));
+assert.ok(configuration.includes('rootDir'));
 const mode = process.env.PILOT_FIXTURE_RESULT;
 if (args.includes('--listTests')) {
   if (mode === 'discovery-failed') process.exit(2);

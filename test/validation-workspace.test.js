@@ -13,7 +13,9 @@ import { prepareValidationWorkspace, removeValidationWorktree,
 import { nativeCommand } from '../src/native-command.js';
 
 async function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'validation-preflight-'));
+  // Git records the canonical worktree path. Keep the fixture on that identity
+  // without relaxing the production rejection of alias/unregistered cleanup.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'validation-preflight-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, 'source'), workspace = join(root, 'isolated');
   mkdirSync(source);

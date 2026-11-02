@@ -34,6 +34,9 @@ function fixture(t) {
   writeFileSync(join(root, 'source', 'final-test.ts'), finalSource);
   writeFileSync(join(root, 'jest-artifacts', 'jest-result.json'), JSON.stringify({ success: true,
     numTotalTestSuites: 1, numTotalTests: 11, numPassedTests: 11, numFailedTests: 0 }));
+  for (const name of ['discovered-tests.json', 'selection.json', 'run.json']) {
+    writeFileSync(join(root, 'jest-artifacts', name), '{}');
+  }
   writeFileSync(join(root, 'changed-files.json'), JSON.stringify([testPath, cardPath,
     'midgard/change/change-11111111-1111-4111-8111-111111111111.json']));
   const failedStages = passingStages();
@@ -59,7 +62,8 @@ function fixture(t) {
   writeFileSync(join(root, 'result.json'), JSON.stringify({ baseRevision, candidate, parent: baseRevision,
     profileSha256, skillSha256, preReviewStages: passingStages(), finalStages: passingStages(), gitStatus: '',
     repairCount: 1, publicationPerformed: false }));
-  const inventoryPaths = ['changed-files.json', 'fault-injection.json', 'jest-artifacts/jest-result.json',
+  const inventoryPaths = ['changed-files.json', 'fault-injection.json', 'jest-artifacts/discovered-tests.json',
+    'jest-artifacts/jest-result.json', 'jest-artifacts/run.json', 'jest-artifacts/selection.json',
     'profile.ps1', 'repair-diagnostics/round-0.txt', 'repair.json', 'result.json', 'review.json',
     'round-artifacts/round-0.txt', 'round-artifacts/round-1.txt', 'rounds.json', 'source/final-test.ts'];
   writeFileSync(join(root, 'inventory.json'), JSON.stringify(inventoryPaths.map(path => {
@@ -92,6 +96,33 @@ test('accepts a controlled test failure repaired and fully revalidated in one SD
   assert.equal(result.proofKind, 'controlled-repair-path');
   assert.equal(result.repairCount, 1);
   assert.equal(result.publicationPerformed, false);
+});
+
+test('accepts one complete final Jest evidence set in a nested stage directory', t => {
+  const value = fixture(t), source = join(value.root, 'jest-artifacts', 'jest-result.json');
+  const nested = join(value.root, 'jest-artifacts', 'test');
+  mkdirSync(nested, { recursive: true });
+  for (const name of ['discovered-tests.json', 'selection.json', 'run.json']) {
+    writeFileSync(join(nested, name), '{}');
+  }
+  writeFileSync(join(nested, 'jest-result.json'), readFileSync(source));
+  rmSync(source);
+  const inventoryPaths = JSON.parse(readFileSync(join(value.root, 'inventory.json'))).map(entry => entry.path)
+    .filter(path => path !== 'jest-artifacts/jest-result.json')
+    .concat(['jest-artifacts/test/discovered-tests.json', 'jest-artifacts/test/jest-result.json',
+      'jest-artifacts/test/run.json', 'jest-artifacts/test/selection.json']).sort();
+  writeFileSync(join(value.root, 'inventory.json'), JSON.stringify(inventoryPaths.map(path => {
+    const bytes = readFileSync(join(value.root, ...path.split('/')));
+    return { path, bytes: bytes.length, sha256: hash(bytes) };
+  })));
+  assert.equal(verify(value).testCount, 11);
+});
+
+test('rejects ambiguous final Jest evidence sets', t => {
+  const value = fixture(t), nested = join(value.root, 'jest-artifacts', 'test');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, 'jest-result.json'), readFileSync(join(value.root, 'jest-artifacts', 'jest-result.json')));
+  assert.throws(() => verify(value), /exactly one final Jest result/);
 });
 
 test('rejects a run without a real failed test-stage round', t => {

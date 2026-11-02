@@ -131,7 +131,14 @@ export function verifyAgencyRunnerSdxRepairLiveE2e(contract, observation, agency
     typeof review.authorSessionId === 'string' && typeof review.reviewerSessionId === 'string' &&
     review.authorSessionId !== review.reviewerSessionId,
   'Fresh independent SDX review did not approve the exact repaired candidate', 'blocked-result');
-  const jest = read(join(root, 'jest-artifacts', 'jest-result.json'));
+  const jestRoot = join(root, 'jest-artifacts');
+  const jestResults = files(jestRoot).filter(path => path.endsWith(`${sep}jest-result.json`));
+  requireThat(jestResults.length === 1, 'SDX bounded-repair E2E requires exactly one final Jest result', 'blocked-result');
+  const jestDirectory = join(jestResults[0], '..');
+  requireThat(['discovered-tests.json', 'selection.json', 'run.json'].every(name =>
+    files(jestDirectory).includes(join(jestDirectory, name))),
+  'SDX bounded-repair E2E final Jest evidence is incomplete', 'blocked-result');
+  const jest = read(jestResults[0]);
   requireThat(jest.success === true && jest.numTotalTests > 0 && jest.numPassedTests === jest.numTotalTests &&
     jest.numFailedTests === 0, 'SDX bounded-repair E2E has no nonzero passing final Jest population', 'blocked-result');
 

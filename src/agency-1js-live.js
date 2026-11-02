@@ -145,7 +145,7 @@ export function verifyOneJsLiveArtifact(root, request, observation, productRepos
   const workbook = zip.get('xl/workbook.xml')?.toString('utf8');
   const relations = zip.get('xl/_rels/workbook.xml.rels')?.toString('utf8');
   requireThat(workbook && relations, 'Workbook OpenXML identity parts are missing', 'blocked-result');
-  const sheet = [...workbook.matchAll(/<sheet\b[^>]*name="([^"]+)"[^>]*(?:r:id|id)="([^"]+)"/g)]
+  const sheet = [...workbook.matchAll(/<(?:[A-Za-z_][\w.-]*:)?sheet\b[^>]*name="([^"]+)"[^>]*(?:r:id|id)="([^"]+)"/g)]
     .find(match => match[1] === request.expected.worksheet);
   requireThat(sheet, 'Expected worksheet is absent from OpenXML', 'blocked-result');
   const target = relationshipTarget(relations, attributes => attributes.Id === sheet[2]);
@@ -158,7 +158,7 @@ export function verifyOneJsLiveArtifact(root, request, observation, productRepos
   requireThat(sheetXml && tableTarget, 'Worksheet table relationship is missing', 'blocked-result');
   const normalized = new URL(tableTarget, `file:///${sheetPath}`).pathname.slice(1);
   const tableXml = zip.get(normalized)?.toString('utf8');
-  const range = tableXml?.match(/<table\b[^>]*ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/) ?? [];
+  const range = tableXml?.match(/<(?:[A-Za-z_][\w.-]*:)?table\b[^>]*ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/) ?? [];
   const column = value => [...value].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0);
   const rows = Number(range[4]) - Number(range[2]) + 1, columns = column(range[3] ?? '') - column(range[1] ?? '') + 1;
   requireThat(tableXml && rows === request.expected.rows && columns === request.expected.columns,

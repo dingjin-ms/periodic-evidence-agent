@@ -66,11 +66,11 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
     changedFiles: [catalogPath, scenarioPath] };
   writeFileSync(join(artifact, 'authoring-receipt.json'), JSON.stringify(receipt));
   const fixtureWorkbook = zip({
-    'xl/workbook.xml': '<workbook xmlns:r="r"><sheets><sheet name="AgencyLive" r:id="rId1"/></sheets></workbook>',
+    'xl/workbook.xml': '<x:workbook xmlns:x="x" xmlns:r="r"><x:sheets><x:sheet name="AgencyLive" sheetId="1" r:id="rId1"/></x:sheets></x:workbook>',
     'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
     'xl/worksheets/sheet1.xml': '<worksheet><tableParts><tablePart r:id="rId1"/></tableParts></worksheet>',
     'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/></Relationships>',
-    'xl/tables/table1.xml': '<table ref="A1:D5"/>'
+    'xl/tables/table1.xml': '<x:table xmlns:x="x" id="1" name="AgencyLiveTable" ref="A1:D5"/>'
   });
   writeFileSync(join(artifact, 'playwright-output', 'case', 'generated-workbook.xlsx'), fixtureWorkbook);
   const result = { status: 'passed', profile: request.profile, base, candidate, bundleSha256,

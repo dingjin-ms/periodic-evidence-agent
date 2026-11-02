@@ -95,9 +95,13 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
   assert.equal(accepted.status, 'passed'); assert.equal(accepted.candidate, candidate);
   assert.deepEqual(calls, ['submit', 'inspect', 'download']);
   await assert.rejects(runOneJsLiveController(config, ledger, request, {}, { transport }), /resume/);
+  const operation = ledger.db.prepare("SELECT id,detail FROM operations WHERE kind='agency-1js-live'").get();
+  const expired = JSON.parse(operation.detail); expired.reservedAt = '2000-01-01T00:00:00.000Z';
+  ledger.db.prepare('UPDATE operations SET detail=? WHERE id=?').run(JSON.stringify(expired), operation.id);
   const resumed = await runOneJsLiveController(config, ledger, request, { resume: true }, { transport });
   assert.equal(resumed.status, 'passed');
   assert.equal(calls.filter(value => value === 'submit').length, 1);
+  assert.equal(calls.filter(value => value === 'inspect').length, 1);
 });
 
 test('1JS live request rejects parallel or fixed-scenario dispatch before submission', async () => {

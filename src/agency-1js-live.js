@@ -202,8 +202,9 @@ export async function runOneJsLiveController(config, ledger, request, options = 
     }
   } else requireThat(options.resume === true, '1JS live operation already exists; resume it instead of submitting again', 'blocked-reconciliation');
   const deadline = Date.parse(detail.reservedAt) + request.maximumMinutes * 60000;
-  let observation;
+  let observation = detail.observation?.terminal ? detail.observation : undefined;
   while (Date.now() < deadline) {
+    if (observation) break;
     observation = await transport('inspect', { request, parentRunId: detail.parentRunId }, directory);
     detail.observation = observation;
     ledger.finishOperation(operationId, 'accepted', detail);

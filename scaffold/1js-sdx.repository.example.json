@@ -104,7 +104,7 @@
         "{profile}"
       ],
       "profilePath": "../scripts/validation/1js-sdx-excel-integration.ps1",
-      "profileSha256": "301692caeffa255f3489dfb2edce700e3e381820fb7c08b1187e052b576f2241",
+      "profileSha256": "cad0212aecc1b8d61c15df7919c40b2f26eb8533580ebb189e8fa5e1df34b3e1",
       "timeoutMs": 1800000
     }
   ],

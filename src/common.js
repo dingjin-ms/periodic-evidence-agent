@@ -378,13 +378,14 @@ export function configAt(path) {
       }
     }
     for (const gate of repo.validationGates ?? []) {
+      const builtInProfile = gate.profile !== undefined;
       configureDeclarativeGate(gate, path);
       validationPackageAuth(gate);
       validationLfsPaths(gate);
       requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
         `Repository ${repo.id} validation gate ${gate.id} must bind profilePath and profileSha256 together`);
       if (!gate.profilePath) continue;
-      requireThat(!isAbsolute(gate.profilePath) &&
+      requireThat((builtInProfile || !isAbsolute(gate.profilePath)) &&
         /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
       `Repository ${repo.id} validation gate ${gate.id} needs a relative profilePath and profileSha256`);
       const profilePath = resolve(dirname(resolve(path)), gate.profilePath);

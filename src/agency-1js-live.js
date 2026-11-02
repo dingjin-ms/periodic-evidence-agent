@@ -13,7 +13,7 @@ const revision = /^[a-f0-9]{40}$/;
 
 export function oneJsLiveRequest(overrides = {}) {
   const branch = overrides.branch ?? 'user/dingjin/pea-1js-agency-same-workspace-authoring-20261102';
-  const sourceRevision = overrides.sourceRevision ?? '7b5304e5d2684f78c34ff88ebe46bb7674ad1484';
+  const sourceRevision = overrides.sourceRevision ?? '22000241f771c99955eef8519e2dc27e1489c9ee';
   return {
     schema: 'pea-1js-agency-live-request-v1',
     sourceRevision,

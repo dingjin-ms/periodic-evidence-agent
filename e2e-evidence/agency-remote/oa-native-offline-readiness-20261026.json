@@ -1,0 +1,79 @@
+{
+  "schema": "agency-native-offline-readiness-v1",
+  "id": "oa-native-offline-readiness-20261026",
+  "observedAt": "2026-10-26T07:04:27.536Z",
+  "repoId": "office-agent",
+  "mode": "live-business-e2e",
+  "result": "offline-checks-passed-remote-execution-not-started",
+  "qualification": "not-verified",
+  "controllerCommit": "e9cf2d6e18c29726ae3e8751db23cbd4af1f4a54",
+  "implementationCommits": [
+    "4c7d45b9f0bb9d4619a19940356659307be3b192",
+    "e9cf2d6e18c29726ae3e8751db23cbd4af1f4a54"
+  ],
+  "offlineValidation": {
+    "testFiles": [
+      "test\\agency-workspace-loop.test.js",
+      "test\\agency-workspace-loop-acceptance.test.js"
+    ],
+    "passed": 50,
+    "failed": 0,
+    "skipped": 0,
+    "windowsProfileCompiler": "synthetic",
+    "packageCheck": "passed",
+    "realProductCompilation": false
+  },
+  "savedSourceImport": {
+    "entryPoint": "agent collector replay-evidence",
+    "result": "saved-source-canonical-import-verified",
+    "separateAuditLedger": true,
+    "records": 1,
+    "originalProvenance": "authenticated-source",
+    "recordAndCaptureBytesUnchanged": true,
+    "freshSourceCalls": 0,
+    "freshSourceCoverage": false,
+    "originalSourceSnapshotUnchanged": true,
+    "reviewRecorded": false,
+    "assignmentPrepared": false
+  },
+  "privateEvidence": {
+    "collection": "agency-live-business-e2e-20261024",
+    "offlineStatus": {
+      "artifact": "native-offline-status-e9cf2d6-20261026.json",
+      "sha256": "d0f767d27e3474289c91d242f881949939d8f4a4714446cbb238bf41e6adc40d"
+    },
+    "regressions": {
+      "artifact": "native-fitness-profile-full-regressions-20261026.txt",
+      "sha256": "90cf9022875af9b5aa18c4b3589097c5045ed6510ac86648cfc5577bc03af267"
+    },
+    "savedSourceImport": {
+      "artifact": "native-recorded-source-audit-20261026\\verified-summary.json",
+      "sha256": "5569b79dd8c2653f0c8b9be432c8339a1bef6802e676d6e02a80006bc24e55b3"
+    },
+    "collectorResult": {
+      "artifact": "native-recorded-source-audit-20261026\\collector-result.json",
+      "sha256": "7c38c5a87698dd1a8cef1e52543b616308cb4f427a6aef9366d60b22b4dbbb5d"
+    }
+  },
+  "remainingPrerequisites": [
+    "Qualify a genuine remaining coverage gap at the exact product revision, preserving existing caller-level coverage and all scanner exclusions.",
+    "For held Stage2 analysis, obtain the approved analyze-excel-agent-test-coverage skill and references/coverage-map.md; neither is installed at the default executor path.",
+    "Alternatively complete an authorized ordinary native review, source-bound coverage plan and skill qualification; an imported source or held review input does not satisfy these guards.",
+    "Prepare and bind the formal current assignment, native fitness patches, independent reviewer and immutable remote pipeline.",
+    "Obtain explicit authority for the new bounded remote execution; prior remote-run budgets are exhausted.",
+    "Execute real authoring, product gates, native fitness and independent review, then independently accept the exact candidate and complete artifacts."
+  ],
+  "remoteJobsSubmitted": 0,
+  "executionAuthorized": false,
+  "productValidationExecuted": false,
+  "controllerAcceptance": false,
+  "productionLedgerTouched": false,
+  "publicationPerformed": false,
+  "limitations": [
+    "This is offline readiness metadata, not a remote validation receipt or an enablement grant.",
+    "The saved-source import preserves old authenticated observations; it is not a new collection, confirmed current defect or qualified coverage gap.",
+    "The real Agency compatibility of native fitness and the independent reviewer remains unverified.",
+    "Fitness or independent-review failure does not establish an automatic quality-repair loop; the current bounded attempt stops for reconciliation.",
+    "Existing remote proofs, their scope and registry entries remain unchanged."
+  ]
+}

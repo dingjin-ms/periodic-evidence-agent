@@ -1,0 +1,812 @@
+{
+  "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+  "batch": "excel-agent-local-68e1a27d6ed6a98f",
+  "gateId": "1js-declarative-five-pass",
+  "status": "passed",
+  "nativeSummarySha256": "df03351ac1ef59118726de4a2b7eb8c53e0a9180cb9b0e9c7d075dcf7d267949",
+  "validationArtifactSha256": "8e070d1e78b3161393ad4abab5cea0ed4c69bcae446dd5b57e5436a168a6a19d",
+  "preparationCountsAsBusinessPass": false,
+  "historicalPassesAggregated": false,
+  "cases": [
+    {
+      "repeat": 0,
+      "status": "passed",
+      "expectedStatus": "passed",
+      "retry": 0,
+      "durationMs": 246552,
+      "steps": [
+        {
+          "title": "open the signed-in Excel hub",
+          "durationMs": 10361,
+          "status": "passed"
+        },
+        {
+          "title": "create a blank workbook from the hub",
+          "durationMs": 8417,
+          "status": "passed"
+        },
+        {
+          "title": "WAC editor iframe loads",
+          "durationMs": 763,
+          "status": "passed"
+        },
+        {
+          "title": "Copilot SDX iframe is present and reaches React-mounted state",
+          "durationMs": 7473,
+          "status": "passed"
+        },
+        {
+          "title": "wait-for-pane.pane-ready",
+          "durationMs": 1634,
+          "status": "passed"
+        },
+        {
+          "title": "select-planning.select-mode",
+          "durationMs": 2674,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.submit-prompt-flow.submit-prompt",
+          "durationMs": 2270,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.wait-for-response-flow.wait-for-response",
+          "durationMs": 43334,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-plan-heading",
+          "durationMs": 1160,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-proceed-action",
+          "durationMs": 1214,
+          "status": "passed"
+        },
+        {
+          "title": "discard-plan-conversation.start-new-conversation",
+          "durationMs": 2115,
+          "status": "passed"
+        },
+        {
+          "title": "seed-private-canary.seed-workbook",
+          "durationMs": 5582,
+          "status": "passed"
+        },
+        {
+          "title": "seed-write-guard.seed-workbook",
+          "durationMs": 5481,
+          "status": "passed"
+        },
+        {
+          "title": "seed-unrelated-guard.seed-workbook",
+          "durationMs": 4981,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-private-canary.read-workbook-resource",
+          "durationMs": 2839,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-write-guard.read-workbook-resource",
+          "durationMs": 2791,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-unrelated-guard.read-workbook-resource",
+          "durationMs": 2794,
+          "status": "passed"
+        },
+        {
+          "title": "select-chat-only.select-mode",
+          "durationMs": 2549,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.submit-prompt-flow.submit-prompt",
+          "durationMs": 2425,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.wait-for-response-flow.wait-for-response",
+          "durationMs": 14109,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.submit-prompt-flow.submit-prompt",
+          "durationMs": 2461,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.wait-for-response-flow.wait-for-response",
+          "durationMs": 11344,
+          "status": "passed"
+        },
+        {
+          "title": "verify-protected-business-contract",
+          "durationMs": 90822,
+          "status": "passed"
+        },
+        {
+          "title": "account.lane",
+          "durationMs": 0,
+          "status": "passed"
+        },
+        {
+          "title": "prompt.contains",
+          "durationMs": 0,
+          "status": "passed"
+        },
+        {
+          "title": "mode.selected",
+          "durationMs": 181,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30068,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30101,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30011,
+          "status": "passed"
+        },
+        {
+          "title": "restore-mode.restore-mode",
+          "durationMs": 2188,
+          "status": "passed"
+        }
+      ],
+      "privateAttachmentCount": 28
+    },
+    {
+      "repeat": 1,
+      "status": "passed",
+      "expectedStatus": "passed",
+      "retry": 0,
+      "durationMs": 242373,
+      "steps": [
+        {
+          "title": "open the signed-in Excel hub",
+          "durationMs": 9772,
+          "status": "passed"
+        },
+        {
+          "title": "create a blank workbook from the hub",
+          "durationMs": 8632,
+          "status": "passed"
+        },
+        {
+          "title": "WAC editor iframe loads",
+          "durationMs": 84,
+          "status": "passed"
+        },
+        {
+          "title": "Copilot SDX iframe is present and reaches React-mounted state",
+          "durationMs": 1945,
+          "status": "passed"
+        },
+        {
+          "title": "wait-for-pane.pane-ready",
+          "durationMs": 1513,
+          "status": "passed"
+        },
+        {
+          "title": "select-planning.select-mode",
+          "durationMs": 2227,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.submit-prompt-flow.submit-prompt",
+          "durationMs": 2218,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.wait-for-response-flow.wait-for-response",
+          "durationMs": 49556,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-plan-heading",
+          "durationMs": 1752,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-proceed-action",
+          "durationMs": 1240,
+          "status": "passed"
+        },
+        {
+          "title": "discard-plan-conversation.start-new-conversation",
+          "durationMs": 2223,
+          "status": "passed"
+        },
+        {
+          "title": "seed-private-canary.seed-workbook",
+          "durationMs": 5384,
+          "status": "passed"
+        },
+        {
+          "title": "seed-write-guard.seed-workbook",
+          "durationMs": 5137,
+          "status": "passed"
+        },
+        {
+          "title": "seed-unrelated-guard.seed-workbook",
+          "durationMs": 4974,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-private-canary.read-workbook-resource",
+          "durationMs": 2728,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-write-guard.read-workbook-resource",
+          "durationMs": 2722,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-unrelated-guard.read-workbook-resource",
+          "durationMs": 2643,
+          "status": "passed"
+        },
+        {
+          "title": "select-chat-only.select-mode",
+          "durationMs": 1937,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.submit-prompt-flow.submit-prompt",
+          "durationMs": 2071,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.wait-for-response-flow.wait-for-response",
+          "durationMs": 14678,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.submit-prompt-flow.submit-prompt",
+          "durationMs": 2093,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.wait-for-response-flow.wait-for-response",
+          "durationMs": 11230,
+          "status": "passed"
+        },
+        {
+          "title": "verify-protected-business-contract",
+          "durationMs": 90617,
+          "status": "passed"
+        },
+        {
+          "title": "account.lane",
+          "durationMs": 1,
+          "status": "passed"
+        },
+        {
+          "title": "prompt.contains",
+          "durationMs": 1,
+          "status": "passed"
+        },
+        {
+          "title": "mode.selected",
+          "durationMs": 212,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30012,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30016,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30016,
+          "status": "passed"
+        },
+        {
+          "title": "restore-mode.restore-mode",
+          "durationMs": 1743,
+          "status": "passed"
+        }
+      ],
+      "privateAttachmentCount": 28
+    },
+    {
+      "repeat": 2,
+      "status": "passed",
+      "expectedStatus": "passed",
+      "retry": 0,
+      "durationMs": 244418,
+      "steps": [
+        {
+          "title": "open the signed-in Excel hub",
+          "durationMs": 11782,
+          "status": "passed"
+        },
+        {
+          "title": "create a blank workbook from the hub",
+          "durationMs": 8313,
+          "status": "passed"
+        },
+        {
+          "title": "WAC editor iframe loads",
+          "durationMs": 57,
+          "status": "passed"
+        },
+        {
+          "title": "Copilot SDX iframe is present and reaches React-mounted state",
+          "durationMs": 8891,
+          "status": "passed"
+        },
+        {
+          "title": "wait-for-pane.pane-ready",
+          "durationMs": 1599,
+          "status": "passed"
+        },
+        {
+          "title": "select-planning.select-mode",
+          "durationMs": 2441,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.submit-prompt-flow.submit-prompt",
+          "durationMs": 2319,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.wait-for-response-flow.wait-for-response",
+          "durationMs": 43265,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-plan-heading",
+          "durationMs": 1147,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-proceed-action",
+          "durationMs": 1086,
+          "status": "passed"
+        },
+        {
+          "title": "discard-plan-conversation.start-new-conversation",
+          "durationMs": 2030,
+          "status": "passed"
+        },
+        {
+          "title": "seed-private-canary.seed-workbook",
+          "durationMs": 5176,
+          "status": "passed"
+        },
+        {
+          "title": "seed-write-guard.seed-workbook",
+          "durationMs": 5447,
+          "status": "passed"
+        },
+        {
+          "title": "seed-unrelated-guard.seed-workbook",
+          "durationMs": 5081,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-private-canary.read-workbook-resource",
+          "durationMs": 2608,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-write-guard.read-workbook-resource",
+          "durationMs": 2699,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-unrelated-guard.read-workbook-resource",
+          "durationMs": 2732,
+          "status": "passed"
+        },
+        {
+          "title": "select-chat-only.select-mode",
+          "durationMs": 2465,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.submit-prompt-flow.submit-prompt",
+          "durationMs": 2112,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.wait-for-response-flow.wait-for-response",
+          "durationMs": 12525,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.submit-prompt-flow.submit-prompt",
+          "durationMs": 2136,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.wait-for-response-flow.wait-for-response",
+          "durationMs": 11300,
+          "status": "passed"
+        },
+        {
+          "title": "verify-protected-business-contract",
+          "durationMs": 90730,
+          "status": "passed"
+        },
+        {
+          "title": "account.lane",
+          "durationMs": 0,
+          "status": "passed"
+        },
+        {
+          "title": "prompt.contains",
+          "durationMs": 0,
+          "status": "passed"
+        },
+        {
+          "title": "mode.selected",
+          "durationMs": 165,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30014,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30074,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30003,
+          "status": "passed"
+        },
+        {
+          "title": "restore-mode.restore-mode",
+          "durationMs": 1660,
+          "status": "passed"
+        }
+      ],
+      "privateAttachmentCount": 28
+    },
+    {
+      "repeat": 3,
+      "status": "passed",
+      "expectedStatus": "passed",
+      "retry": 0,
+      "durationMs": 244553,
+      "steps": [
+        {
+          "title": "open the signed-in Excel hub",
+          "durationMs": 9503,
+          "status": "passed"
+        },
+        {
+          "title": "create a blank workbook from the hub",
+          "durationMs": 8308,
+          "status": "passed"
+        },
+        {
+          "title": "WAC editor iframe loads",
+          "durationMs": 61,
+          "status": "passed"
+        },
+        {
+          "title": "Copilot SDX iframe is present and reaches React-mounted state",
+          "durationMs": 9523,
+          "status": "passed"
+        },
+        {
+          "title": "wait-for-pane.pane-ready",
+          "durationMs": 1628,
+          "status": "passed"
+        },
+        {
+          "title": "select-planning.select-mode",
+          "durationMs": 2080,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.submit-prompt-flow.submit-prompt",
+          "durationMs": 2102,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.wait-for-response-flow.wait-for-response",
+          "durationMs": 46946,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-plan-heading",
+          "durationMs": 1047,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-proceed-action",
+          "durationMs": 1032,
+          "status": "passed"
+        },
+        {
+          "title": "discard-plan-conversation.start-new-conversation",
+          "durationMs": 1875,
+          "status": "passed"
+        },
+        {
+          "title": "seed-private-canary.seed-workbook",
+          "durationMs": 4923,
+          "status": "passed"
+        },
+        {
+          "title": "seed-write-guard.seed-workbook",
+          "durationMs": 5214,
+          "status": "passed"
+        },
+        {
+          "title": "seed-unrelated-guard.seed-workbook",
+          "durationMs": 4879,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-private-canary.read-workbook-resource",
+          "durationMs": 2566,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-write-guard.read-workbook-resource",
+          "durationMs": 2636,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-unrelated-guard.read-workbook-resource",
+          "durationMs": 2561,
+          "status": "passed"
+        },
+        {
+          "title": "select-chat-only.select-mode",
+          "durationMs": 2294,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.submit-prompt-flow.submit-prompt",
+          "durationMs": 2050,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.wait-for-response-flow.wait-for-response",
+          "durationMs": 13306,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.submit-prompt-flow.submit-prompt",
+          "durationMs": 2069,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.wait-for-response-flow.wait-for-response",
+          "durationMs": 11229,
+          "status": "passed"
+        },
+        {
+          "title": "verify-protected-business-contract",
+          "durationMs": 90604,
+          "status": "passed"
+        },
+        {
+          "title": "account.lane",
+          "durationMs": 1,
+          "status": "passed"
+        },
+        {
+          "title": "prompt.contains",
+          "durationMs": 1,
+          "status": "passed"
+        },
+        {
+          "title": "mode.selected",
+          "durationMs": 182,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30006,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30014,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30017,
+          "status": "passed"
+        },
+        {
+          "title": "restore-mode.restore-mode",
+          "durationMs": 1673,
+          "status": "passed"
+        }
+      ],
+      "privateAttachmentCount": 28
+    },
+    {
+      "repeat": 4,
+      "status": "passed",
+      "expectedStatus": "passed",
+      "retry": 0,
+      "durationMs": 236227,
+      "steps": [
+        {
+          "title": "open the signed-in Excel hub",
+          "durationMs": 11813,
+          "status": "passed"
+        },
+        {
+          "title": "create a blank workbook from the hub",
+          "durationMs": 8267,
+          "status": "passed"
+        },
+        {
+          "title": "WAC editor iframe loads",
+          "durationMs": 325,
+          "status": "passed"
+        },
+        {
+          "title": "Copilot SDX iframe is present and reaches React-mounted state",
+          "durationMs": 1496,
+          "status": "passed"
+        },
+        {
+          "title": "wait-for-pane.pane-ready",
+          "durationMs": 1583,
+          "status": "passed"
+        },
+        {
+          "title": "select-planning.select-mode",
+          "durationMs": 2509,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.submit-prompt-flow.submit-prompt",
+          "durationMs": 2139,
+          "status": "passed"
+        },
+        {
+          "title": "request-plan.wait-for-response-flow.wait-for-response",
+          "durationMs": 41184,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-plan-heading",
+          "durationMs": 1176,
+          "status": "passed"
+        },
+        {
+          "title": "observe-plan-approval.observe-proceed-action",
+          "durationMs": 1137,
+          "status": "passed"
+        },
+        {
+          "title": "discard-plan-conversation.start-new-conversation",
+          "durationMs": 1902,
+          "status": "passed"
+        },
+        {
+          "title": "seed-private-canary.seed-workbook",
+          "durationMs": 5139,
+          "status": "passed"
+        },
+        {
+          "title": "seed-write-guard.seed-workbook",
+          "durationMs": 4866,
+          "status": "passed"
+        },
+        {
+          "title": "seed-unrelated-guard.seed-workbook",
+          "durationMs": 4864,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-private-canary.read-workbook-resource",
+          "durationMs": 2610,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-write-guard.read-workbook-resource",
+          "durationMs": 2617,
+          "status": "passed"
+        },
+        {
+          "title": "snapshot-unrelated-guard.read-workbook-resource",
+          "durationMs": 2565,
+          "status": "passed"
+        },
+        {
+          "title": "select-chat-only.select-mode",
+          "durationMs": 2414,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.submit-prompt-flow.submit-prompt",
+          "durationMs": 2002,
+          "status": "passed"
+        },
+        {
+          "title": "read-private-canary.wait-for-response-flow.wait-for-response",
+          "durationMs": 14427,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.submit-prompt-flow.submit-prompt",
+          "durationMs": 2092,
+          "status": "passed"
+        },
+        {
+          "title": "attempt-blocked-write.wait-for-response-flow.wait-for-response",
+          "durationMs": 12936,
+          "status": "passed"
+        },
+        {
+          "title": "verify-protected-business-contract",
+          "durationMs": 90623,
+          "status": "passed"
+        },
+        {
+          "title": "account.lane",
+          "durationMs": 1,
+          "status": "passed"
+        },
+        {
+          "title": "prompt.contains",
+          "durationMs": 0,
+          "status": "passed"
+        },
+        {
+          "title": "mode.selected",
+          "durationMs": 196,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30072,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30003,
+          "status": "passed"
+        },
+        {
+          "title": "workbook.unchanged",
+          "durationMs": 30005,
+          "status": "passed"
+        },
+        {
+          "title": "restore-mode.restore-mode",
+          "durationMs": 1679,
+          "status": "passed"
+        }
+      ],
+      "privateAttachmentCount": 28
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "schema": "agency-validation-attempt-observation-v1",
+  "id": "oa-validation-attempt-20261026",
+  "repoId": "office-agent",
+  "mode": "validation-only",
+  "result": "submission-uncertain",
+  "qualifying": false,
+  "controllerCommit": "397d0340fd581191658940779fadfe20eee2355d",
+  "candidate": "f69c5497e0f260b04289c4615ffdf7dc9347645a",
+  "gateId": "oa-onenote-bootstrap-progress",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "contractSha256": "65379cfddec413d8260e2353d18d5e8498f175456041a0bf45333736f6224478",
+  "requestSha256": "d8563d954f3be97bd56f286c5f19507e973b458c55cdcaec31fd54b383068bdf",
+  "aggregateRemoteJobLimit": null,
+  "reservation": {
+    "reservedAt": "2026-10-26T08:26:42.519Z",
+    "state": "uncertain",
+    "jobId": null,
+    "maximumCreationPosts": 1,
+    "sanitizedErrorType": "TypeError",
+    "failurePhaseKnown": false,
+    "replacementSubmitted": false,
+    "originalControllerAndLedgerPreserved": true
+  },
+  "diagnostics": {
+    "validationOnly": {
+      "observedAt": "2026-10-26T08:29:56.190Z",
+      "httpStatus": 200,
+      "requestBytesUnchanged": true,
+      "jobCreationPosts": 0,
+      "productGatesExecuted": false
+    },
+    "readOnlyReconciliation": {
+      "observedAt": "2026-10-26T08:33:29.338Z",
+      "methods": ["GET"],
+      "agencyListHttpStatus": 200,
+      "agencyRecordsExamined": 25,
+      "agencyRecordsWithMetadata": 25,
+      "agencyNewestVisibleCreatedAt": "2026-10-23T15:20:50.7205302Z",
+      "matchingReservationRecords": 0,
+      "serviceHasMoreRecords": true,
+      "adoBuildListHttpStatus": 200,
+      "adoDefinitionId": 38920,
+      "adoPipelineRevision": "cab40c5d9e99797176194b90d20894ad0cc4e184",
+      "adoQuerySince": "2026-10-26T08:26:42.519Z",
+      "matchingPipelineBuilds": 0,
+      "provesNoJobWasCreated": false,
+      "ledgerModified": false,
+      "replacementAuthorized": false
+    }
+  },
+  "privateEvidence": {
+    "collection": "agency-controller-validation-20261026-397d034",
+    "executionError": {
+      "artifact": "execute-2-stderr.log",
+      "sha256": "500f88c440b4ae2f8aaf0e82acc6cd8c620a5dde5e315e8b8affa48b8f9244be"
+    },
+    "validationOnlyDiagnostic": {
+      "artifact": "reservation-diagnostic.json",
+      "sha256": "8a087a78a0814f6f4d5fdd7e00ca67f60f65238b4423047f3f8c4a0b42b27cfa"
+    },
+    "readOnlyReconciliation": {
+      "artifact": "read-only-reconciliation-4.json",
+      "sha256": "9e5b8a940a67a96aeb996e4eed0d47b3afadba235599c95de9d6059511107c44"
+    },
+    "reservationSnapshot": {
+      "artifact": "reservation-failure-snapshot-2.json",
+      "sha256": "746aadd0f802f04fc4be440480a277278a13fd366f199ae25018f968d2af7390"
+    }
+  },
+  "actualProductValidationObserved": false,
+  "controllerAcceptance": false,
+  "qualificationRegistryUpdated": false,
+  "productSourceEdited": false,
+  "publicationPerformed": false,
+  "tokenRecorded": false,
+  "limitations": [
+    "Service validation-only HTTP 200 checks the request, not real product gates or job completion.",
+    "An unknown creation outcome must not be converted into a rejected submission merely because a bounded job/build query found no match.",
+    "The original controller did not record submission phases; later diagnostics cannot retrospectively establish which POST failed.",
+    "This attempt does not qualify a fresh validation-segment E2E or source-driven native authoring, fitness, independent review or publication.",
+    "Historical successful OA qualifications and the separate A/B experiment remain unchanged."
+  ]
+}

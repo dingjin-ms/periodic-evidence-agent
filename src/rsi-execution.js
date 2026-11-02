@@ -222,14 +222,16 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     requireThat(json(execution.controller) === json(pinRsiController()),
       'RSI loaded controller changed', 'blocked-reconciliation');
     pinRsiEvaluation(automation.evaluation, execution.workspace);
-    storageBytes();
+    const bytes = storageBytes();
     remaining(execution);
+    return bytes;
   };
   function retainRaw(key, value) {
-    check();
     const bytes = json(value);
+    // Serialize before measuring; reuse only this synchronous pre-write check.
+    const usedBytes = check();
     requireThat(Buffer.byteLength(bytes) <= config.rsi.maxObservationBytes &&
-      storageBytes() + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
+      usedBytes + Buffer.byteLength(bytes) <= automation.maxWorkspaceBytes,
     'RSI raw artifact exceeds the execution storage bound', 'blocked-budget');
     const rawRun = `${rawPrefix}${hash(key).slice(0, 24)}`;
     const artifact = persistRunArtifact(config, rawRun, 'payload.json', bytes);
@@ -309,21 +311,27 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     'RSI candidate needs a complete bounded skill decision', 'blocked-result');
   }
   async function phase(name, perform, reconcile = null) {
-    check();
+    remaining(execution);
     const operationId = `${id}:${name}`, file = join(directory, `${name}.json`);
     const original = row(ledger, operationId);
     if (existsSync(file)) {
       if (hostAction?.phase === name) requireThat(
         json(readHostResult(name)) === json(hostAction),
         'Host continuation conflicts with its completed phase', 'blocked-reconciliation');
-      const receipt = JSON.parse(readFileSync(file, 'utf8'));
+      const bytes = readFileSync(file), receipt = JSON.parse(bytes.toString('utf8')), sha256 = hash(bytes);
       requireThat(original && receipt.executionId === id && receipt.phase === name &&
         receipt.observationSha256 === execution.observationSha256 &&
-        (!original.sha256 || original.sha256 === hash(readFileSync(file))),
+        (!original.sha256 || original.sha256 === sha256),
       'RSI phase receipt changed', 'blocked-reconciliation');
-      ledger.finishOperation(operationId, 'completed', { file, sha256: hash(readFileSync(file)) });
+      // Completed replay is read-only; fresh admission still guards recovery and new work below.
+      if (original.state !== 'completed') {
+        check();
+        ledger.finishOperation(operationId, 'completed', { file, sha256 });
+      }
+      remaining(execution);
       return receipt.value;
     }
+    check();
     requireThat(!original || reconcile, 'RSI phase has an unknown prior effect; no automatic repeat',
       'blocked-reconciliation');
     const deadline = original?.deadline ?? Math.min(execution.deadline,
@@ -372,6 +380,8 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
         await git(execution, ['clone', '--no-hardlinks', '--no-checkout', '--', reference, workspace], directory);
         await git(execution, ['checkout', '--detach', automation.baselineRevision], workspace);
         await git(execution, ['remote', 'set-url', 'origin', remote], workspace);
+        // Compact owned metadata without discarding unreachable objects or skipping allocation checks.
+        await git(execution, ['repack', '-ad', '--keep-unreachable'], workspace);
         await cleanHead(execution, workspace, automation.baselineRevision);
         return { workspace, revision: automation.baselineRevision };
       });
@@ -549,6 +559,7 @@ export async function runRsiPending(config, ledger, { runId = null, hostAction =
     }
     const baseline = await evaluate('baseline-evaluation', execution.baselineWorkspace, automation.baselineRevision);
     const updated = await evaluate('candidate-evaluation', execution.workspace, candidate.revision);
+    check();
     const comparison = compareRsiFlows(automation.evaluation, baseline, updated, {
       baselineRevision: automation.baselineRevision, candidateRevision: candidate.revision,
       observationSha256: execution.observationSha256, controller: execution.controller

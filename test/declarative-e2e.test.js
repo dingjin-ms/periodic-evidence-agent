@@ -796,6 +796,7 @@ test('validation preserves native receipts outside the clean final-SHA clone', a
     async (_exe, args, cwd, _timeout, env) => {
       calls++;
       assert.notEqual(cwd, ctx.workspace);
+      assert.equal(dirname(cwd), join(ctx.config.stateDirectory, 'validation-workspaces'));
       assert(existsSync(args[0]));
       const request = JSON.parse(env.PILOT_DECLARATIVE_REQUEST);
       assert.equal(request.sourceRevision, revision);

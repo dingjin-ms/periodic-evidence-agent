@@ -69,7 +69,7 @@ for (const standalone of [false, true]) {
       execute: () => assert.fail('expired push must not execute')
     }), error => error.code === 'blocked-authorization');
     const calls = [];
-    await assert.rejects(createAdoDraft(f.config, { operation: () => assert.fail('no mutation intent') },
+    await assert.rejects(createAdoDraft(f.config, { get: () => null, operation: () => assert.fail('no mutation intent') },
       { id: 'synthetic' }, f.repo, 'b'.repeat(40), { title: 'synthetic', description: 'synthetic' },
       async method => { calls.push(method); assert.equal(method, 'GET'); return { value: [] }; }),
     error => error.code === 'blocked-authorization');
@@ -133,7 +133,7 @@ test('standalone push and Draft recheck expiry after asynchronous provider work'
     execute: () => assert.fail('expiry during credential work must prevent push')
   }), error => error.code === 'blocked-authorization');
   time = f.started;
-  await assert.rejects(createAdoDraft(f.config, { operation: () => assert.fail('no mutation intent') },
+  await assert.rejects(createAdoDraft(f.config, { get: () => null, operation: () => assert.fail('no mutation intent') },
     { id: 'synthetic' }, f.repo, 'b'.repeat(40), { title: 'synthetic', description: 'synthetic' },
     async method => {
       assert.equal(method, 'GET');

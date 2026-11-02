@@ -3515,8 +3515,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     let status = 'blocked', blockedReason = null, commandOrRunUrl = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const id = `${job.id}:validation:${gate.id}:${revision}${attemptSuffix}:attempt:${attempt}`;
+      // Keep managed worktrees in their owned namespace; shorten only unmanaged clone paths.
       // Git for Windows can fail to discover .git beyond MAX_PATH even with core.longpaths.
-      const validationRoot = join(config.stateDirectory, 'vw');
+      const validationRoot = join(config.stateDirectory, declarative ? 'validation-workspaces' : 'vw');
       const preflightRef = declarative ? prepared?.[gate.id]?.preflight : null;
       let preflight = null;
       if (preflightRef) {

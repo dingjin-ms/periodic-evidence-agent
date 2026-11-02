@@ -64,32 +64,41 @@
     "reader": "independent OpenXML ZIP/XML",
     "readerStatus": "passed"
   },
-  "controllerAcceptanceSha256": "d78cc6cca53ade1ac2276ba747140ebce3d226042cc3e373596cacf85bf4bec0",
+  "controllerAcceptanceSha256": "140e5e5915cc380e35a4948a21384bdfde564b090b4c2102c488f3ebe0ab8b28",
   "localCI": {
     "package": "passed",
     "pilot": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "e13abb4ce073ff45d74a5bfb5d870602c348b0af66680e5f42acc6069562761b",
       "tests": 238,
       "pass": 238,
       "fail": 0,
       "skipped": 0
     },
     "remaining": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "c3e623132ccbff04a0691a818d062173ea7833221cf45c6955767b57719661a2",
       "tests": 1592,
       "pass": 1591,
       "fail": 0,
       "skipped": 1
     },
     "demo": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "267503c4d8b9678e71c169313bafd1768c80afdc1a12b4e345089744db640c74",
       "tests": 2,
       "pass": 2,
       "fail": 0,
       "skipped": 0
     },
-    "standaloneDemo": "synthetic-demo-passed"
+    "standaloneDemo": "synthetic-demo-passed",
+    "standaloneDemoSha256": "64eb45cf391a2b5f9acf6f48d5cee1dbb73b694b4226ab255405d99baf2372fa"
   },
   "privateEvidence": {
     "ledger": "live-same-workspace-final/state/ledger.sqlite",
     "controllerAcceptance": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/controller-acceptance.json",
+    "controllerAcceptanceLogSha256": "aea959c8d0ae6e14e579e16c5e94f7fe36596b464a3ade35550e3ffb0c05a88d",
+    "exactCiRoot": "pea-ci-exact-c0da8ac-audit",
     "runnerArtifact": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/runner-artifact"
   },
   "limitations": [

@@ -79,7 +79,7 @@ export function validateAnalysisResult(result, manifest, readTrace) {
   return freeze(structuredClone(result));
 }
 
-export async function runAnalysisOnly({ manifest, suppliedBytes, reasoner }) {
+export function prepareAnalysisRequest({ manifest, suppliedBytes }) {
   const input = createAnalysisInput(manifest, suppliedBytes);
   const evidence = input.manifest.evidence.filter(e => e.supplied).map(e => ({ id: e.id, ...input.read(e.id) }));
   const readTrace = evidence.map(e => e.receipt);
@@ -88,6 +88,11 @@ export async function runAnalysisOnly({ manifest, suppliedBytes, reasoner }) {
     resultContract: { analysisId: input.manifest.analysisId, producer: input.manifest.producer, outcome: 'proposals | no-change | insufficient-evidence', rationale: 'nonempty', findings: [{ text: 'claim', citations: [{id:'actually read evidence ID',sha256:'its digest'}] }], proposals: [{title:'proposal',benefit:'expected benefit',uncertainty:'limits',validation:'proposed validation, not executed',citations:[{id:'actually read evidence ID',sha256:'its digest'}]}] },
     manifest: input.manifest, evidence
   });
+  return { input, readTrace, prompt };
+}
+
+export async function runAnalysisOnly({ manifest, suppliedBytes, reasoner }) {
+  const { input, readTrace, prompt } = prepareAnalysisRequest({ manifest, suppliedBytes });
   let response;
   try {
     response = await reasoner(Object.freeze({ prompt, tools: Object.freeze([]) }));

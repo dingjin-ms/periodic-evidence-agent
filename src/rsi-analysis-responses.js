@@ -13,16 +13,20 @@ export const analysisResponseSchema = object({
 
 // persist must durably retain each record in PRIVATE host storage before resolving.
 // A persistence rejection is fatal. Records never include headers/auth configuration.
-export function createAnalysisResponsesReasoner({ endpoint, model, persist, timeoutMs = 90000, fetchImpl = fetch }) {
+export const serializeAnalysisRequest = (model, prompt) => JSON.stringify({ model, input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }], tools: [], tool_choice: 'none', store: false, stream: false, text: { format: { type: 'json_schema', name: 'analysis_result', strict: true, schema: analysisResponseSchema } } });
+
+export function createAnalysisResponsesReasoner({ endpoint, model, persist, timeoutMs = 90000, maxInputBytes = Infinity, fetchImpl = fetch }) {
   if (!endpoint || !model || typeof persist !== 'function') throw new Error('Explicit existing host endpoint, model and persistence required');
   return async ({ prompt, tools }) => {
     if (!Array.isArray(tools) || tools.length) throw new Error('Analysis must be tool-free');
     const invocation = { startedAt: new Date().toISOString(), modelRequested: model, modelReturned: null, responseId: null, status: null, httpStatus: null, transport: 'existing host Responses; strict json_schema; tools=[]; no retries' };
+    const body = serializeAnalysisRequest(model, prompt);
+    if (Buffer.byteLength(body) > maxInputBytes) throw new Error('Analysis input limit exceeded');
     let record = { rawBody: null, text: null, usage: null, invocation };
     let response;
     try {
       response = await fetchImpl(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }], tools: [], tool_choice: 'none', store: false, stream: false, text: { format: { type: 'json_schema', name: 'analysis_result', strict: true, schema: analysisResponseSchema } } }),
+        body,
         signal: AbortSignal.timeout(timeoutMs) });
       invocation.httpStatus = response.status;
       record.rawBody = await response.text();

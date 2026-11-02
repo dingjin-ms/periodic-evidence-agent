@@ -46,9 +46,26 @@ actual projection read trace. Hosts must persist final success/failure receipts
 too. Counts alone support only aggregate coverage analysis: skipped Proposer,
 absent detailed reasoning and unknown historical usage are not a full cycle.
 
+Controller integration verifies the producer observation even when it is not
+selected for model input. Retained collect/FILTER/Proposer artifacts must match
+the upstream receipt artifact digests in that observation; caller labels alone
+are insufficient. Native citations address `/observation/payload/data/...`;
+array and direct envelopes use their actual prefixes. A JSON-only envelope cites
+the `payloadJson` field itself. Dual payload representations must agree.
+
+`maxInputBytes` independently limits raw source reads and the complete UTF-8
+serialized Responses request, including schema, prompt, repeated projections
+and provenance. The controller checks the latter before reserving an invocation;
+the transport checks the same serialization before sending. Larger requests
+require a newly admitted bounded configuration, not edits to existing pins.
+An invocation timeout may retain a bounded transport-failure receipt while the
+owner remains authorized. Ownership revocation still forbids private failure
+writes; a failed or uncertain durable claim never retries.
+
 This API does not invoke `runRsiPending` or update controller historical state.
 It does not prepare candidates, create branches, author improvements, publish
-or adopt anything. A proposal is an analysis result only. No CLI integration or
-autonomous adoption loop is installed.
+or adopt anything. A proposal is an analysis result only. Controller manual and
+scheduled request loaders support explicit analysis pins; no autonomous adoption
+loop is installed.
 
 Focused validation: `node --test --test-reporter=tap test/rsi-analysis-only.test.js`.

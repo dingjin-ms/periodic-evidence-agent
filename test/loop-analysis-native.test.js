@@ -96,7 +96,12 @@ test('partial app status preserves public pass enums and citations while withhol
    assert.ok(!prepared.suppliedBytes['component-0'].toString().includes('PRIVATE'));
    assert.equal(projection.provenance.artifactSha256,artifact.sha256);
    assert.equal(prepared.manifest.evidence[0].sha256,hash(prepared.suppliedBytes['component-0']));
-   assert.ok(projection.provenance.selectors.includes('/0/payload/data/summary/collection'));
+   for(const pointer of projection.provenance.selectors) {
+     const resolved=pointer.slice(1).split('/').reduce((value,key)=>value[key],JSON.parse(bytes));
+     assert.notEqual(resolved,undefined);
+   }
+   assert.deepEqual(projection.provenance.selectors.map(pointer=>pointer.slice(1).split('/').reduce((value,key)=>value[key],JSON.parse(bytes))),
+     [runId,summary.state,summary.collection]);
    // Unknown values stay withheld; missing/null diagnostics stay distinguishable.
    summary.collection=[{pass:'PRIVATE unknown',state:'PRIVATE unknown',error:'PRIVATE'}, {pass:'ado:created',state:'not-started'}, {pass:'ado:changed',state:'blocked',error:null}];
    observation.payloadSha256=hash(JSON.stringify(payload));

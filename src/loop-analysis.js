@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, mkdirSync, openSync, writeFileSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import { TextDecoder } from 'node:util';
-import { analysisHash, runAnalysisOnly } from './rsi-analysis-only.js';
-import { createAnalysisResponsesReasoner } from './rsi-analysis-responses.js';
+import { TextDecoder, isDeepStrictEqual } from 'node:util';
+import { analysisHash, prepareAnalysisRequest, runAnalysisOnly } from './rsi-analysis-only.js';
+import { createAnalysisResponsesReasoner, serializeAnalysisRequest } from './rsi-analysis-responses.js';
 import { requireThat, utc, windowCheck, exclusions } from './common.js';
 
 export function analysisImplementation() {
@@ -47,16 +47,18 @@ export function prepareControllerAnalysis({runId,occurrence,pins,receipts,readAr
     const source=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));cache.set(artifact.sha256,source);return source;
   };
   const unwrap=source=>{const o=source?.observation ?? (Array.isArray(source)?source[0]:source);
-    return o?.payloadJson?{...o,payload:JSON.parse(o.payloadJson)}:o;};
-  let producer=config.retainedProducer;
-  if(!producer){
-    const artifact=receipts.find(r=>r.operationId===runId+':rsi')?.artifacts[0];
-    requireThat(artifact,'Native observation missing','blocked-reconciliation');
-    const o=unwrap(read(artifact));
-    requireThat(o?.payload?.data?.run?.runId===runId && analysisHash(JSON.stringify(o.payload))===o.payloadSha256,
-      'Observation producer mismatch','blocked-reconciliation');
-    producer={runId,occurrence,release:config.producerRelease,observationSha256:o.payloadSha256};
-  }
+    if(!o?.payloadJson)return o;
+    const payload=JSON.parse(o.payloadJson);
+    requireThat(!o.payload || isDeepStrictEqual(o.payload,payload),'Observation envelopes disagree','blocked-reconciliation');
+    return {...o,payload};};
+  const observationArtifact=receipts.find(r=>r.operationId===runId+':rsi')?.artifacts[0];
+  requireThat(observationArtifact,'Native observation missing','blocked-reconciliation');
+  const observation=unwrap(read(observationArtifact));
+  const producer=config.retainedProducer??{runId,occurrence,release:config.producerRelease,observationSha256:observation?.payloadSha256};
+  requireThat(observation?.payload?.data?.run?.runId===producer.runId &&
+    observation.payloadSha256===producer.observationSha256 &&
+    analysisHash(JSON.stringify(observation.payload))===producer.observationSha256,
+    'Observation producer mismatch','blocked-reconciliation');
   const components=['collect','filter','proposer','rsi'].map((id,i)=>({id,
     status:id==='proposer' && receipts[1]?.outcome!=='eligible'?'skipped':receipts[i]?'available':'missing',
     reason:id==='proposer'?(receipts[1]?.outcome!=='eligible'?'filter '+(receipts[1]?.outcome??'missing')+'; proposer not executed':
@@ -69,6 +71,12 @@ export function prepareControllerAnalysis({runId,occurrence,pins,receipts,readAr
     }
     if(!artifact) { evidence.push({id,component:s.stage,producer,available:false,supplied:false,reason:'selected artifact missing'}); continue; }
     requireThat(!s.sha256 || s.sha256===artifact.sha256,'Source digest changed','blocked-reconciliation');
+    if(config.retainedProducer && s.stage!=='rsi') {
+      const upstream=observation.payload.data.summary?.loop?.receipts;
+      requireThat(Array.isArray(upstream) && upstream.some(r=>r.operationId===producer.runId+':'+s.stage &&
+        r.artifacts?.[s.index]?.sha256===artifact.sha256),
+        'Selected artifact is not bound to retained producer','blocked-reconciliation');
+    }
     const source=read(artifact);
     let projection,selectors;
     if(s.profile==='filter-result') {
@@ -85,7 +93,10 @@ export function prepareControllerAnalysis({runId,occurrence,pins,receipts,readAr
       requireThat(o?.payload?.data?.run?.runId===producer.runId && o.payloadSha256===producer.observationSha256 &&
         analysisHash(JSON.stringify(o.payload))===producer.observationSha256,'Observation producer mismatch','blocked-reconciliation');
       const data=o.payload.data;
-      selectors=['/0/payload/data/run/runId','/0/payload/data/summary/state','/0/payload/data/summary/collection'];
+      const prefix=source?.observation?'/observation':Array.isArray(source)?'/0':'';
+      const raw=source?.observation??(Array.isArray(source)?source[0]:source);
+      selectors=!raw?.payload && raw?.payloadJson?[prefix+'/payloadJson']:
+        ['/run/runId','/summary/state','/summary/collection'].map(path=>prefix+'/payload/data'+path);
       broadAppStatus=allowed(data.summary?.state,['partial-or-blocked','complete']);
       projection={broadAppStatus,passes:(data.summary?.collection??[]).map(p=>({pass:allowed(p.pass,['ado:created','ado:changed','workiq:created','workiq:changed','icm:created']),
         state:allowed(p.state,['complete','partial','blocked','not-started','blocked-auth','unavailable','failed-source']),error:!Object.hasOwn(p,'error')?'missing':p.error===null?'explicit-null':'withheld'}))};
@@ -123,6 +134,9 @@ export async function completeControllerAnalysis({runId,occurrence,pins,receipts
   const admittedOccurrence=admission && JSON.parse(admission.detail).producerOccurrence;
   requireThat(pins.analysis.retainedProducer || admittedOccurrence,'Original producer occurrence missing','blocked-reconciliation');
   const prepared=prepareControllerAnalysis({runId,occurrence:admittedOccurrence??occurrence,pins,receipts,readArtifact});
+  const {prompt}=prepareAnalysisRequest(prepared);
+  requireThat(Buffer.byteLength(serializeAnalysisRequest(pins.analysis.model,prompt))<=pins.analysis.maxInputBytes,
+    'Analysis input limit exceeded','blocked-budget');
   const inputSha256=analysisHash(JSON.stringify(prepared.manifest)),old=get();
   const directory=join(ledger.directory,'private-analysis',runId),confirmationPath=join(directory,'completion-confirmed.json');
   if(old) {
@@ -159,7 +173,8 @@ export async function completeControllerAnalysis({runId,occurrence,pins,receipts
       requireThat(remaining()>0 && !signal.aborted,'Analysis cancelled','blocked-budget');
       return (fetchImpl??fetch)(url,{...options,signal:AbortSignal.any([signal,options.signal])});
     },persist:async record=>{
-      check();requireThat(!signal.aborted,'Analysis cancelled','blocked-budget');
+      check();requireThat(!ownerAbortSignal?.aborted && (record.phase==='transport-failure' || !signal.aborted),
+        'Analysis cancelled','blocked-budget');
       responseReceipts.push(durable(join(directory,record.phase+'.json'),record));
       check();
     }});
@@ -174,7 +189,7 @@ export async function completeControllerAnalysis({runId,occurrence,pins,receipts
   } catch (error) {
     const value={state:'failed',inputSha256,responseReceipts,reconciliationRequired:true,reason:'Analysis invocation, validation or persistence failed; no retry'};
     // A lost owner cannot persist even private failure material. The durable claim remains no-retry.
-    try{check();}catch(ownerError){
+    try{check();requireThat(!ownerAbortSignal?.aborted,'Analysis owner revoked','blocked-budget');}catch(ownerError){
       // Preserve the persistence/invocation failure without restoring revoked authority.
       ownerError.cause=error;ownerError.analysisResponse=error.analysisResponse;throw ownerError;
     }

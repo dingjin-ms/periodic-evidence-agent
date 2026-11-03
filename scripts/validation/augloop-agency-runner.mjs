@@ -67,18 +67,43 @@ async function drain(pid) {
   });
 }
 
-async function run(executable, args, { cwd, env, timeoutMs, stdoutPath, stderrPath }) {
+async function bypassInteractiveAzureLogin(pid) {
+  if (process.platform !== 'win32') return false;
+  const script = [
+    `$all = @(Get-CimInstance Win32_Process)`,
+    `$queue = [Collections.Generic.Queue[int]]::new(); $queue.Enqueue(${pid})`,
+    `$descendants = [Collections.Generic.List[object]]::new()`,
+    `while ($queue.Count) { $parent = $queue.Dequeue(); foreach ($process in $all) {`,
+    `if ([int]$process.ParentProcessId -eq $parent) { $descendants.Add($process); $queue.Enqueue([int]$process.ProcessId) } } }`,
+    `$matches = @($descendants | Where-Object {`,
+    `$candidate = [int]$_.ProcessId; $hasChild = @($descendants | Where-Object { [int]$_.ParentProcessId -eq $candidate }).Count -gt 0;`,
+    `$line = [string]$_.CommandLine; -not $hasChild -and $line -match '(?i)(az(\\.cmd|\\.exe)?\\s+login|python.*azure\\.cli.*login|azure[-_]?cli.*login|__main__\\.py\\s+login)' })`,
+    `if ($matches.Count -ne 1) { exit 2 }`,
+    `Stop-Process -Id ([int]$matches[0].ProcessId) -Force; Write-Output $matches[0].ProcessId`
+  ].join('; ');
+  const result = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    cwd: process.cwd(), env: process.env, timeoutMs: 20000,
+    stdoutPath: join(process.env.TEMP ?? process.cwd(), `agency-azure-login-${pid}.stdout.tmp`),
+    stderrPath: join(process.env.TEMP ?? process.cwd(), `agency-azure-login-${pid}.stderr.tmp`),
+    detectInteractiveLogin: false
+  });
+  return result.exitCode === 0;
+}
+
+async function run(executable, args, { cwd, env, timeoutMs, stdoutPath, stderrPath,
+  detectInteractiveLogin = false }) {
   return new Promise((resolveRun, rejectRun) => {
     const stdout = [], stderr = [];
     const child = spawn(executable, args, { cwd, env, windowsHide: true, shell: false });
-    let timedOut = false, settled = false;
+    let timedOut = false, settled = false, loginBypassStarted = false, interactiveLoginBypassed = false;
     const finish = code => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       const out = Buffer.concat(stdout), err = Buffer.concat(stderr);
       writeFileSync(stdoutPath, out); writeFileSync(stderrPath, err);
-      resolveRun({ exitCode: code ?? -1, timedOut, stdout: out.toString('utf8'), stderr: err.toString('utf8') });
+      resolveRun({ exitCode: code ?? -1, timedOut, interactiveLoginBypassed,
+        stdout: out.toString('utf8'), stderr: err.toString('utf8') });
     };
     const timer = setTimeout(async () => {
       timedOut = true;
@@ -86,8 +111,18 @@ async function run(executable, args, { cwd, env, timeoutMs, stdoutPath, stderrPa
       child.kill();
       finish(-1);
     }, timeoutMs);
-    child.stdout.on('data', chunk => stdout.push(chunk));
-    child.stderr.on('data', chunk => stderr.push(chunk));
+    const capture = target => chunk => {
+      target.push(chunk);
+      if (!detectInteractiveLogin || loginBypassStarted) return;
+      const text = `${Buffer.concat(stdout).toString('utf8')}\n${Buffer.concat(stderr).toString('utf8')}`;
+      if (!/interactive Azure login window will appear/i.test(text) &&
+        !(/Azure CLI login is required for lage remote cache to work/i.test(text) &&
+          /Launching interactive login/i.test(text))) return;
+      loginBypassStarted = true;
+      bypassInteractiveAzureLogin(child.pid).then(bypassed => { interactiveLoginBypassed = bypassed; });
+    };
+    child.stdout.on('data', capture(stdout));
+    child.stderr.on('data', capture(stderr));
     child.once('error', error => {
       clearTimeout(timer);
       rejectRun(error);
@@ -198,14 +233,16 @@ async function main() {
       const remainingMs = Date.parse(input.controllerDeadlineAt) - Date.now() - 20 * 60000;
       requireValue(remainingMs > 0, 'AL runner reached the required twenty-minute stop reserve');
       const result = await run(executable, args, {
-        cwd: root, env, timeoutMs: Math.min(80 * 60000, remainingMs), stdoutPath, stderrPath
+        cwd: root, env, timeoutMs: Math.min(80 * 60000, remainingMs), stdoutPath, stderrPath,
+        detectInteractiveLogin: step === 'cli-build'
       });
       await restoreGeneratedChanges(root, evidence, candidateFiles, initialTrackedStatus);
       const text = `${result.stdout}\n${result.stderr}`;
       const testPopulation = step === 'test' ? population(owner, text) : null;
       gates.push({ gateId, owner: owner.id, package: owner.package, step, runner: owner.runner,
         executable: basename(executable), args, cwd: root, start, end: new Date().toISOString(),
-        exitCode: result.exitCode, timedOut: result.timedOut, testPopulation,
+        exitCode: result.exitCode, timedOut: result.timedOut,
+        interactiveAzureLoginBypassed: result.interactiveLoginBypassed, testPopulation,
         stdout: { path: `logs/${gateId}.stdout.log`, sha256: sha256(readFileSync(stdoutPath)) },
         stderr: { path: `logs/${gateId}.stderr.log`, sha256: sha256(readFileSync(stderrPath)) } });
     }

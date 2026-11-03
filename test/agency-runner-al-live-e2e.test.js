@@ -79,6 +79,9 @@ test('prebuilt AL runner retains porcelain prefixes and bounds Windows drain', (
   assert.match(source, /return output\.stdout\.trimEnd\(\)/);
   assert.match(source, /setTimeout\(\(\) => \{\s*child\.kill\(\);\s*finish\(\);\s*\}, 20000\)/);
   assert.match(source, /await drain\(child\.pid\);\s*child\.kill\(\);\s*finish\(-1\)/);
+  assert.match(source, /async function bypassInteractiveAzureLogin\(pid\)/);
+  assert.match(source, /detectInteractiveLogin: step === 'cli-build'/);
+  assert.match(source, /interactiveAzureLoginBypassed: result\.interactiveLoginBypassed/);
 });
 
 function acceptanceFixture(t) {

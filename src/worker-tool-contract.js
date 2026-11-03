@@ -21,7 +21,7 @@ export const workerToolDefinitions = Object.freeze([
   },
   {
     name: 'pilot_read',
-    description: 'Read one bounded repository file, optionally by line range',
+    description: 'Read one bounded repository file or an exact skill-bundle: manifest path, optionally by line range',
     inputSchema: {
       type: 'object',
       properties: {
@@ -40,6 +40,22 @@ export const workerToolDefinitions = Object.freeze([
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
       required: ['path', 'content'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'pilot_replace_lines',
+    description: 'Surgically replace at most 500 existing lines within approved edit bounds; expected text must match',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        startLine: { type: 'integer', minimum: 1 },
+        endLine: { type: 'integer', minimum: 1 },
+        expected: { type: 'string' },
+        replacement: { type: 'string' }
+      },
+      required: ['path', 'startLine', 'endLine', 'expected', 'replacement'],
       additionalProperties: false
     }
   },

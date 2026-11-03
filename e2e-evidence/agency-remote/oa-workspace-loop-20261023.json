@@ -1,0 +1,179 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "oa-bounded-same-workspace-loop-20261023",
+  "mode": "same-workspace-loop",
+  "result": "passed-scoped",
+  "observedAt": "2026-10-23T15:48:21.580Z",
+  "scope": "Qualification-only native-skill-guided type-failure repair and real product validation in one remote Agency job/workspace, followed by independent local controller acceptance.",
+  "controllerCommit": "0ee3fa9cb7956446905d7a4122dec290a73e423f",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "61458d25-9f75-41c3-be29-e63727145257",
+    "repositoryName": "OfficeAgent"
+  },
+  "repoId": "office-agent",
+  "project": "agents/office-agent",
+  "baseRevision": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+  "candidate": "b5e6049c9bf9d190e188481e67a085a2f6dc1988",
+  "gateId": "oa-onenote-bootstrap-progress",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "pipeline": {
+    "definitionId": 38920,
+    "definitionRevision": 2,
+    "revision": "259955692f05bf0a214eaec527ba1b7237e19188",
+    "result": "succeeded"
+  },
+  "jobId": "office-a9c28b67-4d85-4b6f-bed3-a51df6cf56a2",
+  "actualBuildId": 57969048,
+  "jobState": "Completed",
+  "jobResult": "Success",
+  "executionLocation": "agency-remote",
+  "requestedModel": "gpt-5.6-sol",
+  "environment": {
+    "platform": "Win32NT",
+    "architecture": "X64",
+    "node": "v24.14.0",
+    "corepack": "0.34.6",
+    "yarn": "4.17.1"
+  },
+  "command": {
+    "executable": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "arguments": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "F:\\_temp\\pilot-loop-57969048\\profile.ps1"],
+    "cwd": "F:\\1\\s",
+    "stageSelector": "PILOT_VALIDATION_STAGE",
+    "compile": "corepack yarn compile --to '@officeagent-agent/office-agent'",
+    "policy": [
+      "corepack yarn validate:integration-test-layout",
+      "node '..\\..\\docs\\skills\\Integration-test-core\\scripts\\validate-card-scores.mjs' --strict --floor 6"
+    ],
+    "policyCardScoreCwd": "F:\\1\\s\\agents\\office-agent",
+    "test": "corepack yarn workspace '@officeagent-agent/office-agent' test:integration --testMatch='**/tests/integration/**/*.test.ts' --runTestsByPath tests/integration/contracts/apps/onenote/omni-onenote-bootstrap-progress.contract.test.ts --runInBand"
+  },
+  "preparation": {
+    "candidate": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+    "stages": [
+      {"stage": "fingerprint", "exitCode": 0, "logSha256": "97b004785b6d873db6848d7ed64151a3ae6e87016412fef67c6b83d73e661863"},
+      {"stage": "authentication-check", "exitCode": 0, "logSha256": "c82e04b8c882554e22c4bf3ecb4a1bf6ea6cd8eabf53f292a00bf7e78c1356fc"},
+      {"stage": "authentication", "exitCode": 0, "logSha256": "e86fca27bc5e1c69d6e57ca95e6dcab1bd70a21df5e44342608b2fd75ac74580"},
+      {"stage": "dependencies", "exitCode": 0, "logSha256": "c0bf3ed5ee76b8ed4348ebfde2ed840d88fd2d745a874e9bc7b067f6f1abbbac"}
+    ]
+  },
+  "skillsRead": [
+    "docs/skills/Integration-test-core/references/investigate-test-failure.md",
+    ".github/skills/integration-test-authoring/SKILL.md",
+    "docs/skills/Integration-test-core/references/shared-integration-infrastructure.md",
+    "docs/skills/Integration-test-core/workflow.md",
+    "agents/office-agent/tests/integration/skill-profile/integration-testing-guide.md"
+  ],
+  "nativeInspections": ["project-resolution", "baseline", "card-scores"],
+  "plansRecorded": 1,
+  "rounds": [
+    {
+      "index": 0,
+      "candidate": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+      "validationId": "ce540da6f1110ebe92373aa2caf05709d3cbd496a801c32028efceb713acdd70",
+      "passed": false,
+      "failure": "TS2322 in the permitted OneNote integration contract test",
+      "stages": [
+        {"stage": "compile", "exitCode": 1, "startedAt": "2026-10-23T15:34:42.341Z", "finishedAt": "2026-10-23T15:39:21.323Z", "logSha256": "a863b78b01040b95afd2df7a04484aec0033ad6aa5729b897167b2f8aedf0894"}
+      ]
+    },
+    {
+      "index": 1,
+      "candidate": "b5e6049c9bf9d190e188481e67a085a2f6dc1988",
+      "validationId": "452727d47e1a4df1586560c608f27b0c1f38a28f3f55f905b395ad267ef316b8",
+      "passed": true,
+      "stages": [
+        {"stage": "compile", "exitCode": 0, "startedAt": "2026-10-23T15:40:19.357Z", "finishedAt": "2026-10-23T15:41:04.049Z", "logSha256": "8b7a47036fb5573e103810b28a1d0bc7e4e66c0c98ab3d98f8648e05bc5cc8f5"},
+        {"stage": "policy", "exitCode": 0, "startedAt": "2026-10-23T15:41:04.049Z", "finishedAt": "2026-10-23T15:41:08.369Z", "logSha256": "8f69cb010c953bc3bc36ab70a1bdce790d19a151776020fee871e093b1054c50"},
+        {"stage": "test", "exitCode": 0, "startedAt": "2026-10-23T15:41:08.371Z", "finishedAt": "2026-10-23T15:41:50.714Z", "logSha256": "bed992fdc843f9908152a856782524b2ef5a6f17a55512e5f29225a43cb790f7"}
+      ]
+    }
+  ],
+  "trustedFinal": {
+    "candidate": "b5e6049c9bf9d190e188481e67a085a2f6dc1988",
+    "stages": [
+      {"stage": "compile", "exitCode": 0, "startedAt": "2026-10-23T15:42:34.891Z", "finishedAt": "2026-10-23T15:43:05.254Z", "logSha256": "336adad79a999b45b26f30e00ee316b584f01cb2a573548e3ff5b8e9e3f3abcc"},
+      {"stage": "policy", "exitCode": 0, "startedAt": "2026-10-23T15:43:05.254Z", "finishedAt": "2026-10-23T15:43:09.352Z", "logSha256": "8f69cb010c953bc3bc36ab70a1bdce790d19a151776020fee871e093b1054c50"},
+      {"stage": "test", "exitCode": 0, "startedAt": "2026-10-23T15:43:09.352Z", "finishedAt": "2026-10-23T15:43:35.117Z", "logSha256": "03f471c5c3f8b5dd400c4b5f57c6c865f6108b9589f348e8ce66fedad528ba5d"}
+    ]
+  },
+  "testPopulation": {
+    "suites": 1,
+    "tests": 3,
+    "path": "tests/integration/contracts/apps/onenote/omni-onenote-bootstrap-progress.contract.test.ts"
+  },
+  "sourceControls": {
+    "allowedPath": "agents/office-agent/tests/integration/contracts/apps/onenote/omni-onenote-bootstrap-progress.contract.test.ts",
+    "candidateCommits": 1,
+    "typeOnlyChange": true,
+    "executableTestUnchanged": true,
+    "sourceCleanAfter": true,
+    "gitBundleIndependentlyVerified": true
+  },
+  "remoteCompletion": {
+    "remoteWorkComplete": true,
+    "controllerAcceptance": false,
+    "controllerAcceptanceStatus": "pending-external"
+  },
+  "controllerAcceptance": true,
+  "oldReceiptImported": false,
+  "qualificationOnly": true,
+  "productionAssignment": false,
+  "publicationPerformed": false,
+  "budget": {
+    "maximumNewJobs": 1,
+    "maximumFurtherRepairs": 2,
+    "automaticReplacementJobs": 0,
+    "gateMinutes": 20,
+    "runnerMinutes": 60,
+    "queueMinutes": 15,
+    "cancelObservationMinutes": 5,
+    "maximumArtifactBytes": 6442450944
+  },
+  "runnerSeconds": 1394.589,
+  "queueSeconds": 46.043,
+  "queuedToAcceptanceSeconds": 1647.284,
+  "artifactFilesHashed": 3493,
+  "artifactBytesHashed": 5109061745,
+  "privateEvidence": {
+    "collection": "agency-workspace-loop-completion-20261023",
+    "operation": "0d20c1719d681de4e92de056462305315a10eb8312f3e58016d278eea41c1d6a",
+    "outcomeArtifact": "resume-1-outcome.json",
+    "outcomeSha256": "32c56eb0efdd19e05820c7f60148f46ad1dabb8d4a183be49be18384e21c3f1f",
+    "acceptanceArtifact": "controller-acceptance-1792770501612.json",
+    "acceptanceSha256": "353e5dd5a85a851f63922c3c22db42fe5f3b4557801b115e1ed918e5cbd13cab",
+    "observationArtifact": "observation-1792770435769.json",
+    "observationSha256": "615bf615eced62b734651c13c02889bf13b64d61d823811e3b95bb9cce4a0d9f",
+    "requestSha256": "6deb7d9075d7e1a8012b3163fc6b0a3f870a448bf1516b6a8b4e76ac3173c8ce",
+    "authoringRequestSha256": "3994ea2a4eb621199cb31ff5af26078cf30e94c41c53c7fc51b875e20e00922d",
+    "contractSha256": "37c85896e2b95fbbc25f8464d22d8b136fc0f1db048e4b2757e53d2786e4bd91",
+    "loopResultSha256": "fe06abccffd18caa2a30f6430c58a3240fc69f62abbecac506ac54fa2c0893e6",
+    "candidateBundleSha256": "df0ba50e05e4a1af1fb2d59c99f7995a7883f3f7cc694bc920b386da26b30797",
+    "candidateSourceSha256": "75ce6b64c0dab64c903e1757cdddc035f83645fc14a2d2d7b7ce7287827ef441",
+    "sessionArtifactDirectory": "session_20261023_153252_9372",
+    "agentResultSha256": "526741eaf8985bc23d99e70a384640ba8a3f4670090b5c202655984c421f7322",
+    "agentEventsSha256": "fec8ed9173d9b96a111f45ba0df2c0f136776ed4c24a90c8233de6c914e5b3ff",
+    "runnerSha256": "1b34d0ceafa24072bc48bd16eebe995c776223a7c77373eea0eb45a60946da84",
+    "nativeCommandSha256": "d28935fe1c7cf7787779798319b2f22c7734357eacc3c4d3d8e3236f74be13b3",
+    "protocolVerifierSha256": "b6dcc153f76cb552f612737f67297e9e5541eaa5a6c4027f456c952c67f2567a",
+    "executorSha256": "786d370d4c6cb3bd8154b9e172ff34ba47fbe162f786acc9ef1af91bc6396f3d",
+    "transportSha256": "02f5ade0d12682eebdb0766b8d24d4e03a775baac11363fe5dbba5c38663ef09",
+    "artifactTransportSha256": "2b2fc88e2ad1d348ba5adf3a5281db39a352219e88b2b0d29b1d64ec56650ddc"
+  },
+  "limitations": [
+    "Proves a bounded native-skill-guided TypeScript failure repair, not general test authoring or arbitrary assertion-failure repair.",
+    "Qualification entry only; not the complete production native-assignment dispatch, finding-to-authoring or publication workflow.",
+    "Not qualification for all OA gates, desktop/UI E2E, other repositories, another validation profile, composed transports or the hosted executor.",
+    "Initial execute needed actual-build reconciliation and one resume of the same reserved job; no replacement or uncertain-command restart occurred.",
+    "The four earlier failed attempts remain immutable non-qualifying evidence; this accepted run does not relabel them.",
+    "The remote MCP tool allowlist is not an operating-system sandbox.",
+    "Controller feature commit is isolated and is not claimed to be merged or production-ready.",
+    "Complete offline controller suite previously reported 1131 tests: 1119 passed, 8 failed, 3 cancelled and 1 skipped; all failure causes remain unresolved.",
+    "Model tokens and monetary cost were not measured; execution time limits do not establish a monetary hard cap.",
+    "Committed summary is audit metadata, not a receipt, enablement grant or current-configuration verification; original private evidence must remain accessible and independently rechecked.",
+    "The separate Local/Remote A/B baseline and experiment conditions were not modified."
+  ]
+}

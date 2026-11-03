@@ -1,0 +1,67 @@
+{
+  "schema": "agency-remote-nonqualifying-attempt-v1",
+  "repository": "office-agent",
+  "executionMode": "same-workspace-loop",
+  "qualification": "not-verified",
+  "date": "2026-10-23",
+  "controllerRevision": "9c9b9e0c41add84bf30ddc8ec7e41d5c8df95976",
+  "jobId": "office-92f87667-0a57-4195-9c08-bd641abd09b7",
+  "pipelineRevision": "4c0d08a67c2bb9a7ed69f8848530a238cf6ca445",
+  "pipelineYamlSha256": "16cc7bd7f1084fa5aeec9c58358e121f6478c33027654d0309832e6247aa3010",
+  "runnerSha256": "804cc4e67b500e41ab7d2dde092c1b35f24ffb020bee704ad0496f431426e166",
+  "baseRevision": "9dcc7b441f8883edf96bc2357ecd289948f660ff",
+  "profileSha256": "c8e5a029ab7c5537da8467428adf29c105d0f738426dfb114990551cb1d2afe3",
+  "observed": {
+    "requestSpecValidationHttpStatus": 200,
+    "agency": "Failed/Failure",
+    "reportedPipelineRunId": 0,
+    "reportedPipelineDefinitionId": 0,
+    "qualifiedActualBuildId": null,
+    "modelExecutionProven": false,
+    "productGateExecutionProven": false,
+    "remoteTicketProtocolExecutionProven": false,
+    "controllerAccepted": false,
+    "failureCategory": "pre-run-pipeline-yaml-validation",
+    "serviceReason": "Pipeline 38920 failed YAML validation: while scanning an anchor or alias, did not find expected alphabetic or numeric character.",
+    "faultLocation": {
+      "line": 91,
+      "column": 14
+    }
+  },
+  "rootCause": {
+    "component": "private qualification-pipeline generator",
+    "cause": "A JavaScript replacement string interpreted the PowerShell regex end-anchor plus quote as the replacement metacharacter for the remaining input, injecting YAML tail lines into a quoted inline script.",
+    "reproducedLocally": true,
+    "correctedUsingLiteralReplacementCallback": true,
+    "newOfflineChecks": [
+      "Generated YAML line count is preserved.",
+      "Each generated inline JSON string parses and the decoded loader matches exactly.",
+      "Controller rejects a split generated quoted script before fetching the agent or submitting a job."
+    ],
+    "notAGateAssertionFailure": true
+  },
+  "limitations": [
+    "Request/Spec validation did not validate the pipeline YAML.",
+    "Offline ticket/MCP fixtures do not prove remote execution of the new protocol.",
+    "The corrected pipeline is a new unpublished draft, not a successful rerun.",
+    "The three authorized jobs are consumed; no fourth job was submitted.",
+    "A separate preview-only request with modified YAML was denied because the designated identity lacks EditBuild; no shared permission or pipeline definition was changed."
+  ],
+  "privateEvidence": {
+    "collection": "agency-workspace-loop-ticket-20261023",
+    "files": [
+      {
+        "basename": "placement-1792738572290.json",
+        "sha256": "8aeb8e6074c216d273fcaad2ecb33ae0260ede392f9505e6e985adaf89c45c79"
+      },
+      {
+        "basename": "placement-1792738642283.json",
+        "sha256": "5bb025ad90d6bbb5f849cba9ad14ba7029aafd0c77b2008202136490317856e6"
+      },
+      {
+        "basename": "execute-stderr.log",
+        "sha256": "db488dfb1e3c680d09fcd81679be4579e33128622329467538460b8c3f077fee"
+      }
+    ]
+  }
+}

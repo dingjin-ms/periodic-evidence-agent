@@ -5,6 +5,8 @@ import { hash, now, requireThat, safeError, utc, windowCheck } from './common.js
 import { failureDetails } from './failure-details.js';
 import { reviewLoopFailure } from './loop-failure-review.js';
 
+import { validateAnalysisPins, completeControllerAnalysis } from './loop-analysis.js';
+
 export const loopStages = Object.freeze(['collect', 'filter', 'proposer', 'rsi']);
 export const canonical = value => JSON.stringify(value, (_key, item) =>
   item && typeof item === 'object' && !Array.isArray(item)
@@ -43,6 +45,9 @@ export function previousCalendarDay(occurrence, timeZone) {
 
 export function normalizeLoopRequest(input) {
   const request = structuredClone(input);
+  validateAnalysisPins(request.analysis);
+  requireThat(!request.analysis || request.rsiMode === 'capture-only',
+    'Analysis integration requires capture-only RSI; completion/adoption is excluded', 'blocked-binding');
   requireThat(request.format === 'evidence-loop-v1' && text(request.workflowId) &&
     ['manual', 'scheduled'].includes(request.origin) && text(request.timeZone), 'Invalid loop identity/origin');
   request.window ??= previousCalendarDay(request.occurrence, request.timeZone);
@@ -140,7 +145,7 @@ export async function runEvidenceLoop(input, ledger, adapters) {
       const admission = loopOperation(ledger, slot);
       requireThat(!admission || admission.detail.runId === runId,
         'This occurrence already belongs to another policy; explicit reconciliation required', 'blocked-reconciliation');
-      if (!admission) ledger.operation(slot, runId, 'loop-occurrence', { runId });
+      if (!admission) ledger.operation(slot, runId, 'loop-occurrence', { runId, ...(pins.analysis ? {producerOccurrence:request.occurrence} : {}) });
     });
     const prior = loopOperation(ledger, runId);
     requireThat(!prior || digest(prior.detail.pins) === digest(pins),
@@ -216,7 +221,12 @@ export async function runEvidenceLoop(input, ledger, adapters) {
       await summarizeCollection(role, result.receipt);
     }
     const value = report('complete', { proposer: receipts[2].outcome, rsi: receipts[3].outcome, receipts });
-    ledger.finishOperation(runId, 'recorded', { pins, report: value });
+    if (pins.analysis) {
+      value.analysis = await completeControllerAnalysis({runId,occurrence:request.occurrence,pins,receipts,ledger,
+        readArtifact:a=>readLoopArtifact(ledger,a),fetchImpl:adapters.analysisFetch});
+      if (value.analysis.state !== 'completed') value.state = 'blocked';
+    }
+    ledger.finishOperation(runId, value.state === 'complete' ? 'recorded' : 'started', { pins, report: value });
     return value;
   } catch (error) {
     const value = report('blocked', { ...safeError(error), reconciliationRequired: true,

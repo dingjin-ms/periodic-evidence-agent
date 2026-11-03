@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Workspace,
+    [ValidateSet('OfficeAgent', 'AugmentationLoop')]
+    [string]$RepositoryProfile = 'OfficeAgent',
     [switch]$InstallProvider,
     [switch]$CheckOnly
 )
@@ -11,10 +13,10 @@ $providerPackage = "@microsoft/artifacts-npm-credprovider@$providerVersion"
 $providerIntegrity = 'sha512-mzM9ZVLh7Loo6ioGgYLXo8D8yPOqoBgKEhv9Y0fRjqofWlbUkM91ybTaSUtPAwxloOSr1z20VVoPo15fciWBXg=='
 $providerRegistry = 'https://pkgs.dev.azure.com/artifacts-public/PublicTools/_packaging/AzureArtifacts/npm/registry/'
 $configPath = Join-Path (Resolve-Path -LiteralPath $Workspace) '.yarnrc.yml'
-$expectedRegistries = @(
-    'https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/',
-    'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/'
-)
+$expectedRegistries = @('https://office.pkgs.visualstudio.com/_packaging/AugmentationLoop/npm/registry/')
+if ($RepositoryProfile -eq 'OfficeAgent') {
+    $expectedRegistries += 'https://office.pkgs.visualstudio.com/_packaging/Office/npm/registry/'
+}
 
 function Write-Preflight {
     param(
@@ -64,15 +66,19 @@ function Invoke-CredentialProvider {
 }
 
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-    throw "OfficeAgent Yarn configuration was not found: $configPath"
+    throw "$RepositoryProfile Yarn configuration was not found: $configPath"
 }
 $yarnConfig = Get-Content -LiteralPath $configPath -Raw
 foreach ($registry in $expectedRegistries) {
     $pattern = '(?m)^\s*npmRegistryServer:\s*["'']?' +
         [regex]::Escape($registry) + '["'']?\s*$'
     if ($yarnConfig -notmatch $pattern) {
-        throw "OfficeAgent Yarn configuration is missing expected registry: $registry"
+        throw "$RepositoryProfile Yarn configuration is missing expected registry: $registry"
     }
+}
+if ($RepositoryProfile -eq 'AugmentationLoop' -and
+    [regex]::Matches($yarnConfig, '(?m)^\s*npmRegistryServer:').Count -ne 1) {
+    throw 'AugmentationLoop authentication requires exactly its one declared registry'
 }
 
 $provider = Get-Command artifacts-npm-credprovider -ErrorAction SilentlyContinue
@@ -137,8 +143,8 @@ if ($needsAuthentication) {
         '--validate-only', '--config-file', $configPath, '--verbosity', 'minimal'
     )
     if ($validation.ExitCode -ne 0 -or ($validation.Output -join "`n") -match 'need refresh') {
-        throw 'Azure Artifacts credentials are not valid for every configured OfficeAgent feed'
+        throw "Azure Artifacts credentials are not valid for every configured $RepositoryProfile feed"
     }
 }
 
-Write-Output "OfficeAgent Azure Artifacts authentication is ready with provider $installedVersion."
+Write-Output "$RepositoryProfile Azure Artifacts authentication is ready with provider $installedVersion."

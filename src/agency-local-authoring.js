@@ -33,6 +33,8 @@ async function invokeTool(toolkit, name, args) {
     case 'pilot_search': return toolkit.search(args.query, args.path);
     case 'pilot_read': return toolkit.read(args.path, args.startLine ?? null, args.endLine ?? null);
     case 'pilot_write': return toolkit.write(args.path, args.content);
+    case 'pilot_replace_lines': return toolkit.replaceLines(
+      args.path, args.startLine, args.endLine, args.expected, args.replacement);
     case 'pilot_finish': return toolkit.finish(args);
     default: throw new PilotError('blocked-protocol', 'Unknown pilot tool');
   }

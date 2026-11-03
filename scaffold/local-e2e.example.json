@@ -1,0 +1,24 @@
+{
+  "format": "local-e2e-v1",
+  "runId": "replace-with-approved-run-id",
+  "filter": {
+    "manifestPath": "C:\\approved-run\\filter-manifest.json",
+    "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "routing": {
+    "capability": "integration-test-authoring",
+    "requestedOutcome": "add-or-update-tests"
+  },
+  "authorization": {
+    "approvedBy": "REPLACE",
+    "approvedAt": "2025-01-01T00:00:00Z",
+    "approvalRef": "REPLACE",
+    "deadlineAt": "2025-01-02T00:00:00Z",
+    "maxFilterRequests": 30,
+    "maxProposers": 1,
+    "maxProposerAiCredits": 30,
+    "authorizeCommit": false,
+    "authorizePush": false,
+    "authorizeDraftPR": false
+  }
+}

@@ -314,7 +314,8 @@ async function proposerScenario(config, fixture, filter, root, scenario) {
         assert.equal(scenario, 'success');
         assert.equal(repo.remote, fixture.repo.remote);
         assert.equal(workspace, ledger.job(prepared.assignment.id).workspace);
-        assert.equal(refspec, `HEAD:refs/heads/pilot/${prepared.assignment.id}`);
+        const revision = (await command('git', ['rev-parse', 'HEAD'], workspace)).stdout.trim();
+        assert.equal(refspec, `${revision}:refs/heads/pilot/${prepared.assignment.id}`);
       },
       createDraft: async (_config, _ledger, current, _repo, revision) => {
         counts.simulatedDraft++;

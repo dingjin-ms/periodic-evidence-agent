@@ -546,8 +546,9 @@ test('app status includes only workers owned by the requested run', t => {
     ['worker-two']);
 });
 
-test('app native OA planning pins durable improvement, coverage plan and skill binding before claim', async t => {
+async function nativeCoveragePlanning(t, sourceStatus, qualificationOnly) {
   const { root, config, ledger } = setup(t, { dry: false, provenance: 'app-tool', configure: config => {
+    if (qualificationOnly) config.repositories[0].projectId = null;
     config.repositories[0].allowedWritePrefixes = ['test'];
     config.repositories[0].validationGates = [{ id: 'oa-integration', approved: true,
       executable: process.execPath, args: [], timeoutMs: 1000 }];
@@ -582,7 +583,10 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     validationContractSha256: validationContract.sha256,
     sideEffects: { commit: false, push: false, createDraftPR: false }
   });
-  await adoBatch(config, ledger);
+  await adoBatch(config, ledger, 'created', 'ado-event', {
+    'System.State': sourceStatus, 'System.Reason': 'Resolved',
+    'Microsoft.VSTS.Common.ResolvedReason': 'Fixed'
+  });
   const evidence = ledger.all('evidence')[0];
   const investigation = {
     recordType: 'investigation', schemaVersion: '1.0',
@@ -595,6 +599,9 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     repoIds: ['fixture'], existingFixes: [], nextAction: 'Add focused OA integration coverage.'
   };
   appReview(config, ledger, 'test-run', { investigation, exclusionsChecked: exclusions });
+  assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', {
+    investigationId: investigation.id, repoId: 'fixture', intent: 'rca-only'
+  }), error => error.code === 'blocked-reconciliation');
   const planned = appPlanImprovement(config, ledger, 'test-run', {
     improvement: {
       investigationIds: [investigation.id], category: 'missing-test-coverage',
@@ -604,6 +611,7 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     },
     testCoverage: {
       repoId: 'fixture', capability: 'integration-test-authoring', sourceRevision: baseRevision,
+      purpose: 'regression-coverage',
       searchStatus: 'complete', existingTests: [], coverageGaps: ['No matching integration test.'],
       unknowns: [], rationale: 'Source-bound search confirmed the coverage gap.'
     }
@@ -612,15 +620,58 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     investigationId: investigation.id, repoId: 'fixture', intent: 'defect-fix'
   }), /only for qualified, bounded test-coverage/);
   ledger.setTrackedState(evidence, 'current', 'Unchanged resolved coverage source');
-  const worker = appWorker(config, ledger, 'test-run', 'prepare', {
+  const preparation = {
     investigationId: investigation.id, repoId: 'fixture', intent: 'improvement',
     testCoveragePlanId: planned.testCoveragePlan.id, requestedOutcome: 'add-or-update-tests'
-  });
+  };
+  if (qualificationOnly) {
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', preparation),
+      /project binding is missing/);
+    assert.equal(ledger.status().jobs.length, 0);
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare',
+      { ...preparation, executionTarget: 'unknown' }), /Unsupported native assignment execution target/);
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare',
+      { ...preparation, testCoveragePlanId: undefined, executionTarget: 'agency-workspace-authoring' }),
+    /requires a planned test-coverage improvement/);
+    preparation.executionTarget = 'agency-workspace-authoring';
+    const binding = config.repositories[0].skillBindings[0];
+    binding.sideEffects.push = true;
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', preparation), /cannot publish/);
+    binding.sideEffects.push = false;
+    assert.equal(ledger.status().jobs.length, 0);
+  }
+  const worker = appWorker(config, ledger, 'test-run', 'prepare', preparation);
   assert.equal(worker.assignment.improvementId, planned.improvement.id);
   assert.equal(worker.assignment.testCoveragePlanId, planned.testCoveragePlan.id);
   assert.equal(worker.assignment.skillBindingId, 'oa-integration-test-core');
   assert.equal(ledger.all('areaToImprove').length, 1);
   assert.equal(ledger.all('testCoveragePlan').length, 1);
+  if (qualificationOnly) {
+    assert.equal(worker.projectId, null);
+    assert.equal(worker.execution, 'agency-workspace-authoring-qualification');
+    assert.equal(worker.state, 'prepared');
+    assert.deepEqual(appWorker(config, ledger, 'test-run', 'prepare', preparation), worker);
+    beginApp(config, { runId: 'different-qualification-run', dryRun: false, provenance: 'app-tool' });
+    assert.throws(() => appWorker(config, ledger, 'different-qualification-run', 'prepare', preparation),
+      /different run or execution target/);
+    const sessionConfig = structuredClone(config);
+    sessionConfig.repositories[0].projectId = 'test-project';
+    assert.throws(() => appWorker(sessionConfig, ledger, 'test-run', 'prepare',
+      { ...preparation, executionTarget: undefined }), /different run or execution target/);
+    const preparedSession = ledger.job(worker.id).session_id;
+    for (const action of ['claim', 'bind', 'result', 'uncertain', 'agency-reserve'])
+      assert.throws(() => appWorker(config, ledger, 'test-run', action,
+        { assignmentId: worker.id, claimId: 'not-an-experiment-reservation',
+          coordinatorAgentId: worker.coordinatorAgentId }), /native session actions are forbidden/);
+    assert.equal(ledger.job(worker.id).state, 'prepared');
+    assert.equal(ledger.job(worker.id).session_id, preparedSession);
+    assert.equal(worker.sessionId, null);
+    ledger.moveJob(worker.id, 'prepared', 'uncertain');
+    assert.throws(() => appWorker(config, ledger, 'test-run', 'prepare', preparation),
+      /must reconcile an existing non-prepared assignment/);
+    assert.equal(ledger.job(worker.id).state, 'uncertain');
+    return;
+  }
   const claimId = 'oa-claim';
   appWorker(config, ledger, 'test-run', 'claim', {
     assignmentId: worker.id, claimId, coordinatorAgentId: worker.coordinatorAgentId
@@ -634,7 +685,13 @@ test('app native OA planning pins durable improvement, coverage plan and skill b
     workspace, baseRevision
   });
   assert.equal(bound.baseRevision, baseRevision);
-});
+}
+
+for (const sourceStatus of ['Closed', 'Resolved']) {
+  for (const qualificationOnly of [false, true])
+    test(`app native ${sourceStatus} OA planning pins coverage before ${qualificationOnly ? 'remote qualification' : 'session claim'}`,
+      t => nativeCoveragePlanning(t, sourceStatus, qualificationOnly));
+}
 
 test('app successful run A cursor survives blocked run B in the shared live ledger', async t => {
   const { config, ledger } = setup(t, { dry: false, provenance: 'app-tool' });

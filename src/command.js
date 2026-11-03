@@ -4,5 +4,8 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 
 export async function command(executable, args, cwd, timeout = 120000, env = process.env, signal = undefined) {
+  if (signal?.aborted) throw Object.assign(
+    new Error('The operation was aborted', { cause: signal.reason }),
+    { name: 'AbortError', code: 'ABORT_ERR' });
   return exec(executable, args, { cwd, env, signal, windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' });
 }

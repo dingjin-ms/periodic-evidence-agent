@@ -8,7 +8,7 @@ import { Ledger } from '../src/ledger.js';
 import { configAt } from '../src/common.js';
 import { adoRecord, wiql } from '../src/sources.js';
 import { savedTestRequestLink, testRequestLink, testRequestRows } from '../src/ado-request-link.js';
-import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest, listTestRequests } from '../src/ado-test-request.js';
+import { parseTestRequest, collectTestRequest, testRequestPolicy, readTestRequest, readCurrentTestRequest, listTestRequests } from '../src/ado-test-request.js';
 
 const sample = readFileSync(new URL('../scaffold/ado-test-request.sample.md', import.meta.url), 'utf8');
 const policy = JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url)));
@@ -106,6 +106,26 @@ test('transport queries approved scope before details and pins the batch snapsho
   });
   assert.equal(calls.length, 2);
   assert.equal(result.id, 123);
+});
+
+test('current admission details are not pinned to the earlier scope-query snapshot', async t => {
+  const { config, item } = setup(t);
+  let calls = 0;
+  const result = await readCurrentTestRequest(config, 123, {
+    getToken: async () => 'fixture-token',
+    fetchResponse: async (_url, options) => {
+      calls++;
+      const body = JSON.parse(options.body);
+      if (body.query) return Response.json({ asOf: item.snapshotAt, workItems: [{ id: 123 }] });
+      assert.equal(Object.hasOwn(body, 'asOf'), false);
+      assert.deepEqual(body.ids, [123]);
+      assert.equal(body.errorPolicy, 'Fail');
+      return Response.json({ value: [{ ...item, rev: 2 }] });
+    }
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.rev, 2);
+  assert.equal(Object.hasOwn(result, 'snapshotAt'), false);
 });
 
 test('transport never fetches unmatched details or follows redirects and enforces response bound', async t => {

@@ -153,6 +153,28 @@ test('parallel source reads keep unique receipt IDs and finish waits for deliver
   assert.equal(new Set(reads.map(row => row.id)).size, 2);
 });
 
+test('unknown environment is retained as unknown and a support-only assessment does not publish', async t => {
+  const ctx = setup(t);
+  ctx.config.adoTestRequests.automation.requireSupportMatrix = true;
+  const support = { skill: 'supported', environment: 'unknown', requirements: [{
+    requirement: 'Count saved rows', status: 'supported', sourcePaths: ['src/verifier.js'],
+    reason: 'The assertion is expressible; execution environment has not been qualified.'
+  }] };
+  const deps = dependencies(ctx, { decision: 'supported', support });
+  const result = await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps);
+  assert.equal(result.support.environment, 'unknown');
+  assert.equal(result.state, 'supported');
+  assert.equal(result.publication, 'none');
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+  assert.equal(ctx.comments, 0);
+  const replay = await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps);
+  assert.equal(replay.replayed, true);
+  assert.equal(ctx.calls, 1);
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123,
+    { authorizeReview: true, execute: true }, deps), { code: 'blocked-authorization' });
+  assert.equal(ctx.calls, 1);
+});
+
 test('skill support is distinct from a blocked evidence environment', async t => {
   const ctx = setup(t);
   ctx.config.adoTestRequests.automation.requireSupportMatrix = true;

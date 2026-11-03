@@ -11,18 +11,24 @@ import {
   acceptReviewedHandoff, prepareReviewedHandoff, validateReviewedHandoffReceipt
 } from '../src/reviewed-handoff.js';
 import {
-  dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation, requireCurrentAssignment,
-  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment
+  dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation,
+  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment, commitRepositoryChanges, requireCurrentAssignment
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
+import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
+import { dispatchRuntimeContinuation } from '../src/workers.js';
+import { prepareAuthoringToolContinuation, claimAuthoringToolWorkspace } from '../src/authoring-tool-continuation.js';
+import { dispatchAuthoringToolContinuation } from '../src/workers.js';
 import {
   normalizeSkillInput, repositoryValidationContract, skillQualificationId
 } from '../src/repository-skills.js';
 import { captureWorkerRsiOutcome, inspectRsiArtifacts, readRsiArtifact, rsiWork } from '../src/rsi-flow.js';
 import { pruneState } from '../src/state-retention.js';
 import { beginApp, openApp, appWorker } from '../src/app-native.js';
+import { remoteValidationContract } from '../src/agency-remote-validation.js';
 
-import { collectTestRequest, prepareTestRequest, acceptTestRequest, verifyCurrentTestRequest } from '../src/ado-test-request.js';
+import { collectTestRequest, prepareTestRequest, acceptTestRequest, readCurrentTestRequest,
+  requireTestRequestPublication, verifyCurrentTestRequest } from '../src/ado-test-request.js';
 import { runTestRequest } from '../src/test-request-flow.js';
 import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
 
@@ -56,7 +62,7 @@ const oneJsRepairRunner = readFileSync(
   new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
   'utf8');
 
-async function setup(t, { inputFormat = null, sourceCode = 'export const value = 1;\n' } = {}) {
+async function setup(t, { inputFormat = null, sourceCode = 'export const value = 1;\n', capabilitySources = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
@@ -66,6 +72,11 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
   mkdirSync(join(reference, 'src'), { recursive: true });
   writeFileSync(join(reference, skillPath), '# Fixture integration-test skill\nAdd focused tests.\n');
   writeFileSync(join(reference, 'src', 'value.js'), sourceCode);
+  if (capabilitySources) {
+    mkdirSync(join(reference, 'ooui'));
+    for (const name of ['schema', 'runner', 'ui-map'])
+      writeFileSync(join(reference, 'ooui', `${name}.txt`), `Synthetic ${name} source\n`);
+  }
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
   await git(['init', '--quiet']);
@@ -379,7 +390,17 @@ async function supportedRequestAssessment(ctx) {
   return input;
 }
 
-for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 'draft-lookup-hold', 'draft-auth-hold', 'draft-auth-withdrawal', 'draft-read-hold'])
+function withdrawRequest(ctx, revisionOnly = false) {
+  ctx.item.rev++;
+  if (!revisionOnly) ctx.item.fields['System.State'] = 'Closed';
+}
+function supersedeRequestReview(ctx, assignment) {
+  const investigation = ctx.ledger.get('investigation', assignment.investigationId);
+  ctx.ledger.put({ ...investigation, version: investigation.version + 1, state: 'blocked' });
+}
+
+for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 'draft-lookup-hold', 'draft-auth-hold', 'draft-read-hold', 'authoring-withdrawal', 'authoring-revision', 'validation-withdrawal',
+  'push-withdrawal', 'draft-lookup-withdrawal', 'draft-auth-withdrawal', 'draft-read-review'])
   test(`ADO coverage publication blocks ${interruption} and retains authored work`, async t => {
     const ctx = await requestFixture(t);
     const assessment = await supportedRequestAssessment(ctx);
@@ -400,10 +421,24 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 
               behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
           if (interruption === 'authoring-hold') hold();
           if (interruption === 'source-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
+          if (interruption.startsWith('authoring-')) withdrawRequest(ctx, interruption === 'authoring-revision');
         },
-        pushBranch: async () => { pushes++; if (interruption === 'push-hold') hold(); },
-        createDraft: async (config, ledger, job, repo, revision, proposal) => {
-          if (!interruption.startsWith('draft-')) { drafts++; assert.fail('Draft must not be created after changed admission'); }
+        runValidation: async (...args) => {
+          const result = await runValidation(...args);
+          if (interruption === 'validation-withdrawal') withdrawRequest(ctx);
+          return result;
+        },
+        pushBranch: async (_config, _workspace, _repo, _refspec, admission) => {
+          assert.equal(admission.ledger, ctx.ledger);
+          assert.ok(admission.assignmentId);
+          assert.equal(admission.readTestRequest, ctx.read);
+          pushes++;
+          if (interruption === 'push-hold') hold();
+          if (interruption === 'push-withdrawal') withdrawRequest(ctx);
+        },
+        createDraft: async (config, ledger, job, repo, revision, proposal, _request, _allow, admission) => {
+          assert.equal(admission.readTestRequest, ctx.read);
+          assert.ok(interruption.startsWith('draft-'), 'Draft must not be entered after withdrawal');
           const transportRepo = { ...repo, remote: 'https://dev.azure.com/fixture/project/_git/repo',
             pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' } };
           let tokens = 0;
@@ -417,11 +452,13 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 
             },
             readTestRequest: async () => {
               if (interruption === 'draft-read-hold') hold();
+              if (interruption === 'draft-read-review') supersedeRequestReview(ctx, ledger.get('assignment', job.id));
               return ctx.item;
             },
             fetchResponse: async (_url, options) => {
               if (options.method === 'GET') {
                 if (interruption === 'draft-lookup-hold') hold();
+                if (interruption === 'draft-lookup-withdrawal') withdrawRequest(ctx);
                 return Response.json({ value: [] });
               }
               drafts++;
@@ -430,8 +467,8 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 
           });
         }
       }
-    }), /Coverage is held|approved test-request/);
-    assert.equal(pushes, interruption === 'push-hold' || interruption.startsWith('draft-') ? 1 : 0);
+    }), /Coverage is held|approved test-request|changed or was withdrawn|superseded/);
+    assert.equal(pushes, interruption === 'push-hold' || interruption === 'push-withdrawal' || interruption.startsWith('draft-') ? 1 : 0);
     assert.equal(drafts, 0);
     const job = ctx.ledger.status().jobs[0];
     assert.equal(job.state, 'blocked');
@@ -439,10 +476,12 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 
     const result = ctx.ledger.all('workerResult').at(-1);
     assert.equal(result.outcome, 'blocked');
     assert.ok(result.sourceRevision);
-    assert.equal(result.validation[0].status, 'passed');
+    // Shared admission now observes an in-ledger hold before starting validation.
+    if (interruption === 'authoring-hold') assert.deepEqual(result.validation, []);
+    else assert.equal(result.validation[0].status, 'passed');
   });
 
-for (const transport of ['push', 'build']) for (const interruption of ['auth', 'source-read'])
+for (const transport of ['push', 'build']) for (const interruption of ['auth', 'source-read', 'auth-withdrawal', 'source-read-review'])
   test(`${transport} transport rechecks admission after ${interruption}`, async t => {
     const ctx = await requestFixture(t);
     const assessment = await supportedRequestAssessment(ctx);
@@ -456,14 +495,14 @@ for (const transport of ['push', 'build']) for (const interruption of ['auth', '
       decision: 'needs-evidence', reviewedAt: now() });
     let mutations = 0;
     const dependencies = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
-      getToken: async () => { if (interruption === 'auth') hold(); return 'fixture-token'; },
-      readTestRequest: async () => { if (interruption === 'source-read') hold(); return ctx.item; },
+      getToken: async () => { if (interruption === 'auth') hold(); if (interruption === 'auth-withdrawal') withdrawRequest(ctx); return 'fixture-token'; },
+      readTestRequest: async () => { if (interruption === 'source-read') hold(); if (interruption === 'source-read-review') supersedeRequestReview(ctx, prepared.assignment); return ctx.item; },
       execute: async () => { mutations++; assert.fail('Push after a hold'); },
       fetchResponse: async () => { mutations++; assert.fail('Build POST after a hold'); } };
     if (transport === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.config.repositories[0].referenceCheckout,
-      repo, 'HEAD:refs/heads/fixture', dependencies), /Coverage is held/);
+      repo, 'HEAD:refs/heads/fixture', dependencies), /Coverage is held|approved test-request|superseded/);
     else await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
-      ctx.baseRevision, undefined, dependencies), /Coverage is held/);
+      ctx.baseRevision, undefined, dependencies), /Coverage is held|approved test-request|superseded/);
     assert.equal(mutations, 0);
     assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
   });
@@ -547,6 +586,7 @@ test('shared admission enforces holds and app-native rejects unsupported ADO exe
   ledger.db.prepare('UPDATE app_workers SET body=? WHERE id=?').run(json({ id: assignment.id,
     runId, state: 'claimed', assignment, claimId: claim.claimId, execution: 'external-app-native-session' }), assignment.id);
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'bind', claim), /app-native execution is not supported/);
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'result', { ...claim, outcome: 'draft-reported' }), /app-native execution is not supported/);
 });
 
@@ -965,6 +1005,243 @@ test('uncertain ADO writes never retry and changed requests never post', async t
   assert.equal(posts, 1);
 });
 
+function finishRequestFixture(toolkit) {
+  toolkit.write('test/behavior.test.js', formulaTest);
+  toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
+  toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+    description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
+      changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
+      behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+}
+
+for (const drift of ['none', 'source-refresh', 'push-auth'])
+  test(`ADO supported publication pins the validated revision through ${drift}`, async t => {
+    const ctx = await requestFixture(t);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    const repo = ctx.config.repositories[0];
+    repo.draftBuild = { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 };
+    await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+    const transportRepo = { ...repo, remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' } };
+    let validated, workspace, advanced, pushed, build, draft, posts = 0;
+    const advance = async () => {
+      if (advanced) return;
+      writeFileSync(join(workspace, 'unvalidated.txt'), 'This content has not passed validation.\n');
+      await command('git', ['add', '--', 'unvalidated.txt'], workspace);
+      await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'Unvalidated checkout advance'], workspace);
+      advanced = (await command('git', ['rev-parse', 'HEAD'], workspace)).stdout.trim();
+      assert.notEqual(advanced, validated);
+    };
+    const read = async () => {
+      if (validated && drift === 'source-refresh') await advance();
+      return ctx.item;
+    };
+    const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+      execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read,
+      dispatchDependencies: {
+        runModel: async (_c, _l, _j, _a, _i, toolkit) => finishRequestFixture(toolkit),
+        runValidation: async (...args) => {
+          const output = await runValidation(...args);
+          validated = args[4]; workspace = args[2].workspace;
+          return output;
+        },
+        pushBranch: async (config, path, _repo, refspec, admission) => {
+          assert.equal(refspec.split(':')[0], validated);
+          await pushDraftBranch(config, path, transportRepo, refspec, { ...admission,
+            getToken: async () => { if (drift === 'push-auth') await advance(); return 'fixture-token'; },
+            execute: async (cwd, args) => command('git', args, cwd) });
+          pushed = (await command('git', ['--git-dir', ctx.remote, 'rev-parse', refspec.split(':').slice(1).join(':')], ctx.root)).stdout.trim();
+        },
+        queueDraftBuild: (config, ledger, job, _repo, revision, _request, admission) =>
+          queueAdoDraftBuild(config, ledger, job, transportRepo, revision, undefined, { ...admission,
+            getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+              assert.equal(options.method, 'POST'); build = JSON.parse(options.body);
+              return Response.json({ id: 5 });
+            } }),
+        createDraft: (config, ledger, job, _repo, revision, proposal, _request, allow, admission) =>
+          createAdoDraft(config, ledger, job, transportRepo, revision, proposal, undefined, allow, { ...admission,
+            getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+              if (options.method === 'GET') return Response.json({ value: [] });
+              posts++; draft = JSON.parse(options.body);
+              return Response.json({ ...draft, pullRequestId: 9, status: 'active', lastMergeSourceCommit: { commitId: pushed } });
+            } })
+      }
+    });
+    assert.equal(result.result.outcome, 'draft-pr-validated');
+    assert.equal(pushed, validated);
+    assert.equal(build.sourceVersion, validated);
+    assert.equal(result.result.draftPR.headRevision, validated);
+    assert.equal(result.result.sourceRevision, validated);
+    assert.equal(result.result.validation[0].sourceRevision, validated);
+    assert.equal(posts, 1);
+    const push = ctx.ledger.status().operations.find(row => row.id === `${result.assignment.id}:push`);
+    assert.equal(JSON.parse(push.detail).revision, validated);
+    assert.equal(draft.sourceRefName, build.sourceBranch);
+    if (drift !== 'none') {
+      assert.notEqual(pushed, advanced);
+      assert.equal((await command('git', ['--git-dir', ctx.remote, 'ls-tree', pushed, '--', 'unvalidated.txt'], ctx.root)).stdout, '');
+    }
+  });
+
+for (const change of ['withdrawal', 'revision'])
+  test(`ADO final admission reads current details after WIQL during ${change}`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const original = structuredClone(ctx.item);
+    let calls = 0, mutations = 0;
+    const read = (config, id) => readCurrentTestRequest(config, id, {
+      getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+        calls++;
+        const body = JSON.parse(options.body);
+        if (body.query) return Response.json({ asOf: original.snapshotAt, workItems: [{ id }] });
+        withdrawRequest(ctx, change === 'revision');
+        // A historical request would return the old, still-eligible revision.
+        return Response.json({ value: [body.asOf ? original : ctx.item] });
+      }
+    });
+    await assert.rejects(pushDraftBranch(ctx.config, ctx.root, ctx.config.repositories[0],
+      `${ctx.baseRevision}:refs/heads/fixture`, { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+        readTestRequest: read, execute: async () => { mutations++; } }), /approved test-request|changed or was withdrawn/);
+    assert.equal(calls, 2);
+    assert.equal(mutations, 0);
+  });
+
+for (const phase of ['new', 'prepared', 'validation'])
+  test(`ADO rejects remote validation at ${phase} before any Agency request`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = phase === 'new' ? null : prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const contractPath = join(ctx.root, 'remote-contract.json');
+    const profilePath = join(ctx.root, 'remote-profile.ps1');
+    writeFileSync(profilePath, 'exit 0\n');
+    const repo = ctx.config.repositories[0], gate = repo.validationGates[0];
+    gate.profilePath = profilePath;
+    gate.profileSha256 = hash(readFileSync(profilePath));
+    const pipeline = { revision: 'b'.repeat(40), yamlSha256: hash('synthetic pipeline'), definitionId: 10,
+      definitionRevision: 2, ref: 'refs/heads/fixture', yamlPath: '/pipeline.yml',
+      organization: 'https://dev.azure.com/fixture', project: 'Fixture', repositoryId: 'fixture', artifactPrefix: 'Fixture-' };
+    const contract = { schema: 'agency-oa-validation-contract-v1', repoId: repo.id, candidate: ctx.baseRevision,
+      gateId: gate.id, profileSha256: gate.profileSha256, pipeline,
+      requiredTasks: ['prepare', 'validate'], prepareTask: 'prepare', validationTask: 'validate',
+      testPopulation: { suites: 1, tests: 1, path: 'test/behavior.test.js' }, sourceInputs: ['src/value.js'],
+      executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      profilePath: 'F:\\fixture\\profile.ps1', maximumRunnerMinutes: 10, maximumArtifactBytes: 1024,
+      queueMinutes: 1, cancellationMinutes: 1, pollSeconds: 1,
+      request: { prompt: 'Synthetic validation only.', compute: { $type: 'pipeline', pipelineId: 10, pipelineRefOverride: pipeline.ref },
+        context: { repository: { $type: 'ado', organization: 'fixture', project: 'Fixture' } },
+        additionalOptions: { pluginOptions: { includeDefaults: false } },
+        metadata: { candidate: ctx.baseRevision, pipelineCommit: pipeline.revision,
+          profileSha256: gate.profileSha256, pipelineYamlSha256: pipeline.yamlSha256, productPullRequests: 'forbidden' } } };
+    writeFileSync(contractPath, json(contract));
+    repo.remoteValidation = { type: 'agency-remote', contractPath, contractSha256: hash(json(contract)) };
+    assert.deepEqual(remoteValidationContract(repo, ctx.baseRevision), contract);
+    let effects = 0;
+    if (phase === 'new') assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /remote validation/);
+    else if (phase === 'prepared') await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, prepared.assignment.id,
+      { readTestRequest: async () => { effects++; }, runModel: async () => { effects++; } }), /remote validation/);
+    else await assert.rejects(runValidation(ctx.config, ctx.ledger, { ...prepared.job, workspace: ctx.root }, repo,
+      ctx.baseRevision, async () => { effects++; }, undefined, null,
+      { transport: async () => { effects++; } }), /remote validation/);
+    assert.equal(effects, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind.startsWith('agency-')), false);
+    if (phase === 'new') assert.equal(ctx.ledger.status().jobs.length, 0);
+  });
+
+for (const grant of ['commit', 'push', 'createDraftPR'])
+  test(`ADO assignment reconstruction retains ${grant} and rejects prepared revocation`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    assert.equal(prepared.assignment.publicationGrants[grant], true);
+    ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false;
+    const investigation = ctx.ledger.get('investigation', prepared.assignment.investigationId);
+    const rebuilt = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation,
+      prepared.assignment.testCoveragePlanId, prepared.assignment.requestedOutcome);
+    assert.equal(rebuilt.publicationGrants[grant], false);
+    assert.throws(() => requireCurrentAssignment(ctx.config, ctx.ledger, investigation, prepared.assignment), /changed after preparation/);
+    ctx.config.activation.dispatch = true;
+    ctx.config.limits.maxAiCreditsPerSession = 1;
+    await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, prepared.assignment.id,
+      { readTestRequest: ctx.read, runModel: async () => assert.fail('Revoked assignment must not author') }), /changed after preparation/);
+  });
+
+for (const action of ['commit', 'push', 'build', 'draft'])
+  for (const interruption of action === 'commit' ? ['staging'] : ['authentication', 'source-read'])
+  test(`ADO ${action} transport rejects grant revocation during ${interruption}`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const grant = action === 'draft' ? 'createDraftPR' : action === 'build' ? 'push' : action;
+    const revoke = () => { ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false; };
+    const repo = { ...ctx.config.repositories[0], remote: 'https://dev.azure.com/fixture/project/_git/repo',
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    let mutations = 0;
+    const admission = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
+      readTestRequest: async () => { if (interruption === 'source-read') revoke(); return ctx.item; },
+      getToken: async () => { if (interruption === 'authentication') revoke(); return 'fixture-token'; },
+      execute: async () => { mutations++; }, fetchResponse: async (_url, options) => {
+        if (options.method === 'GET') return Response.json({ value: [] });
+        mutations++; return Response.json({});
+      } };
+    const failure = /changed after preparation|does not authorize/;
+    if (action === 'commit') await assert.rejects(commitRepositoryChanges(ctx.config, ctx.root, repo, 'Fixture',
+      async (_exe, args) => { assert.ok(args.includes('add')); revoke(); }, admission), failure);
+    if (action === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.root, repo,
+      `${ctx.baseRevision}:refs/heads/fixture`, admission), failure);
+    if (action === 'build') await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, undefined, admission), failure);
+    if (action === 'draft') await assert.rejects(createAdoDraft(ctx.config, ctx.ledger, prepared.job, repo,
+      ctx.baseRevision, { title: 'Fixture', description: 'Fixture' }, undefined, true, admission), failure);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => ['draft-pr', 'draft-build'].includes(row.kind)), false);
+  });
+
+for (const transport of ['native', 'override'])
+  test(`ADO ${transport} build rechecks expiry after the final source refresh`, async t => {
+    const ctx = await requestFixture(t);
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    const repo = { ...ctx.config.repositories[0], baseRef: ctx.baseRevision,
+      pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
+      draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    const started = Date.now(), authorityPath = join(ctx.root, 'authority.json');
+    const authority = { format: 'al-recurring-authorization-v1', planSha256: 'c'.repeat(64),
+      approvedAt: new Date(started - 1000).toISOString(), expiresAt: new Date(started + 1000).toISOString(),
+      allowModels: true, allowPublication: true };
+    writeFileSync(authorityPath, json(authority));
+    ctx.config.runtime.executionAuthorization = { repoId: repo.id, baseRevision: repo.baseRef,
+      planSha256: authority.planSha256, reference: { path: authorityPath, sha256: hash(json(authority)) } };
+    let time = started, reads = 0, mutations = 0;
+    t.mock.method(Date, 'now', () => time);
+    await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo, ctx.baseRevision,
+      transport === 'override' ? async () => { mutations++; } : undefined, {
+        getToken: async () => 'fixture-token',
+        readTestRequest: async () => { reads++; time += 1001; return ctx.item; },
+        fetchResponse: async () => { mutations++; }
+      }), /authorization expired/);
+    assert.equal(reads, 1);
+    assert.equal(mutations, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
+  });
+
+test('ADO legacy assignment without captured publication grants cannot resume effects', async t => {
+  const ctx = await requestFixture(t);
+  const { assignment } = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+  const legacy = structuredClone(assignment);
+  delete legacy.publicationGrants;
+  assert.throws(() => requireCurrentAssignment(ctx.config, ctx.ledger,
+    ctx.ledger.get('investigation', assignment.investigationId), legacy), /changed after preparation/);
+  assert.throws(() => requireTestRequestPublication(ctx.config, ctx.ledger, legacy, 'push'), /does not authorize/);
+});
+
+for (const action of ['commit', 'push', 'build', 'draft'])
+  test(`ADO publication needs the action-specific ${action} grant even with a matching assignment`, async t => {
+    const ctx = await requestFixture(t);
+    const grant = action === 'draft' ? 'createDraftPR' : action === 'build' ? 'push' : action;
+    ctx.config.repositories[0].skillBindings[0].sideEffects[grant] = false;
+    const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+    assert.throws(() => requireTestRequestPublication(ctx.config, ctx.ledger, prepared.assignment, action), /does not authorize/);
+  });
+
 async function addOneJsRepository(ctx, {
   enableDraftBuild = false, validationScript = null
 } = {}) {
@@ -1060,15 +1337,15 @@ async function addOneJsRepository(ctx, {
   return { repo, reference, remote, baseRevision, scenarioPath };
 }
 
-async function blockedPreModelFixture(t, mutateResult = () => {}) {
-  const ctx = await setup(t);
+async function blockedPreModelFixture(t, mutateResult = () => {},
+  error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' }, options = {}) {
+  const ctx = await setup(t, options);
   ctx.config.executionMode = 'standalone-sdk';
   ctx.config.limits.maxAiCreditsPerSession = 10;
   const prepared = prepareReviewedHandoff(ctx.config, ctx.ledger, fixture);
   const repo = ctx.config.repositories[0];
   await command('git', ['remote', 'add', 'origin', repo.remote], repo.referenceCheckout);
   const isolated = await provision(ctx.config, prepared.job, repo, prepared.assignment.skillQualification);
-  const error = { code: 'blocked-repository-git', message: 'Repository skill Git show failed' };
   ctx.ledger.moveJob(prepared.job.id, 'prepared', 'running', isolated);
   ctx.ledger.moveJob(prepared.job.id, 'running', 'blocked', { error });
   const limit = prepared.assignment.bounds.maxToolCalls;
@@ -1080,10 +1357,11 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
     validation: [], validationAttempts: [], skillExecution: null,
     toolUsage: { limit, used: 0, remaining: limit,
       byTool: { pilot_list: 0, pilot_search: 0, pilot_read: 0, pilot_write: 0, pilot_finish: 0 }, rounds: [] },
-    blocker: { owner: repo.owner, reason: error.message, unblockCondition: 'Explicit user authorization after fix' },
+    blocker: { owner: repo.owner, reason: error?.message ?? 'Fixture missing bounded edit tool',
+      unblockCondition: 'Explicit user authorization after fix' },
     nextAction: 'Reconcile without replay'
   };
-  mutateResult(result);
+  mutateResult(result, ctx);
   ctx.ledger.put(result);
   const nextConfig = { ...structuredClone(ctx.config), stateDirectory: join(ctx.root, 'continuation') };
   const nextLedger = new Ledger(nextConfig.stateDirectory);
@@ -1097,6 +1375,458 @@ async function blockedPreModelFixture(t, mutateResult = () => {}) {
   };
   return { ...ctx, prepared, isolated, result, nextConfig, nextLedger, authorization };
 }
+
+async function runtimeFixture(t, mutateResult = () => {},
+  failure = { code: 'blocked-runtime', message: 'Copilot executable not found on PATH' }, options = {}) {
+  const ctx = await blockedPreModelFixture(t, (result, fixture) => {
+    result.sourceRevision = fixture.baseRevision;
+    result.remoteValidation = [];
+    result.toolUsage.rounds = [{ round: 0, used: 0, cumulativeUsed: 0, status: 'failed' }];
+    mutateResult(result, fixture);
+  }, failure, options);
+  ctx.config.runtime.cliPath = process.execPath;
+  ctx.nextConfig.runtime.cliPath = process.execPath;
+  const path = join(ctx.root, 'synthetic-runtime-smoke.json');
+  const smoke = {
+    checkedAt: now(), cliPath: process.execPath, cliSha256: hash(readFileSync(process.execPath)),
+    customTool: 'executed',
+    unavailableShell: 'rejected', modelInvoked: false, workplaceRead: false
+  };
+  writeFileSync(path, json(smoke));
+  Object.assign(ctx.authorization, {
+    kind: 'runtime-launch-path',
+    nextConfigSha256: hash(json(ctx.nextConfig)),
+    cliSha256: hash(readFileSync(process.execPath)),
+    runtimeSmoke: { path, sha256: hash(readFileSync(path)) }
+  });
+  return ctx;
+}
+
+function toolBlockedResult(result, assignment) {
+  result.toolUsage.used = 4;
+  result.toolUsage.remaining = result.toolUsage.limit - 4;
+  result.toolUsage.byTool = {
+    pilot_list: 1, pilot_search: 1, pilot_read: 1,
+    pilot_write: 0, pilot_replace_lines: 0, pilot_finish: 1
+  };
+  result.toolUsage.rounds = [{ round: 0, used: 4, cumulativeUsed: 4, status: 'completed' }];
+  result.skillExecution = {
+    bindingId: assignment.skillBindingId, capability: assignment.capability,
+    skillPath: assignment.skillQualification.skillPath, skillRevision: result.sourceRevision,
+    status: 'blocked', classification: 'bounded-edit-capability-unavailable',
+    changedFiles: [], testsAddedOrUpdated: [], behaviorCardsAddedOrUpdated: [],
+    unknowns: [], needsHumanDecision: false
+  };
+  return result;
+}
+
+async function toolFixture(t, options = {}) {
+  const ctx = await runtimeFixture(t, (result, fixture) => {
+    toolBlockedResult(result, fixture.ledger.get('assignment', result.assignmentId));
+    if (options.capabilitySources) {
+      result.skillExecution.classification = 'missing-mid-flow-protected-assertion-capability';
+      result.skillExecution.unknowns = ['Synthetic missing intermediate assertion'];
+      result.skillExecution.needsHumanDecision = true;
+    }
+    if (options.registrationRecovery) {
+      Object.assign(result.skillExecution, {
+        status: 'succeeded', classification: 'regression-coverage',
+        changedFiles: ['test/authored.test.js'], testsAddedOrUpdated: ['test/authored.test.js']
+      });
+      result.toolUsage.byTool.pilot_read = 0;
+      result.toolUsage.byTool.pilot_write = 1;
+    }
+  }, options.registrationRecovery ? { code: 'failed', message: 'Fixture registration setup failure' } : null,
+  options);
+  ctx.nextConfig.limits.workerMaxToolCalls = 180;
+  ctx.nextConfig.limits.maxValidationRepairRounds = 2;
+  Object.assign(ctx.authorization, {
+    kind: 'bounded-authoring-tool', nextConfigSha256: hash(json(ctx.nextConfig)),
+    executionBounds: {
+      workerMaxToolCalls: { before: ctx.config.limits.workerMaxToolCalls, after: 180 },
+      maxValidationRepairRounds: { before: ctx.config.limits.maxValidationRepairRounds, after: 2 }
+    }
+  });
+  if (options.capabilitySources) {
+    const path = join(ctx.root, 'synthetic-capability-review.json');
+    writeFileSync(path, json({
+      format: 'existing-declarative-capability-v1', sourceRevision: ctx.baseRevision,
+      primitive: 'assert', property: 'visible', nativeLoaderVerified: true,
+      explanation: 'Synthetic source-bound capability review; no product execution.',
+      sourceFiles: ['schema', 'runner', 'ui-map'].map(name => ({
+        path: `ooui/${name}.txt`, sha256: hash(`Synthetic ${name} source`)
+      }))
+    }));
+    ctx.authorization.capabilityResolution = { path, sha256: hash(readFileSync(path)) };
+  }
+  if (options.registrationRecovery) {
+    mkdirSync(join(ctx.isolated.workspace, 'test'));
+    writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Synthetic authored proposal\n');
+    const path = join(ctx.root, 'synthetic-registration-recovery.json');
+    writeFileSync(path, json({
+      format: 'uncommitted-registration-recovery-v1', assignmentId: ctx.prepared.job.id,
+      attemptId: ctx.prepared.job.session_id, workerResultSha256: hash(json(ctx.result)),
+      sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+      productInvocations: 0, unknownsResolved: true,
+      fileSha256: { 'test/authored.test.js': hash('// Synthetic authored proposal\n') },
+      explanation: 'Synthetic recovered setup. No product test or publication.'
+    }));
+    ctx.authorization.registrationRecovery = { path, sha256: hash(readFileSync(path)) };
+    const operation = `${ctx.prepared.job.id}:declarative-registration:0`;
+    ctx.ledger.operation(operation, ctx.prepared.job.id, 'declarative-registration', {});
+    ctx.ledger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  }
+  return ctx;
+}
+
+async function retainedRecoveryFixture(t, registeredAncestor) {
+  const ctx = await toolFixture(t, { registrationRecovery: registeredAncestor }), id = ctx.prepared.job.id;
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked', {
+    error: { code: 'failed', message: 'Synthetic registration failure' }
+  });
+  mkdirSync(join(isolated.workspace, 'test'), { recursive: true });
+  writeFileSync(join(isolated.workspace, 'test', 'retained.js'), 'Synthetic retained source\n');
+  const result = toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'retained-proposal-result',
+    attemptId: prepared.job.session_id, reportedAt: now(),
+    toolUsage: { ...ctx.result.toolUsage, limit: prepared.assignment.bounds.maxToolCalls }
+  }, prepared.assignment);
+  Object.assign(result.skillExecution, {
+    status: 'succeeded', classification: 'regression-coverage',
+    changedFiles: [...(registeredAncestor ? ['test/authored.test.js'] : []), 'test/retained.js'],
+    testsAddedOrUpdated: ['test/retained.js'],
+    needsHumanDecision: false
+  });
+  result.toolUsage.byTool.pilot_read = 0;
+  result.toolUsage.byTool.pilot_write = 1;
+  ctx.nextLedger.put(result);
+  const operation = `${id}:declarative-registration:0`;
+  ctx.nextLedger.operation(operation, id, 'declarative-registration', {});
+  ctx.nextLedger.finishOperation(operation, 'blocked', { revision: ctx.baseRevision, round: 0 });
+  const path = join(ctx.root, 'retained-recovery.json');
+  writeFileSync(path, json({
+    format: 'uncommitted-registration-recovery-v1', assignmentId: id,
+    attemptId: prepared.job.session_id, workerResultSha256: hash(json(result)),
+    sourceRevision: ctx.baseRevision, dependencySetup: 'passed', nativeLoader: 'passed',
+    productInvocations: 0, unknownsResolved: true,
+    fileSha256: {
+      ...(registeredAncestor ? { 'test/authored.test.js': hash('// Synthetic authored proposal\n') } : {}),
+      'test/retained.js': hash('Synthetic retained source\n')
+    },
+    explanation: 'Synthetic descendant-only source; no product invocation.'
+  }));
+  const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'registration') };
+  const ledger = new Ledger(next.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = {
+    ...ctx.authorization, scope: 'until-native-validation',
+    priorAuthorizationSha256: hash(json(ctx.authorization)),
+    previousAttemptId: prepared.job.session_id, nextConfigSha256: hash(json(next)),
+    registrationRecovery: { path, sha256: hash(readFileSync(path)) }
+  };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id, next, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(next, ledger, id), isolated);
+  assert.equal(readFileSync(join(isolated.workspace, 'test', 'retained.js'), 'utf8'),
+    'Synthetic retained source\n');
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+}
+for (const registeredAncestor of [false, true])
+  test(`reviewed uncommitted recovery preserves consumed ancestors (registration=${registeredAncestor})`,
+    t => retainedRecoveryFixture(t, registeredAncestor));
+
+for (const condition of ['valid', 'file-drift', 'result-drift', 'unexpected-file', 'validation-started']) {
+  test(`uncommitted owner registration recovery ${condition}`, async t => {
+    const ctx = await toolFixture(t, { registrationRecovery: true }), id = ctx.prepared.job.id;
+    if (condition === 'file-drift')
+      writeFileSync(join(ctx.isolated.workspace, 'test', 'authored.test.js'), '// Changed after review\n');
+    if (condition === 'unexpected-file')
+      writeFileSync(join(ctx.isolated.workspace, 'unexpected.txt'), 'Not skill-authored');
+    if (condition === 'result-drift') {
+      const reference = ctx.authorization.registrationRecovery;
+      const review = JSON.parse(readFileSync(reference.path, 'utf8'));
+      review.workerResultSha256 = 'f'.repeat(64);
+      writeFileSync(reference.path, json(review));
+      reference.sha256 = hash(readFileSync(reference.path));
+    }
+    if (condition === 'validation-started')
+      ctx.ledger.operation('unexpected-validation', id, 'validation', {});
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+      assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+      assert.equal(ctx.ledger.job(id).state, 'blocked');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+  });
+}
+
+test('existing capability reconciliation requires a reviewed source-bound proof and rechecks it at claim', async t => {
+  const ctx = await toolFixture(t, { capabilitySources: true }), id = ctx.prepared.job.id;
+  const proof = ctx.authorization.capabilityResolution;
+  ctx.authorization.capabilityResolution = null;
+  await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /source-bound existing-capability/);
+  ctx.authorization.capabilityResolution = proof;
+  await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  writeFileSync(proof.path, '{}');
+  await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id),
+    /Capability review changed/);
+  assert.equal(ctx.ledger.job(id).state, 'blocked');
+});
+
+for (const condition of ['valid', 'stale-source', 'different-primitive', 'changed-source']) {
+  test(`existing mid-flow capability reconciliation ${condition}`, async t => {
+    const ctx = await toolFixture(t, { capabilitySources: true }), id = ctx.prepared.job.id;
+    const reference = ctx.authorization.capabilityResolution;
+    const proof = JSON.parse(readFileSync(reference.path, 'utf8'));
+    if (condition === 'stale-source') proof.sourceRevision = 'f'.repeat(40);
+    if (condition === 'different-primitive') proof.primitive = 'assert-provider';
+    if (condition === 'changed-source') proof.sourceFiles[0].sha256 = 'f'.repeat(64);
+    writeFileSync(reference.path, json(proof));
+    reference.sha256 = hash(readFileSync(reference.path));
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+      error => error.code === 'blocked-reconciliation');
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+  });
+}
+
+for (const condition of ['valid', 'unlinked-grant', 'missing-scope']) {
+  test(`continued user validation grant ${condition} preserves the consumed authoring lineage`, async t => {
+    const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+    const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+    const isolated = await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+    ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+    ctx.nextLedger.moveJob(id, 'running', 'blocked');
+    ctx.nextLedger.put(toolBlockedResult({
+      ...structuredClone(ctx.result), id: 'read-only-successor-result',
+      attemptId: prepared.job.session_id, reportedAt: new Date(Date.now() + 30000).toISOString(),
+      toolUsage: { ...ctx.result.toolUsage, limit: prepared.assignment.bounds.maxToolCalls }
+    }, prepared.assignment));
+    const next = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'successor') };
+    const ledger = new Ledger(next.stateDirectory);
+    ctx.additionalLedgers.push(ledger);
+    const authorization = {
+      ...ctx.authorization, scope: 'until-native-validation',
+      priorAuthorizationSha256: hash(json(ctx.authorization)),
+      previousAttemptId: prepared.job.session_id, nextConfigSha256: hash(json(next))
+    };
+    if (condition === 'unlinked-grant') authorization.priorAuthorizationSha256 = 'f'.repeat(64);
+    if (condition === 'missing-scope') delete authorization.scope;
+    if (condition === 'valid') {
+      await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id, next, ledger, authorization);
+      assert.deepEqual(await claimAuthoringToolWorkspace(next, ledger, id), isolated);
+      assert.equal(ctx.ledger.job(id).state, 'blocked');
+      assert.equal(ctx.nextLedger.job(id).state, 'blocked');
+    } else await assert.rejects(prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id,
+      next, ledger, authorization), /must follow the blocked/);
+  });
+}
+
+test('tool recovery preserves read-only terminal receipts and claims one unchanged checkout', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  const before = ctx.ledger.job(id);
+  const prepared = await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.equal(prepared.assignment.bounds.maxToolCalls, 180);
+  assert.equal(prepared.assignment.id, id);
+  assert.deepEqual(await claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), ctx.isolated);
+  assert.deepEqual(ctx.ledger.job(id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id), /already consumed/);
+  await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /already reserved/);
+});
+
+test('tool recovery verifies the previously consumed runtime workspace lineage', async t => {
+  const ctx = await runtimeFixture(t), id = ctx.prepared.job.id;
+  const runtime = await prepareRuntimeContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  const isolated = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, id);
+  ctx.nextLedger.moveJob(id, 'prepared', 'running', isolated);
+  ctx.nextLedger.moveJob(id, 'running', 'blocked');
+  ctx.nextLedger.put(toolBlockedResult({
+    ...structuredClone(ctx.result), id: 'read-only-tool-result',
+    attemptId: runtime.job.session_id, reportedAt: now()
+  }, runtime.assignment));
+  const destination = { ...structuredClone(ctx.nextConfig), stateDirectory: join(ctx.root, 'tools') };
+  const ledger = new Ledger(destination.stateDirectory);
+  ctx.additionalLedgers.push(ledger);
+  const authorization = { ...ctx.authorization, kind: 'bounded-authoring-tool',
+    authorizedAt: now(), previousAttemptId: runtime.job.session_id,
+    nextConfigSha256: hash(json(destination)) };
+  await prepareAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id,
+    destination, ledger, authorization);
+  assert.deepEqual(await claimAuthoringToolWorkspace(destination, ledger, id), isolated);
+});
+
+for (const condition of ['authorization', 'old-authorization', 'attempt', 'controller', 'bounds',
+  'source-permission', 'workspace', 'publication', 'claim-drift']) {
+  test(`tool recovery refuses ${condition}`, async t => {
+    const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+    if (condition === 'authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'attempt') ctx.authorization.previousAttemptId = 'unrelated-attempt';
+    if (condition === 'controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'bounds') delete ctx.authorization.executionBounds;
+    if (condition === 'source-permission') ctx.nextConfig.repositories[0].routingApproved = false;
+    if (condition === 'workspace') writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'bad');
+    if (condition === 'publication') ctx.ledger.operation('unexpected-push', id, 'push', {});
+    if (condition === 'claim-drift') {
+      await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+      await assert.rejects(claimAuthoringToolWorkspace(ctx.nextConfig, ctx.nextLedger, id),
+        error => error.code === 'blocked-reconciliation');
+    } else {
+      await assert.rejects(prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+        ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+      error => ['blocked-authorization', 'blocked-reconciliation'].includes(error.code));
+      assert.equal(ctx.nextLedger.status().jobs.length, 0);
+    }
+    assert.equal(ctx.ledger.job(id).state, 'blocked');
+  });
+}
+
+test('tool recovery cannot use ordinary dispatch or bypass synthetic source guards', async t => {
+  const ctx = await toolFixture(t), id = ctx.prepared.job.id;
+  await prepareAuthoringToolContinuation(ctx.config, ctx.ledger, id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, id),
+    /tool continuation requires its explicit/);
+  await assert.rejects(dispatchAuthoringToolContinuation(ctx.nextConfig, ctx.nextLedger, id),
+    /Synthetic evidence cannot launch/);
+});
+
+test('runtime continuation reuses the unchanged task checkout once and preserves terminal receipts', async t => {
+  const ctx = await runtimeFixture(t);
+  const before = ctx.ledger.job(ctx.prepared.job.id);
+  const continued = await prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  assert.deepEqual(ctx.ledger.get('workerResult', ctx.result.id), ctx.result);
+  assert.notEqual(continued.job.session_id, before.session_id);
+  assert.deepEqual(continued.assignment, ctx.prepared.assignment);
+  assert.deepEqual(ctx.nextLedger.get('evidence', ctx.prepared.evidence.id), ctx.prepared.evidence);
+  assert.equal(ctx.nextLedger.all('workerResult').length, 0);
+  const reused = await claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id);
+  assert.deepEqual(reused, ctx.isolated);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'claimed');
+  assert.equal(ctx.ledger.status().operations[0].state, 'claimed');
+  assert.deepEqual(ctx.ledger.job(before.id), before);
+  await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, before.id),
+    /absent or already consumed/);
+  await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, before.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization), /Prior operations/);
+});
+
+for (const condition of ['missing-authorization', 'old-authorization', 'wrong-attempt',
+  'wrong-controller', 'config-drift', 'launcher-drift', 'smoke-drift', 'model-started',
+  'validation-started', 'remote-validation', 'publication-started', 'dirty-workspace',
+  'source-drift', 'superseded-evidence', 'other-runtime-error', 'smoke-used-model',
+  'binary-not-smoked']) {
+  test(`runtime continuation refuses ${condition}`, async t => {
+    const ctx = await runtimeFixture(t, result => {
+      if (condition === 'model-started') result.toolUsage.used = 1;
+      if (condition === 'validation-started') result.validationAttempts.push({
+        round: 0, sourceRevision: result.sourceRevision, validation: [{
+          gateId: 'fixture-test', sourceRevision: result.sourceRevision,
+          commandOrRunUrl: 'synthetic command', status: 'blocked', artifactRefs: [],
+          owner: 'fixture-owner', nextCheckAt: null, attemptCount: 1,
+          blockedReason: 'runner-unavailable'
+        }]
+      });
+      if (condition === 'remote-validation') result.remoteValidation.push({
+        id: 'synthetic-build', provider: 'ado', definitionId: 1, buildId: 1,
+        url: 'https://example.invalid/build/1', status: 'queued',
+        sourceRevision: result.sourceRevision, sourceRef: 'refs/heads/synthetic',
+        queuedAt: now(), blocking: false
+      });
+    }, condition === 'other-runtime-error'
+      ? { code: 'blocked-runtime', message: 'Unrelated runtime error' } : undefined);
+    if (condition === 'missing-authorization') ctx.authorization.approved = false;
+    if (condition === 'old-authorization') ctx.authorization.authorizedAt = '2000-01-01T00:00:00Z';
+    if (condition === 'wrong-attempt') ctx.authorization.previousAttemptId = 'wrong-attempt';
+    if (condition === 'wrong-controller') ctx.authorization.controllerRevision = 'f'.repeat(40);
+    if (condition === 'config-drift') ctx.nextConfig.limits.workerMaxToolCalls++;
+    if (condition === 'launcher-drift') ctx.authorization.cliSha256 = 'f'.repeat(64);
+    if (condition === 'smoke-drift') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (['smoke-used-model', 'binary-not-smoked'].includes(condition)) {
+      const proof = JSON.parse(readFileSync(ctx.authorization.runtimeSmoke.path));
+      if (condition === 'smoke-used-model') proof.modelInvoked = true;
+      else proof.cliSha256 = 'f'.repeat(64);
+      writeFileSync(ctx.authorization.runtimeSmoke.path, json(proof));
+      ctx.authorization.runtimeSmoke.sha256 = hash(readFileSync(ctx.authorization.runtimeSmoke.path));
+    }
+    if (condition === 'publication-started')
+      ctx.ledger.operation('synthetic-push', ctx.prepared.job.id, 'push', {});
+    if (condition === 'dirty-workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'source-drift')
+      await command('git', ['-c', 'core.hooksPath=', '-c', 'user.name=Fixture',
+        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+        '--quiet', '-m', 'Advance fixture source'], ctx.config.repositories[0].referenceCheckout);
+    if (condition === 'superseded-evidence') {
+      const evidence = structuredClone(ctx.prepared.evidence);
+      evidence.source.revision = 'superseded-fixture';
+      evidence.queriedAt = '2099-01-01T00:00:00Z';
+      ctx.ledger.evidence(evidence, { changed: true }, 'changed-fixture');
+    }
+    await assert.rejects(prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization),
+    error => ['blocked-authorization', 'blocked-reconciliation', 'invalid-record'].includes(error.code));
+    assert.equal(ctx.ledger.job(ctx.prepared.job.id).state, 'blocked');
+    assert.equal(ctx.nextLedger.status().jobs.length, 0);
+  });
+}
+
+for (const condition of ['config', 'smoke', 'workspace', 'predecessor-result', 'prior-operation']) {
+  test(`runtime claim rechecks ${condition} after preparation`, async t => {
+    const ctx = await runtimeFixture(t);
+    await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+      ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+    if (condition === 'config') ctx.nextConfig.runtime.timeoutMs++;
+    if (condition === 'smoke') writeFileSync(ctx.authorization.runtimeSmoke.path, '{}');
+    if (condition === 'workspace')
+      writeFileSync(join(ctx.isolated.workspace, 'src', 'value.js'), 'modified\n');
+    if (condition === 'predecessor-result')
+      ctx.ledger.put({ ...ctx.result, id: 'unexpected-second-result' });
+    if (condition === 'prior-operation')
+      ctx.ledger.operation('unexpected-push', ctx.prepared.job.id, 'push', {});
+    await assert.rejects(claimRuntimeWorkspace(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+      error => error.code === 'blocked-reconciliation');
+    assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+  });
+}
+
+test('runtime continuation cannot use ordinary dispatch or bypass synthetic-evidence protection', async t => {
+  const ctx = await runtimeFixture(t);
+  await prepareRuntimeContinuation(ctx.config, ctx.ledger, ctx.prepared.job.id,
+    ctx.nextConfig, ctx.nextLedger, ctx.authorization);
+  ctx.nextConfig.activation.dispatch = true;
+  await assert.rejects(dispatch(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /runtime continuation requires its explicit/);
+  await assert.rejects(dispatchRuntimeContinuation(ctx.nextConfig, ctx.nextLedger, ctx.prepared.job.id),
+    /Synthetic evidence cannot launch/);
+  assert.equal(ctx.nextLedger.status().operations[0].state, 'prepared');
+});
 
 test('authorized pre-model continuation preserves the blocked attempt and reserves exactly one fresh preparation', async t => {
   const ctx = await blockedPreModelFixture(t);
@@ -2153,6 +2883,11 @@ test('Agency remote authoring imports only the remote diff into the local repair
       },
       agencyRemote: {
         getToken: async () => 'synthetic-token',
+        pushBranch: async (currentConfig, workspace, repo, refspec, admission) => {
+          assert.match(refspec, /^[a-f0-9]{40}:refs\/heads\/pilot-agency-base\//);
+          assert.equal(admission.ledger, ledger);
+          await pushDraftBranch(currentConfig, workspace, repo, refspec, admission);
+        },
         executeRemoteJob: async (currentConfig, currentLedger, current, repo,
           provider, input) => {
           assert.equal(validationPrepared, true);

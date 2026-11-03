@@ -4,6 +4,7 @@ import { resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import { hash } from './hash.js';
+import { configureDeclarativeGate } from './declarative-e2e.js';
 import { failureDetails } from './failure-details.js';
 
 export class PilotError extends Error {
@@ -126,6 +127,35 @@ function repositoryRelativePath(value, label) {
   requireThat(parts.every(part => part && part !== '.' && part !== '..'),
     `${label} must not escape its repository`);
   return parts.join('/');
+}
+export function externalSkillBundle(binding) {
+  if (binding.externalBundle === undefined) return null;
+  const bundle = binding.externalBundle;
+  validateRecord(bundle, 'externalSkillBundle');
+  requireThat(isAbsolute(bundle.root), 'External skill bundle root must be absolute');
+  const path = value => {
+    const normalized = repositoryRelativePath(value, 'External skill bundle path');
+    requireThat(normalized === value && !/[?[\]\r\n]/.test(value) &&
+      value.split('/').every(part => !/[. ]$/.test(part)),
+    'External skill bundle paths must be canonical slash-separated paths', 'blocked-scope');
+    return normalized;
+  };
+  requireThat(path(bundle.source.path) === binding.skillPath,
+    'External skill source path must match skillPath', 'blocked-scope');
+  let remote;
+  try { remote = new URL(bundle.source.remote); } catch {}
+  requireThat(remote?.protocol === 'https:' && !remote.username && !remote.password &&
+    !remote.search && !remote.hash, 'External skill provenance requires a credential-free HTTPS remote');
+  const files = bundle.files.map(file => ({ path: path(file.path), sha256: file.sha256 }))
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  requireThat(new Set(files.map(file => file.path.toLowerCase())).size === files.length &&
+    files.some(file => file.path === bundle.source.path),
+  'External skill bundle needs unique files including its source path');
+  return {
+    root: resolve(bundle.root),
+    source: { remote: bundle.source.remote, revision: bundle.source.revision, path: bundle.source.path },
+    files
+  };
 }
 export function configAt(path) {
   const config = readJson(path);
@@ -336,14 +366,26 @@ export function configAt(path) {
       requireThat(binding.authoringProvider === 'copilot-sdk' ||
         Object.hasOwn(config.authoringProviders, binding.authoringProvider),
       `Repository ${repo.id} skill binding ${binding.id} references an unknown authoring provider`);
+      if (binding.externalBundle !== undefined) {
+        requireThat(typeof binding.externalBundle?.root === 'string',
+          'External skill bundle root is required');
+        if (!isAbsolute(binding.externalBundle.root))
+          binding.externalBundle.root = boundedPath(dirname(resolve(path)), binding.externalBundle.root);
+        binding.externalBundle = externalSkillBundle(binding);
+        requireThat(repo.execution === 'local' &&
+          config.authoringProviders?.[binding.authoringProvider]?.type !== 'agency-remote',
+        'External skill bundles require local execution and a local authoring provider');
+      }
     }
     for (const gate of repo.validationGates ?? []) {
+      const builtInProfile = gate.profile !== undefined;
+      configureDeclarativeGate(gate, path);
       validationPackageAuth(gate);
       validationLfsPaths(gate);
       requireThat(Boolean(gate.profilePath) === Boolean(gate.profileSha256),
         `Repository ${repo.id} validation gate ${gate.id} must bind profilePath and profileSha256 together`);
       if (!gate.profilePath) continue;
-      requireThat(!isAbsolute(gate.profilePath) &&
+      requireThat((builtInProfile || !isAbsolute(gate.profilePath)) &&
         /^[a-f0-9]{64}$/.test(gate.profileSha256 ?? ''),
       `Repository ${repo.id} validation gate ${gate.id} needs a relative profilePath and profileSha256`);
       const profilePath = resolve(dirname(resolve(path)), gate.profilePath);
@@ -352,6 +394,24 @@ export function configAt(path) {
       requireThat(hash(readFileSync(profilePath)) === gate.profileSha256,
         `Repository ${repo.id} validation gate ${gate.id} profile hash mismatch`);
       gate.profilePath = profilePath;
+    }
+    if (repo.commitTrailers !== undefined)
+      requireThat(Array.isArray(repo.commitTrailers) &&
+        repo.commitTrailers.every(trailer => typeof trailer === 'string' &&
+          /^[A-Za-z][A-Za-z-]+: [^\r\n\0]+$/.test(trailer)),
+      `Repository ${repo.id} commitTrailers must contain single-line Git trailers`);
+    if (repo.remoteValidation !== undefined) {
+      const selection = repo.remoteValidation;
+      requireThat(selection?.type === 'agency-remote' &&
+        Object.keys(selection).every(key => ['type', 'contractPath', 'contractSha256'].includes(key)) &&
+        typeof selection.contractPath === 'string' && !isAbsolute(selection.contractPath) &&
+        /^[a-f0-9]{64}$/.test(selection.contractSha256 ?? ''),
+      `Repository ${repo.id} remote validation requires a relative, hash-pinned private contract`);
+      selection.contractPath = resolve(dirname(resolve(path)), selection.contractPath);
+      requireThat(lstatSync(selection.contractPath).isFile() &&
+        !lstatSync(selection.contractPath).isSymbolicLink() &&
+        hash(readFileSync(selection.contractPath)) === selection.contractSha256,
+      `Repository ${repo.id} remote validation contract is missing or changed`);
     }
   }
   if (config.repositories.some(repo => repo.skillBindings?.some(binding =>
@@ -370,6 +430,9 @@ export function collectionPreflight(config) {
   positive(config.limits.maxItems, 'maxItems'); positive(config.limits.maxCalls, 'maxCalls');
 }
 export function modelPreflight(config) {
+  requireThat(config.runtime?.authoringModel === undefined ||
+    (typeof config.runtime.authoringModel === 'string' && config.runtime.authoringModel.trim().length > 0),
+  'Configured authoring model must be a nonempty model identifier');
   requireThat(Number.isFinite(config.limits.maxAiCreditsPerSession) && config.limits.maxAiCreditsPerSession > 0,
     'A positive per-session AI credit ceiling must be approved before model execution');
 }

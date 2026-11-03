@@ -313,7 +313,7 @@ function sourceRequestContext(input) {
   if (input.offset === null || Number.isSafeInteger(input.offset)) context.offset = input.offset;
   return context;
 }
-function sourcePage(input, revision, text, ceiling, pageLimit = 12288) {
+export function sourcePage(input, revision, text, ceiling, pageLimit = 12288) {
   const bytes = Buffer.from(text), offset = input.offset ?? 0;
   requireThat(Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length &&
     (offset === bytes.length || (bytes[offset] & 0xc0) !== 0x80),

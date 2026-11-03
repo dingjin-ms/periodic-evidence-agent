@@ -6,7 +6,7 @@ import { persistReviewedInvestigation } from './coordinator.js';
 import { requireCompleteExclusionReview, requireEligibleImprovementInvestigation } from './review-decisions.js';
 import { planImprovement } from './improvements.js';
 import { resolveSkillBinding, skillQualificationId } from './repository-skills.js';
-import { makePlannedImprovementAssignment, dispatchAdoTestRequest } from './workers.js';
+import { makePlannedImprovementAssignment, dispatchAdoTestRequest, requireCurrentAssignment } from './workers.js';
 import { withRsiWorker } from './rsi-flow.js';
 import { harnessPolicy, requireHarnessRequest, requireCoverageCapability } from './ado-harness-request.js';
 
@@ -118,18 +118,14 @@ export function selectedItem(item, id, policy) {
     fields: Object.fromEntries(sourceFields.filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]])) };
 }
 
-export function readTestRequest(config, id, dependencies = {}) {
-  return readRequest(config, id, dependencies, false);
-}
-export function readCurrentTestRequest(config, id, dependencies = {}) {
-  return readRequest(config, id, dependencies, true);
-}
-async function readRequest(config, id, { getToken = adoAccessToken, fetchResponse = fetch }, current) {
+const quote = value => `'${value.replaceAll("'", "''")}'`;
+const requestScope = policy => `[System.TeamProject] = ${quote(policy.project)} AND [System.AreaPath] UNDER ${quote(policy.areaPath)} AND [System.WorkItemType] IN (${policy.workItemTypes.map(quote).join(', ')}) AND [System.State] IN (${policy.states.map(quote).join(', ')}) AND [System.Tags] CONTAINS ${quote(policy.tag)}`;
+
+async function requestTransport(config, { getToken = adoAccessToken, fetchResponse = fetch } = {}) {
   const policy = testRequestPolicy(config);
-  requireThat(Number.isSafeInteger(id) && id > 0, 'Test-request ID must be a positive integer');
   const token = await getToken(config, 'ADO test-request read');
   const base = `https://dev.azure.com/${encodeURIComponent(policy.organization)}/${encodeURIComponent(policy.project)}/_apis/wit/`;
-  async function request(path, body) {
+  return async (path, body) => {
     const response = await fetchResponse(base + path, { method: body ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       ...(body ? { body: json(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(60000) });
@@ -143,9 +139,38 @@ async function readRequest(config, id, { getToken = adoAccessToken, fetchRespons
       chunks.push(chunk);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  }
-  const quote = value => `'${value.replaceAll("'", "''")}'`;
-  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = ${quote(policy.project)} AND [System.Id] = ${id} AND [System.AreaPath] UNDER ${quote(policy.areaPath)} AND [System.WorkItemType] IN (${policy.workItemTypes.map(quote).join(', ')}) AND [System.State] IN (${policy.states.map(quote).join(', ')}) AND [System.Tags] CONTAINS ${quote(policy.tag)}`;
+  };
+}
+
+export async function listTestRequests(config, dependencies = {}) {
+  const policy = testRequestPolicy(config), queue = policy.automation?.queue;
+  requireThat(queue?.enabled === true && queue.scopeApproved === true && queue.approvalRef?.trim() &&
+    Number.isSafeInteger(queue.maxItems) && queue.maxItems > 0 && queue.maxItems <= 20,
+  'Queue discovery needs explicit bounded approval', 'blocked-authorization');
+  requireThat(config.statePolicy?.accessApproved === true, 'Queue reads require approved state');
+  const request = await requestTransport(config, dependencies);
+  const result = await request(`wiql?$top=${queue.maxItems + 1}&api-version=7.1`, {
+    query: `SELECT [System.Id] FROM WorkItems WHERE ${requestScope(policy)} ORDER BY [System.Id] ASC`
+  });
+  utc(result.asOf);
+  requireThat(Array.isArray(result.workItems) && result.workItems.length <= queue.maxItems &&
+    result.workItems.every(item => Number.isSafeInteger(item.id) && item.id > 0) &&
+    new Set(result.workItems.map(item => item.id)).size === result.workItems.length,
+  'Request queue is incomplete, malformed or exceeds its bound; no items dispatched', 'partial');
+  return { ids: result.workItems.map(item => item.id), snapshotAt: result.asOf };
+}
+
+export function readTestRequest(config, id, dependencies = {}) {
+  return readRequest(config, id, dependencies, false);
+}
+export function readCurrentTestRequest(config, id, dependencies = {}) {
+  return readRequest(config, id, dependencies, true);
+}
+async function readRequest(config, id, dependencies, current) {
+  const policy = testRequestPolicy(config);
+  requireThat(Number.isSafeInteger(id) && id > 0, 'Test-request ID must be a positive integer');
+  const request = await requestTransport(config, dependencies);
+  const query = `SELECT [System.Id] FROM WorkItems WHERE ${requestScope(policy)} AND [System.Id] = ${id}`;
   const candidates = await request('wiql?api-version=7.1', { query });
   utc(candidates.asOf);
   requireThat(candidates.workItems?.length === 1 && candidates.workItems[0].id === id,
@@ -349,12 +374,54 @@ function prepareRequest(config, ledger, input, harness = false) {
   });
 }
 
+export function neverDispatchedTestRequest(ledger, id) {
+  const job = ledger.job(id);
+  return job?.state === 'prepared' && !job.workspace && !job.base_revision &&
+    !ledger.status().operations.some(row => row.job_id === id &&
+      !['ado-test-request-review', 'ado-test-request-publication-grants'].includes(row.kind));
+}
+
+export function effectiveTestRequestAssignment(ledger, assignment) {
+  const row = ledger.status().operations.find(row => row.id === assignment.id + ':publication-grants');
+  if (!row) return assignment;
+  const receipt = JSON.parse(row.detail);
+  requireThat(row.kind === 'ado-test-request-publication-grants' && row.state === 'complete' &&
+    receipt.assignmentSha256 === hash(json(assignment)), 'Publication grant receipt changed', 'blocked-reconciliation');
+  return { ...assignment, publicationGrants: receipt.publicationGrants };
+}
+
+function reconcilePreparedPublicationGrants(config, ledger, assignment) {
+  const owner = ledger.acquire('dispatch:' + assignment.id);
+  try {
+    ledger.transaction(() => {
+      const investigation = ledger.get('investigation', assignment.investigationId);
+      const rebuilt = makePlannedImprovementAssignment(config, ledger, investigation,
+        assignment.testCoveragePlanId, assignment.requestedOutcome, assignment.testCoveragePlanVersion);
+      const effective = effectiveTestRequestAssignment(ledger, assignment);
+      if (json(rebuilt) !== json(effective)) {
+        requireThat(['commit', 'push', 'createDraftPR'].every(key =>
+          typeof assignment.publicationGrants?.[key] === 'boolean' && rebuilt.publicationGrants?.[key] === true),
+        'Only captured prepared publication grants can be authorized', 'blocked-authorization');
+        requireThat(json({ ...rebuilt, publicationGrants: assignment.publicationGrants }) === json(assignment),
+          'Prepared assignment substantive pins changed', 'blocked-reconciliation');
+        requireThat(neverDispatchedTestRequest(ledger, assignment.id),
+          'Publication grants cannot change after dispatch', 'blocked-reconciliation');
+        const id = assignment.id + ':publication-grants';
+        ledger.operation(id, assignment.id, 'ado-test-request-publication-grants', {});
+        ledger.finishOperation(id, 'complete', { assignmentSha256: hash(json(assignment)),
+          publicationGrants: structuredClone(rebuilt.publicationGrants) });
+      }
+      requireCurrentAssignment(config, ledger, investigation, assignment);
+    });
+  } finally { ledger.release('dispatch:' + assignment.id, owner); }
+}
+
 export function requireTestRequestPublication(config, ledger, assignment, action) {
   if (!assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request')) return;
   requireTestRequestAssignment(config, ledger, assignment);
   const grant = { commit: 'commit', push: 'push', build: 'push', draft: 'createDraftPR' }[action];
   const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability, assignment.skillBindingId);
-  requireThat(grant && assignment.publicationGrants?.[grant] === true && binding.sideEffects[grant] === true,
+  requireThat(grant && effectiveTestRequestAssignment(ledger, assignment).publicationGrants?.[grant] === true && binding.sideEffects[grant] === true,
     `Test-request repository binding does not authorize ${action}`, 'blocked-authorization');
 }
 
@@ -376,7 +443,7 @@ export async function verifyCurrentTestRequest(config, ledger, id, read = readCu
 
 export async function acceptTestRequest(config, ledger, input, {
   execute = false, authorizeCommit = false, authorizePush = false, authorizeDraftPR = false,
-  read = readCurrentTestRequest, dispatchDependencies = {}
+  read = readCurrentTestRequest, dispatchDependencies = {}, beforeDispatch = () => {}
 } = {}) {
   if (execute) {
     requireThat(authorizeCommit && authorizePush && authorizeDraftPR,
@@ -389,6 +456,8 @@ export async function acceptTestRequest(config, ledger, input, {
   }
   const prepared = prepareTestRequest(config, ledger, input);
   if (!execute) return prepared;
+  reconcilePreparedPublicationGrants(config, ledger, prepared.assignment);
+  beforeDispatch();
   const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
     () => dispatchAdoTestRequest(config, ledger, prepared.assignment.id,
       { ...dispatchDependencies, readTestRequest: read }),

@@ -1,8 +1,8 @@
 ## Crew-authored ADO test requests
 
-This is an opt-in **explicit-ID intake and reviewed handoff**, not an automatic
-queue watcher. The existing resolved Fixed/Duplicate bug collector, FILTER
-cohort and daily deployment remain unchanged. Request evidence has its own
+This opt-in lane supports explicit-ID intake and **system-owned review/delivery
+passes**, plus bounded queue discovery. The existing resolved Fixed/Duplicate
+bug collector, FILTER cohort and daily deployment remain unchanged. Request evidence has its own
 `ado-test-request` kind and namespace; it is not relabeled as a resolved bug,
 confirmed defect or synthetic reviewed-handoff fixture.
 
@@ -122,7 +122,68 @@ idempotent; completed/uncertain workers are not relaunched. Updates after review
 require explicit reconciliation, not automatic second PRs. Configuring RSI
 continues using the existing outcome-capture gates.
 
-### Scope of this increment
+### System-owned execution
+
+`run-test-request` replaces an operator-authored handoff with a bounded live SDK
+FILTER session. It reads the real request, reads only pinned source, records the
+capability decision, and passes an eligible model-authored plan directly to the
+existing planner/PROPOSER/native-validation/Draft-PR gates. The model has no shell,
+source mutation, browser or publication tool. Review success alone cannot publish.
+
+```powershell
+node src/cli.js run-test-request --id 123 --authorize-review --authorize-comment --config request.local.json
+node src/cli.js run-test-request --id 123 --authorize-review --execute --authorize-commit --authorize-push --authorize-draft-pr --authorize-comment --config request.local.json
+node src/cli.js run-test-request-queue --authorize-review --authorize-comment --config request.local.json
+```
+
+The first command reviews and prepares eligible work without dispatch. The second
+allows existing independently approved publication gates. Held requests post the
+source-bound reason; validated coverage results post their actual Draft PR URL.
+The queue command is one finite tick, not a background service; it uses the same
+flags for execution. It queries only the approved area/type/state/tag and fails
+closed on overflow instead of silently processing a truncated queue. Configure a
+separately approved scheduler to invoke ticks; no shared daily deployment changes
+or service installation are made by these commands.
+
+Required `adoTestRequests.automation` fields are `enabled`, `scopeApproved`,
+`approvalRef`, `model`, `maxRequests` (1..20), and `sourcePaths` (bounded committed
+files/directories). Optional `environmentEvidence` contains bounded operator
+observations, never authority. Queue discovery additionally requires `queue` with
+`enabled`, `scopeApproved`, `approvalRef`, and `maxItems` (1..20). Use the existing
+approved standalone `localFilter` limits/source pins and credit-policy acceptance;
+its source revision must match repository qualification. Feedback needs its
+independent policy; publication needs normal repository/dispatch grants.
+
+Set `automation.requireSupportMatrix: true` to require a fully read skill entry
+and a per-requirement `support` result. Its `skill` state is `supported`,
+`unsupported`, or `unknown`; its separate `environment` state is `ready`, `blocked`,
+or `unknown`. Each requirement cites completely delivered pinned files. Schema
+expressibility, registered native actions/verifiers, lifecycle registration and
+skill write bounds all matter. Missing runtime access is not a missing assertion.
+A blocked environment cannot dispatch even when every business assertion is
+supported. Revise sample requirements only with user authorization; never drop an
+assertion merely to turn a blocked run green. Recollect the changed ADO revision.
+
+Source requests may execute concurrently. Each receives its own immutable call ID
+before awaiting Git, and finish waits for all outstanding reads; receipt collisions
+must never make a successfully delivered source appear unreadable. Source errors
+are retained separately from successful read receipts.
+
+Each request holds a ledger lock. Started/interrupted model or dispatch attempts
+are never automatically retried. Completed receipts are replayed. ADO feedback
+increments work-item revision: unchanged selected fields can reuse a completed
+feedback/result receipt, but never authorize new work from an old review. Changed
+request content or source pins require fresh review or explicit reconciliation.
+Failed or uncertain feedback retains the existing no-blind-repost gate.
+
+Known limits: incomplete templates currently return missing fields in the command
+result; automatic clarification comments and automatic harness implementation are
+not provided by this command. A `needs-harness` result uses the separately reviewed
+harness-request lane. A blocked live environment remains blocked, not a validated
+coverage claim. Autonomous successful product qualification and a durable watcher
+must be demonstrated separately before calling the full self-service system live.
+
+### Scope of the low-level handoff commands
 
 The CLI returns clarification fields, prepared assignment IDs and normal worker
 results/PR links. The opt-in [harness-support lane](ADO-HARNESS-REQUESTS.md) adds

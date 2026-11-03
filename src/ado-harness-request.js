@@ -130,7 +130,11 @@ export function requireHarnessRequest(config, ledger, receipt) {
 const escapeHtml = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 export function capabilityComment(assessment) {
-  requireThat(assessment.decision === 'needs-harness', 'Only proven harness gaps may publish unsupported notices');
+  requireThat(['needs-harness', 'needs-evidence', 'blocked-environment'].includes(assessment.decision),
+    'Only held capability decisions may publish hold notices');
+  if (assessment.decision !== 'needs-harness') return `<p>The agentic system is holding this test request: ${escapeHtml(assessment.decision)}.</p>` +
+    `<p>${escapeHtml(assessment.rationale)}</p><p>No coverage PR was published. Business assertions and access controls remain unchanged.</p>` +
+    `<p>Reviewed harness revision: ${assessment.sourceRevision}. Receipt: ${assessment.id}.</p>`;
   return `<p>This E2E case is not yet supported by the test harness. This is not a claim that the product functionality is unsupported.</p>` +
     `<ul>${assessment.missingCapabilities.map(gap => `<li>${escapeHtml(gap)}</li>`).join('')}</ul>` +
     `<p>No coverage PR will be proposed while this gap remains. Add <code>${harnessRequestTag}</code> to request the agentic system to author a separate harness-support Draft PR with validation tests. After integration and verification, the original case will be reassessed for coverage.</p>` +
@@ -245,8 +249,22 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
   const evidence = ledger.get('evidence', receipt.evidenceId);
   requireThat(currentCapabilityAssessment(ledger, evidence)?.id === assessmentId &&
     receipt.policySha256 === testRequestPolicySha256(policy), 'Capability feedback was superseded', 'blocked-reconciliation');
-  let text = capabilityComment(assessment);
-  if (assignmentId) {
+  let text;
+  if (assessment.decision === 'supported') {
+    requireThat(assignmentId, 'Supported feedback requires a validated coverage assignment');
+    const assignment = ledger.get('assignment', assignmentId);
+    const result = ledger.all('workerResult').find(value => value.assignmentId === assignmentId &&
+      value.outcome === 'draft-pr-validated' && value.draftPR?.isDraft === true &&
+      value.draftPR.headRevision === value.sourceRevision);
+    requireThat(assignment?.capability === policy.capability && assignment.evidenceIds.length === 1 &&
+      assignment.evidenceIds[0] === evidence.id && result,
+    'Coverage feedback requires its exact source-bound validated Draft PR', 'blocked-reconciliation');
+    const url = new URL(result.draftPR.url);
+    requireThat(url.protocol === 'https:' && !url.username && !url.password, 'Unsafe coverage PR URL');
+    text = `<p>The agentic system produced a validated coverage Draft PR: ${escapeHtml(url.href)}.</p>` +
+      `<p>Human acceptance is required. Receipt: ${assessmentId}.</p>`;
+  } else text = capabilityComment(assessment);
+  if (assignmentId && assessment.decision !== 'supported') {
     const { assignment, result } = validatedHarnessResult(ledger, assignmentId);
     const harnessReceipt = testRequestReceipt(ledger, ledger.get('evidence', assignment.evidenceIds[0]).scopeId);
     const associationRow = operation(ledger, `harness-feedback-association-${hash(json([assignmentId, assessmentId]))}`);
@@ -258,7 +276,8 @@ export async function publishCapabilityComment(config, ledger, assessmentId, {
       `<p>Coverage remains held pending human review, integration and harness qualification. Receipt: ${assessmentId}.</p>`;
   }
   const id = `test-request-comment-${hash(json([assessment.key, evidence.source.revision,
-    assessment.sourceRevision, [...assessment.missingCapabilities].sort(), assignmentId]))}`;
+    assessment.sourceRevision, [...assessment.missingCapabilities].sort(), assignmentId,
+    ...(assessment.decision === 'needs-harness' ? [] : [assessment.decision, assessment.rationale])]))}`;
   const previous = operation(ledger, id);
   if (previous?.state === 'complete') return JSON.parse(previous.detail);
   requireNoUncertainFeedback(ledger, assessment.key);

@@ -210,6 +210,19 @@ allocation or dispatch: their AL model-pin/deadline parity is not qualified.
 Do not remove this guard. The merged skill adds no model, provider, remote
 execution, write-scope or publication authority.
 
+An independent, explicit qualification route is available through
+`node scripts\augloop.mjs agency-request <private-request.json>`. It does not
+change or bypass the Proposer guard. It builds one source-bound Agency request
+that embeds the pretested `augloop-agency-runner.mjs` and Node preload by exact
+SHA-256. The remote model invokes the native skill, authors and commits the
+candidate, then calls the staged runner in the same product workspace. The
+runner retains all 16 Excel-first native gates, nonzero populations, process
+drain, the 30-credit/one-session model contract, at most two product repairs,
+and the 90/180-minute deadlines. A controller repair is untracked, separately
+hashed and never part of the product candidate. This route remains unqualified
+until a fresh downloaded result passes independent controller verification;
+offline tests or a successful job alone do not enable it generally.
+
 ### Rebind the native profile correctly
 
 `profilePath` is relative to the private input configuration, not the product

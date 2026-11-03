@@ -5,15 +5,17 @@ import { pinnedInput, runAlWorkflow } from '../src/al-workflow.js';
 import { discoverAlCapabilities } from '../src/al-capabilities.js';
 import { runAlRecurring } from '../src/al-recurring.js';
 import { configAt, requireThat } from '../src/common.js';
+import { createAlAgencyLiveE2eRequest } from '../src/al-agency-controller.js';
 
 const [operation, requestPath, ...extra] = process.argv.slice(2);
-if (!['qualify', 'replay', 'collect', 'batch', 'filter', 'reconcile', 'prepare', 'propose', 'continue',
+if (!['qualify', 'replay', 'collect', 'batch', 'filter', 'reconcile', 'prepare', 'propose', 'continue', 'agency-request',
   'capabilities', 'cycle'].includes(operation) ||
     !requestPath || extra.length)
-  throw Error('Usage: node scripts\\augloop.mjs qualify|replay|collect|batch|filter|reconcile|prepare|propose|continue|capabilities|cycle <private-request.json>');
+  throw Error('Usage: node scripts\\augloop.mjs qualify|replay|collect|batch|filter|reconcile|prepare|propose|continue|agency-request|capabilities|cycle <private-request.json>');
 const request = JSON.parse(readFileSync(requestPath, 'utf8').replace(/^\uFEFF/, ''));
 let result;
-if (operation === 'capabilities') {
+if (operation === 'agency-request') result = createAlAgencyLiveE2eRequest(request);
+else if (operation === 'capabilities') {
   requireThat(isAbsolute(request.runDirectory) && !existsSync(request.runDirectory),
     'Capability discovery needs a fresh absolute receipt directory');
   mkdirSync(request.runDirectory, { recursive: true });

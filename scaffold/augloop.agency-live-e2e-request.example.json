@@ -1,0 +1,14 @@
+{
+  "schema": "pea-al-agency-live-e2e-request-v1",
+  "baseRevision": "REPLACE_WITH_APPROVED_40_CHARACTER_REVISION",
+  "peaRevision": "REPLACE_WITH_TESTED_40_CHARACTER_PEA_REVISION",
+  "runnerPath": "REPLACE_WITH_ABSOLUTE_PEA_PATH\\scripts\\validation\\augloop-agency-runner.mjs",
+  "preloadPath": "REPLACE_WITH_ABSOLUTE_PEA_PATH\\scripts\\validation\\augloop-agency-node-preload.cjs",
+  "skillSha256": "REPLACE_WITH_APPROVED_PRODUCT_SKILL_SHA256",
+  "organization": "office",
+  "project": "ISS",
+  "repository": "augloop-workflows",
+  "branch": "feature/REPLACE_WITH_APPROVED_ALIAS/al-agency-base",
+  "pipelineId": 38919,
+  "pipelineRef": "refs/heads/feature/REPLACE_WITH_APPROVED_ALIAS/al-agency-base"
+}

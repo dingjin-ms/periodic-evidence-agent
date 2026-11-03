@@ -1,3 +1,6 @@
 src/filter-capture-verifier.js -text whitespace=trailing-space,space-before-tab,cr-at-eol
 e2e-evidence/** -text
 scripts/validation/1js-sdx-excel-integration.ps1 text eol=lf
+scaffold/augloop.agency-live-e2e-request.example.json text eol=lf
+src/al-agency-controller.js text eol=lf
+test/al-agency-controller.test.js text eol=lf

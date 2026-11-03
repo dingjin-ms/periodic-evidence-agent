@@ -3,7 +3,8 @@ import { hash, readJson, requireThat, proposerExecutorFlight } from './common.js
 
 const root = new URL('../e2e-evidence/agency-remote/', import.meta.url);
 const modes = ['remote-authoring-local-validation', 'remote-validation',
-  'remote-authoring-remote-validation', 'same-workspace-loop', 'live-business-e2e', 'hosted-executor'];
+  'remote-authoring-remote-validation', 'same-workspace-loop', 'live-business-e2e',
+  'native-product-validation', 'same-workspace-live-e2e', 'hosted-executor'];
 
 function matchesRepository(repo, record) {
   const actual = repo.pr, expected = record.repository;
@@ -78,6 +79,7 @@ export function remoteAgencyQualification(config) {
         const configured = mode === 'remote-authoring-local-validation' ? remoteAuthoring && !remoteValidation :
           mode === 'remote-validation' ? remoteValidation :
             mode === 'remote-authoring-remote-validation' ? remoteAuthoring && remoteValidation :
+            mode === 'native-product-validation' ? repo.nativeProductValidation?.type === 'agency-1js-native' :
             mode === 'hosted-executor' ? hosted : false;
         const evidence = evidenceFor(record, mode);
         return {

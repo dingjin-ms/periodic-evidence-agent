@@ -1,0 +1,111 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "1js-bizchat-excel-five-by-four-same-workspace-20261102",
+  "mode": "same-workspace-live-e2e",
+  "result": "passed-scoped",
+  "controllerAcceptance": true,
+  "observedAt": "2026-11-02T10:58:38.52Z",
+  "scope": "One official 1JS Agency workspace read the repository-native authoring skill, authored and committed a new L3 BizChat-to-Excel scenario, sealed a candidate bundle, authenticated with TRIPS FIC, executed the native real-product browser flow, and produced evidence independently accepted by the PEA controller.",
+  "controllerCommit": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+  "controllerTree": "0c8893cc10148678a43fd970d13409eb2c8b599c",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "Office",
+    "repositoryId": "49b0c9f4-555f-4624-8157-a57e6df513b3",
+    "repositoryName": "1JS"
+  },
+  "repoId": "1js",
+  "sourceBase": "22000241f771c99955eef8519e2dc27e1489c9ee",
+  "candidate": "5ca4963b32cbc1939099d5aa543cbf9e7d8f4db1",
+  "profile": "bizchat-excel-five-by-four-v1",
+  "scenario": "bizchat-create-excel-five-by-four",
+  "pipeline": {
+    "orchestratorDefinitionId": 37948,
+    "orchestratorRunId": 58677587,
+    "runnerDefinitionId": 35960,
+    "runnerRunId": 58679076
+  },
+  "jobId": "office-3f9070d3-4164-4890-837b-a81d1068f712",
+  "agent": "wxp-copilot-tester",
+  "authentication": {
+    "mechanism": "TRIPS FIC",
+    "status": "passed",
+    "attempts": 1,
+    "storageStateBytes": 76640
+  },
+  "authoring": {
+    "skillSha256": "162410208de157435b0b4553ba1718db5640f93be705bf99c5369abfb08f8f7a",
+    "scenarioSha256": "11f54e92f9afb705215a0499efe9a7f7d23d886b06bb05e4009ca46a376e8e86",
+    "bundleSha256": "0ee40aa0f95d2f47c9a5cf8eef6cda5e08899d26b5337c5a0b5db9068989420f",
+    "candidateParent": "22000241f771c99955eef8519e2dc27e1489c9ee",
+    "changedFiles": [
+      "ooui/apps/cross-office-client-e2e/failure-lifecycle/case-lifecycle-catalog.json",
+      "ooui/apps/cross-office-client-e2e/scenarios/bizchat-create-excel-five-by-four/scenario.yaml"
+    ]
+  },
+  "nativeResult": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "workbook": {
+    "fileName": "AgencyLive.xlsx",
+    "sha256": "e99cccb947f783a76779ce6818725c245180beb494ef4b5964c1f0ef2808f8c2",
+    "byteLength": 5557,
+    "worksheet": "AgencyLive",
+    "table": "AgencyLiveTable",
+    "range": "A1:D5",
+    "rowCount": 5,
+    "columnCount": 4,
+    "headerRowCount": 1,
+    "dataRowCount": 4,
+    "reader": "independent OpenXML ZIP/XML",
+    "readerStatus": "passed"
+  },
+  "controllerAcceptanceSha256": "140e5e5915cc380e35a4948a21384bdfde564b090b4c2102c488f3ebe0ab8b28",
+  "localCI": {
+    "package": "passed",
+    "pilot": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "e13abb4ce073ff45d74a5bfb5d870602c348b0af66680e5f42acc6069562761b",
+      "tests": 238,
+      "pass": 238,
+      "fail": 0,
+      "skipped": 0
+    },
+    "remaining": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "c3e623132ccbff04a0691a818d062173ea7833221cf45c6955767b57719661a2",
+      "tests": 1592,
+      "pass": 1591,
+      "fail": 0,
+      "skipped": 1
+    },
+    "demo": {
+      "sourceRevision": "c0da8ac0e72f08456813745cbd5659967eaa187b",
+      "summarySha256": "267503c4d8b9678e71c169313bafd1768c80afdc1a12b4e345089744db640c74",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "skipped": 0
+    },
+    "standaloneDemo": "synthetic-demo-passed",
+    "standaloneDemoSha256": "64eb45cf391a2b5f9acf6f48d5cee1dbb73b694b4226ab255405d99baf2372fa"
+  },
+  "privateEvidence": {
+    "ledger": "live-same-workspace-final/state/ledger.sqlite",
+    "controllerAcceptance": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/controller-acceptance.json",
+    "controllerAcceptanceLogSha256": "aea959c8d0ae6e14e579e16c5e94f7fe36596b464a3ade35550e3ffb0c05a88d",
+    "exactCiRoot": "pea-ci-exact-c0da8ac-audit",
+    "runnerArtifact": "live-same-workspace-final/state/agency-1js-live/23ec4ed45083bf05cf112db7/runner-artifact"
+  },
+  "limitations": [
+    "This qualifies only the recorded PEA controller, 1JS base, runner definition, authoring profile, Agency agent, TRIPS FIC configuration and BizChat-to-Excel scenario.",
+    "The product flow passed on its first execution; the product repair path was not exercised.",
+    "The controller was repaired locally to accept namespace-prefixed OpenXML and to revalidate an already terminal job after its polling deadline; these repairs did not rerun or alter the remote product execution.",
+    "No product PR was created or merged, no periodic task was enabled, and no local-browser fallback occurred.",
+    "The register is audit evidence only and does not enable remote dispatch without explicit configuration and qualification binding."
+  ]
+}

@@ -5,12 +5,19 @@ import { normalizeLoopRequest, runEvidenceLoop, loopOperation, loopStages, diges
 import { createNativeLoopAdapter } from './loop-native-adapter.js';
 import { createMailboxLoopAdapter } from './loop-mailbox-adapter.js';
 
-export async function loopMain(origin, argv = process.argv.slice(2)) {
+export function loadLoopRequest(origin, argv) {
   const option = name => argv[argv.indexOf(name) + 1];
   requireThat(argv.includes('--request'), 'An explicit --request file is required; no example/live defaults');
   const input = JSON.parse(readFileSync(option('--request'), 'utf8'));
   if (argv.includes('--occurrence')) input.occurrence = option('--occurrence');
   input.origin = origin;
+  normalizeLoopRequest(input);
+  return input;
+}
+
+export async function loopMain(origin, argv = process.argv.slice(2)) {
+  const option = name => argv[argv.indexOf(name) + 1];
+  const input = loadLoopRequest(origin, argv);
   const { pins, runId } = normalizeLoopRequest(input);
   const native = createNativeLoopAdapter(), mailbox = createMailboxLoopAdapter(native);
   const adapters = Object.fromEntries(loopStages.map(stage => [stage,

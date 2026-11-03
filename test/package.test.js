@@ -61,6 +61,19 @@ test('package check detects unsuitable historical contents removed from the curr
   assert.ok(report.findings.some(f => f.origin !== 'index' && f.rule === 'personal Microsoft email'));
 });
 
+test('analysis documentation is allowed but still scanned for sensitive content', t => {
+  const {root,git,inspect}=fixture(t);
+  mkdirSync(join(root,'docs'));
+  writeFileSync(join(root,'docs','rsi-analysis-only.md'),'Generic analysis contract');
+  git(['add','docs']);
+  assert.equal(inspect().status,0);
+  writeFileSync(join(root,'docs','rsi-analysis-only.md'),['fixture-person','microsoft.com'].join('@'));
+  git(['add','docs']);
+  const result=inspect();
+  assert.equal(result.status,1);
+  assert.ok(JSON.parse(result.stderr).findings.some(f=>f.rule==='personal Microsoft email'));
+});
+
 test('package check ignores history reachable only from unrelated refs', t => {
   const { root, git, inspect } = fixture(t);
   writeFileSync(join(root, 'README.md'), 'Safe package\n');

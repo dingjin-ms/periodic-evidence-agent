@@ -1,32 +1,38 @@
 import {
-  closeSync, existsSync, lstatSync, openSync, readFileSync, readdirSync,
+  closeSync, existsSync, lstatSync, openSync, readdirSync,
   readlinkSync, readSync, realpathSync
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hash } from './hash.js';
 
 const json = JSON.stringify;
 
 const FILE_HASH_BUFFER = Buffer.allocUnsafe(1024 * 1024);
+const fileReadProgress = channel('periodic-evidence-agent.fingerprint-file-read');
 
-function fileSha256(path, size) {
-  if (size <= FILE_HASH_BUFFER.length) return hash(readFileSync(path));
+function fileSha256(path) {
   const digest = createHash('sha256');
   const handle = openSync(path, 'r');
+  let totalBytes = 0;
   try {
     let bytesRead;
     while ((bytesRead = readSync(handle, FILE_HASH_BUFFER, 0,
-      FILE_HASH_BUFFER.length, null)) > 0)
+      FILE_HASH_BUFFER.length, null)) > 0) {
       digest.update(FILE_HASH_BUFFER.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
   } finally {
     closeSync(handle);
   }
-  return digest.digest('hex');
+  const sha256 = digest.digest('hex');
+  fileReadProgress.publish({ bytes: totalBytes });
+  return sha256;
 }
 
 export function fileContentSha256(path) {
-  return fileSha256(path, lstatSync(path).size);
+  return fileSha256(path);
 }
 
 function recordEntry(entries, path, value) {
@@ -57,7 +63,7 @@ export function pathFingerprint(root, path, recordedEntries = null) {
     return value;
   }
   if (info.isFile()) {
-    const sha256 = fileSha256(target, info.size);
+    const sha256 = fileSha256(target);
     recordEntry(recordedEntries, path, { type: 'file', sha256 });
     return { path, type: 'file', sha256 };
   }
@@ -99,7 +105,7 @@ function dependencyNodeFingerprint(workspace, physicalWorkspace, entryPath, name
     return value;
   }
   if (info.isFile()) {
-    const sha256 = fileSha256(entryPath, info.size);
+    const sha256 = fileSha256(entryPath);
     recordEntry(recordedEntries, recordedPath, { type: 'file', sha256 });
     return { name, type: 'file', size: info.size, sha256 };
   }

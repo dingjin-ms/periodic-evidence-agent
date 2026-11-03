@@ -1,5 +1,6 @@
 import { parentPort } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
+import { channel } from 'node:diagnostics_channel';
 import {
   dependencyEntriesFingerprint, dependencyEntryFingerprint, dependencyEntryFingerprintWithEntries,
   outputPathFingerprint, outputPathFingerprintWithEntries, pathFingerprint
@@ -9,6 +10,18 @@ parentPort.on('message', ({
   workspace, index, mode, path, paths, dependencyPath, entryPath, entryPaths, captureEntries,
   measure = false
 }) => {
+  const reads = { completedFiles: 0, hashedBytes: 0 };
+  let lastProgress = performance.now();
+  const observe = ({ bytes }) => {
+    reads.completedFiles++;
+    reads.hashedBytes += bytes;
+    if (performance.now() - lastProgress >= 1000) {
+      lastProgress = performance.now();
+      parentPort.postMessage({ index, progress: { ...reads } });
+    }
+  };
+  const fileReads = channel('periodic-evidence-agent.fingerprint-file-read');
+  if (measure) fileReads.subscribe(observe);
   try {
     const started = performance.now();
     const fingerprint = (mode, entryPath) => {
@@ -52,12 +65,14 @@ parentPort.on('message', ({
     };
     parentPort.postMessage({
       index, valid, serialized,
-      ...(measure ? { timing } : {}),
+      ...(measure ? { timing, reads } : {}),
       ...(captureEntries
         ? { entries: valid ? result.entries : null }
         : {})
     });
   } catch (error) {
     parentPort.postMessage({ index, error: error.message });
+  } finally {
+    if (measure) fileReads.unsubscribe(observe);
   }
 });

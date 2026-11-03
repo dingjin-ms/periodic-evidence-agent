@@ -424,13 +424,23 @@ import { basename, join, relative, sep } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { isMainThread } from 'node:worker_threads';
 if(basename(process.argv[1] ?? '')==='preparation-attempt-child.js'||!isMainThread){
-  const read=fs.readFileSync;
-  fs.readFileSync=(path,...args)=>{
-    const result=read(path,...args);
+  const open=fs.openSync,read=fs.readSync,close=fs.closeSync;
+  const handles=new Map();
+  fs.openSync=(path,...args)=>{
+    const handle=open(path,...args);
     if(typeof path==='string'&&path.startsWith(${json(attemptParent + sep)})&&
-      path.endsWith(join('dist','value.js'))){
+      path.endsWith(join('dist','value.js'))) handles.set(handle,path);
+    return handle;
+  };
+  fs.closeSync=(handle,...args)=>{
+    handles.delete(handle);
+    return close(handle,...args);
+  };
+  fs.readSync=(handle,...args)=>{
+    const result=read(handle,...args),path=handles.get(handle);
+    if(result>0&&path){
       const root=join(${json(attemptParent)},relative(${json(attemptParent)},path).split(sep)[0]);
-      const events=read(join(root,'progress.jsonl'),'utf8').trim().split('\\n').map(JSON.parse);
+      const events=fs.readFileSync(join(root,'progress.jsonl'),'utf8').trim().split('\\n').map(JSON.parse);
       const active=events.at(-1);
       if(active.stage==='compile-output-capture'&&active.phase==='start'){
         fs.writeFileSync(${json(ctx.readyPath + '.tmp')},JSON.stringify(active));

@@ -39,14 +39,16 @@ function Get-ScopedChanges {
     return @($paths | Where-Object { $_ })
 }
 
-$yarnCommand = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { 'yarn.cmd' } else { 'yarn' }
-$yarn = (Get-Command $yarnCommand -ErrorAction Stop).Source
-$npmCommand = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { 'npm.cmd' } else { 'npm' }
-$npm = (Get-Command $npmCommand -ErrorAction Stop).Source
+function Resolve-Yarn {
+    $yarnCommand = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { 'yarn.cmd' } else { 'yarn' }
+    return (Get-Command $yarnCommand -ErrorAction Stop).Source
+}
+
 $packageRoot = 'midgard/packages/officeaicopilot-agent-excel/'
 $integrationRoot = "${packageRoot}tests/integration/"
 
 if ($stage -eq 'fingerprint') {
+    $yarn = Resolve-Yarn
     $fingerprint = [ordered]@{
         node = (& node --version).Trim()
         corepack = (& corepack --version).Trim()
@@ -87,6 +89,7 @@ if ($stage -in @('authentication-check', 'authentication')) {
     if ($brokerChanges.Count -gt 0) {
         throw "Authentication broker inputs differ from the exact requested revision: $($brokerChanges -join ', ')"
     }
+    $yarn = Resolve-Yarn
     Push-Location 'midgard'
     $previousErrorActionPreference = $ErrorActionPreference
     try {
@@ -161,6 +164,9 @@ if ($stage -in @('authentication-check', 'authentication')) {
     exit 0
 }
 
+if ($stage -in @('all', 'dependencies', 'compile', 'policy')) {
+    $yarn = Resolve-Yarn
+}
 Push-Location 'midgard'
 try {
     if ($stage -in @('all', 'dependencies')) {

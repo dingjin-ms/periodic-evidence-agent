@@ -54,6 +54,7 @@ import {
   recordDeclarativeInterruption
 } from './declarative-e2e.js';
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
+import { requireTestRequestAssignment, requireTestRequestPublication, verifyCurrentTestRequest } from './ado-test-request.js';
 import { command } from './command.js';
 import { createPreparedOutputObserver } from './prepared-output-observer.js';
 import { requireExecutionAuthorization, authorizedModelTimeout } from './execution-authorization.js';
@@ -61,6 +62,7 @@ import { claimPreflight, updateResource, retireResource } from './resource-lifec
 
 export { command };
 const reviewedHandoffPermit = Symbol('reviewed-handoff-controller');
+const adoTestRequestPermit = Symbol('ado-test-request-controller');
 const agencyRemoteResultPath = '.periodic-evidence-agent/result.json';
 const validationContinuationPermit = Symbol('validation-continuation-controller');
 const nativeSourceContinuationPermit = Symbol('native-source-continuation-controller');
@@ -90,7 +92,9 @@ export function repositoryCloneTimeout(config, repo) {
     ...(repo.validationGates ?? []).map(gate => gate.timeoutMs ?? 0));
 }
 export async function commitRepositoryChanges(config, workspace, repo, title,
-  execute = command) {
+  execute = command, dependencies = {}) {
+  const admission = publicationAdmission(config, dependencies.ledger, dependencies.assignmentId);
+  admission.check('commit');
   requireExecutionAuthorization(config, repo, 'commit');
   const timeout = repositoryCloneTimeout(config, repo);
   const env = repositoryEnvironment(repo);
@@ -100,6 +104,7 @@ export async function commitRepositoryChanges(config, workspace, repo, title,
     '-c', 'core.safecrlf=false', '-c', `core.hooksPath=${hooks}`, ...args
   ], workspace, timeout, env);
   await run(['add', '--all']);
+  admission.check('commit');
   requireExecutionAuthorization(config, repo, 'commit');
   const trailers = [...new Set([
     'Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>',
@@ -386,9 +391,12 @@ export function makePlannedImprovementAssignment(config, ledger, investigation, 
     skillQualification: pinned
   };
   const assignment = makeAssignment(config, investigation, plan.repoId, 'improvement', enriched);
-  return assignment;
+  if (assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request'))
+    assignment.publicationGrants = structuredClone(binding.sideEffects);
+  return validateRecord(assignment);
 }
 export function requireCurrentAssignment(config, ledger, investigation, assignment) {
+  requireTestRequestAssignment(config, ledger, assignment);
   requireThat(investigation && investigation.version === assignment.investigationVersion &&
     ledger.get('investigation', investigation.id)?.version === investigation.version,
   'Investigation was superseded before execution', 'blocked-reconciliation');
@@ -3457,6 +3465,10 @@ export async function runValidation(config, ledger, job, repo, revision, execute
   cleanup = removeValidationPath, prepared = null, options = {}) {
   const { skillExecution = null } = options;
   if (repo.remoteValidation) {
+    const assignment = ledger.get('assignment', job.id);
+    if (assignment) requireTestRequestAssignment(config, ledger, assignment);
+    requireThat(!assignment?.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request'),
+      'ADO test requests do not support remote validation', 'blocked-config');
     requireThat(options.attemptNamespace === undefined,
       'Local committed-validation recovery cannot be moved to a remote executor', 'blocked-reconciliation');
     requireThat(await git(job.workspace, ['rev-parse', 'HEAD']) === revision &&
@@ -3512,7 +3524,9 @@ export async function runValidation(config, ledger, job, repo, revision, execute
     let status = 'blocked', blockedReason = null, commandOrRunUrl = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const id = `${job.id}:validation:${gate.id}:${revision}${attemptSuffix}:attempt:${attempt}`;
-      const validationRoot = join(config.stateDirectory, 'validation-workspaces');
+      // Keep managed worktrees in their owned namespace; shorten only unmanaged clone paths.
+      // Git for Windows can fail to discover .git beyond MAX_PATH even with core.longpaths.
+      const validationRoot = join(config.stateDirectory, declarative ? 'validation-workspaces' : 'vw');
       const preflightRef = declarative ? prepared?.[gate.id]?.preflight : null;
       let preflight = null;
       if (preflightRef) {
@@ -3533,7 +3547,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           preflight = proof;
         }
       }
-      const validationWorkspace = preflight?.workspace ?? join(validationRoot, hash(id));
+      const validationWorkspace = preflight?.workspace ?? join(validationRoot, hash(id).slice(0, 24));
       const privateProfile = profile
         ? join(config.stateDirectory, 'validation-profiles',
           `${hash(id)}${extname(profile.path)}`)
@@ -3803,16 +3817,36 @@ export function localProposerEnvironment(source = process.env) {
     if (source[name]) env[name] = source[name];
   return env;
 }
+function publicationAdmission(config, ledger, assignmentId, read) {
+  const assignment = ledger?.get('assignment', assignmentId);
+  const testRequest = assignment?.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request');
+  return {
+    refresh: async () => {
+      if (testRequest) await verifyCurrentTestRequest(config, ledger, assignmentId, read);
+    },
+    check: action => {
+      if (testRequest) {
+        requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
+        requireTestRequestPublication(config, ledger, assignment, action);
+      }
+    }
+  };
+}
 export async function pushDraftBranch(config, workspace, repo, refspec, dependencies = {}) {
   requireExecutionAuthorization(config, repo, 'push');
   const execute = dependencies.execute ?? git;
   const timeout = Math.max(120000, config.runtime?.timeoutMs ?? 0,
     ...(repo.validationGates ?? []).map(gate => gate.timeoutMs ?? 0));
-  if (repo.pr?.provider !== 'ado' || !/^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote))
-    return execute(workspace, ['push', 'origin', refspec], process.env, timeout);
-  const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
+  const admission = publicationAdmission(config, dependencies.ledger, dependencies.assignmentId, dependencies.readTestRequest);
+  let env = process.env;
+  if (repo.pr?.provider === 'ado' && /^https:\/\/(?:dev\.azure\.com\/|[^/]+\.visualstudio\.com\/)/i.test(repo.remote)) {
+    const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Git push');
+    env = adoGitEnvironment(token);
+  }
+  await admission.refresh();
+  admission.check('push');
   requireExecutionAuthorization(config, repo, 'push');
-  return execute(workspace, ['push', 'origin', refspec], adoGitEnvironment(token), timeout);
+  return execute(workspace, ['push', 'origin', refspec], env, timeout);
 }
 export function draftSourceRef(repo, jobId) {
   return repositorySourceRef(repo, jobId);
@@ -3877,7 +3911,7 @@ export function adoDraftBuildUrl(repo, queued) {
   'ADO Draft build response did not include an approved build URL', 'blocked-build');
   return url;
 }
-export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride) {
+export async function queueAdoDraftBuild(config, ledger, job, repo, revision, requestOverride, dependencies = {}) {
   const build = repo.draftBuild;
   requireThat(build?.enabled === true && build.provider === 'ado' &&
     Number.isInteger(build.definitionId) && build.definitionId > 0,
@@ -3895,16 +3929,23 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
   }
   const sourceRef = draftSourceRef(repo, job.id);
   const operationId = `${job.id}:draft-build:${build.id}`;
-  ledger.operation(operationId, job.id, 'draft-build', {
-    definitionId: build.definitionId, revision, sourceRef,
-    ...(caseSelection ? { caseSelection } : {})
-  });
+  const admission = publicationAdmission(config, ledger, job.id, dependencies.readTestRequest);
+  const reserve = () => {
+    admission.check('build');
+    requireExecutionAuthorization(config, repo, 'push');
+    ledger.operation(operationId, job.id, 'draft-build', {
+      definitionId: build.definitionId, revision, sourceRef,
+      ...(caseSelection ? { caseSelection } : {})
+    });
+  };
   let request = requestOverride;
   if (!request) {
     request = async body => {
-      const token = await adoAccessToken(config, 'ADO Draft build queue');
+      const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO Draft build queue');
       const url = `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_apis/build/builds?api-version=7.1`;
-      const response = await fetch(url, {
+      await admission.refresh();
+      reserve();
+      const response = await (dependencies.fetchResponse ?? fetch)(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: json(body),
@@ -3915,6 +3956,10 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
         [401, 403].includes(response.status) ? 'blocked-auth' : 'blocked-build');
       return response.json();
     };
+  }
+  if (requestOverride) {
+    await admission.refresh();
+    reserve();
   }
   const queued = await request({
     definition: { id: build.definitionId },
@@ -3939,7 +3984,7 @@ export async function queueAdoDraftBuild(config, ledger, job, repo, revision, re
   ledger.finishOperation(operationId, 'queued', receipt);
   return receipt;
 }
-export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true) {
+export async function createAdoDraft(config, ledger, job, repo, revision, proposal, requestOverride, allowCreate = true, dependencies = {}) {
   requireThat(repo.pr?.provider === 'ado' && repo.pr.repositoryId && repo.pr.project && repo.pr.organization &&
     repo.pr.targetRef?.startsWith('refs/heads/'), 'Draft PR provider is not configured', 'blocked-pr');
   const expected = [
@@ -3950,32 +3995,46 @@ export async function createAdoDraft(config, ledger, job, repo, revision, propos
     !repo.remote.includes('@') &&
     [repo.pr.organization, repo.pr.project, repo.pr.repositoryId].every(s => /^[a-zA-Z0-9_. -]+$/.test(s)),
   'ADO repository/remote mismatch', 'blocked-scope');
+  const admission = publicationAdmission(config, ledger, job.id, dependencies.readTestRequest);
+  const sourceRefName = draftSourceRef(repo, job.id);
+  const operationId = `${job.id}:draft`;
+  const reserve = () => {
+    admission.check('draft');
+    requireExecutionAuthorization(config, repo, 'draft');
+    ledger.operation(operationId, job.id, 'draft-pr', { revision, sourceRefName });
+  };
   let request = requestOverride;
   if (!request) {
     request = async (method, suffix, body) => {
-      const token = await adoAccessToken(config, 'ADO draft access');
-      if (method !== 'GET') requireExecutionAuthorization(config, repo, 'draft');
+      const token = await (dependencies.getToken ?? adoAccessToken)(config, 'ADO draft access');
       const url = `https://dev.azure.com/${encodeURIComponent(repo.pr.organization)}/${encodeURIComponent(repo.pr.project)}/_apis/git/repositories/${encodeURIComponent(repo.pr.repositoryId)}/pullrequests${suffix}`;
-      const response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      if (method === 'POST') {
+        await admission.refresh();
+        reserve();
+      }
+      const response = await (dependencies.fetchResponse ?? fetch)(url, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: body ? json(body) : undefined, redirect: 'error', signal: AbortSignal.timeout(60000) });
       requireThat(response.ok, `ADO draft request returned HTTP ${response.status}`, [401, 403].includes(response.status) ? 'blocked-auth' : 'blocked-pr');
       return response.json();
     };
   }
-  const sourceRefName = draftSourceRef(repo, job.id);
   const found = await request('GET', `?searchCriteria.sourceRefName=${encodeURIComponent(sourceRefName)}&searchCriteria.status=all&api-version=7.1`);
   requireThat(Array.isArray(found.value) && found.value.length <= 1, 'Ambiguous existing PRs; manual reconciliation required', 'blocked-reconciliation');
   let pr = found.value[0];
   if (!pr) {
     requireThat(allowCreate, 'No matching draft found; uncertain creation is not retried', 'blocked-reconciliation');
-    requireExecutionAuthorization(config, repo, 'draft');
-    const operationId = `${job.id}:draft`;
-    ledger.operation(operationId, job.id, 'draft-pr', { revision, sourceRefName });
+    if (requestOverride) {
+      await admission.refresh();
+      reserve();
+    }
     pr = await request('POST', '?api-version=7.1', {
       sourceRefName, targetRefName: repo.pr.targetRef, title: proposal.title,
       description: `${proposal.description}\n\nPilot assignment: ${job.id}`, isDraft: true
     });
     ledger.finishOperation(operationId, 'created', { pullRequestId: pr.pullRequestId, revision });
+  } else {
+    await admission.refresh();
+    admission.check('draft');
   }
   requireThat(pr.isDraft === true && pr.status === 'active' && pr.sourceRefName === sourceRefName &&
     pr.targetRefName === repo.pr.targetRef && pr.lastMergeSourceCommit?.commitId === revision,
@@ -4247,6 +4306,7 @@ export async function materializeAgencyRemoteResult(
 }
 async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
   investigation, toolkit, loadedSkill, authoring, provider, dependencies = {}) {
+  requireTestRequestAssignment(config, ledger, assignment);
   const repo = repoFor(config, assignment.repoId);
   requireThat(repo.pr?.provider === 'ado',
     'Agency remote authoring currently requires an Azure DevOps Draft PR repository',
@@ -4260,7 +4320,8 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
     ref: `refs/heads/${seedBranch}`
   });
   await (dependencies.pushBranch ?? pushDraftBranch)(
-    config, current.workspace, repo, `HEAD:refs/heads/${seedBranch}`);
+    config, current.workspace, repo, `${baseRevision}:refs/heads/${seedBranch}`,
+    { ledger, assignmentId: assignment.id, readTestRequest: dependencies.readTestRequest });
   ledger.finishOperation(seedOperation, 'completed', {
     round: authoring.round, baseRevision,
     ref: `refs/heads/${seedBranch}`
@@ -4268,6 +4329,7 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
   const prompt = agencyRemotePrompt(ledger, assignment, investigation, repo,
     loadedSkill, authoring, baseRevision, resultBranch);
   const execute = dependencies.executeRemoteJob ?? executeAgencyRemoteJob;
+  requireTestRequestAssignment(config, ledger, assignment);
   const remote = await execute(config, ledger, current, repo, provider, {
     round: authoring.round, baseRevision, branch: seedBranch, resultBranch, prompt
   }, dependencies.transport ?? {});
@@ -4288,6 +4350,7 @@ async function runAgencyRemoteAuthoring(config, ledger, current, assignment,
 }
 async function runConfiguredModel(config, ledger, current, assignment, investigation, toolkit,
   loadedSkill, authoring, dependencies) {
+  requireTestRequestAssignment(config, ledger, assignment);
   if (!assignment.authoringProvider)
     return runModel(config, ledger, current, assignment, investigation, toolkit, loadedSkill, authoring);
   const provider = config.authoringProviders?.[assignment.authoringProvider];
@@ -4480,6 +4543,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   }
   requireCurrentSourceEligibility(ledger, assignment);
   const fixtureEvidence = assignment.evidenceIds.map(e => ledger.get('evidence', e));
+  if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
+    requireThat(dependencies[adoTestRequestPermit] === true,
+      'ADO test requests require the dedicated source-rechecking dispatch entrypoint', 'blocked-authorization');
+  }
   const permittedReviewedHandoff = dependencies[reviewedHandoffPermit] === true &&
     assignment.intent === 'improvement' && assignment.skillBindingId &&
     fixtureEvidence.every(e => e?.source.kind === 'fixture' && e.source.provenance === 'synthetic' &&
@@ -4824,12 +4891,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           if (description !== null) proposal.description = description;
         }
         const commitOperation = `${id}:commit:${authoring.round}`;
+        requireTestRequestPublication(config, ledger, assignment, 'commit');
         requireExecutionAuthorization(config, repo, 'commit');
         ledger.operation(commitOperation, id, 'commit', { baseRevision: revision, round: authoring.round });
         const commitStarted = Date.now();
         try {
           const commit = () => (dependencies.commitChanges ?? commitRepositoryChanges)(
-            config, current.workspace, repo, proposal.title);
+            config, current.workspace, repo, proposal.title, undefined, { ledger, assignmentId: id });
           if (repo.changeFile)
             await withPreparedCommitTools(current.workspace, preparedValidation, commit);
           else await commit();
@@ -4940,14 +5008,22 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         await verifyCommittedValidationRecovery(config, ledger, current, assignment, repo, committedRecovery);
       const caseSelection = repo.id === '1js' && repo.draftBuild?.enabled
         ? await newCaseBuildSelection(current, revision) : null;
+      if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request'))
+        await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
+      requireTestRequestPublication(config, ledger, assignment, 'push');
       requireExecutionAuthorization(config, repo, 'push');
       ledger.operation(`${id}:push`, id, 'push', { revision });
       await (dependencies.pushBranch ?? pushDraftBranch)(
-        config, current.workspace, repo, `HEAD:${draftSourceRef(repo, id)}`);
+        config, current.workspace, repo, `${revision}:${draftSourceRef(repo, id)}`,
+        { ledger, assignmentId: id, readTestRequest: dependencies.readTestRequest });
       ledger.finishOperation(`${id}:push`, 'completed', { revision });
       if (repo.draftBuild?.enabled) {
+        requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
+        requireTestRequestPublication(config, ledger, assignment, 'build');
+        requireExecutionAuthorization(config, repo, 'push');
         const queuedBuild = await (dependencies.queueDraftBuild ?? queueAdoDraftBuild)(
-          config, ledger, current, repo, revision);
+          config, ledger, current, repo, revision, undefined, { readTestRequest: dependencies.readTestRequest });
         requireThat(queuedBuild?.status === 'queued' && queuedBuild.blocking === false &&
           queuedBuild.sourceRevision === revision &&
           queuedBuild.sourceRef === draftSourceRef(repo, id),
@@ -4970,8 +5046,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
               `Existing cases and unaffected suites are not scheduled; this is not a full regression run.\n\n` +
               caseSelection.scenarioPaths.map(path => `- \`${path}\``).join('\n') : ''))
       };
+      if (fixtureEvidence.some(e => e?.source.kind === 'ado-test-request'))
+        await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      requireCurrentAssignment(config, ledger, ledger.get('investigation', assignment.investigationId), assignment);
+      requireTestRequestPublication(config, ledger, assignment, 'draft');
       const createdDraft = await (dependencies.createDraft ?? createAdoDraft)(
-        config, ledger, current, repo, revision, publicationProposal);
+        config, ledger, current, repo, revision, publicationProposal, undefined, true,
+        { readTestRequest: dependencies.readTestRequest });
       validateRecord(createdDraft, 'draftPR');
       requireThat(createdDraft.headRevision === revision &&
         finalValidation.length === assignment.validationGates.length &&
@@ -5037,6 +5118,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
 
 export async function dispatchReviewedHandoff(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [reviewedHandoffPermit]: true });
+}
+export async function dispatchAdoTestRequest(config, ledger, id, dependencies = {}) {
+  await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+  return dispatch(config, ledger, id, { ...dependencies, [adoTestRequestPermit]: true });
 }
 export async function dispatchLocalValidationContinuation(config, ledger, id, dependencies = {}) {
   return dispatch(config, ledger, id, { ...dependencies, [validationContinuationPermit]: true });

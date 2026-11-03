@@ -4,7 +4,7 @@ import { hash, readJson, requireThat, proposerExecutorFlight } from './common.js
 const root = new URL('../e2e-evidence/agency-remote/', import.meta.url);
 const modes = ['remote-authoring-local-validation', 'remote-validation',
   'remote-authoring-remote-validation', 'same-workspace-loop', 'live-business-e2e',
-  'native-product-validation', 'hosted-executor'];
+  'native-product-validation', 'same-workspace-live-e2e', 'hosted-executor'];
 
 function matchesRepository(repo, record) {
   const actual = repo.pr, expected = record.repository;

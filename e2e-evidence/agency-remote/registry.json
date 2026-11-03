@@ -22,6 +22,11 @@
           "mode": "same-workspace-live-e2e",
           "file": "1js-same-workspace-live-e2e-20261102.json",
           "sha256": "5f14f3c88a7b5f008cb9cc6e251251ead0ce963ba26e6a252875358fb7220fac"
+        },
+        {
+          "mode": "live-business-e2e",
+          "file": "1js-sdx-native-business-20261030.json",
+          "sha256": "05e99dd7e068749a6a8648092f2e32186ea2b87837e18d0f6c8ea835abffa8ec"
         }
       ],
       "preflights": []
@@ -61,23 +66,6 @@
           "sha256": "b35ded01802c38e443f55576bd48e1efada1b6b78ee00a63e02e800a93343b30"
         }
       ]
-    },
-    {
-      "repoId": "1js",
-      "repository": {
-        "provider": "ado",
-        "organization": "office",
-        "project": "Office",
-        "repositoryIds": ["1JS"]
-      },
-      "qualifications": [
-        {
-          "mode": "live-business-e2e",
-          "file": "1js-sdx-native-business-20261030.json",
-          "sha256": "05e99dd7e068749a6a8648092f2e32186ea2b87837e18d0f6c8ea835abffa8ec"
-        }
-      ],
-      "preflights": []
     }
   ]
 }

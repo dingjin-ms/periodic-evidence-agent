@@ -146,6 +146,22 @@ test('1JS native product validation requires explicit opt-in and exposes scoped 
   assert.equal(mode(remoteAgencyQualification(config), 'native-product-validation').configured, false);
 });
 
+test('1JS same-workspace live E2E proof remains scoped and does not enable dispatch', () => {
+  const report = remoteAgencyQualification(fixture({
+    id: '1js',
+    pr: {
+      provider: 'ado', organization: 'office', project: 'Office',
+      repositoryId: '49b0c9f4-555f-4624-8157-a57e6df513b3'
+    }
+  }));
+  const live = mode(report, 'same-workspace-live-e2e');
+  assert.equal(live.status, 'historical-scoped-proof');
+  assert.equal(live.configured, false);
+  assert.equal(live.configurationVerified, false);
+  assert.equal(live.evidence.candidate, '5ca4963b32cbc1939099d5aa543cbf9e7d8f4db1');
+  assert.equal(report.acceptanceAuthority, false);
+});
+
 test('default SDK and Local Agency remain warning-free and config is not mutated', () => {
   for (const type of ['copilot-sdk', 'agency-local']) {
     const config = fixture();

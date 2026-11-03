@@ -6,7 +6,7 @@ import { persistReviewedInvestigation } from './coordinator.js';
 import { requireCompleteExclusionReview, requireEligibleImprovementInvestigation } from './review-decisions.js';
 import { planImprovement } from './improvements.js';
 import { resolveSkillBinding, skillQualificationId } from './repository-skills.js';
-import { makePlannedImprovementAssignment, dispatchAdoTestRequest } from './workers.js';
+import { makePlannedImprovementAssignment, dispatchAdoTestRequest, requireCurrentAssignment } from './workers.js';
 import { withRsiWorker } from './rsi-flow.js';
 import { harnessPolicy, requireHarnessRequest, requireCoverageCapability } from './ado-harness-request.js';
 
@@ -374,12 +374,54 @@ function prepareRequest(config, ledger, input, harness = false) {
   });
 }
 
+export function neverDispatchedTestRequest(ledger, id) {
+  const job = ledger.job(id);
+  return job?.state === 'prepared' && !job.workspace && !job.base_revision &&
+    !ledger.status().operations.some(row => row.job_id === id &&
+      !['ado-test-request-review', 'ado-test-request-publication-grants'].includes(row.kind));
+}
+
+export function effectiveTestRequestAssignment(ledger, assignment) {
+  const row = ledger.status().operations.find(row => row.id === assignment.id + ':publication-grants');
+  if (!row) return assignment;
+  const receipt = JSON.parse(row.detail);
+  requireThat(row.kind === 'ado-test-request-publication-grants' && row.state === 'complete' &&
+    receipt.assignmentSha256 === hash(json(assignment)), 'Publication grant receipt changed', 'blocked-reconciliation');
+  return { ...assignment, publicationGrants: receipt.publicationGrants };
+}
+
+function reconcilePreparedPublicationGrants(config, ledger, assignment) {
+  const owner = ledger.acquire('dispatch:' + assignment.id);
+  try {
+    ledger.transaction(() => {
+      const investigation = ledger.get('investigation', assignment.investigationId);
+      const rebuilt = makePlannedImprovementAssignment(config, ledger, investigation,
+        assignment.testCoveragePlanId, assignment.requestedOutcome, assignment.testCoveragePlanVersion);
+      const effective = effectiveTestRequestAssignment(ledger, assignment);
+      if (json(rebuilt) !== json(effective)) {
+        requireThat(['commit', 'push', 'createDraftPR'].every(key =>
+          typeof assignment.publicationGrants?.[key] === 'boolean' && rebuilt.publicationGrants?.[key] === true),
+        'Only captured prepared publication grants can be authorized', 'blocked-authorization');
+        requireThat(json({ ...rebuilt, publicationGrants: assignment.publicationGrants }) === json(assignment),
+          'Prepared assignment substantive pins changed', 'blocked-reconciliation');
+        requireThat(neverDispatchedTestRequest(ledger, assignment.id),
+          'Publication grants cannot change after dispatch', 'blocked-reconciliation');
+        const id = assignment.id + ':publication-grants';
+        ledger.operation(id, assignment.id, 'ado-test-request-publication-grants', {});
+        ledger.finishOperation(id, 'complete', { assignmentSha256: hash(json(assignment)),
+          publicationGrants: structuredClone(rebuilt.publicationGrants) });
+      }
+      requireCurrentAssignment(config, ledger, investigation, assignment);
+    });
+  } finally { ledger.release('dispatch:' + assignment.id, owner); }
+}
+
 export function requireTestRequestPublication(config, ledger, assignment, action) {
   if (!assignment.evidenceIds.some(id => ledger.get('evidence', id)?.source.kind === 'ado-test-request')) return;
   requireTestRequestAssignment(config, ledger, assignment);
   const grant = { commit: 'commit', push: 'push', build: 'push', draft: 'createDraftPR' }[action];
   const { binding } = resolveSkillBinding(config, assignment.repoId, assignment.capability, assignment.skillBindingId);
-  requireThat(grant && assignment.publicationGrants?.[grant] === true && binding.sideEffects[grant] === true,
+  requireThat(grant && effectiveTestRequestAssignment(ledger, assignment).publicationGrants?.[grant] === true && binding.sideEffects[grant] === true,
     `Test-request repository binding does not authorize ${action}`, 'blocked-authorization');
 }
 
@@ -401,7 +443,7 @@ export async function verifyCurrentTestRequest(config, ledger, id, read = readCu
 
 export async function acceptTestRequest(config, ledger, input, {
   execute = false, authorizeCommit = false, authorizePush = false, authorizeDraftPR = false,
-  read = readCurrentTestRequest, dispatchDependencies = {}
+  read = readCurrentTestRequest, dispatchDependencies = {}, beforeDispatch = () => {}
 } = {}) {
   if (execute) {
     requireThat(authorizeCommit && authorizePush && authorizeDraftPR,
@@ -414,6 +456,8 @@ export async function acceptTestRequest(config, ledger, input, {
   }
   const prepared = prepareTestRequest(config, ledger, input);
   if (!execute) return prepared;
+  reconcilePreparedPublicationGrants(config, ledger, prepared.assignment);
+  beforeDispatch();
   const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
     () => dispatchAdoTestRequest(config, ledger, prepared.assignment.id,
       { ...dispatchDependencies, readTestRequest: read }),

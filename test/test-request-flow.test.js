@@ -338,11 +338,77 @@ test('source pages consume a cumulative input budget', async t => {
       assert.equal(first.error, undefined);
       let exhausted = false;
       for (let i = 0; i < 5; i++) {
-        const page = JSON.parse(await source.handler({ action: 'read', path: 'src/verifier.js' }));
-        if (page.error) { assert.match(page.error.message ?? page.error, /source budget exhausted/); exhausted = true; break; }
+        const response = await source.handler({ action: 'read', path: 'src/verifier.js' });
+        if (response === '') { exhausted = true; break; }
+        assert.equal(JSON.parse(response).error, undefined);
       }
       assert.equal(exhausted, true);
     }, disconnect: async () => {}
   }) });
   await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /budget previously exhausted/);
+});
+for (const boundary of ['disconnect', 'client-stop']) for (const loss of ['expiry', 'revocation'])
+  test('authority lost during ' + boundary + ' by ' + loss + ' cannot accept review', async t => {
+    const ctx = setup(t), path = authority(ctx), deps = dependencies(ctx), connect = deps.connect;
+    const clock = Date.now;
+    const loseAuthority = () => {
+      if (loss === 'revocation') writeFileSync(path, '{}');
+      else Date.now = () => clock() + 60000;
+    };
+    deps.connect = async (config, cwd, action) => {
+      const value = await connect(config, cwd, async client => action({ createSession: async options => {
+        const session = await client.createSession(options), disconnect = session.disconnect;
+        session.disconnect = async () => { await disconnect(); if (boundary === 'disconnect') loseAuthority(); };
+        return session;
+      } }));
+      if (boundary === 'client-stop') loseAuthority();
+      return value;
+    };
+    try {
+      await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /authorization/);
+    } finally { Date.now = clock; }
+    assert.equal(ctx.ledger.status().operations.filter(r => r.kind === 'ado-test-request-capability').length, 0);
+    assert.equal(ctx.ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'uncertain');
+    await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /incomplete or uncertain/);
+    assert.equal(ctx.calls, 1);
+  });
+
+test('near-limit errors and completion acknowledgement are all charged or terminally refused', async t => {
+  const run = async (ctx, deniedCount) => {
+    const responses = []; let sessionOptions, payload;
+    const deps = dependencies(ctx);
+    deps.connect = async (_config, _cwd, action) => action({ createSession: async options => {
+      sessionOptions = options; let event;
+      return { sessionId: 'all-responses', on: callback => { event = callback; return () => {}; },
+        rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
+        sendAndWait: async input => {
+          payload = input; event({ type: 'assistant.turn_start' });
+          const source = options.tools.find(t => t.name === 'pilot_request_source');
+          for (let i = 0; i < deniedCount; i++) responses.push(await source.handler({ action: 'read', path: '../denied' }));
+          responses.push(await source.handler({ action: 'read', path: 'src/verifier.js' }));
+          responses.push(await options.tools.find(t => t.name === 'pilot_request_finish').handler({ invalid: true }));
+          responses.push(await options.tools.find(t => t.name === 'pilot_request_finish').handler({
+            decision: 'blocked-environment', missingCapabilities: [], sourcePaths: ['src/verifier.js'],
+            rationale: 'Synthetic environment hold.', verificationEvidence: [], handoff: null
+          }));
+        }, disconnect: async () => {} };
+    } });
+    let error;
+    try { await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps); } catch (caught) { error = caught; }
+    const sessionUpdate = { installedPlugins: [], includedBuiltinSkills: [], skipCustomInstructions: true,
+      customAgentsLocalOnly: true, coauthorEnabled: false, manageScheduleEnabled: false };
+    return { error, responses, bytes: Buffer.byteLength(json({ sessionOptions, sessionUpdate, payload })) +
+      responses.reduce((sum, value) => sum + Buffer.byteLength(value), 0) };
+  };
+  const baseline = await run(setup(t), 2); assert.equal(baseline.error, undefined);
+  for (const delta of [-1, 0]) {
+    const ctx = setup(t); ctx.config.localFilter.maxRequestBytes = baseline.bytes + delta;
+    const result = await run(ctx, 2);
+    assert.ok(result.bytes <= ctx.config.localFilter.maxRequestBytes);
+    if (delta) {
+      assert.match(result.error.message, /budget previously exhausted/);
+      assert.equal(result.responses.at(-1), '');
+      assert.equal(ctx.ledger.status().operations.filter(r => r.kind === 'ado-test-request-capability').length, 0);
+    } else { assert.equal(result.error, undefined); assert.equal(result.bytes, baseline.bytes); }
+  }
 });

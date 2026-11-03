@@ -55,7 +55,7 @@ import {
 } from './declarative-e2e.js';
 import { preparationStage, withPreparationProgress } from './preparation-progress.js';
 import { requireAdoEvidenceCohort } from './ado-cohort.js';
-import { requireTestRequestAssignment, requireTestRequestPublication, verifyCurrentTestRequest } from './ado-test-request.js';
+import { effectiveTestRequestAssignment, requireTestRequestAssignment, requireTestRequestPublication, verifyCurrentTestRequest } from './ado-test-request.js';
 import { command } from './command.js';
 import { createPreparedOutputObserver } from './prepared-output-observer.js';
 import { requireExecutionAuthorization, authorizedModelTimeout } from './execution-authorization.js';
@@ -412,7 +412,7 @@ export function requireCurrentAssignment(config, ledger, investigation, assignme
     ? makePlannedImprovementAssignment(config, ledger, investigation,
       assignment.testCoveragePlanId, assignment.requestedOutcome, assignment.testCoveragePlanVersion)
     : makeAssignment(config, investigation, assignment.repoId, assignment.intent);
-  requireThat(json(rebuilt) === json(assignment),
+  requireThat(json(rebuilt) === json(effectiveTestRequestAssignment(ledger, assignment)),
     'Assignment inputs, plan or qualification changed after preparation', 'blocked-reconciliation');
   requireCurrentSourceEligibility(ledger, assignment);
   return rebuilt;

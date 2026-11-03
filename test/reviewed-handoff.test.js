@@ -370,14 +370,30 @@ test('automated request FILTER hands its plan to the real worker and publication
     }
   };
   const options = { authorizeReview: true, execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, authorizeComment: true };
+  const publicationBinding = ctx.config.repositories.find(r => r.id === 'office-agent').skillBindings.find(b => b.id === 'oa-integration-test-core');
+  publicationBinding.sideEffects = { commit: false, push: false, createDraftPR: false };
   ctx.config.activation.dispatch = false;
   ctx.config.adoTestRequests.feedback.enabled = false;
   const prepared = await runTestRequest(ctx.config, ledger, 123, { authorizeReview: true }, dependencies);
   assert.equal(filters, 1); assert.equal(proposers, 0);
+  const originalAssignment = ledger.get('assignment', prepared.assignmentId);
+  assert.equal(originalAssignment.publicationGrants.push, false);
+  await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies), /does not authorize publication/);
+  assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
+  publicationBinding.sideEffects = { commit: true, push: true, createDraftPR: true };
   ctx.config.activation.dispatch = true;
   ctx.config.adoTestRequests.feedback.enabled = true;
+  const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
+  const qualification = ledger.qualification(qualificationId);
+  ledger.qualify(qualificationId, { ...qualification, skillSha256: 'f'.repeat(64) });
+  await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies), /pins changed|qualification/);
+  assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
+  assert.equal(filters, 1); assert.equal(proposers, 0);
+  ledger.qualify(qualificationId, qualification);
   const result = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(result.state, 'draft-pr-validated', json(result));
+  assert.deepEqual(ledger.get('assignment', prepared.assignmentId), originalAssignment);
+  assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-publication-grants').state, 'complete');
   assert.equal(result.result.validation[0].sourceRevision, result.result.draftPR.headRevision);
   assert.equal((await runTestRequest(ctx.config, ledger, 123, options, dependencies)).replayed, true);
   assert.equal(result.feedback.state, 'commented');
@@ -385,6 +401,8 @@ test('automated request FILTER hands its plan to the real worker and publication
   const revisionReplay = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(revisionReplay.priorOutcomeOnly, true);
   assert.deepEqual([filters, proposers, drafts, comments], [1, 1, 1, 1]);
+  publicationBinding.sideEffects.push = false;
+  assert.throws(() => requireTestRequestPublication(ctx.config, ledger, originalAssignment, 'push'), /does not authorize/);
 });
 
 async function supportedRequestAssessment(ctx) {
@@ -3110,4 +3128,19 @@ test(`${invalidResult} validation prevents push and Draft PR creation`, async t 
   assert.equal(modelCalls, 1);
   assert.equal(pushed, false);
   assert.equal(draftCreated, false);
+});
+for (const prior of ['dispatching', 'recorded-attempt']) test('prepared grant reconciliation refuses ' + prior, async t => {
+  const ctx = await requestFixture(t);
+  const binding = ctx.config.repositories[0].skillBindings[0];
+  binding.sideEffects = { commit: false, push: false, createDraftPR: false };
+  const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
+  if (prior === 'dispatching') ctx.ledger.moveJob(prepared.assignment.id, 'prepared', 'dispatching');
+  else ctx.ledger.operation(prepared.assignment.id + ':attempt', prepared.assignment.id, 'test-dispatch-attempt', {});
+  binding.sideEffects = { commit: true, push: true, createDraftPR: true };
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
+    execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true,
+    read: ctx.read, dispatchDependencies: { runModel: async () => assert.fail('must not dispatch') }
+  }), /cannot change after dispatch/);
+  assert.deepEqual(ctx.ledger.get('assignment', prepared.assignment.id), prepared.assignment);
+  assert.equal(ctx.ledger.status().operations.some(r => r.kind === 'ado-test-request-publication-grants'), false);
 });

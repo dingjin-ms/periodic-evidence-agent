@@ -793,11 +793,23 @@ for (const unstable of [false, true]) {
     async t => {
       const ctx = await fixture(t, 'dist');
       assert.equal((await ctx.initialize()).valid, true);
-      const originalReadFile = fs.readFileSync;
+      const originalOpen = fs.openSync, originalRead = fs.readSync,
+        originalClose = fs.closeSync;
+      const handles = new Set();
       let injected = 0;
-      fs.readFileSync = (path, ...args) => {
-        const bytes = originalReadFile(path, ...args);
-        if (String(path) === ctx.file && (unstable || injected === 0)) {
+      fs.openSync = (path, ...args) => {
+        const handle = originalOpen(path, ...args);
+        if (String(path) === ctx.file) handles.add(handle);
+        return handle;
+      };
+      fs.closeSync = (handle, ...args) => {
+        handles.delete(handle);
+        return originalClose(handle, ...args);
+      };
+      fs.readSync = (handle, ...args) => {
+        const bytes = originalRead(handle, ...args);
+        // Mutate after EOF so the current witness cannot include newly appended bytes.
+        if (bytes === 0 && handles.has(handle) && (unstable || injected === 0)) {
           injected++;
           if (!unstable) writeFileSync(ctx.file, 'changed during complete-root hashing\n');
           ctx.watcher().callback('change', null);
@@ -809,14 +821,16 @@ for (const unstable of [false, true]) {
       try {
         ctx.watcher().callback('change', null);
         const result = await ctx.verify();
+        assert.ok(injected > 0, 'Must inject at the end of an actual target content read');
         assert.equal(result.valid, false);
         assert.match(result.reason, unstable
           ? /content-revalidation-unstable/ : /content-changed/);
         assert.equal(result.details.settlementPassCount, unstable ? 4 : 2);
         assert.equal(result.details.fullRootRevalidationCount, unstable ? 4 : 2);
-        assert.ok(injected > 0);
       } finally {
-        fs.readFileSync = originalReadFile;
+        fs.openSync = originalOpen;
+        fs.readSync = originalRead;
+        fs.closeSync = originalClose;
         syncBuiltinESMExports();
       }
     });

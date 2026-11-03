@@ -370,6 +370,12 @@ test('automated request FILTER hands its plan to the real worker and publication
     }
   };
   const options = { authorizeReview: true, execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, authorizeComment: true };
+  ctx.config.activation.dispatch = false;
+  ctx.config.adoTestRequests.feedback.enabled = false;
+  const prepared = await runTestRequest(ctx.config, ledger, 123, { authorizeReview: true }, dependencies);
+  assert.equal(filters, 1); assert.equal(proposers, 0);
+  ctx.config.activation.dispatch = true;
+  ctx.config.adoTestRequests.feedback.enabled = true;
   const result = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(result.state, 'draft-pr-validated', json(result));
   assert.equal(result.result.validation[0].sourceRevision, result.result.draftPR.headRevision);

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configAt, json } from '../src/common.js';
+import { configAt, json, hash } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 import { skillQualificationId } from '../src/repository-skills.js';
 import { runTestRequest, runTestRequestQueue } from '../src/test-request-flow.js';
@@ -47,10 +47,12 @@ function dependencies(ctx, { decision = 'blocked-environment', crash = false, in
     connect: async (_config, _cwd, action) => {
       ctx.calls++;
       return action({ createSession: async options => {
+        ctx.sessionOptions = options;
         let onEvent;
         return { sessionId: 'fixture-session', on: callback => { onEvent = callback; return () => {}; },
           rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
-          sendAndWait: async () => {
+          sendAndWait: async (payload, timeout) => {
+            ctx.payload = payload; ctx.timeout = timeout;
             onEvent({ type: 'assistant.turn_start' });
             if (crash) throw new Error('interrupted');
             const source = options.tools.find(tool => tool.name === 'pilot_request_source');
@@ -213,4 +215,134 @@ test('request-scoped ledger lock excludes concurrent review before source calls'
   const name = 'ado-request-flow:office:OC:123', owner = ctx.ledger.acquire(name);
   await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps));
   ctx.ledger.release(name, owner); assert.equal(ctx.calls, 0);
+});
+function authority(ctx, { expired = false, allowModels = true } = {}) {
+  const repo = ctx.config.repositories.find(r => r.id === ctx.config.adoTestRequests.repoId);
+  const path = join(ctx.config.stateDirectory, 'authority.json');
+  const value = { format: 'al-recurring-authorization-v1', planSha256: 'fixture-plan',
+    approvedAt: new Date(Date.now() - 60000).toISOString(),
+    expiresAt: new Date(Date.now() + (expired ? -1000 : 5000)).toISOString(), allowModels, allowPublication: false };
+  writeFileSync(path, json(value));
+  ctx.config.runtime.executionAuthorization = { repoId: repo.id, baseRevision: repo.baseRef,
+    planSha256: value.planSha256, reference: { path, sha256: hash(readFileSync(path)) } };
+  return path;
+}
+for (const denied of [{ expired: true }, { allowModels: false }]) test('execution authority rejects before reservation ' + JSON.stringify(denied), async t => {
+  const ctx = setup(t); authority(ctx, denied);
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, dependencies(ctx)), /authorization expired or does not permit/);
+  assert.equal(ctx.calls, 0);
+  assert.equal(ctx.ledger.status().operations.filter(r => r.kind === 'ado-test-request-flow').length, 0);
+});
+test('authority caps timeout and forwards approved context tier', async t => {
+  const ctx = setup(t); authority(ctx); ctx.config.localFilter.contextTier = 'long_context';
+  await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, dependencies(ctx));
+  assert.ok(ctx.timeout > 0 && ctx.timeout <= 5000);
+  assert.equal(ctx.sessionOptions.contextTier, 'long_context');
+});
+test('revocation during connection prevents session creation', async t => {
+  const ctx = setup(t), path = authority(ctx); let sessions = 0;
+  const deps = dependencies(ctx);
+  deps.connect = async (_config, _cwd, action) => {
+    writeFileSync(path, '{}');
+    return action({ createSession: async () => { sessions++; throw new Error('must not create'); } });
+  };
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /authorization changed/);
+  assert.equal(sessions, 0);
+});
+test('revocation after initialization blocks submission', async t => {
+  const ctx = setup(t), path = authority(ctx); let sent = 0, disconnected = 0;
+  const deps = dependencies(ctx);
+  deps.connect = async (_config, _cwd, action) => action({ createSession: async () => ({
+    sessionId: 'revoked', on: () => () => {},
+    rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => writeFileSync(path, '{}') } },
+    sendAndWait: async () => { sent++; }, disconnect: async () => { disconnected++; }
+  }) });
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /authorization changed/);
+  assert.equal(sent, 0); assert.equal(disconnected, 1);
+});
+test('later action grants preserve accepted review without another FILTER', async t => {
+  const ctx = setup(t), deps = dependencies(ctx);
+  ctx.config.adoTestRequests.feedback = { enabled: false, scopeApproved: false, approvalRef: '' };
+  await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps);
+  ctx.config.activation.dispatch = true;
+  for (const repo of ctx.config.repositories) for (const binding of repo.skillBindings ?? [])
+    binding.sideEffects = { commit: true, push: true, createDraftPR: true };
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'later-grant' };
+  const result = await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true, authorizeComment: true }, deps);
+  assert.equal(result.feedback.state, 'commented');
+  assert.equal(ctx.calls, 1); assert.equal(ctx.comments, 1);
+});
+test('external bundle is unsupported before model or source invocation', async t => {
+  const ctx = setup(t); let effects = 0;
+  const repo = ctx.config.repositories.find(r => r.id === ctx.config.adoTestRequests.repoId);
+  repo.execution = 'local';
+  repo.skillBindings.find(b => b.capability === ctx.config.adoTestRequests.capability).externalBundle = {
+    root: ctx.config.stateDirectory, source: { remote: repo.remote, revision: 'b'.repeat(40), path: 'src/verifier.js' },
+    files: [{ path: 'src/verifier.js', sha256: 'c'.repeat(64) }] };
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, {
+    read: async () => { effects++; }, connect: async () => { effects++; }, execute: async () => { effects++; }
+  }), /does not support external skill bundles/);
+  assert.equal(effects, 0);
+});
+test('unsupported context tier has no model effects', async t => {
+  const ctx = setup(t); ctx.config.localFilter.contextTier = 'unapproved';
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, dependencies(ctx)), /context tier/);
+  assert.equal(ctx.calls, 0);
+});
+test('complete input budget rejects schemas and instructions before reservation', async t => {
+  const ctx = setup(t); ctx.config.localFilter.maxRequestBytes = 8000;
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, dependencies(ctx)), /complete model input budget/);
+  assert.equal(ctx.calls, 0);
+  assert.equal(ctx.ledger.status().operations.filter(r => r.kind === 'ado-test-request-flow').length, 0);
+});
+test('complete session payload has an exact pre-reservation boundary', async t => {
+  const baseline = setup(t);
+  await runTestRequest(baseline.config, baseline.ledger, 123, { authorizeReview: true }, dependencies(baseline));
+  const sessionUpdate = { installedPlugins: [], includedBuiltinSkills: [], skipCustomInstructions: true,
+    customAgentsLocalOnly: true, coauthorEnabled: false, manageScheduleEnabled: false };
+  const budget = Buffer.byteLength(json({ sessionOptions: baseline.sessionOptions, sessionUpdate, payload: baseline.payload }));
+  for (const delta of [-1, 0]) {
+    const ctx = setup(t); ctx.config.localFilter.maxRequestBytes = budget + delta; let connected = 0;
+    const deps = { ...dependencies(ctx), connect: async () => { connected++; throw new Error('boundary reached'); } };
+    await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps),
+      delta ? /complete model input budget/ : /boundary reached/);
+    assert.equal(connected, delta ? 0 : 1);
+  }
+});
+test('revoked authority denies source and finish callbacks before backend effects', async t => {
+  const ctx = setup(t), path = authority(ctx); let reads = 0;
+  const deps = dependencies(ctx); deps.execute = async () => { reads++; return { stdout: 'source' }; };
+  deps.connect = async (_config, _cwd, action) => action({ createSession: async options => ({
+    sessionId: 'revoked-tools', on: () => () => {},
+    rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
+    sendAndWait: async () => {
+      writeFileSync(path, '{}');
+      for (const name of ['pilot_request_source', 'pilot_request_finish']) {
+        const value = JSON.parse(await options.tools.find(tool => tool.name === name).handler({ action: 'read', path: 'src/verifier.js' }));
+        assert.match(value.error.message ?? value.error, /authorization changed/);
+      }
+    }, disconnect: async () => {}
+  }) });
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /authorization changed/);
+  assert.equal(reads, 0);
+});
+test('source pages consume a cumulative input budget', async t => {
+  const ctx = setup(t); ctx.config.localFilter.maxRequestBytes = 24000;
+  const deps = dependencies(ctx); deps.execute = async () => ({ stdout: 'x'.repeat(4000) });
+  deps.connect = async (_config, _cwd, action) => action({ createSession: async options => ({
+    sessionId: 'budget-pages', on: () => () => {},
+    rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
+    sendAndWait: async () => {
+      const source = options.tools.find(tool => tool.name === 'pilot_request_source');
+      const first = JSON.parse(await source.handler({ action: 'read', path: 'src/verifier.js' }));
+      assert.equal(first.error, undefined);
+      let exhausted = false;
+      for (let i = 0; i < 5; i++) {
+        const page = JSON.parse(await source.handler({ action: 'read', path: 'src/verifier.js' }));
+        if (page.error) { assert.match(page.error.message ?? page.error, /source budget exhausted/); exhausted = true; break; }
+      }
+      assert.equal(exhausted, true);
+    }, disconnect: async () => {}
+  }) });
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /budget previously exhausted/);
 });

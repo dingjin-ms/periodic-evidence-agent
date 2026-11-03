@@ -27,6 +27,9 @@ export const help = `Local evidence pilot (live operations disabled by default)
   node src\\cli.js bootstrap-repo --repo office-agent --config pilot.local.json [--search-root C:\\src] [--clone-root D:\\repos]
   node src\\cli.js pr-review-publish --repo OWNER/REPO --pr NUMBER --file review-receipt.local.json [--approve-other-author]
   node src\\cli.js pr-review-verify --repo OWNER/REPO --pr NUMBER
+  node src\\cli.js ado-test-request --id NUMBER --collect --config pilot.local.json
+  node src\\cli.js submit-test-request --file handoff.json --prepare --config pilot.local.json
+  node src\\cli.js submit-test-request --file handoff.json --execute --authorize-commit --authorize-push --authorize-draft-pr --config pilot.local.json
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --prepare
   node src\\cli.js submit-reviewed-handoff --file reviewed-handoff.json --config pilot.local.json --execute --authorize-synthetic --authorize-commit --authorize-push --authorize-draft-pr
   node src\\cli.js submit-filter-handoff --file filter-handoff.json --config pilot.local.json --prepare [--intent improvement|defect-fix]

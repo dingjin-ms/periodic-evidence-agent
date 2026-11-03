@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -13,7 +13,7 @@ import {
 import { Ledger } from '../src/ledger.js';
 
 async function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'sdx-adapter-test-'));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'sdx-adapter-test-')));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
   const reference = join(root, 'reference');
   mkdirSync(reference);

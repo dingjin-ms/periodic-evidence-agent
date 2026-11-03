@@ -20,7 +20,7 @@ import { hash, json, uuid } from '../src/common.js';
 import { Ledger } from '../src/ledger.js';
 
 function snapshotFixture(t) {
-  const root = mkdtempSync(join(tmpdir(), 'rsi-snapshot-test-'));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'rsi-snapshot-test-')));
   const directory = join(root, 'prior'), workspace = join(directory, 'workspace');
   mkdirSync(join(workspace, 'test'), { recursive: true });
   writeFileSync(join(workspace, 'test', 'case.test.mjs'), 'synthetic assertions\n');

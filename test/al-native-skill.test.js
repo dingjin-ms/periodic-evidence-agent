@@ -37,6 +37,9 @@ function fixture(t) {
     return git(['rev-parse', 'HEAD']);
   };
   git(['init', '--quiet']);
+  // The native skill path is intentionally deep. Configure only this owned Git
+  // fixture so every subsequent Git invocation can access its full path.
+  git(['config', 'core.longpaths', 'true']);
   write('.github/skills/tests/SKILL.md', '# Synthetic FILTER guidance, not authoring\n');
   const oldBase = commit('Synthetic baseline without authoring skill');
   write(legacyPath, '# Synthetic historical skill\n');

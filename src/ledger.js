@@ -113,7 +113,7 @@ export class Ledger {
     for (const record of this.all('evidence')) {
       const key = json([record.source.namespace, record.source.recordId]);
       const old = latest.get(key);
-      const revisioned = record.source.kind === 'ado' && old?.source.revision;
+      const revisioned = ['ado', 'ado-test-request'].includes(record.source.kind) && old?.source.revision;
       if (!old || (revisioned ? Number(record.source.revision) > Number(old.source.revision)
         : Date.parse(record.observedAt) >= Date.parse(old.observedAt))) latest.set(key, record);
     }

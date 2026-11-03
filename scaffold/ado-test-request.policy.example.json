@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "scopeApproved": false,
+  "approvalRef": "replace-with-approved-intake-reference",
+  "organization": "office",
+  "project": "OC",
+  "areaPath": "OC\\Excel\\Intelligence\\Copilot\\Excel Agent\\Automation",
+  "workItemTypes": ["Bug"],
+  "states": ["New", "Active"],
+  "tag": "AgenticTestRequest",
+  "repoId": "office-agent",
+  "capability": "integration-test-authoring",
+  "requestedOutcome": "add-or-update-tests",
+  "maxResponseBytes": 262144
+}

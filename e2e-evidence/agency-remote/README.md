@@ -18,13 +18,39 @@ qualification probe may establish that proof; provider selection alone cannot.
 | OA (`office-agent`) | Hosted Agency executor (separate task/result contract) | Requires its own proof; not qualified by the validation-only run. |
 | 1JS (`1JS`) | Official Agency runner + TRIPS FIC + native BizChat-to-Excel declarative product validation | **Passed within the recorded scope**, 2026-11-02, orchestrator `58660325`, runner `58660451`; [sanitized evidence](1js-native-product-validation-20261102.json). Real authenticated BizChat created `Test_Table.xlsx`; native XLSX evidence verified worksheet `Test`, table 6×5, one header and five data rows. This does not enable production routing or qualify author/repair workflows. |
 | 1JS (`1JS`) | Native skill -> new scenario authoring -> candidate commit/bundle -> TRIPS FIC -> real BizChat-to-Excel validation in one Agency workspace -> local controller acceptance | **Passed within the bounded recorded scope**, 2026-11-02, orchestrator `58677587`, runner `58679076`; [sanitized evidence](1js-same-workspace-live-e2e-20261102.json). The exact PEA implementation `c0da8ac0e72f08456813745cbd5659967eaa187b` passed the complete source-bound local CI. The real workbook `AgencyLive.xlsx` independently verified worksheet `AgencyLive`, table `AgencyLiveTable`, and range `A1:D5`. Product execution passed first time, so the product repair path was not exercised. No product PR, periodic task, or local-browser fallback occurred. |
-| Office src / other repositories | Any remote path | No E2E proof registered here; do not infer support or qualification from OA or 1JS. |
+| 1JS SDX (`midgard/packages/officeaicopilot-agent-excel`) | Native skill -> authoring -> candidate -> pre-review gates -> independent review -> final gates -> local controller acceptance (`live-business-e2e`) | **Passed within the bounded qualification scope**, 2026-10-30, build `58531234`; [sanitized evidence](1js-sdx-native-business-20261030.json). One focused preserved-behavior integration case passed 11/11 tests. No product repair, push, PR, merge or publication occurred. |
+| Office src / other repositories | Any remote path | No E2E proof registered here; do not infer support or qualification from OA, SDX or 1JS. |
 
 The first row is the existing remote-authoring architecture, **not** the
 fixed-candidate validation experiment. A diagram, implementation, another
 session's unreviewed result, or combining two individually tested capabilities
 does not establish an E2E run of their composition. A genuinely verified run
 can be added when its authoritative evidence is available.
+
+## 1JS SDX native live E2E: 2026-10-30
+
+Agency job `office-31b2c17d-5bac-46b7-9780-7d5409ac1174`, ADO build
+`58531234`, used pipeline `35960` against exact 1JS base
+`653989a82e29120978d7e1dc33e739aec6eeae1e`. The pinned Excel integration
+skill authored one contract case, updated its behavior card, generated one
+changefile and committed candidate `97795c027ca58e74e91311fb5b289a47d35b4e45`.
+The complete seven-stage pre-review gate round passed, a separate read-only
+review approved the exact candidate with no findings, and the complete final
+gate round passed again. The focused Jest population passed 11/11 tests.
+
+The independent local controller accepted the original Agency event stream and
+downloaded artifact inventory, binding the job, build, base, skill, profile,
+candidate parent, changed paths, review and final gates. Complete controller CI
+at revision `23b3104dbde7ce9fac4ff8e6f0f686dd5aa0044f` covered all 96 discovered
+files exactly once; remaining tests passed 1,598 with one existing skip, demo
+passed 2/2, and standalone demo exited zero.
+
+This is historical scoped proof, not current-configuration acceptance or an
+authorization grant. The product candidate passed first try, so product repair
+remains untested; the earlier dependency rehydration was infrastructure
+bootstrap repair only. No product push, PR, merge or publication occurred. Raw
+Agency logs, events and artifacts remain in ignored private storage and are not
+committed.
 
 ## Master-integrated replay: 2026-10-29 r8
 

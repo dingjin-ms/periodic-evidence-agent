@@ -40,3 +40,7 @@ The separate [remote Agency qualification register](agency-remote/README.md)
 indexes narrower execution-path evidence, including publication-free product
 validation. Those records are **not** evidence-to-Draft-PR proof bundles and
 must not be promoted to one or supplied as an acceptance receipt.
+
+The register includes the publication-free 1JS SDX native live E2E completed on
+2026-10-30: remote native-skill authoring, candidate commit, pre-review gates,
+independent review, final gates and independent local controller acceptance.

@@ -39,6 +39,7 @@ function setup(t, { maxCycles = 2, nativeReceiptFixture = false, localSkillCheck
     const git = args => execFileSync('git', ['-c', 'core.hooksPath=.git/no-hooks', ...args],
       { cwd: checkout, encoding: 'utf8', stdio: 'pipe' }).trim();
     git(['init', '--quiet']);
+    git(['config', 'core.longpaths', 'true']);
     git(['config', 'core.autocrlf', 'false']);
     git(['add', '.']);
     git(['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid',

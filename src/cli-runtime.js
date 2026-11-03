@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { runTestRequest, runTestRequestQueue } from './test-request-flow.js';
+import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from './ado-harness-request.js';
 import { dirname, resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +28,7 @@ import { bootstrapLocalRepository } from './local-settings.js';
 import { setupLocalEnvironment } from './setup.js';
 import { publishReviewReceipt, verifyReviewReceipt } from './pr-review-receipt.js';
 import { acceptReviewedHandoff } from './reviewed-handoff.js';
+import { collectTestRequest, acceptTestRequest } from './ado-test-request.js';
 import { acceptFilterProposerHandoff } from './filter-handoff.js';
 import { cleanupWorkspaces } from './workspace-gc.js';
 import { schedulePreparedAssignments } from './assignment-scheduler.js';
@@ -93,6 +96,55 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action)) {
+    const values = action === 'comment-test-request' ? ['--config', '--assessment', '--assignment'] : ['--config', '--file'];
+    const switches = action === 'comment-test-request' ? ['--authorize-comment', '--retry-rejected']
+      : action.startsWith('reconcile-') ? ['--authorize-reconciliation'] : [];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...values, ...switches].includes(key),
+        'Unknown or duplicate test-request option', 'blocked-scope');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Test-request option needs a value');
+    }
+    requireThat([...values, ...switches].filter(key => !['--assignment', '--retry-rejected'].includes(key)).every(key => seen.has(key)),
+      'Test-request assessment/feedback requires explicit inputs and comment authorization', 'blocked-authorization');
+  }
+  if (['run-test-request', 'run-test-request-queue'].includes(action)) {
+    const values = action === 'run-test-request' ? ['--config', '--id'] : ['--config'];
+    const switches = ['--authorize-review', '--execute', '--authorize-commit', '--authorize-push', '--authorize-draft-pr', '--authorize-comment'];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...values, ...switches].includes(key), 'Unknown or duplicate request-flow option');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Request-flow option needs a value');
+    }
+    requireThat(values.every(key => seen.has(key)) && seen.has('--authorize-review') &&
+      (action === 'run-test-request-queue' || /^\d+$/.test(option('--id') ?? '')),
+      'Request flow requires explicit config, ID and model review authorization', 'blocked-authorization');
+  }
+  if (['ado-test-request', 'submit-test-request'].includes(action)) {
+    requireThat(option('--config') && !option('--config').startsWith('--'),
+      'Test-request commands require an explicit --config', 'blocked-authorization');
+    const switches = action === 'ado-test-request' ? ['--collect']
+      : ['--prepare', '--execute', '--authorize-commit', '--authorize-push', '--authorize-draft-pr'];
+    const values = action === 'ado-test-request' ? ['--config', '--id'] : ['--config', '--file'];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...switches, ...values].includes(key),
+        'Unknown or duplicate test-request option', 'blocked-scope');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'),
+        'Test-request option needs a value');
+    }
+    requireThat(action === 'ado-test-request'
+      ? seen.has('--collect') && /^\d+$/.test(option('--id') ?? '')
+      : seen.has('--file') && seen.has('--prepare') !== seen.has('--execute'),
+    'Test-request commands require explicit collection or prepare/execute inputs', 'blocked-authorization');
+  }
   if (action === 'filter-local-retry-prepare') requireThat(
     ['--config', '--file', '--output'].every(key => option(key) && !option(key).startsWith('--')),
     'Retry preparation requires explicit --config, --file and --output', 'blocked-authorization');
@@ -238,6 +290,10 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (['run-test-request', 'run-test-request-queue', 'assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))
+      requireThat(config.statePolicy.accessApproved === true,
+        'Test-request feedback/review requires approved local state', 'blocked-authorization');
+
     if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
       requireThat(rsiPolicy(config).enabled, 'RSI is disabled for this configuration', 'blocked-authorization');
     if (config.rsi?.enabled || ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action))
@@ -640,6 +696,46 @@ try {
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
+      case 'assess-test-request':
+        result = recordCapabilityAssessment(config, ledger, input());
+        break;
+      case 'reconcile-harness-association':
+        result = await reconcileHarnessAssociation(config, ledger, input(), {
+          authorizeReconciliation: args.includes('--authorize-reconciliation')
+        });
+        break;
+      case 'reconcile-test-request-comment':
+        result = reconcileCapabilityComment(config, ledger, input(), {
+          authorizeReconciliation: args.includes('--authorize-reconciliation')
+        });
+        break;
+      case 'comment-test-request':
+        result = await publishCapabilityComment(config, ledger, option('--assessment'), {
+          authorizeComment: args.includes('--authorize-comment'), retryRejected: args.includes('--retry-rejected'),
+          assignmentId: option('--assignment') ?? null
+        });
+        break;
+      case 'run-test-request-queue':
+      case 'run-test-request':
+        result = await (action === 'run-test-request-queue'
+          ? (settings, state, _id, grants) => runTestRequestQueue(settings, state, grants)
+          : runTestRequest)(config, ledger, Number(option('--id')), {
+          authorizeReview: args.includes('--authorize-review'), execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'), authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr'), authorizeComment: args.includes('--authorize-comment')
+        });
+        break;
+      case 'ado-test-request':
+        result = await collectTestRequest(config, ledger, Number(option('--id')));
+        break;
+      case 'submit-test-request':
+        result = await acceptTestRequest(config, ledger, input(), {
+          execute: args.includes('--execute'),
+          authorizeCommit: args.includes('--authorize-commit'),
+          authorizePush: args.includes('--authorize-push'),
+          authorizeDraftPR: args.includes('--authorize-draft-pr')
+        });
+        break;
       case 'submit-reviewed-handoff': {
         requireThat(args.includes('--prepare') !== args.includes('--execute'),
           `${action} requires exactly one of --prepare or --execute`);

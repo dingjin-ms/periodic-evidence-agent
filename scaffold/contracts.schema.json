@@ -21,6 +21,8 @@
     { "$ref": "#/$defs/filterProposerHandoff" },
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/reviewedHandoff" },
+    { "$ref": "#/$defs/adoTestRequestHandoff" },
+    { "$ref": "#/$defs/adoHarnessRequestHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -825,7 +827,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["kind", "namespace", "recordId", "revision", "versionBasis", "provenance", "ownerConfirmation"],
           "properties": {
-            "kind": { "enum": ["ado", "icm", "workiq", "fixture"] },
+            "kind": { "enum": ["ado", "ado-test-request", "icm", "workiq", "fixture"] },
             "namespace": { "$ref": "#/$defs/text" },
             "recordId": { "$ref": "#/$defs/text" },
             "revision": { "$ref": "#/$defs/nullableText" },
@@ -848,7 +850,7 @@
           },
           "allOf": [
             {
-              "if": { "properties": { "kind": { "const": "ado" } } },
+              "if": { "properties": { "kind": { "enum": ["ado", "ado-test-request"] } } },
               "then": { "properties": { "revision": { "$ref": "#/$defs/text" } } }
             },
             {
@@ -919,7 +921,7 @@
         }
       },
       "allOf": [{
-        "if": { "properties": { "source": { "properties": { "kind": { "const": "ado" } } } } },
+        "if": { "properties": { "source": { "properties": { "kind": { "enum": ["ado", "ado-test-request"] } } } } },
         "then": { "properties": { "snapshotAt": { "$ref": "#/$defs/utc" } } }
       }]
     },
@@ -991,6 +993,52 @@
           "then": { "properties": { "reportEligibility": { "const": "unavailable" }, "handoffEligibility": { "const": "needs-evidence" }, "defectConfirmation": { "const": "unconfirmed" } } }
         }
       ]
+    },
+    "adoHarnessRequestHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
+      "properties": {
+        "format": { "const": "ado-harness-request-handoff-v1" },
+        "intakeId": { "$ref": "#/$defs/text" },
+        "intakeSha256": { "$ref": "#/$defs/rsiHash" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "review": { "$ref": "#/$defs/reviewedHandoff/properties/review" },
+        "planning": { "$ref": "#/$defs/adoTestRequestHandoff/properties/planning" }
+      }
+    },
+    "adoTestRequestHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
+      "properties": {
+        "format": { "const": "ado-test-request-handoff-v1" },
+        "intakeId": { "$ref": "#/$defs/text" },
+        "intakeSha256": { "$ref": "#/$defs/rsiHash" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "review": { "$ref": "#/$defs/reviewedHandoff/properties/review" },
+        "planning": {
+          "type": "object", "additionalProperties": false,
+          "required": ["improvement", "testCoverage", "requestedOutcome"],
+          "properties": {
+            "improvement": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/improvement" },
+            "requestedOutcome": { "$ref": "#/$defs/text" },
+            "skillInput": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/skillInput" },
+            "testCoverage": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repoId", "capability", "sourceRevision", "searchStatus", "existingTests", "coverageGaps", "unknowns", "rationale"],
+              "properties": {
+                "repoId": { "$ref": "#/$defs/text" },
+                "capability": { "$ref": "#/$defs/text" },
+                "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+                "searchStatus": { "enum": ["complete", "partial", "not-run"] },
+                "existingTests": { "$ref": "#/$defs/reviewedHandoff/properties/planning/properties/testCoverage/properties/existingTests" },
+                "coverageGaps": { "$ref": "#/$defs/texts" },
+                "unknowns": { "$ref": "#/$defs/texts" },
+                "rationale": { "$ref": "#/$defs/text" }
+              }
+            }
+          }
+        }
+      }
     },
     "reviewedHandoff": {
       "type": "object", "additionalProperties": false,
@@ -1278,6 +1326,15 @@
         "skillBindingId": { "$ref": "#/$defs/text" },
         "authoringProvider": { "$ref": "#/$defs/text" },
         "authoringProviderSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "publicationGrants": {
+          "type": "object", "additionalProperties": false,
+          "required": ["commit", "push", "createDraftPR"],
+          "properties": {
+            "commit": { "type": "boolean" },
+            "push": { "type": "boolean" },
+            "createDraftPR": { "type": "boolean" }
+          }
+        },
         "skillInput": { "$ref": "#/$defs/declarativeE2ESpecBatch" },
         "allowedWritePrefixes": { "$ref": "#/$defs/texts" },
         "allowedWriteFiles": { "$ref": "#/$defs/texts" },
@@ -1517,6 +1574,18 @@
         "sourceRef": { "type": "string", "pattern": "^refs/heads/" },
         "queuedAt": { "$ref": "#/$defs/utc" },
         "blocking": { "const": false },
+        "harnessSelection": {
+          "type": "object", "additionalProperties": false,
+          "required": ["format", "baseRevision", "sourceRevision", "testPaths", "contractSha256"],
+          "properties": {
+            "format": { "const": "harness-contract-selection-v1" },
+            "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "contractSha256": { "$ref": "#/$defs/rsiHash" },
+            "testPaths": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/text" } }
+          }
+        },
         "caseSelection": {
           "type": "object", "additionalProperties": false,
           "required": ["format", "baseRevision", "sourceRevision", "scenarioPaths"],

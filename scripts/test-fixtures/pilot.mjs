@@ -354,7 +354,8 @@ function packageToken(t, name = 'PILOT_FIXTURE_TOKEN', token = 'synthetic-packag
   return token;
 }
 async function longPathFixture(workspace) {
-  const path = join('src', 'long-native-path-'.repeat(8), 'value.js');
+  // Stay above MAX_PATH even when the controller shortens the validation root.
+  const path = join('src', 'long-native-path-'.repeat(8), 'long-native-path-'.repeat(8), 'value.js');
   mkdirSync(dirname(join(workspace, path)), { recursive: true });
   writeFileSync(join(workspace, path), 'export const value = 1;\n');
   await command('git', ['-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',

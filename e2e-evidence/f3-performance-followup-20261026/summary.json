@@ -1,0 +1,256 @@
+{
+  "format": "f3-dependency-scan-followup-v1",
+  "date": "2026-10-26",
+  "scope": "F3 only; sanitized synthetic measurements, separate new follow-up directory, not frozen live E2E evidence or product qualification",
+  "conclusion": {
+    "observed": "Sequential synthetic full preparation and reverification batches were faster after the change.",
+    "attribution": "The same-fixture interleaved hash-only comparison showed only a 2.48% mean wall reduction, overlapping ranges and two slower optimized adjacent pairs. A stable algorithm speedup is not established.",
+    "notClaimed": "No measured real-preflight, five-round business, cleanup or physical-disk-throughput improvement; do not attribute all end-to-end reduction to buffered hashing.",
+    "delivery": "Draft performance experiment with complete safety checks and persistent measurements, not an approval to publish or merge."
+  },
+  "revisions": {
+    "pr58": "7702cfc2cc6522fdbb1d19a77c47177cd2be21d4",
+    "baselineWithInstrumentation": "03262cc8f12247f6eb3e6041160db07d7799b761",
+    "bufferedReadImplementation": "11bff8f5bc40ba324c7c54fef5f5c29dff1a8570",
+    "latestMasterDocumentationIncluded": "998d7fcff74ef76ffb8a9842eb0f03ea09727c94",
+    "measuredAfter": "e0a3e446944a14bb56ca944da33a09d97bcacc24",
+    "pairedBenchmarkHarness": "a120a5aa9f2200b07029a2e8f5665c4fe9aa97d1",
+    "f1f2PR": 60,
+    "f1f2CheckedHead": "0617ce9d67c024fad02c6a09e309da722296aab2",
+    "f1f2Integration": "merge-tree passed without textual conflicts; no uncommitted code consumed and no combined runtime acceptance claimed"
+  },
+  "change": {
+    "mechanism": "Extend the existing reusable 1MiB synchronous SHA-256 read buffer to small files; keep short-read handling, reads through EOF and finally-close.",
+    "benefitBoundary": "Avoid whole-file readFileSync buffers; this does not eliminate all allocations or all filesystem metadata work.",
+    "unchanged": [
+      "Initial complete source scan, copy or expected-seed validation, complete source and target byte reverification",
+      "SHA-256 schemas, ignored dependencies/build-output detection and final source/target Git identity and cleanliness checks",
+      "Link containment, workspace isolation, ownership/approval and retained-copy provenance/one-time consumption",
+      "All three approximately 30-second unchanged windows, business assertions, deadlines and cleanup safeguards"
+    ],
+    "failureContainment": "Both final scan pools settle before a rejection is returned, so cleanup cannot race a still-running sibling pool."
+  },
+  "environment": {
+    "node": "v24.22.1",
+    "platform": "win32",
+    "availableParallelism": 16,
+    "allMeasuredCheckoutsClean": true,
+    "startGate": "Three consecutive samples about 20 seconds apart: host CPU below 40%, physical disk below 10MiB/s and 30% busy, foreign Node test CPU below 5%, no detected native acceptance.",
+    "admittedHostCpuPercent": {
+      "baseline": [
+        38,
+        36,
+        26
+      ],
+      "after": [
+        38,
+        33,
+        32
+      ],
+      "paired": [
+        37,
+        30,
+        32
+      ]
+    },
+    "limitations": "Start gates are not exclusive host reservations or continuous contention monitoring. OS caches are uncontrolled. A waiting gate was stopped, before measurement, when a foreign live preflight appeared."
+  },
+  "fullDependencySeedBenchmark": {
+    "command": "node scripts/benchmark-dependency-scan.mjs --output ABSOLUTE_NEW_RESULT_PATH",
+    "samplesPerRevision": 3,
+    "filesPerScan": 8192,
+    "logicalBytesPerScan": 140509184,
+    "scansPerPhase": 3,
+    "totalVerifiedScans": 36,
+    "fixture": "Four store packages, mixed 1KiB/64KiB files and an internal node_modules junction; own generated fixtures removed after successful measurement.",
+    "seedSha256EveryPhase": "c0b1a54685dc24dbb7a2a451da8579eda83d9a40d6a824c0266741cf1347b78c",
+    "initialPreparation": {
+      "scope": "Source scan, copy/link rebase, full source/target byte scans and all Git checks; no native selection/typecheck or business cases.",
+      "baselineWallMs": [
+        62393.6409,
+        60936.3185,
+        69787.7502
+      ],
+      "afterWallMs": [
+        59524.5418,
+        54570.1435,
+        50189.5529
+      ],
+      "baselineMeanWallMs": 64372.569867,
+      "afterMeanWallMs": 54761.412733,
+      "observedMeanReductionPercent": 14.930516,
+      "baselineControllerCpuMs": [
+        16749,
+        16516,
+        17078
+      ],
+      "afterControllerCpuMs": [
+        16327,
+        15328,
+        14031
+      ],
+      "baselineInitialSourceScanMs": [
+        1596.17,
+        1539.5919,
+        1613.7268
+      ],
+      "afterInitialSourceScanMs": [
+        1384.8755,
+        1314.7746,
+        1243.9162
+      ],
+      "baselineRetainedSourceScanMs": [
+        1820.9383,
+        1938.1427,
+        3556.5768
+      ],
+      "afterRetainedSourceScanMs": [
+        24747.8488,
+        1609.2798,
+        1504.8105
+      ],
+      "baselineCopiedWorkspaceScanMs": [
+        23487.9327,
+        19635.222,
+        25911.8922
+      ],
+      "afterCopiedWorkspaceScanMs": [
+        24772.0637,
+        18854.9439,
+        16840.945
+      ],
+      "outlierNotExcluded": "After sample 0 retained-source scan took 24.748s, versus baseline 1.821-3.557s. Do not claim every individual scan improved."
+    },
+    "preparedReverification": {
+      "scope": "Expected-seed path; all three full scans and all Git checks remain, with no recopy.",
+      "baselineWallMs": [
+        34020.1046,
+        37337.0276,
+        37325.066
+      ],
+      "afterWallMs": [
+        30624.9446,
+        26504.8424,
+        28422.918
+      ],
+      "baselineMeanWallMs": 36227.3994,
+      "afterMeanWallMs": 28517.568333,
+      "observedMeanReductionPercent": 21.281768,
+      "baselineControllerCpuMs": [
+        16437,
+        14687,
+        15829
+      ],
+      "afterControllerCpuMs": [
+        14204,
+        13079,
+        14563
+      ],
+      "baselineInitialSourceScanMs": [
+        2346.5866,
+        1588.7538,
+        1706.987
+      ],
+      "afterInitialSourceScanMs": [
+        1324.1007,
+        1223.6311,
+        1409.834
+      ],
+      "baselineRetainedSourceScanMs": [
+        2119.847,
+        2566.5588,
+        2257.2514
+      ],
+      "afterRetainedSourceScanMs": [
+        1669.7497,
+        1573.5403,
+        1623.9912
+      ],
+      "baselineCopiedWorkspaceScanMs": [
+        2329.4393,
+        2658.0051,
+        2310.7151
+      ],
+      "afterCopiedWorkspaceScanMs": [
+        1722.1835,
+        1582.9814,
+        1639.8966
+      ]
+    },
+    "aggregation": "Parent phases include subphases. Source and copied-workspace scans overlap; do not add their wall or process-CPU intervals. dependency-byte-verification stage also includes final Git checks."
+  },
+  "sameFixtureHashAttributionBenchmark": {
+    "command": "node scripts/benchmark-file-hash.mjs --baseline 03262cc8f12247f6eb3e6041160db07d7799b761 --output ABSOLUTE_NEW_RESULT_PATH",
+    "scope": "Same directory, serial pathFingerprint, 8192 files/140509184 logical bytes per scan, one warm-up per implementation; no Git/copy/worker startup within timed scans.",
+    "order": [
+      "baseline",
+      "optimized",
+      "optimized",
+      "baseline",
+      "baseline",
+      "optimized",
+      "optimized",
+      "baseline"
+    ],
+    "baselineWallMs": [
+      3780.3149,
+      3605.4613,
+      3522.8329,
+      3786.2026
+    ],
+    "optimizedWallMs": [
+      3722.9849,
+      3621.5918,
+      3566.6982,
+      3419.7057
+    ],
+    "baselineMeanWallMs": 3673.702925,
+    "optimizedMeanWallMs": 3582.74515,
+    "baselineControllerCpuMs": [
+      3188,
+      2734,
+      2750,
+      3265
+    ],
+    "optimizedControllerCpuMs": [
+      3016,
+      2860,
+      2781,
+      2750
+    ],
+    "baselineSourceSha256": "a706a8f1afab34bc4f3aeae57bc99b895e93db6c6587447d07daff04d00d8758",
+    "optimizedSourceSha256": "f7d6205428ae2852aad9ea16809c4b31e3d845ba4b993fdb281d1ed4b0af97a0",
+    "treeSha256EveryScan": "5802cb3cba939bda2b831304bbd24dba44e5fa2ca32506cb65bd44deedf2955d",
+    "interpretation": "Four small samples per implementation; overlapping ranges and mixed pair directions. No stable p50/p95 or significance claim. This does not establish stable speedup."
+  },
+  "persistentProgress": {
+    "location": "Private workspace sibling: <workspace>.dependency-verification-<uuid>.jsonl",
+    "format": "dependency-verification-progress-v1",
+    "frequency": "Stage boundaries and every 10 seconds during hashing, with flushed append-only records; worker file/byte updates at most once per second.",
+    "realWork": "Completed planned tasks, successfully hashed files and actual logical bytes; both serial and worker-pool paths are measured.",
+    "timing": "Monotonic scan/benchmark wall time plus process cumulative CPU; existing lifecycle stage records retain their wall-clock timestamps/durations.",
+    "cpu": "Controller process including worker threads, excluding child Git/robocopy; concurrent intervals overlap.",
+    "processIO": "Not measured. Logical hashed bytes are not process IO counters.",
+    "physicalDisk": "Host admission counters only, not attributable throughput of this workload.",
+    "percentage": null,
+    "eta": null,
+    "deadline": "Progress messages do not renew the absolute task timeout."
+  },
+  "validation": {
+    "focusedCommand": "node --test test\\output-fingerprint.test.js test\\retained-dependency-copy.test.js test\\dependency-seed-progress.test.js",
+    "focusedTestsPassed": 21,
+    "benchmarkBoundaryCommand": "node --test test\\fingerprint-benchmark.test.js",
+    "benchmarkBoundaryTestsPassed": 4,
+    "packageHygiene": "npm run check:package passed",
+    "syntaxAndDiff": "Modified JavaScript syntax, evidence JSON parsing and git diff --check passed",
+    "failureEdges": "Same-length restored-mtime ignored source/target tampering, added ignored build output, escaping/dangling links, failed reads, short reads, cancellation and aliased frozen-evidence destinations",
+    "remoteCI": "Report actual PR check results separately; local passing checks are not remote CI acceptance."
+  },
+  "remainingBottlenecks": [
+    "Repeated complete scans remain; no Git-only trust, immutable snapshot cache or preparation lifecycle redesign was introduced.",
+    "Copying, link rebase, fresh copied-file access and Git checks remain material; sequential batch differences outside hashing are not causally attributed.",
+    "Historical cleanup was 93.843s link scanning plus 677.996s git remove, not 774.427s entirely attributable to links; cleanup is unchanged.",
+    "No real product restore/fullbuild, native preflight, business five-round run, model call or Aurora invocation was performed.",
+    "Existing sealed preflight/Controller qualification is not silently requalified for changed Controller file bytes."
+  ]
+}

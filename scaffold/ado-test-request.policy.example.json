@@ -1,0 +1,27 @@
+{
+  "enabled": false,
+  "scopeApproved": false,
+  "approvalRef": "replace-with-approved-intake-reference",
+  "organization": "office",
+  "project": "OC",
+  "areaPath": "OC\\Excel\\Intelligence\\Copilot\\Excel Agent\\Automation",
+  "workItemTypes": ["Bug"],
+  "states": ["New", "Active"],
+  "tag": "AgenticTestRequest",
+  "repoId": "office-agent",
+  "capability": "integration-test-authoring",
+  "requestedOutcome": "add-or-update-tests",
+  "maxResponseBytes": 262144,
+  "feedback": {
+    "enabled": false,
+    "scopeApproved": false,
+    "approvalRef": "replace-with-approved-ADO-comment-scope"
+  },
+  "harnessSupport": {
+    "enabled": false,
+    "scopeApproved": false,
+    "approvalRef": "replace-with-approved-harness-authoring-scope",
+    "capability": "e2e-harness-authoring",
+    "requestedOutcome": "extend-e2e-harness"
+  }
+}

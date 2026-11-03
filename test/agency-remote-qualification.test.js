@@ -104,8 +104,24 @@ test('business preflight observations stay bound to their repository rather than
   }
 });
 
-test('unknown, 1JS and Office repositories default to unverified rather than unsupported', () => {
-  for (const id of ['another-repository', '1js', 'office-src']) {
+test('1JS SDX live business proof stays historical, scoped and publication-free', () => {
+  const report = remoteAgencyQualification(fixture({
+    id: '1js',
+    pr: { provider: 'ado', organization: 'office', project: 'Office', repositoryId: '1JS' }
+  }));
+  const business = mode(report, 'live-business-e2e');
+  assert.equal(business.status, 'historical-scoped-proof');
+  assert.equal(business.evidence.buildId, 58531234);
+  assert.equal(business.evidence.candidate, '97795c027ca58e74e91311fb5b289a47d35b4e45');
+  assert.ok(business.evidence.limitations.some(text => text.includes('no product test/card repair')));
+  assert.ok(business.evidence.limitations.some(text => text.includes('No product push')));
+  assert.equal(business.configured, false);
+  assert.equal(business.configurationVerified, false);
+  assert.equal(report.acceptanceAuthority, false);
+});
+
+test('unknown and Office repositories default to unverified rather than unsupported', () => {
+  for (const id of ['another-repository', 'office-src']) {
     const report = remoteAgencyQualification(fixture({ id, remoteValidation: { type: 'agency-remote' } }));
     assert.equal(report.repositories[0].modes.every(item => item.status === 'not-verified'), true);
     assert.equal(report.warnings.length, 2);

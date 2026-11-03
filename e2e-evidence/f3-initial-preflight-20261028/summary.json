@@ -1,0 +1,107 @@
+{
+  "format": "f3-initial-source-stage-measurement-v1",
+  "date": "2026-10-28",
+  "scope": "Sanitized real initial dependency-source fingerprint measurements, not synthetic prepared-call latency, frozen E2E evidence, business qualification or complete preflight acceptance.",
+  "conclusion": {
+    "observed": "Two bounded ABBA samples per implementation show a 39.220234188352% lower mean wall time for the complete initial source fingerprint call.",
+    "baselineMeanWallMs": 2723744.6465,
+    "candidateMeanWallMs": 1655485.61745,
+    "notClaimed": "The historical 2h45m preflight and the over-three-hour workflow have not received complete before/after acceptance. Do not subtract these stage measurements from historical totals or describe the whole workflow as fixed.",
+    "limitations": "Small samples, substantial candidate variation, uncontrolled OS caches, no exclusive host reservation and no physical-IO attribution. This is an observed stage improvement, not a stable percentile or guaranteed production speedup."
+  },
+  "revisions": {
+    "measuredBaseline": "c88482455ff34e0d4630f1df4a58dcf56de8b868",
+    "measuredExperimentalCandidate": "53a7edf9d96776d4068adc7aab9351826fb23474",
+    "experimentalDifference": "Only the full-byte worker cap changed from 8 to 16. No hashing or copy algorithm changed.",
+    "adoptionBoundary": "The production follow-up narrows the higher cap to the initial single-source scan. Post-copy source/target verification and pinned prepared verification retain their default cap of 8 per pool. This narrowed production integration is not itself the measured experimental commit."
+  },
+  "workload": {
+    "dependencyRoots": 591,
+    "expandedFingerprintPaths": 7578,
+    "tasksPerCompleteScan": 1060,
+    "filesPerCompleteScan": 1292151,
+    "logicalBytesPerCompleteScan": 16308618911,
+    "completeScans": 4,
+    "everyDigestEqualsPreservedQualifiedProof": true,
+    "currentMetadataGuardsPassedBeforeAndAfterEveryScan": true,
+    "sourceReadOnly": true,
+    "timed": "Complete outputFingerprint call: synchronous planning, bounded worker startup, every dependency byte, aggregate hashing and worker termination.",
+    "excluded": "Git and inventory guards, dependency copy/link rebase, post-copy byte verification, checkout, native selection/typecheck and business execution."
+  },
+  "environment": {
+    "node": "v24.22.1",
+    "platform": "win32",
+    "availableParallelism": 16,
+    "order": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline"
+    ],
+    "warmup": "None; four bounded complete scans with ABBA ordering, not a cold-cache-controlled experiment.",
+    "admission": "Three consecutive samples about 20 seconds apart: CPU below 40%, physical disk transfer below 10MiB/s, disk time counter below 30, foreign Node-test CPU below 5%, no detected native acceptance.",
+    "admittedCpuPercent": [
+      38,
+      31,
+      23
+    ],
+    "cpuScope": "Cumulative controller-process CPU including worker threads, excluding untimed Git children.",
+    "ioScope": "Per-process Windows cumulative IO counters and host-wide physical disk samples were persisted separately. Neither logical hashed bytes nor process IO counters are physical disk throughput attributable to this process."
+  },
+  "samples": [
+    {
+      "implementation": "baseline",
+      "workerCount": 8,
+      "wallMs": 2815019.6735,
+      "planningMs": 136389.7849,
+      "workerPoolWallMs": 2675095.9045,
+      "processCpuMs": 1435141,
+      "state": "passed"
+    },
+    {
+      "implementation": "candidate",
+      "workerCount": 16,
+      "wallMs": 2008075.6855,
+      "planningMs": 43066.2293,
+      "workerPoolWallMs": 1962517.2049,
+      "processCpuMs": 1326266,
+      "state": "passed"
+    },
+    {
+      "implementation": "candidate",
+      "workerCount": 16,
+      "wallMs": 1302895.5494,
+      "planningMs": 32335.5677,
+      "workerPoolWallMs": 1268465.6292,
+      "processCpuMs": 1327173,
+      "state": "passed"
+    },
+    {
+      "implementation": "baseline",
+      "workerCount": 8,
+      "wallMs": 2632469.6195,
+      "planningMs": 32164.9201,
+      "workerPoolWallMs": 2596583.0316,
+      "processCpuMs": 1254406,
+      "state": "passed"
+    }
+  ],
+  "historicalFirstPreflight": {
+    "totalMs": 9949362,
+    "dependencyParentMs": 9609922,
+    "initialSourceFingerprintMs": 3707107,
+    "copyMs": 1689177,
+    "postCopyByteVerificationMs": 4120616,
+    "accounting": "Child stages are already included in their parents. These historical timings are context, not a comparable current baseline."
+  },
+  "evidence": {
+    "rawReportSha256": "50bbafaaa02807e8be6c79f83c34183cdeee122ecd3ec7d4fcfb27ef7613b2cc",
+    "rawReportStatus": "passed",
+    "rawReportsAndResourceSamples": "Private and retained; source paths, raw inventories, credentials and product contents are not uploaded.",
+    "parentShellExitCode": "Unavailable: shell reclaimed. The report and stdout passed, stderr was empty and no benchmark process remained; no parent exit code is invented.",
+    "businessInvocations": 0,
+    "modelInvocations": 0,
+    "productRestoreOrFullbuildInvocations": 0,
+    "publicationEligible": false
+  }
+}

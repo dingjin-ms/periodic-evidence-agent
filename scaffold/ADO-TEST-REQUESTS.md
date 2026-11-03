@@ -125,10 +125,11 @@ continues using the existing outcome-capture gates.
 ### Scope of this increment
 
 The CLI returns clarification fields, prepared assignment IDs and normal worker
-results/PR links for the operator to relay. It **does not yet comment on ADO,
-watch the queue, fetch attachments, create sample work items, or deploy a
-schedule**. Those require separately approved transport and recovery contracts.
-There is no promise of immediate pickup just because a crew files an ADO.
+results/PR links. The opt-in [harness-support lane](ADO-HARNESS-REQUESTS.md) adds
+source-bound capability holds, authorized ADO gap/validated-harness-PR comments,
+and tag-requested agent authoring of a separate harness Draft before coverage.
+It does not watch the queue, fetch attachments, create sample work items, or deploy
+a schedule. There is no promise of immediate pickup just because a crew files an ADO.
 
 Offline qualification uses injected ADO/model/PR boundaries with disposable Git
 and SQLite resources, but real planning, bounded file tools, commit, validation,

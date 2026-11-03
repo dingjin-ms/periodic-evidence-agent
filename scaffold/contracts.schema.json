@@ -22,6 +22,7 @@
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/reviewedHandoff" },
     { "$ref": "#/$defs/adoTestRequestHandoff" },
+    { "$ref": "#/$defs/adoHarnessRequestHandoff" },
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
@@ -993,6 +994,18 @@
         }
       ]
     },
+    "adoHarnessRequestHandoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
+      "properties": {
+        "format": { "const": "ado-harness-request-handoff-v1" },
+        "intakeId": { "$ref": "#/$defs/text" },
+        "intakeSha256": { "$ref": "#/$defs/rsiHash" },
+        "reviewedAt": { "$ref": "#/$defs/utc" },
+        "review": { "$ref": "#/$defs/reviewedHandoff/properties/review" },
+        "planning": { "$ref": "#/$defs/adoTestRequestHandoff/properties/planning" }
+      }
+    },
     "adoTestRequestHandoff": {
       "type": "object", "additionalProperties": false,
       "required": ["format", "intakeId", "intakeSha256", "reviewedAt", "review", "planning"],
@@ -1561,6 +1574,18 @@
         "sourceRef": { "type": "string", "pattern": "^refs/heads/" },
         "queuedAt": { "$ref": "#/$defs/utc" },
         "blocking": { "const": false },
+        "harnessSelection": {
+          "type": "object", "additionalProperties": false,
+          "required": ["format", "baseRevision", "sourceRevision", "testPaths", "contractSha256"],
+          "properties": {
+            "format": { "const": "harness-contract-selection-v1" },
+            "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "contractSha256": { "$ref": "#/$defs/rsiHash" },
+            "testPaths": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/text" } }
+          }
+        },
         "caseSelection": {
           "type": "object", "additionalProperties": false,
           "required": ["format", "baseRevision", "sourceRevision", "scenarioPaths"],

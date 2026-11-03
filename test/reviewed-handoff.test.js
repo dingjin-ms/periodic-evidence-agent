@@ -28,7 +28,8 @@ import { beginApp, openApp, appWorker } from '../src/app-native.js';
 import { remoteValidationContract } from '../src/agency-remote-validation.js';
 
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, readCurrentTestRequest,
-  requireTestRequestPublication } from '../src/ado-test-request.js';
+  requireTestRequestPublication, verifyCurrentTestRequest } from '../src/ado-test-request.js';
+import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
 
@@ -316,6 +317,15 @@ test('sample request exercises intake through real validation and local push, wi
   assert.match(failure.stdout, /deduplication preserves formulas/);
 });
 
+async function supportedRequestAssessment(ctx) {
+  const input = { format: 'ado-test-request-capability-v1', intakeId: ctx.intake.id,
+    intakeSha256: hash(json(ctx.intake)), sourceRevision: ctx.baseRevision,
+    reviewedAt: now(), reviewer: 'fixture-reviewer', decision: 'supported', missingCapabilities: [],
+    sourcePaths: ['src/value.js'], rationale: 'Synthetic supported coverage contract.', verificationEvidence: [] };
+  recordCapabilityAssessment(ctx.config, ctx.ledger, input);
+  return input;
+}
+
 function withdrawRequest(ctx, revisionOnly = false) {
   ctx.item.rev++;
   if (!revisionOnly) ctx.item.fields['System.State'] = 'Closed';
@@ -325,13 +335,16 @@ function supersedeRequestReview(ctx, assignment) {
   ctx.ledger.put({ ...investigation, version: investigation.version + 1, state: 'blocked' });
 }
 
-for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'validation-withdrawal',
+for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 'draft-lookup-hold', 'draft-auth-hold', 'draft-read-hold', 'authoring-withdrawal', 'authoring-revision', 'validation-withdrawal',
   'push-withdrawal', 'draft-lookup-withdrawal', 'draft-auth-withdrawal', 'draft-read-review'])
   test(`ADO coverage publication blocks ${interruption} and retains authored work`, async t => {
     const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
     ctx.config.activation.dispatch = true;
     ctx.config.limits.maxAiCreditsPerSession = 1;
     let pushes = 0, drafts = 0;
+    const hold = () => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment,
+      decision: 'needs-harness', missingCapabilities: ['Newly reviewed formula evidence gap'], reviewedAt: now() });
     await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
       execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
       dispatchDependencies: {
@@ -342,6 +355,8 @@ for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'valid
             description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
               changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
               behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+          if (interruption === 'authoring-hold') hold();
+          if (interruption === 'source-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
           if (interruption.startsWith('authoring-')) withdrawRequest(ctx, interruption === 'authoring-revision');
         },
         runValidation: async (...args) => {
@@ -354,6 +369,7 @@ for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'valid
           assert.ok(admission.assignmentId);
           assert.equal(admission.readTestRequest, ctx.read);
           pushes++;
+          if (interruption === 'push-hold') hold();
           if (interruption === 'push-withdrawal') withdrawRequest(ctx);
         },
         createDraft: async (config, ledger, job, repo, revision, proposal, _request, _allow, admission) => {
@@ -364,15 +380,20 @@ for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'valid
           let tokens = 0;
           return createAdoDraft(config, ledger, job, transportRepo, revision, proposal, undefined, true, {
             getToken: async () => {
-              if (++tokens === 2 && interruption === 'draft-auth-withdrawal') withdrawRequest(ctx);
+              if (++tokens === 2) {
+                if (interruption === 'draft-auth-hold') hold();
+                if (interruption === 'draft-auth-withdrawal') { ctx.item.rev++; ctx.item.fields['System.State'] = 'Closed'; }
+              }
               return 'fixture-token';
             },
             readTestRequest: async () => {
+              if (interruption === 'draft-read-hold') hold();
               if (interruption === 'draft-read-review') supersedeRequestReview(ctx, ledger.get('assignment', job.id));
               return ctx.item;
             },
             fetchResponse: async (_url, options) => {
               if (options.method === 'GET') {
+                if (interruption === 'draft-lookup-hold') hold();
                 if (interruption === 'draft-lookup-withdrawal') withdrawRequest(ctx);
                 return Response.json({ value: [] });
               }
@@ -382,8 +403,8 @@ for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'valid
           });
         }
       }
-    }), /approved test-request|changed or was withdrawn|superseded/);
-    assert.equal(pushes, interruption === 'push-withdrawal' || interruption.startsWith('draft-') ? 1 : 0);
+    }), /Coverage is held|approved test-request|changed or was withdrawn|superseded/);
+    assert.equal(pushes, interruption === 'push-hold' || interruption === 'push-withdrawal' || interruption.startsWith('draft-') ? 1 : 0);
     assert.equal(drafts, 0);
     const job = ctx.ledger.status().jobs[0];
     assert.equal(job.state, 'blocked');
@@ -391,36 +412,41 @@ for (const interruption of ['authoring-withdrawal', 'authoring-revision', 'valid
     const result = ctx.ledger.all('workerResult').at(-1);
     assert.equal(result.outcome, 'blocked');
     assert.ok(result.sourceRevision);
-    assert.equal(result.validation[0].status, 'passed');
+    // Shared admission now observes an in-ledger hold before starting validation.
+    if (interruption === 'authoring-hold') assert.deepEqual(result.validation, []);
+    else assert.equal(result.validation[0].status, 'passed');
   });
 
-for (const transport of ['push', 'build']) for (const interruption of ['auth-withdrawal', 'source-read-review'])
-  test(`ADO ${transport} transport rechecks admission after ${interruption}`, async t => {
+for (const transport of ['push', 'build']) for (const interruption of ['auth', 'source-read', 'auth-withdrawal', 'source-read-review'])
+  test(`${transport} transport rechecks admission after ${interruption}`, async t => {
     const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
     const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
     const repo = { ...ctx.config.repositories[0], remote: 'https://dev.azure.com/fixture/project/_git/repo',
       pr: { provider: 'ado', organization: 'fixture', project: 'project', repositoryId: 'repo', targetRef: 'refs/heads/main' },
       draftBuild: { enabled: true, provider: 'ado', id: 'fixture-build', definitionId: 2 } };
+    // Use a later timestamp deterministically without timers around native Git.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const hold = () => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment,
+      decision: 'needs-evidence', reviewedAt: now() });
     let mutations = 0;
     const dependencies = { ledger: ctx.ledger, assignmentId: prepared.assignment.id,
-      getToken: async () => { if (interruption === 'auth-withdrawal') withdrawRequest(ctx); return 'fixture-token'; },
-      readTestRequest: async () => {
-        if (interruption === 'source-read-review') supersedeRequestReview(ctx, prepared.assignment);
-        return ctx.item;
-      },
-      execute: async () => { mutations++; assert.fail('Push after changed admission'); },
-      fetchResponse: async () => { mutations++; assert.fail('Build POST after changed admission'); } };
+      getToken: async () => { if (interruption === 'auth') hold(); if (interruption === 'auth-withdrawal') withdrawRequest(ctx); return 'fixture-token'; },
+      readTestRequest: async () => { if (interruption === 'source-read') hold(); if (interruption === 'source-read-review') supersedeRequestReview(ctx, prepared.assignment); return ctx.item; },
+      execute: async () => { mutations++; assert.fail('Push after a hold'); },
+      fetchResponse: async () => { mutations++; assert.fail('Build POST after a hold'); } };
     if (transport === 'push') await assert.rejects(pushDraftBranch(ctx.config, ctx.config.repositories[0].referenceCheckout,
-      repo, 'HEAD:refs/heads/fixture', dependencies), /approved test-request|superseded/);
+      repo, 'HEAD:refs/heads/fixture', dependencies), /Coverage is held|approved test-request|superseded/);
     else await assert.rejects(queueAdoDraftBuild(ctx.config, ctx.ledger, prepared.job, repo,
-      ctx.baseRevision, undefined, dependencies), /approved test-request|superseded/);
+      ctx.baseRevision, undefined, dependencies), /Coverage is held|approved test-request|superseded/);
     assert.equal(mutations, 0);
     assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'draft-build'), false);
   });
 
 for (const provider of ['agency-remote', 'agency-local'])
-  test(`ADO coverage rejects persisted ${provider} before authoring or seed publication`, async t => {
+  test(`ADO coverage rejects ${provider} before authoring or seed publication`, async t => {
     const ctx = await requestFixture(t);
+    const assessment = await supportedRequestAssessment(ctx);
     const prepared = prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff);
     ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath,
       profile: 'fixture-provider', ...(provider === 'agency-remote' ? { pollSeconds: 1 } : {}) } };
@@ -428,11 +454,15 @@ for (const provider of ['agency-remote', 'agency-local'])
     const investigation = ctx.ledger.get('investigation', prepared.assignment.investigationId);
     const external = makePlannedImprovementAssignment(ctx.config, ctx.ledger, investigation,
       prepared.assignment.testCoveragePlanId, prepared.assignment.requestedOutcome);
+    // Model an old persisted external assignment without granting it a new dispatch.
     ctx.ledger.put(external);
     const reviewId = `${ctx.intake.id}:review`;
     const review = JSON.parse(ctx.ledger.status().operations.find(row => row.id === reviewId).detail);
     ctx.ledger.finishOperation(reviewId, 'complete', { ...review, assignmentId: external.id });
     assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /final local executor/);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    recordCapabilityAssessment(ctx.config, ctx.ledger, { ...assessment, decision: 'needs-harness',
+      missingCapabilities: ['Newly reviewed capability gap'], reviewedAt: now() });
     let pushes = 0, launches = 0;
     await assert.rejects(dispatchAdoTestRequest(ctx.config, ctx.ledger, external.id, {
       readTestRequest: ctx.read,
@@ -447,6 +477,7 @@ for (const provider of ['agency-remote', 'agency-local'])
 for (const provider of ['agency-remote', 'agency-local'])
   test(`new ADO coverage preparation cannot select ${provider}`, async t => {
     const ctx = await requestFixture(t);
+    await supportedRequestAssessment(ctx);
     ctx.config.authoringProviders = { external: { type: provider, executable: process.execPath, profile: 'fixture-provider' } };
     ctx.config.repositories[0].skillBindings[0].authoringProvider = 'external';
     await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.handoff, {
@@ -456,7 +487,7 @@ for (const provider of ['agency-remote', 'agency-local'])
     assert.equal(ctx.ledger.status().jobs.length, 0);
   });
 
-test('app-native rejects new and persisted ADO execution paths', async t => {
+test('shared admission enforces holds and app-native rejects unsupported ADO execution paths', async t => {
   const ctx = await requestFixture(t);
   ctx.config.activation.collect = true;
   ctx.config.activation.dispatch = true;
@@ -469,13 +500,21 @@ test('app-native rejects new and persisted ADO execution paths', async t => {
     const key = skillQualificationId('office-agent', binding.id);
     ledger.qualify(key, ctx.ledger.qualification(key));
   }
-  const intake = await collectTestRequest(ctx.config, ledger, 123, { read: ctx.read });
-  const handoff = { ...ctx.handoff, intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() };
-  const { assignment } = prepareTestRequest(ctx.config, ledger, handoff);
+  ctx.ledger = ledger;
+  ctx.intake = await collectTestRequest(ctx.config, ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = ctx.intake.id;
+  ctx.handoff.intakeSha256 = hash(json(ctx.intake));
+  ctx.handoff.reviewedAt = now();
+  const assessment = await supportedRequestAssessment(ctx);
+  const prepared = prepareTestRequest(ctx.config, ledger, ctx.handoff);
+  const assignment = prepared.assignment;
   const prepareInput = { investigationId: assignment.investigationId, repoId: assignment.repoId,
     intent: assignment.intent, testCoveragePlanId: assignment.testCoveragePlanId };
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'prepare', prepareInput), /app-native execution is not supported/);
-  // Simulate an app worker persisted before this guard existed.
+  recordCapabilityAssessment(ctx.config, ledger, { ...assessment, decision: 'needs-evidence', reviewedAt: now() });
+  assert.throws(() => requireCurrentAssignment(ctx.config, ledger, ledger.get('investigation', assignment.investigationId), assignment), /Coverage is held/);
+  assert.throws(() => appWorker(ctx.config, ledger, runId, 'prepare', prepareInput), /app-native execution is not supported/);
+  // Simulate an app worker persisted by the previous version before this guard existed.
   ledger.db.prepare('INSERT INTO app_workers VALUES(?,?)').run(assignment.id, json({ id: assignment.id,
     runId, state: 'prepared', assignment, claimId: null, execution: 'external-app-native-session' }));
   const claim = { assignmentId: assignment.id, claimId: 'fixture-claim', coordinatorAgentId: ctx.config.agent.id };
@@ -485,6 +524,421 @@ test('app-native rejects new and persisted ADO execution paths', async t => {
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'claim', claim), /app-native execution is not supported/);
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'bind', claim), /app-native execution is not supported/);
   assert.throws(() => appWorker(ctx.config, ledger, runId, 'result', { ...claim, outcome: 'draft-reported' }), /app-native execution is not supported/);
+});
+
+async function harnessFixture(t) {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-01T00:00:00Z') });
+  const ctx = await requestFixture(t);
+  const repo = ctx.config.repositories[0];
+  ctx.config.adoTestRequests.harnessSupport = {
+    enabled: true, scopeApproved: true, approvalRef: 'synthetic-harness-approval',
+    capability: 'e2e-harness-authoring', requestedOutcome: 'extend-e2e-harness'
+  };
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'synthetic-feedback' };
+  repo.allowedWritePrefixes.push('harness');
+  const binding = { ...structuredClone(repo.skillBindings[0]), id: 'fixture-harness',
+    capability: 'e2e-harness-authoring', requestedOutcomes: ['extend-e2e-harness'],
+    allowedWritePrefixes: ['harness'], requiresBehaviorCard: false };
+  repo.skillBindings.push(binding);
+  const qualification = ctx.ledger.qualification(skillQualificationId(repo.id, repo.skillBindings[0].id));
+  ctx.ledger.qualify(skillQualificationId(repo.id, binding.id), {
+    ...qualification, bindingId: binding.id, capability: binding.capability
+  });
+  ctx.item.rev++;
+  ctx.item.fields['System.Tags'] += '; AgenticHarnessRequest';
+  ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = ctx.intake.id;
+  ctx.handoff.intakeSha256 = hash(json(ctx.intake));
+  ctx.assessmentInput = { format: 'ado-test-request-capability-v1', intakeId: ctx.intake.id,
+    intakeSha256: hash(json(ctx.intake)), sourceRevision: ctx.baseRevision,
+    reviewedAt: '2026-10-02T00:00:00Z', reviewer: 'synthetic-source-review', decision: 'needs-harness',
+    missingCapabilities: ['Formula metadata is not exposed by the workbook reader.'],
+    sourcePaths: ['harness/reader.js'], rationale: 'Synthetic gap for routing qualification.', verificationEvidence: [] };
+  t.mock.timers.setTime(new Date('2026-10-05T00:00:00Z').getTime());
+  ctx.handoff.reviewedAt = now();
+  ctx.assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput);
+  ctx.harnessHandoff = structuredClone(ctx.handoff);
+  ctx.harnessHandoff.format = 'ado-harness-request-handoff-v1';
+  ctx.harnessHandoff.planning.improvement.category = 'test-maintainability';
+  ctx.harnessHandoff.planning.improvement.capabilities = ['e2e-harness-authoring'];
+  ctx.harnessHandoff.planning.testCoverage.capability = 'e2e-harness-authoring';
+  ctx.harnessHandoff.planning.requestedOutcome = 'extend-e2e-harness';
+  ctx.harnessHandoff.review.nextAction = 'Extend only the reusable fixture reader and add contract tests; no product scenario.';
+  return ctx;
+}
+
+test('harness gap holds coverage and prepares one separate bounded agent assignment', async t => {
+  const ctx = await harnessFixture(t);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  assert.deepEqual(recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput), ctx.assessment);
+  const first = prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff);
+  assert.equal(first.assignment.capability, 'e2e-harness-authoring');
+  assert.deepEqual(first.assignment.allowedWritePrefixes, ['harness']);
+  assert.equal(first.assignment.requestedOutcome, 'extend-e2e-harness');
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment.id, first.assignment.id);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+  const equivalent = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: now() });
+  assert.equal(equivalent.id, ctx.assessment.id);
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment.id, first.assignment.id);
+  await verifyCurrentTestRequest(ctx.config, ctx.ledger, first.assignment.id, ctx.read);
+  ctx.item.rev++;
+  ctx.item.fields['System.Tags'] = 'AgenticTestRequest';
+  await assert.rejects(verifyCurrentTestRequest(ctx.config, ctx.ledger, first.assignment.id, ctx.read), /changed or was withdrawn/);
+  await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff), /superseded/);
+});
+
+for (const condition of ['no-tag', 'overlapping-bounds', 'normalized-overlap', 'unapproved', 'environment', 'no-assessment'])
+  test(`harness route rejects ${condition}`, async t => {
+    const ctx = await harnessFixture(t);
+    if (condition === 'overlapping-bounds') ctx.config.repositories[0].skillBindings[1].allowedWritePrefixes = ['test'];
+    if (condition === 'normalized-overlap') ctx.config.repositories[0].skillBindings[1].allowedWritePrefixes = ['./test/'];
+    if (condition === 'unapproved') ctx.config.adoTestRequests.harnessSupport.scopeApproved = false;
+    if (['no-tag', 'no-assessment'].includes(condition)) {
+      ctx.item.rev++;
+      if (condition === 'no-tag') ctx.item.fields['System.Tags'] = 'AgenticTestRequest; AgenticHarnessRequestOther';
+      const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+      ctx.harnessHandoff.intakeId = intake.id;
+      ctx.harnessHandoff.intakeSha256 = hash(json(intake));
+      if (condition === 'no-tag') recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+        intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() });
+    }
+    if (condition === 'environment') recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+      decision: 'blocked-environment', missingCapabilities: [], reviewedAt: '2026-10-03T00:00:00Z' });
+    assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff));
+    assert.equal(ctx.ledger.all('assignment').length, 0);
+  });
+
+test('harness preparation rejects a selected hosted Agency executor before persisting work', async t => {
+  const ctx = await harnessFixture(t);
+  let assignment;
+  const rollback = new Error('fixture inspection rollback');
+  assert.throws(() => ctx.ledger.transaction(() => {
+    assignment = prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff).assignment;
+    throw rollback;
+  }), error => error === rollback);
+  ctx.config.agency = { selections: [{ taskId: assignment.id, repoId: assignment.repoId, role: 'proposer',
+    suiteId: 'fixture-suite', profileId: 'fixture-profile', qualificationId: 'fixture-qualification',
+    qualificationSha256: 'a'.repeat(64), sourceRevision: ctx.baseRevision, targetRef: 'refs/heads/main',
+    payloadSha256: 'b'.repeat(64), instructionsSha256: 'c'.repeat(64), resultKind: 'validation', allowPush: true,
+    dispatchAllowed: true, maxExecutionSeconds: 60, allowedPaths: ['harness'], forbiddenPaths: ['src'],
+    caseContract: { cases: [{ suite: 'harness', title: 'formula metadata', status: 'passed' }], scenarios: ['harness'],
+      commands: [{ id: 'fixture-test', phase: 'test', command: 'node --test', cwd: '.' }] } }] };
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff), /final local executor/);
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+  assert.equal(ctx.ledger.status().jobs.length, 0);
+});
+
+test('a new request revision cannot duplicate an existing harness assignment', async t => {
+  const ctx = await harnessFixture(t);
+  prepareTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff);
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, intakeId: intake.id,
+    intakeSha256: hash(json(intake)), reviewedAt: now() });
+  const handoff = { ...ctx.harnessHandoff, intakeId: intake.id, intakeSha256: hash(json(intake)) };
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, handoff), /Prior harness assignment/);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+});
+
+test('enabled harness routing requires a supported assessment even without a recorded gap', async t => {
+  const ctx = await requestFixture(t);
+  ctx.config.adoTestRequests.harnessSupport = { enabled: true };
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  ctx.handoff.intakeId = intake.id;
+  ctx.handoff.intakeSha256 = hash(json(intake));
+  ctx.handoff.reviewedAt = now();
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+});
+
+test('coverage reassessment requires changed revision and qualification evidence, including through intermediate states', async t => {
+  const ctx = await harnessFixture(t);
+  const supported = { ...ctx.assessmentInput, decision: 'supported', missingCapabilities: [], reviewedAt: '2026-10-04T00:00:00Z' };
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /new harness revision/);
+  recordCapabilityAssessment(ctx.config, ctx.ledger, { ...supported, decision: 'needs-evidence', reviewedAt: '2026-10-03T00:00:00Z' });
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /new harness revision/);
+  const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
+  ctx.ledger.qualify(qualificationId, { ...ctx.ledger.qualification(qualificationId), baseRevision: 'a'.repeat(40) });
+  supported.sourceRevision = 'a'.repeat(40);
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, supported), /verification evidence/);
+  supported.verificationEvidence = ['Synthetic integrated harness contract test receipt'];
+  recordCapabilityAssessment(ctx.config, ctx.ledger, supported);
+  ctx.handoff.planning.testCoverage.sourceRevision = supported.sourceRevision;
+  assert.equal(prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff).assignment.capability, 'integration-test-authoring');
+});
+
+test('equivalent holds retain latest review freshness without changing semantic identity', async t => {
+  const ctx = await harnessFixture(t);
+  const hold = { ...ctx.assessmentInput, decision: 'needs-evidence', missingCapabilities: [], reviewedAt: '2026-10-03T00:00:00Z' };
+  const first = recordCapabilityAssessment(ctx.config, ctx.ledger, hold);
+  assert.equal(recordCapabilityAssessment(ctx.config, ctx.ledger, { ...hold, reviewedAt: '2026-10-05T00:00:00Z' }).id, first.id);
+  const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
+  ctx.ledger.qualify(qualificationId, { ...ctx.ledger.qualification(qualificationId), baseRevision: 'a'.repeat(40) });
+  assert.throws(() => recordCapabilityAssessment(ctx.config, ctx.ledger, { ...hold, decision: 'supported',
+    sourceRevision: 'a'.repeat(40), reviewedAt: '2026-10-04T00:00:00Z', verificationEvidence: ['new revision test receipt'] }), /advance its timestamp/);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+});
+
+for (const buildMode of ['disabled', 'harness', 'missing-contract', 'unapproved', 'selection-override']) test(`harness proposer publication with ${buildMode} build contract`, async t => {
+  const ctx = await harnessFixture(t);
+  if (buildMode !== 'disabled') {
+    ctx.config.repositories[0].id = '1js';
+    ctx.config.adoTestRequests.repoId = '1js';
+    for (const handoff of [ctx.handoff, ctx.harnessHandoff]) {
+      handoff.review.repoIds = ['1js'];
+      handoff.planning.improvement.repoIds = ['1js'];
+      handoff.planning.testCoverage.repoId = '1js';
+    }
+    for (const binding of ctx.config.repositories[0].skillBindings) ctx.ledger.qualify(skillQualificationId('1js', binding.id), {
+      ...ctx.ledger.qualification(skillQualificationId('office-agent', binding.id)), repoId: '1js'
+    });
+    ctx.item.rev++;
+    ctx.intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+    ctx.assessmentInput = { ...ctx.assessmentInput, intakeId: ctx.intake.id, intakeSha256: hash(json(ctx.intake)), reviewedAt: now() };
+    ctx.assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput);
+    for (const handoff of [ctx.handoff, ctx.harnessHandoff]) {
+      handoff.intakeId = ctx.intake.id;
+      handoff.intakeSha256 = hash(json(ctx.intake));
+    }
+    ctx.config.repositories[0].pr = { provider: 'ado', organization: 'fixture', project: 'project',
+      repositoryId: '1js', targetRef: 'refs/heads/main', sourceBranchPrefix: 'fixture' };
+    ctx.config.repositories[0].draftBuild = { enabled: true, provider: 'ado', id: 'coverage', definitionId: 1,
+      ...(buildMode !== 'missing-contract' ? { harness: { enabled: true, scopeApproved: buildMode !== 'unapproved', approvalRef: 'fixture-build-approval',
+        provider: 'ado', id: 'harness-contracts', definitionId: 2, testPaths: ['harness/reader.test.js'],
+        templateParameters: buildMode === 'selection-override' ? { harnessSelection: 'untrusted override' } : {} } } : {}) };
+  }
+  t.mock.timers.reset();
+  ctx.config.activation.dispatch = true;
+  ctx.config.limits.maxAiCreditsPerSession = 1;
+  const repo = ctx.config.repositories[0];
+  repo.validationGates[0].args = ['--test', 'harness/reader.test.js'];
+  const contract = repositoryValidationContract(repo);
+  const key = skillQualificationId(repo.id, 'fixture-harness');
+  ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), validationContractVersion: contract.version,
+    validationContractSha256: contract.sha256 });
+  await command('git', ['init', '--bare', '--quiet', ctx.remote], ctx.root);
+  let models = 0, drafts = 0;
+  const options = { execute: true, authorizeCommit: true, authorizePush: true, authorizeDraftPR: true, read: ctx.read,
+    dispatchDependencies: {
+      runModel: async (_config, _ledger, _job, assignment, _investigation, toolkit) => {
+        models++;
+        assert.equal(assignment.capability, 'e2e-harness-authoring');
+        assert.match(assignment.questions[0], /Formula metadata/);
+        assert.throws(() => toolkit.write('test/new-product-case.js', 'bad'), /bounds|scope|allowed/);
+        toolkit.write('harness/reader.js', 'export const formula = cell => cell.formula ?? null;\n');
+        toolkit.write('harness/reader.test.js', "import assert from 'node:assert/strict';\nimport { formula } from './reader.js';\nassert.equal(formula({formula: '=B2*C2', value: 6}), '=B2*C2');\nassert.equal(formula({value: 6}), null);\n");
+        toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic formula-aware reader contract.',
+          title: 'Extend harness formula evidence', description: 'Harness-only fixture; no product scenario.',
+          skillResult: { status: 'succeeded', classification: 'test-maintainability',
+            changedFiles: ['harness/reader.js', 'harness/reader.test.js'], testsAddedOrUpdated: ['formula evidence'],
+            behaviorCardsAddedOrUpdated: [], unknowns: [], needsHumanDecision: false } });
+      },
+      queueDraftBuild: async (config, ledger, job, repo, revision) => queueAdoDraftBuild(config, ledger, job, repo, revision, async body => {
+        assert.equal(body.definition.id, 2);
+        assert.equal(body.templateParameters.newCaseSelection, undefined);
+        const selection = JSON.parse(body.templateParameters.harnessSelection);
+        assert.equal(selection.format, 'harness-contract-selection-v1');
+        assert.equal(selection.sourceRevision, revision);
+        assert.deepEqual(selection.testPaths, ['harness/reader.test.js']);
+        return { id: 31 };
+      }, { readTestRequest: ctx.read }),
+      createDraft: async (_config, _ledger, _job, _repo, revision, proposal) => {
+        drafts++;
+        if (buildMode === 'harness') assert.match(proposal.description, /harness contract tests only/);
+        return { url: 'https://example.invalid/harness/draft/1', isDraft: true, headRevision: revision };
+      }
+    } };
+  if (['missing-contract', 'unapproved', 'selection-override'].includes(buildMode)) {
+    await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options), /separate approved harness Draft build|controller-owned selections/);
+    assert.equal(drafts, 0);
+    assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'push'), false);
+    return;
+  }
+  const result = await acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options);
+  assert.equal(result.result.outcome, 'draft-pr-validated', json(result.result));
+  assert.equal(result.result.validation[0].status, 'passed');
+  assert.equal(result.result.draftPR.headRevision, result.result.sourceRevision);
+  const equivalent = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: now() });
+  assert.equal(equivalent.id, ctx.assessment.id);
+  let comments = 0;
+  const feedback = { authorizeComment: true, assignmentId: result.assignment.id, read: ctx.read,
+    getToken: async () => 'fixture-token', fetchResponse: async (_url, options) => {
+      comments++;
+      assert.match(JSON.parse(options.body).text, /https:\/\/example.invalid\/harness\/draft\/1/);
+      return Response.json({ id: 55, workItemId: 123 });
+    } };
+  await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, feedback);
+  await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, feedback);
+  assert.equal(comments, 1);
+  assert.throws(() => prepareTestRequest(ctx.config, ctx.ledger, ctx.handoff), /Coverage is held/);
+  await assert.rejects(acceptTestRequest(ctx.config, ctx.ledger, ctx.harnessHandoff, options), /never-dispatched/);
+  assert.equal(models, 1);
+  assert.equal(drafts, 1);
+  ctx.item.rev++;
+  ctx.item.fields['System.Title'] += ' clarified';
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+    intakeId: intake.id, intakeSha256: hash(json(intake)), reviewedAt: now() });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, feedback), /association reconciliation/);
+  const association = { assignmentId: result.assignment.id, assessmentId: assessment.id,
+    reviewer: 'fixture-owner', reviewedAt: now(), evidenceRef: 'Title-only change inspected' };
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, association, { read: ctx.read }), /authorization/);
+  ctx.item.rev++;
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, association, {
+    authorizeReconciliation: true, read: ctx.read }), /changed before harness association/);
+  ctx.item.rev--;
+  await reconcileHarnessAssociation(ctx.config, ctx.ledger, association, { authorizeReconciliation: true, read: ctx.read });
+  await publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, feedback);
+  assert.equal(comments, 2);
+  assert.equal(ctx.ledger.all('assignment').length, 1);
+  ctx.item.rev++;
+  ctx.item.fields['System.Description'] += '\nChanged expected contract.';
+  const changed = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const changedAssessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput,
+    intakeId: changed.id, intakeSha256: hash(json(changed)), reviewedAt: now() });
+  await assert.rejects(reconcileHarnessAssociation(ctx.config, ctx.ledger, { ...association,
+    assessmentId: changedAssessment.id, reviewedAt: now() }, { authorizeReconciliation: true, read: ctx.read }), /title-only/);
+});
+
+test('capability feedback is escaped, authorized, source checked and posted at most once', async t => {
+  const ctx = await harnessFixture(t);
+  assert.match(capabilityComment(ctx.assessment), /not yet supported by the test harness/);
+  assert.doesNotMatch(capabilityComment({ ...ctx.assessment, missingCapabilities: ['<script>unsafe</script>'] }), /<script>/);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async (url, options) => {
+      posts++;
+      assert.equal(options.redirect, 'error');
+      assert.equal(options.method, 'POST');
+      assert.match(url, /workItems\/123\/comments\?format=html&api-version=7.1-preview.4$/);
+      assert.match(JSON.parse(options.body).text, /AgenticHarnessRequest/);
+      return Response.json({ id: 44, workItemId: 123 });
+    } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, authorizeComment: false }), /authorization/);
+  assert.equal(posts, 0);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options);
+  assert.equal(result.commentId, 44);
+  assert.deepEqual(await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), result);
+  assert.equal(posts, 1);
+  const repeated = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, reviewedAt: '2026-10-03T00:00:00Z' });
+  await publishCapabilityComment(ctx.config, ctx.ledger, repeated.id, options);
+  assert.equal(posts, 1);
+});
+
+test('feedback refuses unapproved local state before ledger or external access', async t => {
+  const ctx = await harnessFixture(t);
+  ctx.config.statePolicy.accessApproved = false;
+  const ledger = new Proxy({}, { get() { assert.fail('Ledger accessed before state approval'); } });
+  const forbidden = () => assert.fail('External boundary called before state approval');
+  await assert.rejects(publishCapabilityComment(ctx.config, ledger, ctx.assessment.id, {
+    authorizeComment: true, read: forbidden, getToken: forbidden, fetchResponse: forbidden
+  }), /approved local state/);
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ledger, {}, { authorizeReconciliation: true }), /approved local state/);
+});
+
+for (const change of ['source', 'authorization']) test(`feedback admission rechecks ${change} after authentication`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true,
+    getToken: async () => {
+      if (change === 'source') { ctx.item.rev++; ctx.item.fields['System.Title'] += ' changed during auth'; }
+      else ctx.config.adoTestRequests.feedback.enabled = false;
+      return 'fixture-token';
+    }, read: ctx.read, fetchResponse: async () => { posts++; assert.fail('Feedback POST after revoked admission'); }
+  }), /changed before feedback|authorization/);
+  assert.equal(posts, 0);
+  assert.equal(ctx.ledger.status().operations.some(row => row.kind === 'ado-test-request-feedback'), false);
+});
+
+test('feedback activation does not invalidate unchanged intake or capability assessment', async t => {
+  const ctx = await harnessFixture(t);
+  ctx.config.adoTestRequests.feedback.enabled = false;
+  assert.deepEqual(await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read }), ctx.intake);
+  assert.deepEqual(recordCapabilityAssessment(ctx.config, ctx.ledger, ctx.assessmentInput), ctx.assessment);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true }), /authorization/);
+  ctx.config.adoTestRequests.feedback = { enabled: true, scopeApproved: true, approvalRef: 'new-feedback-grant' };
+  assert.deepEqual(await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read }), ctx.intake);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { authorizeComment: true,
+    read: ctx.read, getToken: async () => 'fixture-token', fetchResponse: async () => Response.json({ id: 70, workItemId: 123 }) });
+  assert.equal(result.commentId, 70);
+});
+
+for (const status of [401, 403]) test(`definitive ${status} feedback rejection permits only an authorized retry`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; return posts === 1 ? new Response('', { status }) : Response.json({ id: 71, workItemId: 123 }); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), error => error.code === 'blocked-auth');
+  const rejected = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  assert.equal(rejected.state, 'rejected');
+  assert.equal(JSON.parse(rejected.detail).status, status);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /retry-rejected/);
+  assert.equal(posts, 1);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, retryRejected: true });
+  assert.equal(result.commentId, 71);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.prior.detail.status, status);
+  assert.equal(posts, 2);
+});
+
+for (const disposition of ['posted', 'not-posted']) test(`uncertain feedback blocks newer revisions until explicit ${disposition} reconciliation`, async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('response lost'); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  const uncertain = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  ctx.item.rev++;
+  const intake = await collectTestRequest(ctx.config, ctx.ledger, 123, { read: ctx.read });
+  const assessment = recordCapabilityAssessment(ctx.config, ctx.ledger, { ...ctx.assessmentInput, intakeId: intake.id,
+    intakeSha256: hash(json(intake)), reviewedAt: now() });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, { ...options, retryRejected: true }), /uncertain/);
+  assert.equal(posts, 1);
+  const reconciliation = { operationId: uncertain.id, expectedOperationSha256: hash(json(uncertain)),
+    disposition, commentId: disposition === 'posted' ? 73 : null, reviewer: 'human-fixture', reviewedAt: now(),
+    evidenceRef: 'Synthetic bounded ADO comment history inspection' };
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ctx.ledger, reconciliation), /authorization/);
+  assert.throws(() => reconcileCapabilityComment(ctx.config, ctx.ledger, { ...reconciliation, expectedOperationSha256: 'a'.repeat(64) },
+    { authorizeReconciliation: true }), /operation changed/);
+  reconcileCapabilityComment(ctx.config, ctx.ledger, reconciliation, { authorizeReconciliation: true });
+  assert.equal(ctx.ledger.status().operations.find(row => row.id === uncertain.id).state, disposition === 'posted' ? 'complete' : 'not-posted');
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, assessment.id, { ...options,
+    fetchResponse: async () => { posts++; return Response.json({ id: 74, workItemId: 123 }); } });
+  assert.equal(result.commentId, 74);
+  assert.equal(posts, 2);
+});
+
+test('reconciled not-posted feedback retries the same revision only with explicit authorization', async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('uncertain response'); } };
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  const row = ctx.ledger.status().operations.find(row => row.kind === 'ado-test-request-feedback');
+  reconcileCapabilityComment(ctx.config, ctx.ledger, { operationId: row.id, expectedOperationSha256: hash(json(row)),
+    disposition: 'not-posted', commentId: null, reviewer: 'fixture-owner', reviewedAt: now(),
+    evidenceRef: 'Synthetic inspected remote history and stopped original publisher' }, { authorizeReconciliation: true });
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /retry-rejected/);
+  const result = await publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, { ...options, retryRejected: true,
+    fetchResponse: async () => { posts++; return Response.json({ id: 75, workItemId: 123 }); } });
+  assert.equal(posts, 2);
+  assert.equal(result.prior.detail.reconciliation.disposition, 'not-posted');
+});
+
+test('uncertain ADO writes never retry and changed requests never post', async t => {
+  const ctx = await harnessFixture(t);
+  let posts = 0;
+  const options = { authorizeComment: true, read: ctx.read, getToken: async () => 'fixture-token',
+    fetchResponse: async () => { posts++; throw new Error('network lost after write'); } };
+  ctx.item.rev++;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /changed before feedback/);
+  assert.equal(posts, 0);
+  ctx.item.rev--;
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  await assert.rejects(publishCapabilityComment(ctx.config, ctx.ledger, ctx.assessment.id, options), /uncertain/);
+  assert.equal(posts, 1);
 });
 
 function finishRequestFixture(toolkit) {

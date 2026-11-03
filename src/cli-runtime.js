@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from './ado-harness-request.js';
 import { dirname, resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +95,21 @@ try {
   requireThat(!(roleInvocation && action === 'self-improvement'),
     'Self-improvement is not an evidence-role operation', 'blocked-scope');
   if (roleInvocation) agent = agentInvocation(role, action);
+  if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action)) {
+    const values = action === 'comment-test-request' ? ['--config', '--assessment', '--assignment'] : ['--config', '--file'];
+    const switches = action === 'comment-test-request' ? ['--authorize-comment', '--retry-rejected']
+      : action.startsWith('reconcile-') ? ['--authorize-reconciliation'] : [];
+    const seen = new Set();
+    for (let index = 0; index < args.length; index++) {
+      const key = args[index];
+      requireThat(!seen.has(key) && [...values, ...switches].includes(key),
+        'Unknown or duplicate test-request option', 'blocked-scope');
+      seen.add(key);
+      if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Test-request option needs a value');
+    }
+    requireThat([...values, ...switches].filter(key => !['--assignment', '--retry-rejected'].includes(key)).every(key => seen.has(key)),
+      'Test-request assessment/feedback requires explicit inputs and comment authorization', 'blocked-authorization');
+  }
   if (['ado-test-request', 'submit-test-request'].includes(action)) {
     requireThat(option('--config') && !option('--config').startsWith('--'),
       'Test-request commands require an explicit --config', 'blocked-authorization');
@@ -259,6 +275,10 @@ try {
   }
   else {
     const config = configAt(resolve(configFile));
+    if (['assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))
+      requireThat(config.statePolicy.accessApproved === true,
+        'Test-request feedback/review requires approved local state', 'blocked-authorization');
+
     if (['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run'].includes(action))
       requireThat(rsiPolicy(config).enabled, 'RSI is disabled for this configuration', 'blocked-authorization');
     if (config.rsi?.enabled || ['rsi-work', 'app-rsi-work', 'rsi-run', 'app-rsi-run', 'app-end'].includes(action))
@@ -661,6 +681,25 @@ try {
         ledger.qualify(skillQualificationId(result.repoId, result.bindingId), result);
         break;
       }
+      case 'assess-test-request':
+        result = recordCapabilityAssessment(config, ledger, input());
+        break;
+      case 'reconcile-harness-association':
+        result = await reconcileHarnessAssociation(config, ledger, input(), {
+          authorizeReconciliation: args.includes('--authorize-reconciliation')
+        });
+        break;
+      case 'reconcile-test-request-comment':
+        result = reconcileCapabilityComment(config, ledger, input(), {
+          authorizeReconciliation: args.includes('--authorize-reconciliation')
+        });
+        break;
+      case 'comment-test-request':
+        result = await publishCapabilityComment(config, ledger, option('--assessment'), {
+          authorizeComment: args.includes('--authorize-comment'), retryRejected: args.includes('--retry-rejected'),
+          assignmentId: option('--assignment') ?? null
+        });
+        break;
       case 'ado-test-request':
         result = await collectTestRequest(config, ledger, Number(option('--id')));
         break;

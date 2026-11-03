@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { globSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism, cpus, freemem, totalmem } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function discoverCiGroups(cwd = process.cwd()) {
@@ -13,10 +13,11 @@ export function discoverCiGroups(cwd = process.cwd()) {
   const files = globSync(`**/{test,test/**/*,test-*,*[._-]test}.{${extensions}}`, {
     cwd, exclude: path => basename(path) === 'node_modules'
   }).sort();
-  const pilot = files.filter(path => path === join('test', 'pilot.test.js'));
+  const pilot = files.filter(path =>
+    dirname(path) === 'test' && /^pilot(?:-.+)?\.test\.js$/.test(basename(path)));
   const demo = files.filter(path => path === join('test', 'demo.test.js'));
   const remaining = files.filter(path => !pilot.includes(path) && !demo.includes(path));
-  if (pilot.length !== 1 || demo.length !== 1 || remaining.length === 0 ||
+  if (!pilot.includes(join('test', 'pilot.test.js')) || demo.length !== 1 || remaining.length === 0 ||
       new Set([...pilot, ...remaining, ...demo]).size !== files.length)
     throw new Error('CI partitions must cover every discovered file exactly once, with nonempty pilot, remaining and demo groups');
   return { files, groups: { pilot, remaining, demo },

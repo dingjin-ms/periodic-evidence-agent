@@ -1,11 +1,32 @@
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { hash, requireThat, PilotError } from './common.js';
 
-const exec = promisify(execFile);
 const supervisor = fileURLToPath(new URL('./native-command.ps1', import.meta.url));
+
+function exec(executable, args, options) {
+  let child, streamError;
+  const result = new Promise((resolve, reject) => {
+    child = execFile(executable, args, options, (error, stdout, stderr) => {
+      const failure = streamError ?? error;
+      if (failure) {
+        Object.assign(failure, { stdout, stderr });
+        if (streamError && error) Object.assign(failure, { killed: error.killed, signal: error.signal });
+        reject(failure);
+      } else resolve({ stdout, stderr });
+    });
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      stream?.once('error', error => {
+        streamError ??= error;
+        child.kill();
+      });
+    }
+  });
+  result.child = child;
+  return result;
+}
 
 export function nativeTemporaryDirectory(stateDirectory, key) {
   const path = join(stateDirectory, 'nt', hash(key).slice(0, 24));
@@ -23,9 +44,30 @@ export function nativeCommand(executable, args, cwd, timeout, env, { signal } = 
     return Promise.reject(new PilotError('blocked-native-environment',
       'Native validation requires PATHEXT including .EXE; restore the host environment before retrying'));
   const host = /^pwsh(?:\.exe)?$/i.test(basename(executable)) ? executable : 'pwsh.exe';
-  return exec(host,
+  const jobName = `Local\\PilotNative-${randomUUID()}`;
+  const invoke = request => exec(host,
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', supervisor], {
       ...options,
-      env: { ...env, PILOT_NATIVE_COMMAND: JSON.stringify({ executable, args }) }
+      ...(request.action === 'drain' ? { timeout: 20000, signal: undefined } : {}),
+      env: { ...env, PILOT_NATIVE_COMMAND: JSON.stringify(request) }
     });
+  const launched = invoke({ executable, args, jobName });
+  const completed = (async () => {
+    let result, failure;
+    try { result = await launched; }
+    catch (error) { failure = error; }
+    try { await invoke({ action: 'drain', jobName }); }
+    catch {
+      const error = failure ?? new Error('Native command process-tree exit was not confirmed');
+      error.containmentFailure = true;
+      throw error;
+    }
+    if (failure) {
+      failure.ownedProcessesExited = true;
+      throw failure;
+    }
+    return { ...result, ownedProcessesExited: true };
+  })();
+  completed.child = launched.child;
+  return completed;
 }

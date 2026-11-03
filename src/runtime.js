@@ -31,11 +31,12 @@ export function createClient(config, workingDirectory, workplace = false) {
     useLoggedInUser: true
   });
 }
-export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '' } = {}) {
+export function restrictedSession(tools, { sessionId, workingDirectory, prompt = '', model } = {}) {
   const { ToolSet } = loadSdk();
   const names = new Set(tools.map(t => t.name));
   return {
     sessionId, workingDirectory, tools,
+    ...(model ? { model } : {}),
     availableTools: tools.reduce((set, tool) => set.addCustom(tool.name), new ToolSet()),
     onPermissionRequest: () => ({ kind: 'denied-by-rules' }),
     hooks: {
@@ -47,6 +48,12 @@ export function restrictedSession(tools, { sessionId, workingDirectory, prompt =
     systemMessage: { mode: 'append', content: prompt },
     onUserInputRequest: () => { throw new PilotError('blocked-input', 'Worker needs operator input; no implicit approval'); }
   };
+}
+export function authoringSession(client, tools, options, round) {
+  const configuration = restrictedSession(tools, options);
+  return round > 0
+    ? client.resumeSession(options.sessionId, configuration)
+    : client.createSession(configuration);
 }
 export async function withClient(config, cwd, fn, workplace = false) {
   const client = createClient(config, cwd, workplace);

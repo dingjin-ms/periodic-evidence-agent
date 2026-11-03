@@ -1,0 +1,52 @@
+{
+  "format": "1js-native-continuation-proof-v1",
+  "runId": "1js-chat-only-full-live-20261023",
+  "generatedAt": "2026-10-23T15:14:52.617Z",
+  "state": "draft-pr-validated",
+  "sourceRevision": "158cd1d1a8dac2818abbd984d6067ce79268714c",
+  "reconciledResultId": "da6739c3-91da-4989-8a9c-71016e5dd892",
+  "allCloudTestsGreen": false,
+  "privateIndexSha256": "ed38d3c457da1c29c44606a24f66d0bedf04da742128eee3dcdfe404a32d5805",
+  "artifacts": [
+    {
+      "name": "01-collection.json",
+      "sha256": "ab246d14d5dcdf028faf39ee8f1939975cabedecd974f2165c9e8b4fdc22d0f4"
+    },
+    {
+      "name": "02-selection-handoff.json",
+      "sha256": "c10640191c2a44b6a69a999b633d56703904e37e7ce2eac1a51aca40f552e91b"
+    },
+    {
+      "name": "03-1js-authoring.json",
+      "sha256": "8a6991880fb862e9e06e80734c74aeef75564f9a0e5acb6e3103d9d1ff29ca46"
+    },
+    {
+      "name": "04-validation.json",
+      "sha256": "9046f277c0dff96c4a11ad479c5d2a93a0eeb41e173f42bc09d5a823303afb28"
+    },
+    {
+      "name": "05-publication.json",
+      "sha256": "0c51f44fde8adecd08b645a840c7c4bb1b77cd91dec24b816eea041e52752d99"
+    },
+    {
+      "name": "06-recovery-and-follow-ups.json",
+      "sha256": "f90692ec8a665bc04d6f6863fc354dfdc06bd64315a8476e87ef1cc7be77144c"
+    },
+    {
+      "name": "07-safety-and-performance.json",
+      "sha256": "19cbd6a61d1811a588f6bcf49b76e152384c5da8f59e11fa1989238ccb134700"
+    },
+    {
+      "name": "08-private-evidence-index.json",
+      "sha256": "9c8b11b7f9e53349c9b7535293d0f81708c246adbbc551cf873d638fbec9e1de"
+    },
+    {
+      "name": "README.md",
+      "sha256": "0d7b8d54bed5c404a1e059b586a1dc29cae7b38ddf08f877eefc00f21749fe22"
+    },
+    {
+      "name": "verify.mjs",
+      "sha256": "4e869d1a8761859748a144c22c746f036da3a6724598160a6b36b63fb9ed7b95"
+    }
+  ]
+}

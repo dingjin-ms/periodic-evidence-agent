@@ -1725,6 +1725,42 @@ OS sandboxes and instructions alone are not enforcement. Repo-specific routing,
 tool permissions and validation are unresolved, so activation remains off.
 No merges, auto-completion, source writes or duplicate validation are authorized.
 
+For the separate publication-free `qualify-remote-authoring` experiment, `prepare`
+may additionally specify `testCoveragePlanId`, `requestedOutcome` and
+`executionTarget: "agency-workspace-authoring"`. This still requires a current
+review, complete source-bound test-coverage plan and qualified repository skill.
+The binding must forbid commit, push and draft-PR publication. Preparation records
+`execution: "agency-workspace-authoring-qualification"` with no app project or
+session binding; it does not enable normal hosted execution or submit a job.
+Only the experimental qualifier may reserve execution, using its separately
+hash-pinned source authorization, candidate, pipeline, real gates and native
+workflow contract. Do not claim, bind or report it through native session actions.
+An existing assignment cannot change run or execution target. Ordinary native
+session preparation still requires its real configured project ID.
+
+Private source evidence must not be embedded in published pipeline files,
+agent specifications or Git branches. The experimental authoring contract may
+explicitly select `evidenceTransport: "request-tool-v1"` and carry the complete
+base64-encoded evidence in the approved private Agency request. Trusted preparation
+may precede evidence delivery, but authoring still requires `loop_evidence` to
+materialize the exact SHA-256-pinned bytes in the job-private directory and read
+them before planning. Existing evidence cannot be replaced, and final validation,
+independent review and controller acceptance still require its intact contents.
+
+The explicit experimental `evidenceTransport: "request-session-v1"` avoids
+model transcription: `loop_evidence({})` reads only the initial request from
+`COPILOT_HOME/session-state/AGENCY_SESSION_ID/events.jsonl`, using the managed
+process's explicit home and session identity. It never searches other sessions,
+provider diagnostics or credential files. Input reads are bounded, linked paths
+are rejected, and canonical base64 and the complete approved SHA-256 remain
+mandatory. The controller independently compares the recorded request identity
+and exact prompt hash with the downloaded original session events. Missing
+managed context fails closed; it cannot fall back to a model-supplied payload,
+another session or a local receipt. Do not put source evidence in job metadata:
+Agency surfaces metadata in telemetry and diagnostics. This transport does not
+itself qualify a repository or mode; real end-to-end proof is still required.
+Legacy pre-materialized evidence remains supported without enabling request writes.
+
 ## Demonstrated live pilot (not release qualification)
 
 An October 2026 local pilot recorded ADO created 47, ADO changed 59 (39 changed-only),
@@ -1748,3 +1784,48 @@ publication window; policy rows were not builds. The reconciled public controlle
 is offline-validated only. This is not a new collection/review, incident RCA,
 full-cohort, hosted, browser E2E, unattended or latest-target qualification.
 See [the sharing gate](README.md#validation-and-sharing-gate).
+
+## WorkIQ channel collection cost
+
+PILOT-47 recorded 820 WorkIQ reads and 12,058 examined messages for zero
+in-window evidence records. Collection across the approved sources took
+45m 9s. This is full channel enumeration, including replies on old roots;
+the requested date window filters evidence locally, not the source reads.
+At two seconds between responses, 820 sequential reads alone require about
+27m 18s of pacing, before network and local processing.
+
+The CLI also replayed every accumulated receipt after each response to find
+the next request. That repeatedly hashed and inspected old messages and
+rewrote evidence/thread context. With similarly sized pages, this grows
+quadratically in the number of reads.
+
+Fresh runs now drive the existing bounded traversal directly, journal every
+request intent and response, then independently replay all receipts once to
+materialize evidence and coverage. Failed reads retain the received prefix;
+budget stops retain buffered rows for explicitly authorized continuations.
+Offline reconciliation imports unaccepted receipts together and recognizes
+already accepted batches. Explicit continuation runs retain the existing
+inherited replay path.
+
+During fresh collection, progress is visible in the durable transport journal;
+the evidence/pass summary is materialized at the end or a handled failure.
+An interrupted run requires the existing offline reconciliation command and
+never silently repeats an uncertain read.
+
+Run `node scripts/benchmark-workiq.mjs` for 200 synthetic roots, 2,800 replies,
+205 reads and zero in-window evidence. It uses no network, pacing or business
+content. An optional first argument selects a baseline collector module, and
+the second sets the root count (1–1000). Compare on an otherwise idle host;
+these timings measure local processing, not daily end-to-end latency.
+
+This change does not reduce source calls or the two-second pacing interval.
+The next substantial reduction requires qualifying a source-side incremental
+or expanded-reply contract against the deployed WorkIQ version. Qualification
+must include new replies to old roots, reply pagination, edits/tombstones,
+expired checkpoints, permission failures and unchanged coverage receipts.
+Neither root creation-time cutoffs nor semantic search establish exhaustive
+reply coverage. No such API contract or production rollout is claimed here.
+
+Deployment requires a new reviewed, pinned release/configuration for future
+occurrences. Existing admitted occurrences retain their original immutable
+request, producer release and receipts.

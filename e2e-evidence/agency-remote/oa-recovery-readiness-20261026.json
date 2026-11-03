@@ -1,0 +1,75 @@
+{
+  "schema": "agency-recovery-readiness-observation-v1",
+  "id": "oa-recovery-readiness-20261026",
+  "repoId": "office-agent",
+  "attemptId": "oa-validation-attempt-20261026",
+  "observedAt": "2026-10-26T09:37:29.508Z",
+  "result": "blocked-external-recovery",
+  "qualifying": false,
+  "requestSha256": "d8563d954f3be97bd56f286c5f19507e973b458c55cdcaec31fd54b383068bdf",
+  "officialSource": {
+    "revision": "68cd9681de64452fad5264d797d9820697b7a0d4",
+    "controllerContentSha256": "c1c696833f7caaa424a8335597a1b22036f86449fdef2a69858f7e91a15c3cae",
+    "genericHandlerContentSha256": "c3571ca0e40f72b8403f9a0266f12e415aa2f1ebb8ab83fbe8ef5adcfb4af1b1",
+    "jobStoreContentSha256": "68e4de0a0c0b345b0d8f4588eecf8e552f61327a4f2f8af2c374bc8c84637ffe",
+    "genericCreateAndListShareJobStore": true,
+    "listIsCallerScoped": true,
+    "serverPersistenceGeneratesJobId": true,
+    "deployedRevisionIndependentlyConfirmed": false,
+    "sourceContentPublished": false
+  },
+  "approvedCatalogLookup": {
+    "method": "GET",
+    "operation": "ListPluginsAsync",
+    "type": "Company",
+    "pageOffsets": [0, 100, 200],
+    "pageCounts": [100, 100, 26],
+    "reportedTotalCountOnEveryPage": 226,
+    "errors": [],
+    "installedAnyPlugin": false,
+    "establishesRequiredCoverageAnalyzerSource": false,
+    "privateArtifacts": [
+      {
+        "artifact": "agency-company-catalog-all-company-20261026.json",
+        "sha256": "e300ca488fd8a5eb86c856e4e1dc82395f75cfad9664aadeadb45a81a96f7ca9"
+      },
+      {
+        "artifact": "agency-company-catalog-all-company-skip100-20261026.json",
+        "sha256": "06ab8ded45efc5f1fae1d5313bab463990ef80e8f44cc80e70439ed38cbab129"
+      },
+      {
+        "artifact": "agency-company-catalog-all-company-skip200-20261026.json",
+        "sha256": "ad5a5937ae5fcc947a0db73a0b5692a193ee3ef4ba6dd47c9a5eb79f72341717"
+      }
+    ]
+  },
+  "customerTelemetryReadiness": {
+    "query": "Agency_Telemetry() | getschema",
+    "httpStatus": 403,
+    "result": "schema-read-blocked",
+    "failureCode": "TelemetryAccessNotAuthorized",
+    "queryPosts": 1,
+    "readOnlyHeader": true,
+    "retrievedTelemetryEvents": false,
+    "privateArtifact": "agency-telemetry-schema-readiness-20261026.json",
+    "privateArtifactSha256": "b8f0de11664b52d0cd8faf300222565caf121a52e535886d7fc5a113a32b72ae"
+  },
+  "remainingExternalRequirements": [
+    "The original job identity or authoritative service-side no-creation reconciliation.",
+    "The genuine installed coverage-analysis skill and pinned reference required by the selected held Stage2 flow."
+  ],
+  "jobCreationPosts": 0,
+  "originalReservationModified": false,
+  "sharedConfigurationChanged": false,
+  "permissionOrRoleChanges": false,
+  "supportTicketOrPageCreated": false,
+  "productGatesExecuted": false,
+  "qualificationRegistryUpdated": false,
+  "businessE2ECompleted": false,
+  "limitations": [
+    "Pinned source inspection explains implementation semantics, not the production deployment revision, live storage consistency or the original creation outcome.",
+    "The catalog observations establish only the queried caller-visible plugin listing; they do not prove that a particular skill does not exist.",
+    "The rejected telemetry schema query provides no event evidence and does not reconcile the original submission.",
+    "No historical qualification, request, receipt or other experiment was changed."
+  ]
+}

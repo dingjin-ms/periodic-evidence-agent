@@ -183,7 +183,10 @@ For eligible work:
 
 1. Check existing assignments, fixes and PRs. An existing resolved source item is
    not automatically a new coding task. Reconcile changed evidence with active
-   work before issuing a new assignment version.
+   work before issuing a new assignment version. A fixed production issue can
+   still support an eligible test-only `regression-coverage` plan with complete
+   source-bound discovery and a remaining coverage gap. Preserve source status
+   and existing-fix references; do not dispatch another production fix.
    Only current, qualified test-only coverage improvements may use the
    Resolved/Closed + Fixed/Duplicate cohort. Preserve known product-fix URLs in
    existingFixes. If nonempty, bind plan.existingFixesReview to every URL and the

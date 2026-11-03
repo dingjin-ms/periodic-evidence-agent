@@ -92,6 +92,38 @@ worker CLI action captures it; otherwise the owner calls `app-end`. The owner
 invokes `evidence-rsi` in the approved host. Do not treat a queued task as a
 completed RSI invocation or rerun product work to reconstruct its artifacts.
 
+For the exact CLI-not-on-PATH rejection before authoring,
+`agent proposer continue-runtime-launch --prepare|--execute` accepts a fresh
+one-attempt user authorization and content-bound offline launcher smoke. It
+rechecks zero tool/validation/publication activity, immutable predecessor receipts,
+source eligibility and the clean owned checkout. The continuation reuses that
+task checkout once without resetting the blocked job or enabling general
+dispatch. Other runtime or subsequent model/native failures are not admitted.
+
+For the exact read-only `bounded-edit-capability-unavailable` authoring result,
+use `agent proposer continue-authoring-tools --prepare|--execute` only after
+repairing the advertised tool contract and obtaining a fresh explicit user
+authorization. Keep the old result immutable, requalify the source, verify the
+owned clean workspace and any consumed runtime-reuse lineage, and claim reuse
+once. Only explicitly authorized authoring/repair budget changes are allowed;
+never alter native gates, production code or publication limits.
+
+A read-only missing-mid-flow-assertion result may use that entrypoint only after
+an owner-reviewed, source/content-bound existing-capability proof resolves the
+reported gap without changing the harness. Preserve and recheck every consumed
+ancestor and use a new attempt-specific reservation. Where the user's original
+grant explicitly covers continuation until validation, bind its original time
+and the prior authorization hash with `scope: "until-native-validation"`; never
+fabricate a fresh approval time. The same native, write-scope and publication
+limits remain mandatory.
+
+If authoring succeeded but first registration failed before any commit or native
+test, preserve that result and exact authored diff. Use a content-bound
+`registrationRecovery` review only after proving native setup recovered. The
+same entrypoint rechecks the unchanged authored bytes and blocked registration
+before a fresh bounded authoring round. Do not admit owner-metadata drift,
+committed proposals, product invocations or publication through this path.
+
 For an already-authored candidate, use
 `agent proposer continue-local-validation --prepare|--execute` only under the
 [recorded handoff contract](../../../APP-NATIVE.md#recorded-source-role-handoff)
@@ -99,6 +131,19 @@ and its separately authorized validation-only continuation. The actual Collector
 and FILTER replay receipts must match the original worker ledger. Keep the
 original model proposal and source revision; this operation must not invoke a
 new authoring model or create another candidate commit.
+
+For the specifically recorded dependency-fingerprint timeout after an approved
+commit but before the first native invocation, use
+`agent proposer continue-native-preparation --prepare|--execute`. It requires
+the immutable failure and owner request/approval hashes, the same clean approved
+commit, no native output directory or publication operations, and the original
+until-validation grant/time linked by its authorization hash. It reuses the owned
+checkout once in fresh private state with zero initial model calls or commits.
+Native gates, source qualification and zero infrastructure retries cannot change.
+One recorded zero-stage workspace-base field mismatch can be continued once with
+both predecessor reservations intact; nested dispatch corrections are rejected.
+Later test-only repair remains bounded and requires a new external owner review;
+an already-invoked native failure is never admitted as a preparation failure.
 
 ## Authority
 

@@ -54,11 +54,6 @@
       "baseRef": null,
       "qualificationRefresh": "fetch",
       "provisionTimeoutMs": 900000,
-      "sparseCheckoutPaths": [
-        ".github/skills/author-declarative-e2e-test",
-        "ooui/apps/cross-office-client-e2e",
-        "ooui/apps/excel-agent-declarative-e2e"
-      ],
       "remote": "https://dev.azure.com/office/Office/_git/1JS",
       "allowedWritePrefixes": [
         "ooui/apps/cross-office-client-e2e/scenarios",
@@ -98,7 +93,21 @@
         }
       ],
       "commitIdentity": { "name": null, "email": null },
-      "validationGates": [],
+      "commitTrailers": [],
+      "validationGates": [{
+        "id": "1js-declarative-five-pass",
+        "profile": "1js-declarative-e2e-v1",
+        "approved": false,
+        "executable": null,
+        "timeoutMs": 3600000,
+        "declarativeE2E": {
+          "cdpEndpoint": "http://127.0.0.1:9222",
+          "yarnEntryPoint": null,
+          "maxCases": 1,
+          "installDependencies": false,
+          "registration": { "approved": false, "priority": "P1" }
+        }
+      }],
       "draftBuild": {
         "enabled": false,
         "provider": "ado",

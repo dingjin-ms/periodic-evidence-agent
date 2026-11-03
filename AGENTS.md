@@ -19,6 +19,19 @@ product-repository dependencies, enable write permissions or create a PR.
 Use `npm run setup:repos -- --repo <id>` only when intentionally rerunning the
 repository layer without reinstalling dependencies or repeating all checks.
 
+## Hosted CI budget fallback
+
+When GitHub Actions cannot start because of an account budget, spending-limit
+or payment restriction, run complete local CI instead of repeatedly retrying
+the blocked hosted jobs. Follow the
+[README procedure](README.md#local-ci-when-hosted-actions-is-budget-blocked):
+run all three full groups sequentially, preserve runner concurrency and budgets,
+and include syntax, package and standalone demo checks. Preserve failed reports
+and record the validated revision and complete results. An actual test failure
+still requires investigation and correction. Report local success separately
+from the hosted account blocker; never override required checks or infer
+permission to publish or merge a Draft.
+
 ## Validation authentication recovery
 
 When a controller command returns `state: "action-required-auth"`:
@@ -40,6 +53,23 @@ When a controller command returns `state: "action-required-auth"`:
 Dependency-cache hits do not require authentication preflight. Never delete a
 trusted dependency receipt merely to force authentication.
 
+## Draft PR publication and merge authorization
+
+Controller and worker deliveries remain Draft PRs. Creating, updating, testing,
+reviewing or completing an assignment does not authorize publishing a draft,
+enabling auto-complete or merging it.
+
+A separate user instruction must explicitly identify the PR by repository and
+number or URL and authorize the requested publication or merge. Do not interpret
+"merge this PR", "merge first" or similar wording as authorization when multiple
+PRs are in scope. Ask which PR the user means; if the user is unavailable, leave
+all drafts unchanged. Authorization for a controller PR never extends to its
+generated product-repository PRs, or vice versa.
+
+Keep draft publication and merge outside the autonomous agentic loop. Passing
+validation, a clean mergeability result, no blocking policies, and a prior merge
+authorization for another PR are not permission to merge.
+
 ## Controller E2E test ownership
 
 Keep controller E2E input JSON, qualification scenarios and their expected
@@ -55,3 +85,26 @@ runtime files are local or CI artifacts, not source-controlled fixtures.
 Preserve failed-run evidence until investigation is complete; do not delete
 it merely because it is temporary. Commit only intentional sanitized synthetic
 inputs and expected contracts, never real accounts, secrets or workbook data.
+
+## Remote Agency enablement requires scoped E2E evidence
+
+Before recommending or enabling remote Agency for a product repository, read
+[the qualification register](e2e-evidence/agency-remote/README.md) and run
+`node src\cli.js doctor --config pilot.local.json`. Match evidence to the actual
+repository, skill, execution topology, candidate/configuration and real gates.
+Selecting `agency-remote`, passing fixtures, a successful Agency job or model
+self-report does not establish product E2E qualification.
+
+Track remote authoring with local validation, remote product validation, and
+same-job/workspace author/validate/repair separately. Proof of one does not
+qualify the others or another repository. If matching E2E proof is absent,
+inaccessible or stale, explicitly tell the user **this remote path has not yet
+been verified for the requested configuration** before execution. An authorized
+bounded qualification probe is not general enablement.
+
+Store sanitized evidence summaries and their scoped index under
+`e2e-evidence/agency-remote/`; retain raw logs, full artifacts, receipts and
+credentials only in approved private storage. Update the register after
+independent controller acceptance, not from an agent's completion message.
+Match each recorded OA fixed-candidate, same-workspace repair or bounded native
+authoring proof to its own scope; none qualifies another topology or repository.

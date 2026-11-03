@@ -1,0 +1,191 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "oa-native-evidence-authoring-validation-review-20261028-r7",
+  "mode": "live-business-e2e",
+  "result": "passed-scoped",
+  "observedAt": "2026-10-28T07:46:37.981Z",
+  "scope": "Approved saved real evidence -> native skill -> two new OA caller integration cases and behavior card -> real remote gates -> mutation/refactor fitness -> independent review -> trusted final remote gates -> independent local controller acceptance. Publication-free bounded qualification, not general production dispatch.",
+  "controllerCommit": "3eea8b61ffffadb944a889e0053e52942eef12ce",
+  "remoteProducerControllerCommit": "fb3c5d7b96cc938bd74ac9c04a6abc4cf02e49e6",
+  "localRecoveryCommits": [
+    "de0e2d3cede76c5dfe425c742259d85da839bd2e",
+    "3eea8b61ffffadb944a889e0053e52942eef12ce"
+  ],
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "61458d25-9f75-41c3-be29-e63727145257",
+    "repositoryName": "OfficeAgent"
+  },
+  "repoId": "office-agent",
+  "project": "agents/office-agent",
+  "baseRevision": "46299221b14698dbe21ac87167b21083612279cc",
+  "candidate": "58006dd2380ebc87bc05c3b472dc417445261ec0",
+  "gateId": "oa-excel-user-skill-ingress",
+  "profileSha256": "dad91945c58e0765ed01a85009f835e1d0c33b1ae9c1f755e8fb7772863dc5ab",
+  "pipeline": {
+    "definitionId": 38920,
+    "definitionRevision": 2,
+    "revision": "4cfef64dbd4df604ebc3b3b4137fa935002e7ece",
+    "result": "succeeded",
+    "queuedAt": "2026-10-28T06:33:36.032361Z",
+    "startedAt": "2026-10-28T06:35:20.1448136Z",
+    "finishedAt": "2026-10-28T07:13:48.3791102Z"
+  },
+  "jobId": "office-95bd35d1-8a6b-49e7-8eb9-bd61f61eb3a9",
+  "actualBuildId": 58299935,
+  "jobState": "Completed",
+  "jobResult": "Success",
+  "executionLocation": "agency-remote",
+  "environment": {
+    "platform": "Win32NT",
+    "architecture": "X64",
+    "node": "v24.14.0",
+    "corepack": "0.34.6",
+    "yarn": "4.17.1",
+    "workspace": "F:\\1\\s"
+  },
+  "sourceAuthorization": {
+    "mode": "reviewed-assignment",
+    "assignmentId": "assignment-25ade02c914fec74a95c75689a67badfd18e3c80c760dbae522dbbb90d2629a5",
+    "evidenceSha256": "3e270aa8fbc09859e1ba22f7d8417f3e32dd63e09be598d4a58940b50f76d98b",
+    "sourceApprovalSha256": "f38236b1f840c7fe4e8175bb8080dea39ae9bf2c5eb5a93366f66f91c9e9c3dd",
+    "freshSourceCollection": false,
+    "coverageGoal": "Public nonempty user-skill package acknowledgement, real staging, classifier bypass and completed turn through the final orchestrator request; empty package acknowledgement followed by normal classification and final model request. Preserve both original slot-redirect cases byte-for-byte.",
+    "historicalDefectResolutionClaimed": false
+  },
+  "nativeSkill": {
+    "entry": ".github/skills/integration-test-authoring/SKILL.md",
+    "workflow": "docs/skills/Integration-test-core/workflow.md",
+    "revision": "46299221b14698dbe21ac87167b21083612279cc",
+    "requiredSourceReadsIndependentlyVerified": true
+  },
+  "command": {
+    "executable": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "cwd": "F:\\1\\s",
+    "stageSelector": "PILOT_VALIDATION_STAGE",
+    "compile": "corepack yarn compile --to '@officeagent-agent/office-agent'",
+    "policy": [
+      "corepack yarn validate:integration-test-layout",
+      "node '..\\..\\docs\\skills\\Integration-test-core\\scripts\\validate-card-scores.mjs' --strict --floor 6"
+    ],
+    "policyCardScoreCwd": "F:\\1\\s\\agents\\office-agent",
+    "testWrapper": "node docs\\skills\\Integration-test-core\\scripts\\run-integration-tests.mjs --runDir <private-run-directory> -- corepack yarn workspace @officeagent-agent/office-agent test:integration --testMatch=**/tests/integration/**/*.test.ts --runTestsByPath tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts --runInBand",
+    "testArgumentsPassedAsArray": true
+  },
+  "rounds": [
+    {
+      "index": 0,
+      "candidate": "58006dd2380ebc87bc05c3b472dc417445261ec0",
+      "passed": true,
+      "stages": [
+        {"stage": "compile", "exitCode": 0, "logSha256": "48d65348dc932a90bd652c85e97536619f8a4382760046054b64f7b5ab35817e"},
+        {"stage": "policy", "exitCode": 0, "logSha256": "5028f08f0493d835ef22fad137eebda7363dce5b463a0a1795fd1f625e155104"},
+        {"stage": "test", "exitCode": 0, "logSha256": "57c494af50be45aa9571c9b57868594d0f906078d65ca42a4b87703374a55a8a"}
+      ]
+    }
+  ],
+  "candidateRepairsObserved": 0,
+  "fitness": {
+    "mutation": "killed",
+    "refactor": "robust",
+    "sourceRestoredSha256": "6b1737e8e0d7b554e30dc67b044172df53c1789a69957719459f7b0b5ee5fed2",
+    "notCandidateRepairs": true
+  },
+  "review": {
+    "sessionId": "1095c8e0-10fa-4fe2-aa43-9da8d34d0ad5",
+    "model": "gpt-5.6-sol",
+    "completed": true,
+    "exitCode": 0,
+    "verdict": "approved",
+    "findings": [],
+    "residuals": [
+      {"path": "modules/agent-runtime/src/config/materialize.ts", "line": 201, "scope": "Plugin-only provenance is outside these two public-package caller cases."},
+      {"path": "modules/agent-runtime/src/agent-runtime.ts", "line": 6964, "scope": "Mixed staged-user/plugin provenance and owner-local standalone runTurn variants remain uncovered."}
+    ]
+  },
+  "trustedFinal": {
+    "candidate": "58006dd2380ebc87bc05c3b472dc417445261ec0",
+    "stages": [
+      {"stage": "compile", "exitCode": 0, "startedAt": "2026-10-28T07:11:26.533Z", "finishedAt": "2026-10-28T07:11:57.983Z", "logSha256": "994b02e815bf0319830039760321e52cc2015b9d163cd769688f81d6b27769ff"},
+      {"stage": "policy", "exitCode": 0, "startedAt": "2026-10-28T07:11:57.986Z", "finishedAt": "2026-10-28T07:12:02.731Z", "logSha256": "5028f08f0493d835ef22fad137eebda7363dce5b463a0a1795fd1f625e155104"},
+      {"stage": "test", "exitCode": 0, "startedAt": "2026-10-28T07:12:02.733Z", "finishedAt": "2026-10-28T07:12:36.338Z", "logSha256": "c2c14426b5f3cb47c1e3ebf20c84ab89280aa36b6678d9d271054631dd923e87"}
+    ]
+  },
+  "testPopulation": {
+    "suites": 1,
+    "tests": 4,
+    "originalTests": 2,
+    "newTests": 2,
+    "path": "tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts"
+  },
+  "sourceControls": {
+    "allowedPaths": [
+      "agents/office-agent/tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts",
+      "agents/office-agent/tests/integration/behavior-cards/apps/excel/omni-excel-app-composition.behavior-card.md"
+    ],
+    "appendOnlyTests": true,
+    "productionSourceEdits": false,
+    "sourceCleanAfter": true,
+    "gitBundleIndependentlyVerified": true,
+    "originalBundleUnchangedDuringImport": true
+  },
+  "remoteCompletion": {
+    "remoteWorkComplete": true,
+    "controllerAcceptance": false,
+    "controllerAcceptanceStatus": "pending-external",
+    "remoteResultUnmodifiedAfterDownload": true
+  },
+  "controllerAcceptance": true,
+  "localProductGatesExecuted": false,
+  "oldReceiptImported": false,
+  "qualificationOnly": true,
+  "productionAssignment": false,
+  "publicationPerformed": false,
+  "budget": {
+    "maximumNewJobs": 1,
+    "maximumRepairs": 2,
+    "automaticReplacementJobs": 0,
+    "gateMinutes": 20,
+    "reviewerMinutes": 10,
+    "runnerMinutes": 60,
+    "maximumArtifactBytes": 6442450944,
+    "aggregateJobOrMonetaryCeiling": null
+  },
+  "artifactFilesHashed": 3517,
+  "artifactBytesHashed": 5099752366,
+  "privateEvidence": {
+    "collection": "agency-live-business-e2e-20261024",
+    "runDirectory": "native-excel-qualification-20261028-r7",
+    "operation": "8217d025ea5b26377fed2ddf81b265c418bdf83b7932d71149db547c9bbe860e",
+    "outcomeArtifact": "resume-long-bundle-fix-20261028.stdout.json",
+    "outcomeSha256": "3a83a8ba8327160c2756795a04445c91ea2d60bc74b6bfe9b5716ec7e4d9879b",
+    "acceptanceArtifact": "controller-acceptance-1793173597983.json",
+    "acceptanceSha256": "8b20507e1c0322a4d31557d069c7c467e436b1c7ab28246fe7d0ac0db0034173",
+    "observationArtifact": "observation-1793173450113.json",
+    "observationSha256": "f5e5d62a16c5c1e4affe4f438256e99358e6867d35ab7abcf74e58be4702d0cb",
+    "remoteJobRequestSha256": "03557151aca571f24d071e53c843f8944c390f0aeef0cb7204d859b25adc1e7a",
+    "controllerAuthoringRequestSha256": "fd47e2c35b9e054e2212dd99a5f597b68c8a5e9804bf33d9eebdc2860ac9ac57",
+    "contractSha256": "70ca8311a2053385e7c9051a44976152d807f06317dd9168c0c77c87002053d1",
+    "loopResultSha256": "220b69013fc0914b42cb81f3ff4c63c7ce9e7677be17f9700f972a47a87e1cf5",
+    "reviewSha256": "9d9c1ec945a60cd002e3860ae65ca6b378cbe6cb66d5573f490a2f9632c3dbaf",
+    "reviewCommandSha256": "a08fab286d4ca08d33b644c64371c8dfb9dc28a3e941bfbd462a1ad3c9821a8b",
+    "candidateBundleSha256": "f2aada28384caf0ea231269548257633647abf9f3322f116230be9dcc7ee772d",
+    "protocolVerifierSha256": "5085f365ec374a591d93e854256f8df6093ef43fcef3f025205d826495d0f710"
+  },
+  "limitations": [
+    "Bounded qualification on saved approved real evidence, not fresh source collection, general production native-assignment dispatch or evidence-to-Draft-PR publication.",
+    "First candidate passed: this run does not prove a candidate repair. r6 separately exercised two real assertion repairs but was rejected by its reviewer and remains non-qualifying.",
+    "Reviewer approval is only for the two approved public-package OA caller cases; plugin-only, mixed provenance and standalone runTurn residuals remain. The historical defect is not claimed resolved.",
+    "Not all OA suites, desktop/UI E2E, 1JS, Office src, another profile, composed transports or the hosted executor.",
+    "Submission required read-only build reconciliation and resume of the same job; no duplicate, replacement job or uncertain-command restart.",
+    "Local recovery fixed Windows downloader cwd and Git bundle-reader long-path failures. A temporary byte-identical bundle was hash-bound to the original inventory; original remote artifacts, request, receipt checks and product gates were not changed.",
+    "The controller independently checked 3517 files and their 5099752366 bytes; remote loop-result alone was intentionally left pending-external and was not promoted or edited.",
+    "The remote MCP tool allowlist is not an operating-system sandbox. Controller feature commits remain isolated and are not claimed merged or production-ready.",
+    "The earlier complete offline controller suite had unresolved failures. Package hygiene still reports a personal-home path in the pre-existing 064b8d7 Git-history blob; current README is sanitized and history was not rewritten.",
+    "Model tokens and monetary cost were not measured. No aggregate PEA job or monetary ceiling was configured.",
+    "This committed summary is audit metadata, not a receipt, enablement grant or current-configuration verification; the original private evidence must remain accessible and independently rechecked.",
+    "The separate Local/Remote A/B baseline and experiment conditions were not modified; compare remote-authoring/local-validation with the same-workspace remote path only in a separately frozen follow-up experiment."
+  ]
+}

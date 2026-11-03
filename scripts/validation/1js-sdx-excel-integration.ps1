@@ -40,7 +40,8 @@ function Get-ScopedChanges {
 }
 
 function Resolve-Yarn {
-    return (Get-Command yarn.cmd -ErrorAction Stop).Source
+    $yarnCommand = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { 'yarn.cmd' } else { 'yarn' }
+    return (Get-Command $yarnCommand -ErrorAction Stop).Source
 }
 
 $packageRoot = 'midgard/packages/officeaicopilot-agent-excel/'
@@ -79,10 +80,14 @@ if ($stage -in @('authentication-check', 'authentication')) {
     if ($missingBootstrap) {
         throw "PILOT_AUTH_BOOTSTRAP_MISSING: materialize the pinned repository bootstrap before authentication: $($missingBootstrap -join ', ')"
     }
-    $brokerChanges = @(& git status --porcelain -- `
+    $brokerChanges = @(& git -c core.quotePath=false diff --name-only --no-renames `
+        $env:PILOT_VALIDATION_REVISION -- `
         '.npmrc' 'midgard/package.json' 'packages/node-azure-auth')
-    if ($LASTEXITCODE -ne 0 -or $brokerChanges.Count -gt 0) {
-        throw 'Authentication broker inputs differ from the exact requested revision'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Authentication broker diff exited with code $LASTEXITCODE"
+    }
+    if ($brokerChanges.Count -gt 0) {
+        throw "Authentication broker inputs differ from the exact requested revision: $($brokerChanges -join ', ')"
     }
     $yarn = Resolve-Yarn
     Push-Location 'midgard'
@@ -97,6 +102,29 @@ if ($stage -in @('authentication-check', 'authentication')) {
         $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
+    $credentialSource = 'repository-broker'
+    if ($authExitCode -ne 0 -and $env:CI -eq 'true') {
+        $homeDirectory = if ($env:HOME) { $env:HOME } else { [Environment]::GetFolderPath('UserProfile') }
+        $userNpmrc = Join-Path $homeDirectory '.npmrc'
+        if (Test-Path -LiteralPath $userNpmrc -PathType Leaf) {
+            $npmCommand = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { 'npm.cmd' } else { 'npm' }
+            $npm = (Get-Command $npmCommand -ErrorAction Stop).Source
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & $npm view '@1js/ci-scripts' version --silent `
+                    --userconfig $userNpmrc `
+                    --registry 'https://pkgs.dev.azure.com/office/Office/_packaging/1JS/npm/registry/' *> $null
+                $authExitCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+            if ($authExitCode -eq 0) {
+                $credentialSource = 'runner-preauthenticated-user-npmrc'
+            }
+        }
+    }
     if ($stage -eq 'authentication-check') {
         $preflight = if ($authExitCode -eq 0) {
             [ordered]@{
@@ -104,6 +132,7 @@ if ($stage -in @('authentication-check', 'authentication')) {
                 provider = '1js-node-azure-auth'
                 providerVersion = '0.0.1'
                 feedCount = 1
+                credentialSource = $credentialSource
                 tokenRecorded = $false
             }
         }
@@ -128,6 +157,7 @@ if ($stage -in @('authentication-check', 'authentication')) {
         provider = '1js-node-azure-auth'
         providerVersion = '0.0.1'
         feedCount = 1
+        credentialSource = $credentialSource
         tokenRecorded = $false
     }
     Write-Output "PILOT_VALIDATION_AUTH:$($authentication | ConvertTo-Json -Compress)"
@@ -142,26 +172,71 @@ try {
     if ($stage -in @('all', 'dependencies')) {
         Invoke-Checked $yarn fast '@1js/officeaicopilot-agent-excel' `
             --skip-postinstall-local `
-            --allowed-packages-with-install-scripts keytar azureauth '@1js/ci-scripts'
+            --no-scripts
     }
 
     if ($stage -in @('all', 'compile')) {
-        Invoke-Checked $yarn workspace '@1js/jest-config' build
-
         Pop-Location
         try {
-            $generated = @(& git diff --name-only)
+            $jestConfigChanges = @(& git -c core.quotePath=false diff --name-only --no-renames `
+                $env:PILOT_VALIDATION_BASE_REVISION $env:PILOT_VALIDATION_REVISION -- `
+                'midgard/packages/jest-config/src' `
+                'midgard/packages/jest-config/package.json' `
+                'midgard/packages/jest-config/tsconfig.json')
             if ($LASTEXITCODE -ne 0) {
-                throw "git diff exited with code $LASTEXITCODE"
+                throw "Jest config source diff exited with code $LASTEXITCODE"
             }
-            $unexpected = @($generated | Where-Object {
-                $_ -and -not $_.StartsWith('midgard/packages/jest-config/lib/')
-            })
-            if ($unexpected.Count -gt 0) {
-                throw "Jest config build changed unexpected files: $($unexpected -join ', ')"
+            if ($jestConfigChanges.Count -gt 0) {
+                throw "Candidate changes Jest config sources and requires a source-complete build closure: $($jestConfigChanges -join ', ')"
             }
-            # Content-equivalent LF output can still leave a CRLF checkout dirty.
-            Invoke-Checked git restore --worktree -- 'midgard/packages/jest-config/lib'
+            $preparedChanges = @(& git -c core.quotePath=false diff --name-only --no-renames `
+                $env:PILOT_VALIDATION_REVISION -- 'midgard/packages/jest-config/lib')
+            if ($LASTEXITCODE -ne 0 -or $preparedChanges.Count -gt 0) {
+                throw 'Prepared Jest config outputs differ from the exact requested revision'
+            }
+            $jestConfigRoot = (Resolve-Path -LiteralPath 'midgard/packages/jest-config').Path
+            $compileArtifactRoot = Split-Path -Parent $env:PILOT_VALIDATION_ARTIFACT_DIRECTORY
+            $sourceConfig = Get-Content -LiteralPath (Join-Path $jestConfigRoot 'tsconfig.json') -Raw |
+                ConvertFrom-Json
+            $sourceConfig.extends = (Join-Path $jestConfigRoot 'tsconfig.extends.json')
+            $sourceConfig.references = @()
+            $compileGlobals = Join-Path $compileArtifactRoot `
+                'jest-config.validation-globals.d.ts'
+            [IO.File]::WriteAllText($compileGlobals, `
+                "declare function afterAll(callback: () => void | Promise<void>): void;`n")
+            $sourceConfig.include = @((Join-Path $jestConfigRoot 'src'), $compileGlobals)
+            $sourceConfig.compilerOptions.rootDir = (Join-Path $jestConfigRoot 'src')
+            $sourceConfig.compilerOptions.outDir = (Join-Path $jestConfigRoot 'lib')
+            $sourceConfig.compilerOptions.tsBuildInfoFile = (Join-Path $jestConfigRoot 'lib/tsconfig.tsbuildinfo')
+            $compileConfig = Join-Path $compileArtifactRoot `
+                'jest-config.validation.tsconfig.json'
+            [IO.File]::WriteAllText($compileConfig, ($sourceConfig | ConvertTo-Json -Depth 10))
+            $typescriptCli = (& node -e `
+                "process.stdout.write(require.resolve('typescript/bin/tsc',{paths:['./midgard/packages/jest-config']}))").Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $typescriptCli) {
+                throw 'TypeScript CLI could not be resolved from the Jest config workspace'
+            }
+            Invoke-Checked -Executable node -Arguments @(
+                $typescriptCli,
+                '--project',
+                $compileConfig
+            )
+            foreach ($path in @(
+                'midgard/packages/jest-config/lib/index.js',
+                'midgard/packages/jest-config/lib/index.d.ts',
+                'midgard/packages/jest-config/lib/defaultJestConfig.js',
+                'midgard/packages/jest-config/lib/makeJestConfig.js',
+                'midgard/packages/jest-config/lib/jsdomEnvironment.js',
+                'midgard/packages/officeaicopilot-agent-excel/jest.integration.config.js'
+            )) {
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                    throw "Compile input is missing: $path"
+                }
+            }
+            Invoke-Checked -Executable node -Arguments @(
+                '-e',
+                "require('./midgard/packages/officeaicopilot-agent-excel/jest.integration.config.js')"
+            )
         }
         finally {
             Push-Location 'midgard'
@@ -177,7 +252,11 @@ try {
             }
             $outside = @($changes | Where-Object {
                 -not $_.StartsWith($integrationRoot) -and
-                -not $_.StartsWith('midgard/change/')
+                -not $_.StartsWith('midgard/change/') -and
+                $_ -notin @(
+                    'midgard/packages/officeaicopilot-agent-excel/jest.integration.config.js',
+                    'midgard/packages/officeaicopilot-agent-excel/package.json'
+                )
             })
             if ($outside.Count -gt 0) {
                 throw "SDX validation scope contains unsupported paths: $($outside -join ', ')"
@@ -220,6 +299,9 @@ try {
             throw 'PILOT_VALIDATION_PROFILE_ERROR: a fresh absolute artifact directory is required'
         }
         $configurationPath = Join-Path $artifactDirectory 'runtime-config.cjs'
+        $resolverPath = Join-Path $artifactDirectory 'workspace-source-resolver.cjs'
+        $conversationBridgePath = Join-Path $artifactDirectory 'conversation-history-bridge.cjs'
+        $tokenProviderBridgePath = Join-Path $artifactDirectory 'token-provider-bridge.cjs'
         $resultPath = Join-Path $artifactDirectory 'jest-result.json'
         $discoveryPath = Join-Path $artifactDirectory 'discovered-tests.json'
         $selectionPath = Join-Path $artifactDirectory 'selection.json'
@@ -229,28 +311,97 @@ const { createRequire } = require('node:module');
 const rootDir = __PACKAGE_DIRECTORY__;
 const fromPackage = createRequire(path.join(rootDir, 'package.json'));
 const original = fromPackage('./jest.integration.config.js');
-const transformer = fromPackage.resolve('@1js/jest-config/swc-transform');
-const fromTransformer = createRequire(transformer);
 module.exports = {
   ...original,
   rootDir,
-  resolver: fromPackage.resolve('@1js/jest-config/source-resolver'),
-  transformIgnorePatterns: [],
-  transform: {
-    '\\.tests?\\.[cm]?tsx?$': original.transform['\\.tsx?'],
-    '\\.[cm]?tsx?$': [transformer, { rootDir }],
-    '\\.[cm]?js$': [transformer, { rootDir }],
+  resolver: __RESOLVER_PATH__,
+  testEnvironmentOptions: {
+    ...original.testEnvironmentOptions,
+    customExportConditions: ['source', 'browser'],
   },
   moduleNameMapper: {
     ...original.moduleNameMapper,
-    '^@swc/helpers/(.*)$':
-      path.dirname(fromTransformer.resolve('@swc/helpers/package.json')) + '/$1',
+    '^@1js/officeaicopilot-agent-conversations-panel$': __CONVERSATION_BRIDGE__,
+    '^\\.\\./context/TokenProvider$': __TOKEN_PROVIDER_BRIDGE__,
   },
 };
 '@
         $configuration = $configuration.Replace('__PACKAGE_DIRECTORY__',
             (ConvertTo-Json -InputObject $packageDirectory -Compress))
+        $configuration = $configuration.Replace('__RESOLVER_PATH__',
+            (ConvertTo-Json -InputObject $resolverPath -Compress))
+        $configuration = $configuration.Replace('__CONVERSATION_BRIDGE__',
+            (ConvertTo-Json -InputObject $conversationBridgePath -Compress))
+        $configuration = $configuration.Replace('__TOKEN_PROVIDER_BRIDGE__',
+            (ConvertTo-Json -InputObject $tokenProviderBridgePath -Compress))
         [System.IO.File]::WriteAllText($configurationPath, $configuration)
+        $conversationImplementation = Join-Path (Split-Path -Parent $packageDirectory) `
+            'officeaicopilot-agent-conversations-panel/src/api/getConversationHistory.ts'
+        $conversationBridge = @'
+const implementation = __IMPLEMENTATION__;
+exports.getCopilotReferenceIdFromUrl = (...args) =>
+  require(implementation).getCopilotReferenceIdFromUrl(...args);
+'@
+        $conversationBridge = $conversationBridge.Replace('__IMPLEMENTATION__',
+            (ConvertTo-Json -InputObject $conversationImplementation -Compress))
+        [System.IO.File]::WriteAllText($conversationBridgePath, $conversationBridge)
+        $tokenProviderImplementation = Join-Path $packageDirectory 'src/context/TokenProvider.tsx'
+        $tokenProviderBridge = @'
+const implementation = __IMPLEMENTATION__;
+exports.getUserInfoCached = (...args) =>
+  require(implementation).getUserInfoCached(...args);
+'@
+        $tokenProviderBridge = $tokenProviderBridge.Replace('__IMPLEMENTATION__',
+            (ConvertTo-Json -InputObject $tokenProviderImplementation -Compress))
+        [System.IO.File]::WriteAllText($tokenProviderBridgePath, $tokenProviderBridge)
+        $resolver = @'
+const fs = require('node:fs');
+const path = require('node:path');
+const packageRoot = __PACKAGE_DIRECTORY__;
+const workspacesRoot = path.dirname(packageRoot);
+const sourceExtensions = ['', '.ts', '.tsx', '.js', '.jsx', '.json'];
+function existing(candidate) {
+  for (const extension of sourceExtensions) {
+    const file = candidate + extension;
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+  }
+  for (const extension of sourceExtensions.slice(1)) {
+    const file = path.join(candidate, 'index' + extension);
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+  }
+}
+module.exports = (request, options) => {
+  try {
+    return options.defaultResolver(request, options);
+  } catch (primaryError) {
+    const match = request.match(/^@1js\/([^/]+)(?:\/(.+))?$/);
+    if (match) {
+      const workspace = path.join(workspacesRoot, match[1]);
+      if (fs.existsSync(path.join(workspace, 'package.json'))) {
+        if (match[2]) {
+          const relative = match[2].startsWith('lib/')
+            ? match[2].slice('lib/'.length)
+            : match[2];
+          const subpath = existing(path.join(workspace, 'src', relative));
+          if (subpath) return subpath;
+        } else {
+          const manifest = JSON.parse(fs.readFileSync(path.join(workspace, 'package.json')));
+          const source = manifest.exports?.['.']?.source;
+          const entry = existing(source ? path.join(workspace, source) : path.join(workspace, 'src'));
+          if (entry) return entry;
+        }
+      }
+    }
+    if (!request.startsWith('.') && !path.isAbsolute(request)) {
+      return options.defaultResolver(request, { ...options, basedir: packageRoot });
+    }
+    throw primaryError;
+  }
+};
+'@
+        $resolver = $resolver.Replace('__PACKAGE_DIRECTORY__',
+            (ConvertTo-Json -InputObject $packageDirectory -Compress))
+        [System.IO.File]::WriteAllText($resolverPath, $resolver)
         $state = 'failed'
         $phase = 'runner-resolution'
         $primaryError = $null
@@ -338,6 +489,13 @@ module.exports = {
                 passedCount = $result.numPassedTests
             }
             Write-Output "PILOT_VALIDATION_TEST_RESULT:$($proof | ConvertTo-Json -Compress)"
+            Pop-Location
+            try {
+                Invoke-Checked -Executable git -Arguments @('clean', '-fd')
+            }
+            finally {
+                Push-Location 'midgard'
+            }
         }
         catch {
             $primaryError = $_

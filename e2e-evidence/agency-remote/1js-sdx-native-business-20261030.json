@@ -1,0 +1,149 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "1js-sdx-native-authoring-validation-review-20261030-r3",
+  "mode": "live-business-e2e",
+  "result": "passed-scoped",
+  "observedAt": "2026-11-02T02:14:26.289Z",
+  "scope": "Pinned 1JS Excel integration skill -> focused test, behavior card and generated changefile -> candidate commit -> complete pre-review gates -> independent review -> complete final gates -> independent local controller acceptance. Publication-free bounded qualification in one remote Agency workspace.",
+  "controllerCommit": "23b3104dbde7ce9fac4ff8e6f0f686dd5aa0044f",
+  "remoteProducerControllerCommit": "23b3104dbde7ce9fac4ff8e6f0f686dd5aa0044f",
+  "upstreamCommit": "99e5cf29448e78b7f12397cc2f69eced936512a7",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "Office",
+    "repositoryId": "1JS",
+    "repositoryName": "1JS"
+  },
+  "repoId": "1js",
+  "project": "midgard/packages/officeaicopilot-agent-excel",
+  "baseRevision": "653989a82e29120978d7e1dc33e739aec6eeae1e",
+  "candidate": "97795c027ca58e74e91311fb5b289a47d35b4e45",
+  "gateId": "1js-sdx-excel-integration",
+  "profileSha256": "cad0212aecc1b8d61c15df7919c40b2f26eb8533580ebb189e8fa5e1df34b3e1",
+  "skill": {
+    "path": "midgard/packages/officeaicopilot-agent-excel/.github/skills/excel-agent-integration-tests/SKILL.md",
+    "sha256": "9f5dfe6b5e3db7be8f97fc0035b31a32215c02a657898c2433766fc5f28760d1",
+    "binding": "pinned-custom-agent"
+  },
+  "pipeline": {
+    "definitionId": 35960,
+    "result": "succeeded",
+    "queuedAt": "2026-10-30T13:44:26.421472Z",
+    "startedAt": "2026-10-30T13:44:45.022368Z",
+    "finishedAt": "2026-10-30T14:10:10.965664Z"
+  },
+  "jobId": "office-31b2c17d-5bac-46b7-9780-7d5409ac1174",
+  "actualBuildId": 58531234,
+  "jobState": "Completed",
+  "jobResult": "Success",
+  "executionLocation": "agency-remote",
+  "authoredPaths": [
+    "midgard/change/change-74fcb4e8-1511-434b-a834-e76bc572ab35.json",
+    "midgard/packages/officeaicopilot-agent-excel/tests/integration/behavior-cards/supportedFileTypes-filter.md",
+    "midgard/packages/officeaicopilot-agent-excel/tests/integration/contracts/supportedFileTypes-filter.contract.integration.test.ts"
+  ],
+  "candidateParent": "653989a82e29120978d7e1dc33e739aec6eeae1e",
+  "candidateWorkspaceClean": true,
+  "preReviewGates": {
+    "orderedStages": [
+      "fingerprint",
+      "authentication-check",
+      "authentication",
+      "dependencies",
+      "compile",
+      "policy",
+      "test"
+    ],
+    "allExitCodesZero": true
+  },
+  "review": {
+    "schema": "sdx-native-review-v1",
+    "candidate": "97795c027ca58e74e91311fb5b289a47d35b4e45",
+    "verdict": "approved",
+    "findings": [],
+    "independent": true
+  },
+  "finalGates": {
+    "orderedStages": [
+      "fingerprint",
+      "authentication-check",
+      "authentication",
+      "dependencies",
+      "compile",
+      "policy",
+      "test"
+    ],
+    "allExitCodesZero": true,
+    "suiteCount": 1,
+    "testCount": 11,
+    "passedTestCount": 11,
+    "failedTestCount": 0
+  },
+  "repairs": {
+    "maximum": 2,
+    "candidateRepairsObserved": 0,
+    "productRepairPathExercised": false,
+    "infrastructureBootstrapRepairExercised": true
+  },
+  "controllerAcceptance": true,
+  "controllerReceipt": {
+    "schema": "sdx-live-e2e-controller-receipt-v1",
+    "status": "passed",
+    "controllerSha256": "adb4d3dfe3809dab94311cd55caa67e353e6dcc991e879a1c791dc591518b469",
+    "promptSha256": "92568351ba4c5d3e5c63a4452b3bde560a06ea763d0cae41906eea72d22adb50",
+    "requestSha256": "035d7706e35a3b8d8cd910ebde44ff0bc593dd372f1bff4d2a5fdfbe89b06cbe"
+  },
+  "artifactHashes": {
+    "resultJson": "5981f5f347c7fd0d2ef44d1cca6ce33416d505c0856c8dd1d557c93f0166d17f",
+    "reviewJson": "c8b30a7b883215a8558d965e43734197128debe3d9912860e55cc8b1f4918c4f",
+    "changedFilesJson": "beb7fae36a091f68d20d843508f597fbcec76917dfd31f5d5c4093e93579174e",
+    "inventoryJson": "bb568ed606f519e986258cd94fe96a6b36030799897300eb255367a431b67e2a",
+    "jestResultJson": "4b9e0fb76ef419d1b0d513eb4c2c808735bf60f08244c42b69fa00cd1123a17a"
+  },
+  "localControllerCi": {
+    "sourceRevision": "23b3104dbde7ce9fac4ff8e6f0f686dd5aa0044f",
+    "catalogueSha256": "fa1c94933c25c1784817ab7ba634f732670ea59e521d8298cd4820a813f1f8db",
+    "discoveredFiles": 96,
+    "selectedExactlyOnce": true,
+    "remaining": {
+      "passed": 1598,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 1
+    },
+    "demo": {
+      "passed": 2,
+      "failed": 0
+    },
+    "standaloneDemoExitCode": 0
+  },
+  "publication": {
+    "productPush": false,
+    "productPullRequest": false,
+    "productMerge": false,
+    "peaMerge": false
+  },
+  "priorAttempts": [
+    {
+      "round": "r1",
+      "buildId": 58517746,
+      "result": "failed-before-candidate",
+      "reason": "Historical-base dependency closure differed from the runner preinstall; the normal commit hook could not resolve a required package."
+    },
+    {
+      "round": "r2",
+      "buildId": 58518662,
+      "result": "remote-success-controller-rejected",
+      "reason": "The evidence JSON field names did not satisfy the frozen controller contract."
+    }
+  ],
+  "limitations": [
+    "This is historical scoped proof for the pinned 1JS base, SDX Excel integration skill, gate profile and Agency pipeline; it does not verify every current configuration.",
+    "The first product candidate passed all gates, so no product test/card repair was exercised. The r1 dependency rehydration was an infrastructure bootstrap repair, not a product candidate repair.",
+    "The run authored one focused preserved-behavior integration case. It does not establish UI, browser, Aurora, OOUI, unrelated 1JS packages or general Office repository support.",
+    "No product push, pull request, merge or publication occurred. The candidate exists only in retained private evidence and the downloaded bundle.",
+    "Raw Agency events, logs, artifacts, local paths, credentials and private runtime state remain excluded from the repository. This sanitized record is not an authorization grant or an acceptance receipt for a future run.",
+    "The controller revision is frozen before this audit-only evidence commit."
+  ]
+}

@@ -1,3 +1,4 @@
+import { reviewContext } from './test-fixtures/draft-context.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -286,7 +287,7 @@ async function proposerScenario(config, fixture, filter, root, scenario) {
           '});', ''
         ].join('\n'));
         toolkit.finish({
-          outcome: 'propose-change', findings: 'Deterministic fixture authoring; no model invoked.',
+          outcome: 'propose-change', reviewContext, findings: 'Deterministic fixture authoring; no model invoked.',
           title: 'Add synthetic selection coverage', description: 'Offline demo; publication is simulated.',
           skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
             changedFiles: [testPath], testsAddedOrUpdated: [invariant], behaviorCardsAddedOrUpdated: [],

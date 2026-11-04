@@ -1,3 +1,4 @@
+import { reviewContext } from '../scripts/test-fixtures/draft-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -283,7 +284,7 @@ test('sample request exercises intake through real validation and local push, wi
         toolkit.write('test/behavior.test.js', formulaTest);
         toolkit.write('test/behavior-card.md', '# Synthetic formula preservation\nCheck surviving rows, row-relative formulas and immutable input.\n');
         toolkit.finish({
-          outcome: 'propose-change', findings: 'Added the synthetic request regression and behavior card.',
+          outcome: 'propose-change', reviewContext, findings: 'Added the synthetic request regression and behavior card.',
           title: 'Preserve formulas during duplicate removal', description: 'Synthetic controller qualification only.',
           skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
             changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
@@ -360,7 +361,7 @@ test('automated request FILTER hands its plan to the real worker and publication
       runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
         proposers++; toolkit.write('test/behavior.test.js', formulaTest);
         toolkit.write('test/behavior-card.md', '# Formula preservation\nSynthetic contract.\n');
-        toolkit.finish({ outcome: 'propose-change', findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
+        toolkit.finish({ outcome: 'propose-change', reviewContext, findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
           skillResult: { status: 'succeeded', classification: 'missing-test-coverage', changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
             testsAddedOrUpdated: ['formula preservation'], behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
       },
@@ -439,7 +440,7 @@ for (const interruption of ['authoring-hold', 'source-withdrawal', 'push-hold', 
         runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
           toolkit.write('test/behavior.test.js', formulaTest);
           toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
-          toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+          toolkit.finish({ outcome: 'propose-change', reviewContext, findings: 'Fixture test authored.', title: 'Fixture coverage',
             description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
               changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
               behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
@@ -817,7 +818,7 @@ for (const buildMode of ['disabled', 'harness', 'missing-contract', 'unapproved'
         assert.throws(() => toolkit.write('test/new-product-case.js', 'bad'), /bounds|scope|allowed/);
         toolkit.write('harness/reader.js', 'export const formula = cell => cell.formula ?? null;\n');
         toolkit.write('harness/reader.test.js', "import assert from 'node:assert/strict';\nimport { formula } from './reader.js';\nassert.equal(formula({formula: '=B2*C2', value: 6}), '=B2*C2');\nassert.equal(formula({value: 6}), null);\n");
-        toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic formula-aware reader contract.',
+        toolkit.finish({ outcome: 'propose-change', reviewContext, findings: 'Synthetic formula-aware reader contract.',
           title: 'Extend harness formula evidence', description: 'Harness-only fixture; no product scenario.',
           skillResult: { status: 'succeeded', classification: 'test-maintainability',
             changedFiles: ['harness/reader.js', 'harness/reader.test.js'], testsAddedOrUpdated: ['formula evidence'],
@@ -1032,7 +1033,7 @@ test('uncertain ADO writes never retry and changed requests never post', async t
 function finishRequestFixture(toolkit) {
   toolkit.write('test/behavior.test.js', formulaTest);
   toolkit.write('test/behavior-card.md', '# Synthetic formula behavior\n');
-  toolkit.finish({ outcome: 'propose-change', findings: 'Fixture test authored.', title: 'Fixture coverage',
+  toolkit.finish({ outcome: 'propose-change', reviewContext, findings: 'Fixture test authored.', title: 'Fixture coverage',
     description: 'Synthetic test only.', skillResult: { status: 'succeeded', classification: 'missing-test-coverage',
       changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'], testsAddedOrUpdated: ['formula preservation'],
       behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
@@ -2198,7 +2199,7 @@ for (const automaticRsi of [false, true]) test(
           "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n");
         toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: 'Added focused fixture coverage through the real reviewed-handoff controller.',
           title: 'Add fixture behavior coverage',
           description: 'Authorized synthetic reviewed-handoff draft.',
@@ -2295,7 +2296,7 @@ test('authorized 1JS handoff runs the controller end to end and links one non-bl
           'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
         );
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: 'Added the reviewed declarative E2E scenario.',
           title: 'Add BizChat Canary workbook E2E',
           description: 'Authorized synthetic 1JS Draft PR.',
@@ -2369,7 +2370,7 @@ test('1JS publication blocks before push when the authored diff has no added cas
         const path = 'ooui/apps/cross-office-client-e2e/scenarios/existing.yaml';
         toolkit.write(path, 'name: Existing scenario updated\n');
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: 'Updated existing coverage only.',
           title: 'Update existing coverage',
           description: 'No new scenario.',
@@ -2436,7 +2437,7 @@ test('OA and 1JS bundle executes as two isolated assignments in one controller l
               'name: BizChat creates Canary workbook\ncontract: 4x3\nsheet: Canary\n'
             );
             toolkit.finish({
-              outcome: 'propose-change',
+              outcome: 'propose-change', reviewContext,
               findings: 'Added isolated 1JS fixture coverage.',
               title: 'Add isolated 1JS coverage',
               description: '1JS bundle Draft.',
@@ -2458,7 +2459,7 @@ test('OA and 1JS bundle executes as two isolated assignments in one controller l
             "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, 1));\n");
           toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
           toolkit.finish({
-            outcome: 'propose-change',
+            outcome: 'propose-change', reviewContext,
             findings: 'Added isolated OA fixture coverage.',
             title: 'Add isolated OA coverage',
             description: 'OA bundle Draft.',
@@ -2520,7 +2521,7 @@ test('controller validation failures feed a bounded repository-skill repair loop
         for (const [path, content] of Object.entries(round.writes))
           toolkit.write(path.replaceAll('/', '\\'), content);
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: round.findings,
           title: round.title,
           description: 'Authorized synthetic reviewed-handoff draft.',
@@ -2708,7 +2709,7 @@ test(`1JS edited-commit repair budget ${repairBudget} preserves failures and val
         }
         toolkit.write(scenarioPath.replaceAll('/', '\\'), json(round.scenario));
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: round.findings,
           title: round.title,
           description: 'Synthetic 1JS edited-commit qualification drill, not live product proof.',
@@ -2844,7 +2845,7 @@ test('Agency authoring provider uses the same local repair loop and exact sessio
         for (const [path, content] of Object.entries(round.writes))
           toolkit.write(path.replaceAll('/', '\\'), content);
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: round.findings,
           title: round.title,
           description: 'Authorized synthetic reviewed-handoff draft.',
@@ -2937,7 +2938,7 @@ test('Agency remote authoring imports only the remote diff into the local repair
             round: input.round,
             baseRevision: input.baseRevision,
             proposal: {
-              outcome: 'propose-change',
+              outcome: 'propose-change', reviewContext,
               findings: round.findings,
               title: round.title,
               description: 'Authorized synthetic Agency remote draft.',
@@ -3020,7 +3021,7 @@ test(`exhausted test-only repair budget ${repairBudget} blocks without push or D
           `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('fixture behavior', () => assert.equal(1, ${authoring.round + 2}));\n`);
         toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: 'Added initial focused fixture coverage.',
           title: 'Add failing fixture behavior coverage',
           description: 'Authorized synthetic reviewed-handoff draft.',
@@ -3079,7 +3080,7 @@ test(`${invalidResult} validation prevents push and Draft PR creation`, async t 
           "import test from 'node:test';\ntest('fixture behavior', () => {});\n");
         toolkit.write('test\\behavior-card.md', '# Fixture behavior\n');
         toolkit.finish({
-          outcome: 'propose-change',
+          outcome: 'propose-change', reviewContext,
           findings: 'Added focused fixture coverage.',
           title: 'Add fixture behavior coverage',
           description: 'Authorized synthetic reviewed-handoff draft.',

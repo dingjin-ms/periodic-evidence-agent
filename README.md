@@ -2207,6 +2207,26 @@ current revision. Exhausted repair rounds, missing or stale gate results, and
 post-validation source changes remain blocked locally; failed drafts are not
 published.
 
+Every new `propose-change` submission must also include `reviewContext`:
+`coverageGap`, `testsAndAssertions`, `boundaries`, and `reviewFocus` are nonempty
+strings of at most 1000 characters each. These are author-reported explanations,
+not independent proof of coverage. Describe observable assertions, real versus
+mocked components, uncovered variants and remaining uncertainty; do not claim
+validation success or include raw captures, credentials or local artifact paths.
+
+The controller builds the Draft description from that context, the author's
+summary, every assigned source identity/link and captured revision (or payload
+hash), the actual committed changed-file list, and exact-head native gate results.
+Existing seam inventories and reported unknowns are retained. Missing context or
+unversioned evidence blocks before push; failed or stale gates cannot produce a
+success claim. Descriptions over the provider's 4000-character limit, including
+the assignment footer, are rejected rather than silently truncated. The final
+size check also includes any queued-build receipt; queuing is not a CI-pass claim.
+Older preserved proposals without `reviewContext` must be explicitly re-authored
+through the authorized recovery flow before publication; reconciliation of an
+already-created Draft remains read-only. This does not add scheduling, reviewers,
+comments, notifications, auto-complete or merge behavior.
+
 Repository-skill bindings use the existing Copilot SDK authoring transport by
 default. A binding may explicitly select the opt-in
 [Local Agency authoring provider](AGENCY-LOCAL-AUTHORING.md), which exposes the

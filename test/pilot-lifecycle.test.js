@@ -1,3 +1,4 @@
+import { reviewContext } from '../scripts/test-fixtures/draft-context.mjs';
 import test from 'node:test';
 import { loadAuthoringFeedback } from '../src/workers.js';
 import assert from 'node:assert/strict';
@@ -327,6 +328,12 @@ test('ADO draft provider creates only a draft and reconciles by stable source br
   const calls = [], revision = 'a'.repeat(40);
   const pr = { pullRequestId: 5, isDraft: true, status: 'active', sourceRefName: `refs/heads/pilot/${job.id}`,
     targetRefName: 'refs/heads/main', lastMergeSourceCommit: { commitId: revision } };
+  await assert.rejects(createAdoDraft(config, ledger, job, repo, revision,
+    { title: 'Fixture', description: 'x'.repeat(4000) }, async method => {
+      assert.equal(method, 'GET', 'oversized body must not create a PR');
+      return { value: [] };
+    }), { code: 'blocked-pr-description' });
+  assert.equal(ledger.status().operations.some(operation => operation.kind === 'draft-pr'), false);
   const result = await createAdoDraft(config, ledger, job, repo, revision, { title: 'Fixture', description: 'Synthetic' },
     async (method, suffix, body) => { calls.push({ method, suffix, body }); return method === 'GET' ? { value: [] } : pr; });
   assert.equal(calls[1].body.isDraft, true);
@@ -635,13 +642,19 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
       modelCalls++;
       assert.match(toolkit.read('src\\value.js'), /value = 1/);
       toolkit.write('src\\value.js', 'export const value = 2;\n');
-      toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic reproduction and source correction',
+      toolkit.finish({ outcome: 'propose-change', reviewContext, findings: 'Synthetic reproduction and source correction',
         title: 'Synthetic fixture correction', description: 'Simulated PR, not workplace evidence.' });
     },
-    createDraft: async (c, l, current, r, revision) => {
+    createDraft: async (c, l, current, r, revision, proposal) => {
       draftCalls++;
       const remoteHead = (await command('git', ['--git-dir', repo.remote, 'rev-parse', `refs/heads/pilot/${job.id}`], root)).stdout.trim();
       assert.equal(remoteHead, revision);
+      assert.ok(proposal.description.includes(revision));
+      assert.ok(proposal.description.includes(reviewContext.testsAndAssertions));
+      assert.ok(proposal.description.includes(ledger.get('evidence',
+        ledger.get('assignment', job.id).evidenceIds[0]).url));
+      assert.match(proposal.description, /src\/value\.js/);
+      assert.match(proposal.description, /### Boundaries and limitations/);
       return { url: 'https://example.invalid/synthetic-draft/1', isDraft: true, headRevision: revision };
     }
   };
@@ -664,6 +677,24 @@ test('local flight controller path: simulated adapter/model/PR, real isolated ed
   await assert.rejects(dispatch(config, ledger, job.id), /never-dispatched/);
   assert.equal((await g(['rev-parse', 'HEAD'])).stdout, primaryHead);
   assert.equal((await g(['status', '--porcelain'])).stdout, '');
+});
+test('missing review context blocks the worker before commit, push or draft creation', async t => {
+  const { config, ledger, job } = await fixture(t, 'authenticated-source', 'defect-fix');
+  config.activation.dispatch = true;
+  config.limits.maxAiCreditsPerSession = 1;
+  await assert.rejects(dispatch(config, ledger, job.id, {
+    runModel: async (c, l, current, assignment, investigation, toolkit) => {
+      toolkit.write('src/value.js', 'export const value = 2;\n');
+      toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic change',
+        title: 'Synthetic change', description: 'Missing required review context.' });
+    },
+    commitChanges: () => assert.fail('must not commit'),
+    pushBranch: () => assert.fail('must not push'),
+    createDraft: () => assert.fail('must not create a PR')
+  }), { code: 'blocked-pr-description' });
+  assert.equal(ledger.job(job.id).state, 'blocked');
+  assert.equal(ledger.status().operations.some(operation =>
+    ['commit', 'push', 'draft-pr'].includes(operation.kind)), false);
 });
 test('multi-repository scheduler uses isolated real commits, gates and pushes with same-repository exclusion',
   { timeout: 60000 }, async t => {
@@ -725,7 +756,7 @@ test('multi-repository scheduler uses isolated real commits, gates and pushes wi
         assert.match(toolkit.read('src\\value.js'), new RegExp(`value = ${expected};`));
         toolkit.write('src\\value.js', `export const value = ${expected * 2};\n`);
         toolkit.finish({
-          outcome: 'propose-change', findings: 'Isolated synthetic source correction',
+          outcome: 'propose-change', reviewContext, findings: 'Isolated synthetic source correction',
           title: 'Synthetic concurrent correction', description: 'Offline concurrency test'
         });
       },
@@ -908,7 +939,7 @@ test('planned OA skill path reconciles a landed product fix and creates a source
     allowedWritePrefixes: ['test']
   });
   assert.throws(() => rejected.finish({
-    outcome: 'propose-change', findings: 'Skill could not safely complete.',
+    outcome: 'propose-change', reviewContext, findings: 'Skill could not safely complete.',
     title: 'Must not publish', description: 'Must not publish',
     skillResult: {
       status: 'failed', classification: 'missing-coverage',
@@ -924,7 +955,7 @@ test('planned OA skill path reconciles a landed product fix and creates a source
     allowedWritePrefixes: ['test']
   });
   assert.throws(() => needsDecision.finish({
-    outcome: 'propose-change', findings: 'Skill needs a human decision.',
+    outcome: 'propose-change', reviewContext, findings: 'Skill needs a human decision.',
     title: 'Must not publish', description: 'Must not publish',
     skillResult: {
       status: 'succeeded', classification: 'missing-coverage',
@@ -950,7 +981,7 @@ test('planned OA skill path reconciles a landed product fix and creates a source
         "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('OA behavior', () => assert.equal(1, 1));\n");
       toolkit.write('test\\behavior.behavior-card.md', '# OA behavior\n\nSynthetic behavior card.\n');
       toolkit.finish({
-        outcome: 'propose-change', findings: 'Added focused OA integration coverage.',
+        outcome: 'propose-change', reviewContext, findings: 'Added focused OA integration coverage.',
         title: '[Periodic Evidence Agent Canary] Add OA behavior coverage',
         description: 'Synthetic draft used to verify the source-bound OA skill pipeline.',
         skillResult: {
@@ -1224,7 +1255,7 @@ test('automatic delivery cleanup honors opt-out and retains failure metadata', a
         runModel: async (c, l, current, assignment, investigation, toolkit) => {
           toolkit.write('src\\value.js', 'export const value = 2;\n');
           toolkit.finish({
-            outcome: 'propose-change', findings: 'Synthetic change',
+            outcome: 'propose-change', reviewContext, findings: 'Synthetic change',
             title: 'Synthetic delivery', description: 'Fixture only'
           });
         },

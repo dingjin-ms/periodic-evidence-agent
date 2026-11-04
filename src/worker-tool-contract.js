@@ -1,3 +1,5 @@
+import { reviewContextSchema } from './draft-description.js';
+
 export const workerToolDefinitions = Object.freeze([
   {
     name: 'pilot_list',
@@ -71,6 +73,7 @@ export const workerToolDefinitions = Object.freeze([
         findings: { type: 'string' },
         title: { type: 'string' },
         description: { type: 'string' },
+        reviewContext: reviewContextSchema,
         skillResult: {
           type: 'object',
           additionalProperties: false,

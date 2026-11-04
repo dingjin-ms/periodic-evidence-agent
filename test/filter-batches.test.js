@@ -1,3 +1,4 @@
+import { reviewContext } from '../scripts/test-fixtures/draft-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -211,7 +212,7 @@ async function exerciseFilterProposer(s, ledger, checkout, git, manifest, review
         toolkit.write('scenarios/canary.json', bytes(assignment.skillInput.items[0]));
         toolkit.write('resources.json', bytes([assignment.skillInput.items[0].inputItemId]));
         toolkit.finish({
-          outcome: 'propose-change', findings: 'Synthetic authoring preserves reviewed input.',
+          outcome: 'propose-change', reviewContext, findings: 'Synthetic authoring preserves reviewed input.',
           title: recover === 'committed' && modelCalls === 2
             ? 'Reworded proposal without code changes' : 'Add synthetic declarative scenario',
           description: 'Offline controller fixture only.',

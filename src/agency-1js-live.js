@@ -178,6 +178,13 @@ export function verifyOneJsLiveArtifact(root, request, observation, productRepos
   };
 }
 
+export function isOneJsLiveTerminal(parent, child, job) {
+  const failedRun = run => run?.status === 'completed' && run.result !== 'succeeded';
+  return failedRun(parent) || failedRun(child) ||
+    (parent?.status === 'completed' && child?.status === 'completed' &&
+      ['Completed', 'Failed', 'Cancelled'].includes(job?.state));
+}
+
 export async function runOneJsLiveController(config, ledger, request, options = {}, dependencies = {}) {
   validateRequest(request);
   requireThat(config.activation?.dispatch === true && config.statePolicy?.accessApproved === true,
@@ -217,8 +224,8 @@ export async function runOneJsLiveController(config, ledger, request, options = 
     await wait(request.pollSeconds * 1000);
   }
   requireThat(observation?.terminal, '1JS live execution exceeded its bounded timeout', 'blocked-reconciliation');
-  requireThat(observation.parent.result === 'succeeded' && observation.child.result === 'succeeded' &&
-    observation.job.state === 'Completed' && observation.job.result === 'Success',
+  requireThat(observation.parent?.result === 'succeeded' && observation.child?.result === 'succeeded' &&
+    observation.job?.state === 'Completed' && observation.job?.result === 'Success',
   'Orchestrator, Agency job, and runner must all succeed', 'blocked-result');
   const artifactRoot = await transport('download', { request, observation }, directory);
   const acceptance = verifyOneJsLiveArtifact(artifactRoot, request, observation,
@@ -292,14 +299,14 @@ export function createOneJsLiveTransport(config, dependencies = {}) {
         const log = await logResponse.text();
         jobId = log.match(/Agency job created:\s*([A-Za-z0-9_.-]+)/)?.[1];
       }
-      if (!jobId) return { terminal: false, parent: { id: parent.id, status: parent.status, result: parent.result } };
+      if (!jobId) return { terminal: isOneJsLiveTerminal(parent),
+        parent: { id: parent.id, status: parent.status, result: parent.result } };
       const job = await request(`${agencyRoot}/jobs/${jobId}`, agencyScope);
       const childId = job.pipelineRun?.runId;
       const child = childId ? await request(ado(`build/builds/${childId}?api-version=7.1`), adoScope) : null;
       if (child) requireThat(child.definition?.id === 35960 && child.sourceVersion === input.request.sourceRevision,
         'Agency runner is outside the pinned definition/source', 'blocked-result');
-      return { terminal: parent.status === 'completed' && child?.status === 'completed' &&
-        ['Completed', 'Failed', 'Cancelled'].includes(job.state),
+      return { terminal: isOneJsLiveTerminal(parent, child, job),
       parent: { id: parent.id, status: parent.status, result: parent.result },
       child: child && { id: child.id, status: child.status, result: child.result }, job,
       authentication: { mechanism: 'TRIPS FIC' } };

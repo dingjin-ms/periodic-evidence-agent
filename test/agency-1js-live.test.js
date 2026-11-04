@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Ledger } from '../src/ledger.js';
 import { hash } from '../src/common.js';
-import { oneJsLiveRequest, runOneJsLiveController } from '../src/agency-1js-live.js';
+import { isOneJsLiveTerminal, oneJsLiveRequest, runOneJsLiveController } from '../src/agency-1js-live.js';
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -123,4 +123,14 @@ test('1JS live request rejects parallel or fixed-scenario dispatch before submis
   await assert.rejects(runOneJsLiveController({ activation: { dispatch: true }, statePolicy: { accessApproved: true } },
     {}, request, {}, { transport: async operation => calls.push(operation) }), /fixed single-job/);
   assert.deepEqual(calls, []);
+});
+
+test('1JS live terminal detection fails fast without weakening success completion', () => {
+  const runningParent = { status: 'inProgress' };
+  const runningJob = { state: 'Pending' };
+  assert.equal(isOneJsLiveTerminal(runningParent, { status: 'completed', result: 'failed' }, runningJob), true);
+  assert.equal(isOneJsLiveTerminal({ status: 'completed', result: 'canceled' }), true);
+  assert.equal(isOneJsLiveTerminal(runningParent, { status: 'completed', result: 'succeeded' }, runningJob), false);
+  assert.equal(isOneJsLiveTerminal({ status: 'completed', result: 'succeeded' },
+    { status: 'completed', result: 'succeeded' }, { state: 'Completed' }), true);
 });

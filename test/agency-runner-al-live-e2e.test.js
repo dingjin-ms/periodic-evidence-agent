@@ -30,8 +30,8 @@ function runnerFixture(t) {
   mkdirSync(join(workspace, 'utils', 'excel-agent-in-container-proxy', 'tests'), { recursive: true });
   mkdirSync(join(workspace, 'utils', 'excel-agent-in-container-proxy', '.github', 'skills',
     'excel-agent-in-container-proxy-integration-tests'), { recursive: true });
-  const fixtureScript = `const args = process.argv.slice(2);\n` +
-    `if (args.includes('build') && args.includes('@augloop-utils/excel-agent-in-container-proxy')) console.log('@augloop/tracelogger build success\\n@augloop/sf-native build success\\nALTraceLogger.node\\nPerfCounters');\n` +
+  const fixtureScript = `const fs = require('node:fs'); const path = require('node:path'); const args = process.argv.slice(2);\n` +
+    `if (args.includes('build') && args.includes('@augloop-utils/excel-agent-in-container-proxy')) { console.log('@augloop/tracelogger build success\\n@augloop/sf-native build success'); fs.mkdirSync(path.join(process.cwd(), 'server', 'tracelogger', 'build', 'Release'), { recursive: true }); fs.writeFileSync(path.join(process.cwd(), 'server', 'tracelogger', 'build', 'Release', 'ALTraceLogger.node'), 'native'); fs.writeFileSync(path.join(process.cwd(), 'server', 'tracelogger', 'build', 'Release', 'PerfCountersDll.dll'), 'native'); }\n` +
     `if (args.includes('test')) console.log(args.includes('@augloop/session-protocol') ? '  115 passing' : 'Tests:  2 passed, 2 total');\n` +
     `else console.log('fixture gate passed');\n`;
   writeFileSync(join(workspace, '.yarn', 'releases', 'yarn-3.2.1.cjs'), fixtureScript);
@@ -69,6 +69,10 @@ test('prebuilt AL runner executes Excel first and all sixteen native gate comman
   assert.equal(receipt.gates[0].gateId, 'excel-agent-in-container-proxy-cli-build');
   assert.equal(receipt.gates.find(gate => gate.owner === 'session-protocol' && gate.step === 'test').testPopulation, 115);
   assert.equal(receipt.gates.filter(gate => gate.step === 'test').every(gate => gate.testPopulation > 0), true);
+  assert.equal(receipt.gates.filter(gate => gate.runner === 'jest' && gate.step === 'test')
+    .every(gate => gate.args.includes('--cacheDirectory')), true);
+  assert.equal(receipt.excelNativeProof.assets.alTraceLoggerNode.path,
+    'server/tracelogger/build/Release/ALTraceLogger.node');
   const audits = readFileSync(join(f.evidence, 'node-preload-audit.ndjson'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
   assert.equal(audits.length >= 16, true);
   assert.equal(audits.every(audit => audit.lageGitIgnoredFilesPresent === false), true);

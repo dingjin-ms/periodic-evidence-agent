@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, globSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,23 +27,32 @@ function requireValue(value, message) {
   if (!value) throw new Error(message);
 }
 
-function command(owner, step, root) {
+function command(owner, step, root, evidence) {
   const node = process.execPath;
   const yarn = join(root, '.yarn', 'releases', 'yarn-3.2.1.cjs');
   const cli = join(root, 'tools', 'node_modules', '@augloop-tools', 'cli', 'lib', 'src', 'cli.js');
   if (step === 'cli-build') return [node, [cli, 'build', owner.package]];
   if (step === 'workspace-build') return [node, [yarn, 'workspace', owner.package, 'build']];
   if (step === 'eslint') return [node, [yarn, 'workspace', owner.package, 'exec', 'gulp', 'eslint']];
-  return [node, [yarn, 'workspace', owner.package, 'test']];
+  const args = [yarn, 'workspace', owner.package, 'test'];
+  if (owner.runner === 'jest') args.push('--cacheDirectory', join(evidence, 'jest-cache', owner.id));
+  return [node, args];
 }
 
 function population(owner, text) {
+  const plain = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
   if (owner.runner === 'mocha') {
-    const matches = [...text.matchAll(/(?:^|\n)\s*(\d+) passing(?:\s|$)/g)];
+    const matches = [...plain.matchAll(/(?:^|\n)\s*(\d+) passing(?:\s|$)/g)];
     return matches.length ? Number(matches.at(-1)[1]) : 0;
   }
-  const matches = [...text.matchAll(/Tests:\s+(?:(?:\d+) skipped,\s+)?(\d+) passed(?:,\s+(\d+) total)?/g)];
+  const matches = [...plain.matchAll(/Tests:\s+(?:(?:\d+) skipped,\s+)?(\d+) passed(?:,\s+(\d+) total)?/g)];
   return matches.length ? Number(matches.at(-1)[2] ?? matches.at(-1)[1]) : 0;
+}
+
+function nativeAsset(root, fileName) {
+  const found = globSync(`server/tracelogger/**/${fileName}`, { cwd: root }).sort().at(0) ?? null;
+  const path = found?.replaceAll('\\', '/') ?? null;
+  return { present: path !== null, path, sha256: path ? sha256(readFileSync(join(root, path))) : null };
 }
 
 async function drain(pid) {
@@ -226,7 +235,7 @@ async function main() {
   const startedAt = new Date().toISOString(), gates = [];
   for (const owner of owners) {
     for (const step of steps) {
-      const gateId = `${owner.id}-${step}`, [executable, args] = command(owner, step, root);
+      const gateId = `${owner.id}-${step}`, [executable, args] = command(owner, step, root, evidence);
       const stdoutPath = join(evidence, 'logs', `${gateId}.stdout.log`);
       const stderrPath = join(evidence, 'logs', `${gateId}.stderr.log`);
       const start = new Date().toISOString();
@@ -253,13 +262,17 @@ async function main() {
     gate.step === 'cli-build');
   const excelCliText = excelCli ? `${readFileSync(join(evidence, excelCli.stdout.path), 'utf8')}\n${
     readFileSync(join(evidence, excelCli.stderr.path), 'utf8')}` : '';
+  const alTraceLoggerNode = nativeAsset(root, 'ALTraceLogger.node');
+  const perfCounters = nativeAsset(root, 'PerfCountersDll.dll');
   const excelNativeProof = {
     traceLoggerBuild: /@augloop\/tracelogger build success/i.test(excelCliText),
     sfNativeBuild: /@augloop\/sf-native build success/i.test(excelCliText),
-    alTraceLoggerNode: /ALTraceLogger\.node/i.test(excelCliText),
-    perfCounters: /PerfCounters/i.test(excelCliText)
+    alTraceLoggerNode: alTraceLoggerNode.present,
+    perfCounters: perfCounters.present,
+    assets: { alTraceLoggerNode, perfCounters }
   };
-  const nativePassed = Object.values(excelNativeProof).every(Boolean);
+  const nativePassed = excelNativeProof.traceLoggerBuild && excelNativeProof.sfNativeBuild &&
+    excelNativeProof.alTraceLoggerNode && excelNativeProof.perfCounters;
   const receipt = {
     schema: 'pea-al-agency-runner-receipt-v1', startedAt, finishedAt: new Date().toISOString(),
     baseRevision: input.baseRevision, candidate: input.candidate, changedFiles: changed,

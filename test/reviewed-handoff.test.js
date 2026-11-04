@@ -329,7 +329,7 @@ test('sample request exercises intake through real validation and local push, wi
   assert.match(failure.stdout, /deduplication preserves formulas/);
 });
 
-for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication', 'phased', 'phased-uncertain', 'phased-drift', 'phased-missing-tool', 'phased-interrupted', 'phased-profile', 'phased-profile-failure', 'phased-profile-drift', 'phased-profile-interrupted'])
+for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication', 'phased', 'phased-uncertain', 'phased-drift', 'phased-missing-tool', 'phased-interrupted', 'phased-profile', 'phased-profile-failure', 'phased-profile-drift', 'phased-profile-interrupted', 'phased-shared-ledger'])
   test(`automated request FILTER maintained ${executionCase} path without an operator handoff`, async t => {
   const ctx = await requestFixture(t, { nativeRequest: true });
   const repo = ctx.config.repositories[0];
@@ -473,6 +473,12 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   assert.equal(filters, 1); assert.equal(proposers, 0);
   ledger.qualify(qualificationId, qualification);
   if (phased) {
+    if (executionCase === 'phased-shared-ledger') {
+      // A different request already consumed its own complete allocation in this ledger.
+      const other = 'other-request-assignment';
+      ledger.operation(`${other}:phase:author`, other, 'request-phase', {});
+      ledger.finishOperation(`${other}:phase:author`, 'complete', { elapsedMs: repo.requestExecution.phases.maxTotalMs });
+    }
     if (executionCase === 'phased-missing-tool') {
       rmSync(join(ctx.root, 'local-tool.js'));
       await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'prepare' }, dependencies));

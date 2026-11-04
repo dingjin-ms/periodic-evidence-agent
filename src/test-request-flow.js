@@ -351,7 +351,12 @@ export async function runTestRequest(config, ledger, workItemId, options = {}, d
       let delivered;
       try {
         if (options.phase && repo.requestExecution?.phases) {
-          const usage = ledger.status().operations.filter(row => row.kind === 'request-phase').map(row => JSON.parse(row.detail));
+          const review = row(ledger, intake.id + ':review');
+          const assignmentId = review && JSON.parse(review.detail).assignmentId;
+          requireThat(review?.state === 'complete' && assignmentId,
+            'Phased request requires its prepared assignment identity', 'blocked-reconciliation');
+          const usage = ledger.status().operations.filter(row => row.kind === 'request-phase' && row.job_id === assignmentId)
+            .map(row => JSON.parse(row.detail));
           const budget = repo.requestExecution.phases.budgets[options.phase.startsWith('validate-') ? 'validate' : options.phase];
           requireThat(Number.isFinite(reviewed.elapsedMs) && reviewed.elapsedMs + usage.reduce((sum, row) => sum + (row.elapsedMs ?? 0), 0) + budget <= repo.requestExecution.phases.maxTotalMs,
             'FILTER plus worker phases exceed the total allocation', 'blocked-budget');

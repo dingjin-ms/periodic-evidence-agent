@@ -2,4 +2,5 @@
 import { help } from './cli-help.js';
 
 if ((process.argv[2] ?? 'help') === 'help') console.log(help);
-else await import('./cli-runtime.js');
+else if (!await (await import('./request-phase-cli.js')).ownRequestPhase(process.argv.slice(2)))
+  await import('./cli-runtime.js');

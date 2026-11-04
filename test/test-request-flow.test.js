@@ -28,7 +28,8 @@ function setup(t) {
   binding.enabled = true; binding.qualification = 'qualified'; binding.skillPath = 'src/verifier.js';
   repo.allowedWritePrefixes = binding.allowedWritePrefixes; repo.allowedWriteFiles = binding.allowedWriteFiles ?? [];
   const ledger = new Ledger(root);
-  ledger.qualify(skillQualificationId(repo.id, binding.id), { baseRevision: revision });
+  ledger.qualify(skillQualificationId(repo.id, binding.id), { baseRevision: revision, skillPath: binding.skillPath,
+    skillSha256: hash('export const supported = false;\n') });
   const item = { id: 123, rev: 1, snapshotAt: '2026-10-01T00:00:00Z', fields: {
     'System.TeamProject': 'OC', 'System.AreaPath': policy.areaPath, 'System.WorkItemType': 'Bug',
     'System.State': 'New', 'System.Tags': policy.tag, 'System.Title': 'Synthetic request',
@@ -38,7 +39,8 @@ function setup(t) {
   return { config, ledger, item, calls: 0, comments: 0, read: async () => item };
 }
 function dependencies(ctx, { decision = 'blocked-environment', crash = false, incomplete = false, support, rejectedFinish = false } = {}) {
-  return { read: ctx.read, execute: async () => ({ stdout: incomplete ? 'x'.repeat(30000) : 'export const supported = false;\n' }),
+  let sourceCalls = 0;
+  return { read: ctx.read, execute: async () => ({ stdout: incomplete && sourceCalls++ > 0 ? 'x'.repeat(30000) : 'export const supported = false;\n' }),
     feedback: { getToken: async () => 'fixture', fetchResponse: async (_url, options) => {
       ctx.comments++; assert.equal(options.redirect, 'error');
       assert.match(JSON.parse(options.body).text, /holding this test request/);
@@ -311,7 +313,7 @@ test('complete session payload has an exact pre-reservation boundary', async t =
 });
 test('revoked authority denies source and finish callbacks before backend effects', async t => {
   const ctx = setup(t), path = authority(ctx); let reads = 0;
-  const deps = dependencies(ctx); deps.execute = async () => { reads++; return { stdout: 'source' }; };
+  const deps = dependencies(ctx); deps.execute = async () => { reads++; return { stdout: 'export const supported = false;\n' }; };
   deps.connect = async (_config, _cwd, action) => action({ createSession: async options => ({
     sessionId: 'revoked-tools', on: () => () => {},
     rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
@@ -324,11 +326,12 @@ test('revoked authority denies source and finish callbacks before backend effect
     }, disconnect: async () => {}
   }) });
   await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps), /authorization changed/);
-  assert.equal(reads, 0);
+  assert.equal(reads, 1); // Pinned skill delivery occurred before revocation; no callback read followed.
 });
 test('source pages consume a cumulative input budget', async t => {
   const ctx = setup(t); ctx.config.localFilter.maxRequestBytes = 24000;
-  const deps = dependencies(ctx); deps.execute = async () => ({ stdout: 'x'.repeat(4000) });
+  const deps = dependencies(ctx); let reads = 0;
+  deps.execute = async () => ({ stdout: reads++ === 0 ? 'export const supported = false;\n' : 'x'.repeat(4000) });
   deps.connect = async (_config, _cwd, action) => action({ createSession: async options => ({
     sessionId: 'budget-pages', on: () => () => {},
     rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },

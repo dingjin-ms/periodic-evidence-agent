@@ -85,11 +85,14 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
     child: { id: 11, result: 'succeeded' }, job: { jobId: 'office-fixture', state: 'Completed', result: 'Success',
       agent: { name: 'wxp-copilot-tester' } }, authentication: { mechanism: 'TRIPS FIC' } };
   const calls = [];
+  let inspections = 0;
   const transport = async operation => { calls.push(operation);
     if (operation === 'collect') return { schema: 'pea-1js-live-evidence-v1', workItemId: 11590949,
       sourceRevision: base, collectedAt: new Date().toISOString() };
     if (operation === 'submit') return { parentRunId: 10 };
-    if (operation === 'inspect') return observation;
+    if (operation === 'inspect') return inspections++ === 0
+      ? { terminal: false, parent: { id: 10, status: 'inProgress' } }
+      : observation;
     if (operation === 'publish') return { url: 'https://example.invalid/draft/1', id: 1, isDraft: true,
       autoComplete: false, merged: false, headRevision: candidate };
     return join(root, 'artifact'); };
@@ -101,7 +104,7 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
   const accepted = await runOneJsLiveController(config, ledger, request, { publishDraft: true }, { transport });
   assert.equal(accepted.status, 'passed'); assert.equal(accepted.candidate, candidate);
   assert.equal(accepted.draftPR.isDraft, true);
-  assert.deepEqual(calls, ['collect', 'submit', 'inspect', 'download', 'publish']);
+  assert.deepEqual(calls, ['collect', 'submit', 'inspect', 'inspect', 'download', 'publish']);
   await assert.rejects(runOneJsLiveController(config, ledger, request, {}, { transport }), /resume/);
   const operation = ledger.db.prepare("SELECT id,detail FROM operations WHERE kind='agency-1js-live'").get();
   const expired = JSON.parse(operation.detail); expired.reservedAt = '2000-01-01T00:00:00.000Z';
@@ -110,7 +113,7 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
   assert.equal(resumed.status, 'passed');
   assert.equal(calls.filter(value => value === 'collect').length, 1);
   assert.equal(calls.filter(value => value === 'submit').length, 1);
-  assert.equal(calls.filter(value => value === 'inspect').length, 1);
+  assert.equal(calls.filter(value => value === 'inspect').length, 2);
 });
 
 test('1JS live request rejects parallel or fixed-scenario dispatch before submission', async () => {

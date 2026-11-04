@@ -67,10 +67,14 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
   const state = join(root, 'state');
-  const skillPath = '.github/skills/integration-test-authoring/SKILL.md';
-  mkdirSync(join(reference, '.github', 'skills', 'integration-test-authoring'), { recursive: true });
+  // Optional private qualification input stays outside this public fixture.
+  const externalSkill = nativeRequest && process.env.PILOT_TEST_SKILL_FILE;
+  const skillPath = externalSkill ? '.github/skills/author-declarative-e2e-test/SKILL.md' : '.github/skills/integration-test-authoring/SKILL.md';
+  const skillContent = externalSkill ? readFileSync(externalSkill, 'utf8') : '# Fixture integration-test skill\nAdd focused tests.\n';
+  if (externalSkill) assert.equal(hash(skillContent), process.env.PILOT_TEST_SKILL_SHA256, 'Private fixture skill must match its source pin');
+  mkdirSync(join(reference, skillPath, '..'), { recursive: true });
   mkdirSync(join(reference, 'src'), { recursive: true });
-  writeFileSync(join(reference, skillPath), '# Fixture integration-test skill\nAdd focused tests.\n');
+  writeFileSync(join(reference, skillPath), skillContent);
   writeFileSync(join(reference, 'src', 'value.js'), sourceCode);
   if (capabilitySources) {
     mkdirSync(join(reference, 'ooui'));
@@ -145,7 +149,7 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
     baseRef: 'HEAD',
     baseRevision,
     skillPath,
-    skillSha256: hash('# Fixture integration-test skill\nAdd focused tests.\n'),
+    skillSha256: hash(skillContent),
     qualificationSource: 'local-reference',
     validationContractVersion: validationContract.version,
     validationContractSha256: validationContract.sha256,
@@ -156,7 +160,7 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
     ledger.close();
     rmSync(root, { recursive: true, force: true });
   });
-  return { root, remote, config, ledger, baseRevision, additionalLedgers };
+  return { root, remote, config, ledger, baseRevision, additionalLedgers, skillPath, skillContent };
 }
 
 const formulaSource = `export function removeDuplicates(rows) {
@@ -341,11 +345,11 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   ctx.config.activation.review = true; ctx.config.activation.dispatch = true;
   ctx.config.filterExecutor = 'local-sdk'; ctx.config.limits.maxAiCreditsPerSession = 30;
   ctx.config.localFilter = { enabled: true, acceptSoftCreditLimit: true, maxRequests: 1,
-    maxToolCalls: 10, timeoutMs: 10000, maxSourceBytes: 12000, maxRequestBytes: 100000,
+    maxToolCalls: 10, timeoutMs: 10000, maxSourceBytes: Math.max(12000, Buffer.byteLength(ctx.skillContent)), maxRequestBytes: 262144,
     sources: [{ repoId: 'office-agent', revision: ctx.baseRevision }] };
   ctx.config.adoTestRequests.automation = { enabled: true, scopeApproved: true, approvalRef: 'fixture-flow',
     model: 'fixture', maxRequests: 1, requireSupportMatrix: true,
-    sourcePaths: ['src', '.github/skills/integration-test-authoring'] };
+    sourcePaths: ['src', ctx.skillPath] };
   // New policy is collected into a fresh ledger, not retrofitted onto old receipts.
   const ledger = new Ledger(join(ctx.root, 'flow-state'));
   ctx.additionalLedgers.push(ledger);
@@ -365,12 +369,17 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
         rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
         sendAndWait: async ({ prompt }) => {
           const request = JSON.parse(prompt);
-          assert.equal(request.repositorySkill.content, '# Fixture integration-test skill\nAdd focused tests.\n');
+          assert.equal(request.repositorySkill.content, ctx.skillContent);
           assert.equal(request.repositorySkill.sha256, hash(request.repositorySkill.content));
           assert.equal(request.repositorySkill.revision, ctx.baseRevision);
           event({ type: 'assistant.turn_start' });
           await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: 'src/value.js' });
-          await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: request.skillPath });
+          let offset = 0;
+          do {
+            const page = JSON.parse(await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: request.skillPath, offset }));
+            assert.equal(page.error, undefined, json(page.error));
+            offset = page.nextOffset;
+          } while (offset !== null);
           const result = JSON.parse(await options.tools.find(tool => tool.name === 'pilot_request_finish').handler({
             decision: 'supported', missingCapabilities: [], sourcePaths: ['src/value.js'],
             rationale: 'Fixture implementation supports the invariant.', verificationEvidence: [],
@@ -387,7 +396,7 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
         async (_config, _cwd, invoke) => invoke({ createSession: async options => ({
           disconnect: async () => {}, sendAndWait: async ({ prompt }) => {
             proposers++;
-            assert.match(prompt, /--- repository skill ---\n# Fixture integration-test skill\nAdd focused tests\./);
+            assert.ok(prompt.includes(`--- repository skill ---\n${ctx.skillContent}`));
             assert.match(prompt, new RegExp(ctx.baseRevision));
             const write = options.tools.find(tool => tool.name === 'pilot_write');
             await write.handler({ path: 'test/behavior.test.js', content: executionCase === 'failed-validation' ? 'throw new Error("synthetic assertion failure");' : formulaTest });

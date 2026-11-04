@@ -17,6 +17,7 @@ import { cleanupWorkspace } from './workspace-gc.js';
 import { operationRowsHash } from './operation-evidence.js';
 import { withClient, authoringSession, defineTool } from './runtime.js';
 import { skillDeliveryReceipt } from './skill-delivery.js';
+import { requestExecutionPolicy, requestHookEnvironment, preflightRequestExecution, formatAcceptedMarkdown } from './request-execution.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification, renderCoverageReview,
   externalSkillReadPrefix, readExternalSkill,
@@ -99,8 +100,8 @@ export async function commitRepositoryChanges(config, workspace, repo, title,
   admission.check('commit');
   requireExecutionAuthorization(config, repo, 'commit');
   const timeout = repositoryCloneTimeout(config, repo);
-  const env = repositoryEnvironment(repo);
-  const hooks = repo.changeFile ? '.githooks' : '.git/hooks';
+  const env = requestHookEnvironment(repo, repositoryEnvironment(repo));
+  const hooks = requestExecutionPolicy(repo)?.nativeHooks ?? (repo.changeFile ? '.githooks' : '.git/hooks');
   const run = args => (execute === command ? nativeCommand : execute)('git', [
     '-c', 'core.longpaths=true', '-c', 'core.autocrlf=false',
     '-c', 'core.safecrlf=false', '-c', `core.hooksPath=${hooks}`, ...args
@@ -3993,6 +3994,13 @@ export async function pushDraftBranch(config, workspace, repo, refspec, dependen
   await admission.refresh();
   admission.check('push');
   requireExecutionAuthorization(config, repo, 'push');
+  const hooks = requestExecutionPolicy(repo)?.nativeHooks;
+  if (hooks) {
+    env = requestHookEnvironment(repo, env);
+    requireThat(existsSync(join(workspace, hooks, 'pre-push')), 'Native pre-push hook missing', 'blocked-validation');
+    const args = ['-c', `core.hooksPath=${hooks}`, 'push', 'origin', refspec];
+    return dependencies.execute ? execute(workspace, args, env, timeout) : nativeCommand('git', args, workspace, timeout, env);
+  }
   return execute(workspace, ['push', 'origin', refspec], env, timeout);
 }
 export function draftSourceRef(repo, jobId) {
@@ -4918,6 +4926,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         `Workspace was provisioned at ${isolated.workspace}, but its ownership receipt could not be persisted; reconcile it without cloning or dispatching again. ${safeError(error).message}`);
     }
     const current = ledger.job(id);
+    if (!recovery && repo.requestExecution && fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
+      await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      await preflightRequestExecution(config, ledger, current, repo);
+      requireCurrentAssignment(config, ledger, investigation, assignment);
+    }
     const loadedSkill = assignment.skillBindingId
       ? loadRepositorySkill(config, assignment, current.workspace, current.base_revision, qualification)
       : null;
@@ -5061,6 +5074,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           'Authoring successor must update the exact preserved case', 'blocked-reconciliation');
           successorCore.verifySetupOnlyChange(original.toString('utf8'),
             readFileSync(boundedPath(current.workspace, successor.testPath), 'utf8'));
+        }
+        if (repo.requestExecution && fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
+          await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+          await formatAcceptedMarkdown(config, ledger, current, repo, proposal, authoring.round);
+          requireCurrentAssignment(config, ledger, investigation, assignment);
         }
         if (authoring.round === 0 && repo.changeFile) {
           preparedValidation ??= await preparationPromise;

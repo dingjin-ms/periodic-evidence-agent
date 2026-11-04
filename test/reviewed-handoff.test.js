@@ -62,7 +62,7 @@ const oneJsRepairRunner = readFileSync(
   new URL('./fixtures/reviewed-handoff/1js-validation-repair-drill.runner.mjs.txt', import.meta.url),
   'utf8');
 
-async function setup(t, { inputFormat = null, sourceCode = 'export const value = 1;\n', capabilitySources = false } = {}) {
+async function setup(t, { inputFormat = null, sourceCode = 'export const value = 1;\n', capabilitySources = false, nativeRequest = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'reviewed-handoff-'));
   const reference = join(root, 'reference');
   const remote = join(root, 'remote.git');
@@ -76,6 +76,11 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
     mkdirSync(join(reference, 'ooui'));
     for (const name of ['schema', 'runner', 'ui-map'])
       writeFileSync(join(reference, 'ooui', `${name}.txt`), `Synthetic ${name} source\n`);
+  }
+  if (nativeRequest) {
+    mkdirSync(join(reference, '.githooks'));
+    writeFileSync(join(reference, '.githooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(reference, '.githooks/pre-push'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   }
   const git = args => command('git', ['-c', 'core.hooksPath=.git/no-hooks',
     '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], reference);
@@ -181,8 +186,8 @@ test('deduplication preserves formulas at surviving row positions', () => {
   assert.deepEqual(rows, before);
 });
 `;
-async function requestFixture(t) {
-  const ctx = await setup(t, { sourceCode: formulaSource });
+async function requestFixture(t, options = {}) {
+  const ctx = await setup(t, { sourceCode: formulaSource, ...options });
   ctx.config.adoTestRequests = {
     ...JSON.parse(readFileSync(new URL('../scaffold/ado-test-request.policy.example.json', import.meta.url))),
     enabled: true, scopeApproved: true, approvalRef: 'synthetic-intake-experiment'
@@ -318,8 +323,20 @@ test('sample request exercises intake through real validation and local push, wi
   assert.match(failure.stdout, /deduplication preserves formulas/);
 });
 
-test('automated request FILTER hands its plan to the real worker and publication gates without an operator handoff', async t => {
-  const ctx = await requestFixture(t);
+for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication'])
+  test(`automated request FILTER maintained ${executionCase} path without an operator handoff`, async t => {
+  const ctx = await requestFixture(t, { nativeRequest: true });
+  const repo = ctx.config.repositories[0];
+  repo.pr = { targetRef: 'refs/heads/main' };
+  const readiness = join(ctx.root, 'readiness.mjs'), formatter = join(ctx.root, 'formatter.mjs');
+  writeFileSync(readiness, `console.log(JSON.stringify({status:'ready',sourceRevision:${JSON.stringify(ctx.baseRevision)},capabilities:${JSON.stringify(executionCase === 'missing-readiness' ? [] : ['typed-cells'])},evidenceRef:'synthetic-qualified-observer'}));`);
+  writeFileSync(formatter, "import fs from 'node:fs';for(const path of process.argv.slice(3))fs.writeFileSync(path,fs.readFileSync(path,'utf8').replace(/Synthetic\\s+contract/g,'Synthetic contract'));\n");
+  const step = file => ({ executable: process.execPath, executableSha256: hash(readFileSync(process.execPath)), args: [file], timeoutMs: 10000, files: [{ path: file, sha256: hash(readFileSync(file)) }] });
+  repo.requestExecution = { enabled: true, scopeApproved: true, approvalRef: 'fixture-maintained-route', nativeHooks: '.githooks',
+    requiredCapabilities: ['typed-cells'], preflight: step(readiness), formatMarkdown: { ...step(formatter), args: [formatter, '--write'] } };
+  if (executionCase === 'failed-validation') ctx.config.limits.maxValidationRepairRounds = 0;
+  const contract = repositoryValidationContract(repo), key = skillQualificationId(repo.id, repo.skillBindings[0].id);
+  ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), validationContractVersion: contract.version, validationContractSha256: contract.sha256 });
   ctx.config.executionMode = 'standalone-sdk';
   ctx.config.activation.review = true; ctx.config.activation.dispatch = true;
   ctx.config.filterExecutor = 'local-sdk'; ctx.config.limits.maxAiCreditsPerSession = 30;
@@ -373,8 +390,8 @@ test('automated request FILTER hands its plan to the real worker and publication
             assert.match(prompt, /--- repository skill ---\n# Fixture integration-test skill\nAdd focused tests\./);
             assert.match(prompt, new RegExp(ctx.baseRevision));
             const write = options.tools.find(tool => tool.name === 'pilot_write');
-            await write.handler({ path: 'test/behavior.test.js', content: formulaTest });
-            await write.handler({ path: 'test/behavior-card.md', content: '# Formula preservation\nSynthetic contract.\n' });
+            await write.handler({ path: 'test/behavior.test.js', content: executionCase === 'failed-validation' ? 'throw new Error("synthetic assertion failure");' : formulaTest });
+            await write.handler({ path: 'test/behavior-card.md', content: '# Formula preservation\nSynthetic   contract.\n' });
             await options.tools.find(tool => tool.name === 'pilot_finish').handler({ outcome: 'propose-change',
               findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
               skillResult: { status: 'succeeded', classification: 'missing-test-coverage', changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
@@ -382,7 +399,9 @@ test('automated request FILTER hands its plan to the real worker and publication
           } }) })
       ),
       createDraft: async (_config, _ledger, _job, _repo, revision) => {
-        drafts++; return { url: 'https://example.invalid/automated-request/draft/1', isDraft: true, headRevision: revision };
+        drafts++;
+        if (executionCase === 'uncertain-publication') throw new Error('Synthetic unknown publication acknowledgement');
+        return { url: 'https://example.invalid/automated-request/draft/1', isDraft: true, headRevision: revision };
       }
     }
   };
@@ -407,6 +426,21 @@ test('automated request FILTER hands its plan to the real worker and publication
   assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
   assert.equal(filters, 1); assert.equal(proposers, 0);
   ledger.qualify(qualificationId, qualification);
+  if (executionCase !== 'ready') {
+    if (executionCase === 'failed-validation') {
+      const failed = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+      assert.equal(failed.result.outcome, 'blocked');
+      assert.equal(failed.result.validation[0].status, 'failed');
+      assert.equal(failed.result.draftPR, null);
+    } else await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies));
+    if (executionCase === 'uncertain-publication' || executionCase === 'missing-readiness')
+      await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies));
+    assert.equal(filters, 1);
+    assert.equal(proposers, executionCase === 'missing-readiness' ? 0 : 1);
+    assert.equal(drafts, executionCase === 'uncertain-publication' ? 1 : 0);
+    if (executionCase !== 'uncertain-publication') assert.equal(ledger.status().operations.some(row => row.kind === 'push'), false);
+    return;
+  }
   const result = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(result.state, 'draft-pr-validated', json(result));
   assert.deepEqual(ledger.get('assignment', prepared.assignmentId), originalAssignment);
@@ -422,6 +456,14 @@ test('automated request FILTER hands its plan to the real worker and publication
   assert.deepEqual(deliveredSkills.map(row => row.stage).sort(), ['FILTER', 'PROPOSER']);
   assert.equal(new Set(deliveredSkills.map(row => row.skillSha256)).size, 1);
   assert.ok(deliveredSkills.every(row => row.sourceRevision === ctx.baseRevision));
+  const preflight = ledger.status().operations.find(row => row.kind === 'request-execution-preflight');
+  const transformed = ledger.status().operations.find(row => row.kind === 'accepted-markdown-format');
+  assert.equal(preflight.state, 'passed');
+  assert.equal(transformed.state, 'complete');
+  const formatReceipt = JSON.parse(transformed.detail);
+  assert.notDeepEqual(formatReceipt.before, formatReceipt.after);
+  assert.equal(formatReceipt.modelReinvoked, false);
+  assert.match(readFileSync(formatReceipt.originals[0].artifact, 'utf8'), /Synthetic   contract/);
   publicationBinding.sideEffects.push = false;
   assert.throws(() => requireTestRequestPublication(ctx.config, ledger, originalAssignment, 'push'), /does not authorize/);
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { hash, json, requireThat, boundedPath, now } from './common.js';
+import { requestGateMinimumMs, requestProfilePins } from './request-profile-contract.js';
 
 export const requestPhases = repo => ['prepare', 'author', 'commit', ...repo.validationGates.map(gate => `validate-${gate.id}`), 'publish'];
 const git = (workspace, args) => execFileSync('git', ['-C', workspace, ...args], { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }).toString();
@@ -18,7 +19,7 @@ export function admitRequestPhase(config, repo, phase) {
     Number.isSafeInteger(policy.maxTotalMs) && policy.maxTotalMs > 0 &&
     config.limits.maxValidationRepairRounds === 0 && config.limits.maxValidationInfrastructureRetries === 0 &&
     !repo.remoteValidation && !repo.draftBuild?.enabled && !config.rsi?.enabled && !repo.changeFile &&
-    repo.validationGates.length > 0 && repo.validationGates.every(gate => !gate.profile && !gate.profilePath),
+    repo.validationGates.length > 0,
   'Phased requests need current bounded zero-retry local authority', 'blocked-authorization');
   const names = requestPhases(repo), budgets = policy.budgets;
   const budgetFor = name => name.startsWith('validate-') ? budgets.validate : budgets[name];
@@ -26,9 +27,10 @@ export function admitRequestPhase(config, repo, phase) {
     budgetFor(name) + 90000 <= policy.foregroundMs), 'Indivisible request phase exceeds foreground ownership', 'blocked-budget');
   const required = { prepare: (repo.provisionTimeoutMs ?? 120000) + (repo.requestExecution.tools?.timeoutMs ?? 0) + repo.requestExecution.preflight.timeoutMs,
     author: config.limits.workerMinutes * 60000,
-    commit: (repo.requestExecution.formatMarkdown?.timeoutMs ?? 0) + (repo.requestExecution.commitTimeoutMs ?? 120000),
+    commit: (repo.requestExecution.formatMarkdown?.timeoutMs ?? 0) + (repo.requestExecution.commitTimeoutMs ?? 120000) +
+      repo.validationGates.filter(gate => gate.profile === '1js-declarative-e2e-v1').reduce((sum, gate) => sum + gate.timeoutMs, 0),
     publish: (repo.requestExecution.pushTimeoutMs ?? 120000) + (repo.requestExecution.draftTimeoutMs ?? 120000),
-    ...Object.fromEntries(repo.validationGates.map(gate => [`validate-${gate.id}`, gate.timeoutMs + (repo.provisionTimeoutMs ?? 120000) + (repo.requestExecution.tools?.timeoutMs ?? 0)])) };
+    ...Object.fromEntries(repo.validationGates.map(gate => [`validate-${gate.id}`, requestGateMinimumMs(repo, gate)])) };
   requireThat(budgetFor(phase) >= required[phase] && Date.now() + budgetFor(phase) + 60000 < Date.parse(policy.expiresAt),
     'Request phase cannot fit its native budgets or authority expiry', 'blocked-budget');
   return policy;
@@ -60,6 +62,7 @@ export function completeRequestPhase(config, ledger, job, phase, payload) {
   const elapsedMs = Date.now() - phase.started;
   requireThat(hash(json(config)) === phase.configurationSha256 && elapsedMs <= phase.budgetMs && Date.now() < Date.parse(phase.policy.expiresAt),
     'Request phase exceeded its allocation; checkpoint is not continuable', 'blocked-budget');
+  requestProfilePins(config.repositories.find(repo => repo.id === ledger.get('assignment', job.id).repoId));
   const receipt = { phase: phase.phase, configurationSha256: hash(json(config)),
     assignmentSha256: hash(json(ledger.get('assignment', job.id))), workspace: job.workspace, source: source(job.workspace),
     payload, elapsedMs, totalUsedMs: phase.usedMs + elapsedMs, finishedAt: now(), processesCollected: true };

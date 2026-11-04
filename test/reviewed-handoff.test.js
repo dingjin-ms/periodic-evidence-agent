@@ -30,6 +30,7 @@ import { remoteValidationContract } from '../src/agency-remote-validation.js';
 import { collectTestRequest, prepareTestRequest, acceptTestRequest, readCurrentTestRequest,
   requireTestRequestPublication, verifyCurrentTestRequest } from '../src/ado-test-request.js';
 import { runTestRequest } from '../src/test-request-flow.js';
+import { executeRequestCli } from '../src/request-cli.js';
 import { recordCapabilityAssessment, publishCapabilityComment, capabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from '../src/ado-harness-request.js';
 
 const rsiPolicy = JSON.parse(readFileSync(new URL('../scaffold/rsi-flow.example.json', import.meta.url)));
@@ -328,7 +329,7 @@ test('sample request exercises intake through real validation and local push, wi
   assert.match(failure.stdout, /deduplication preserves formulas/);
 });
 
-for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication', 'phased', 'phased-uncertain', 'phased-drift', 'phased-missing-tool', 'phased-interrupted'])
+for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication', 'phased', 'phased-uncertain', 'phased-drift', 'phased-missing-tool', 'phased-interrupted', 'phased-profile', 'phased-profile-failure', 'phased-profile-drift', 'phased-profile-interrupted'])
   test(`automated request FILTER maintained ${executionCase} path without an operator handoff`, async t => {
   const ctx = await requestFixture(t, { nativeRequest: true });
   const repo = ctx.config.repositories[0];
@@ -359,6 +360,21 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
     repo.requestExecution.phases = { scopeApproved: true, approvalRef: 'synthetic-phase-authority',
       expiresAt: new Date(Date.now() + 3600000).toISOString(), foregroundMs: 600000, maxTotalMs: 1200000,
       budgets: { prepare: 60000, author: 60000, commit: 180000, validate: 180000, publish: 240000 } };
+  }
+  const profiled = executionCase.startsWith('phased-profile');
+  const invokeRequest = (config, state, id, options, dependencies) => profiled
+    ? executeRequestCli(config, state, 'run-test-request', ['--id', String(id),
+      ...Object.entries({ authorizeReview: '--authorize-review', execute: '--execute', authorizeCommit: '--authorize-commit',
+        authorizePush: '--authorize-push', authorizeDraftPR: '--authorize-draft-pr', authorizeComment: '--authorize-comment' })
+        .filter(([key]) => options[key]).map(([, flag]) => flag), ...(options.phase ? ['--phase', options.phase] : [])], dependencies)
+    : runTestRequest(config, state, id, options, dependencies);
+  const profilePath = join(ctx.root, 'required-profile.mjs'), profileTrace = join(ctx.root, 'profile-trace.jsonl');
+  if (profiled) {
+    const plan = { version: 2, stages: ['dependencies', 'compile', 'policy', 'test'], testOnlyPrefixes: ['test/'],
+      lockfilePaths: ['src/value.js'], buildConfigPaths: ['src/value.js'], dependencySnapshotPaths: ['node_modules'], preparedOutputPaths: ['node_modules'] };
+    writeFileSync(profilePath, `// PILOT_VALIDATION_PLAN: ${json(plan)}\nimport fs from 'node:fs';\nconst stage=process.env.PILOT_VALIDATION_STAGE;\nfs.appendFileSync(${JSON.stringify(profileTrace)},JSON.stringify({stage,workspace:process.cwd()})+'\\n');\nif(stage==='fingerprint')console.log('PILOT_VALIDATION_FINGERPRINT:'+JSON.stringify({node:process.version,corepack:'fixture',yarn:'fixture',platform:process.platform,architecture:process.arch}));\nif(stage==='dependencies'){fs.mkdirSync('node_modules',{recursive:true});fs.writeFileSync('node_modules/profile-tool.js','tool');}\nif(stage==='compile')fs.writeFileSync('node_modules/compiled.js','compiled');\nif(stage==='policy'||stage==='test'){if(fs.readFileSync('node_modules/compiled.js','utf8')!=='compiled')throw Error('Missing compile');}\nif(stage==='test'&&${JSON.stringify(executionCase === 'phased-profile-failure')})throw Error('Synthetic required live gate failed');\n`);
+    repo.validationGates.push({ id: 'required-profile', approved: true, isolationVerified: true,
+      executable: process.execPath, args: ['{profile}'], profilePath, profileSha256: hash(readFileSync(profilePath)), timeoutMs: 15000 });
   }
   const contract = repositoryValidationContract(repo), key = skillQualificationId(repo.id, repo.skillBindings[0].id);
   ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), baseRef: repo.baseRef, validationContractVersion: contract.version, validationContractSha256: contract.sha256 });
@@ -440,11 +456,11 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   publicationBinding.sideEffects = { commit: false, push: false, createDraftPR: false };
   ctx.config.activation.dispatch = false;
   ctx.config.adoTestRequests.feedback.enabled = false;
-  const prepared = await runTestRequest(ctx.config, ledger, 123, { authorizeReview: true }, dependencies);
+  const prepared = await invokeRequest(ctx.config, ledger, 123, { authorizeReview: true }, dependencies);
   assert.equal(filters, 1); assert.equal(proposers, 0);
   const originalAssignment = ledger.get('assignment', prepared.assignmentId);
   assert.equal(originalAssignment.publicationGrants.push, false);
-  await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies), /does not authorize publication/);
+  await assert.rejects(invokeRequest(ctx.config, ledger, 123, options, dependencies), /does not authorize publication/);
   assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
   publicationBinding.sideEffects = { commit: true, push: true, createDraftPR: true };
   ctx.config.activation.dispatch = true;
@@ -452,64 +468,96 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   const qualificationId = skillQualificationId('office-agent', 'oa-integration-test-core');
   const qualification = ledger.qualification(qualificationId);
   ledger.qualify(qualificationId, { ...qualification, skillSha256: 'f'.repeat(64) });
-  await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies), /pins changed|qualification/);
+  await assert.rejects(invokeRequest(ctx.config, ledger, 123, options, dependencies), /pins changed|qualification/);
   assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
   assert.equal(filters, 1); assert.equal(proposers, 0);
   ledger.qualify(qualificationId, qualification);
   if (phased) {
     if (executionCase === 'phased-missing-tool') {
       rmSync(join(ctx.root, 'local-tool.js'));
-      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'prepare' }, dependencies));
+      await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'prepare' }, dependencies));
       assert.deepEqual([proposers, drafts], [0, 0]); return;
     }
     for (const phase of ['prepare', 'author', 'commit', 'validate-fixture-test']) {
-      const checkpoint = await runTestRequest(ctx.config, ledger, 123, { ...options, phase }, dependencies);
+      const checkpoint = await invokeRequest(ctx.config, ledger, 123, { ...options, phase }, dependencies);
       assert.equal(checkpoint.state, 'phase-complete', json(checkpoint));
       assert.equal(ledger.job(prepared.assignmentId).state, 'phase-complete');
       assert.equal(drafts, 0);
       assert.equal(proposers, phase === 'prepare' ? 0 : 1);
       if (phase === 'prepare' && executionCase === 'phased-interrupted') {
         ledger.operation(`${prepared.assignmentId}:phase:author`, prepared.assignmentId, 'request-phase', { phase: 'author' });
-        await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'author' }, dependencies), /Interrupted/);
+        await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'author' }, dependencies), /Interrupted/);
         assert.deepEqual([proposers, drafts], [0, 0]); return;
       }
       if (phase === 'author' && executionCase === 'phased-drift') {
         writeFileSync(join(ledger.job(prepared.assignmentId).workspace, 'test/behavior-card.md'), 'changed checkpoint');
-        await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'commit' }, dependencies), /checkpoint.*changed/);
+        await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'commit' }, dependencies), /checkpoint.*changed/);
         assert.equal(proposers, 1); return;
       }
     }
+    if (profiled) {
+      // Publishing before the second required gate must not collapse the contract.
+      await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /out of order/);
+      if (executionCase === 'phased-profile-drift') {
+        writeFileSync(profilePath, readFileSync(profilePath, 'utf8') + '// changed');
+        await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'validate-required-profile' }, dependencies), /profile changed/);
+        assert.deepEqual([proposers, drafts], [1, 0]); return;
+      }
+      if (executionCase === 'phased-profile-interrupted') {
+        ledger.operation(`${prepared.assignmentId}:phase:validate-required-profile`, prepared.assignmentId, 'request-phase', { phase: 'validate-required-profile' });
+        await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'validate-required-profile' }, dependencies), /Interrupted/);
+        assert.deepEqual([proposers, drafts], [1, 0]); return;
+      }
+      const checked = await invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'validate-required-profile' }, dependencies);
+      const stages = readFileSync(profileTrace, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).stage);
+      assert.deepEqual(stages.filter(stage => stage !== 'fingerprint'), ['dependencies', 'compile', 'policy', 'test']);
+      if (executionCase === 'phased-profile-failure') {
+        assert.equal(checked.result.outcome, 'blocked');
+        assert.equal(checked.result.validation.at(-1).status, 'failed');
+        assert.equal(drafts, 0);
+        assert.equal(ledger.status().operations.some(row => row.kind === 'push'), false);
+        return;
+      }
+      assert.equal(checked.state, 'phase-complete', json(checked));
+      assert.equal(checked.result.nextPhase, 'publish');
+    }
     if (executionCase === 'phased-uncertain') {
-      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /unknown publication/);
-      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /incomplete|uncertain/);
+      await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /unknown publication/);
+      await assert.rejects(invokeRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /incomplete|uncertain/);
       assert.deepEqual([filters, proposers, drafts], [1, 1, 1]); return;
     }
     options.phase = 'publish';
   }
   if (executionCase !== 'ready' && !phased) {
     if (executionCase === 'failed-validation') {
-      const failed = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+      const failed = await invokeRequest(ctx.config, ledger, 123, options, dependencies);
       assert.equal(failed.result.outcome, 'blocked');
       assert.equal(failed.result.validation[0].status, 'failed');
       assert.equal(failed.result.draftPR, null);
-    } else await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies));
+    } else await assert.rejects(invokeRequest(ctx.config, ledger, 123, options, dependencies));
     if (executionCase === 'uncertain-publication' || executionCase === 'missing-readiness')
-      await assert.rejects(runTestRequest(ctx.config, ledger, 123, options, dependencies));
+      await assert.rejects(invokeRequest(ctx.config, ledger, 123, options, dependencies));
     assert.equal(filters, 1);
     assert.equal(proposers, executionCase === 'missing-readiness' ? 0 : 1);
     assert.equal(drafts, executionCase === 'uncertain-publication' ? 1 : 0);
     if (executionCase !== 'uncertain-publication') assert.equal(ledger.status().operations.some(row => row.kind === 'push'), false);
     return;
   }
-  const result = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+  const result = await invokeRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(result.state, 'draft-pr-validated', json(result));
   assert.deepEqual(ledger.get('assignment', prepared.assignmentId), originalAssignment);
   assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-publication-grants').state, 'complete');
   assert.equal(result.result.validation[0].sourceRevision, result.result.draftPR.headRevision);
-  assert.equal((await runTestRequest(ctx.config, ledger, 123, options, dependencies)).replayed, true);
+  const profileBeforeReplay = profiled ? readFileSync(profileTrace, 'utf8') : null;
+  assert.equal((await invokeRequest(ctx.config, ledger, 123, options, dependencies)).replayed, true);
+  if (profiled) {
+    assert.equal(readFileSync(profileTrace, 'utf8'), profileBeforeReplay, 'Completed delivery cannot rerun a profile');
+    assert.deepEqual(result.result.validation.map(gate => gate.gateId), repo.validationGates.map(gate => gate.id));
+    assert.ok(result.result.validation.every(gate => gate.status === 'passed' && gate.sourceRevision === result.result.draftPR.headRevision));
+  }
   assert.equal(result.feedback.state, 'commented');
   ctx.item.rev++;
-  const revisionReplay = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
+  const revisionReplay = await invokeRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(revisionReplay.priorOutcomeOnly, true);
   assert.deepEqual([filters, proposers, drafts, comments], [1, 1, 1, 1]);
   const deliveredSkills = ledger.status().operations.filter(row => row.kind === 'repository-skill-delivery').map(row => JSON.parse(row.detail));

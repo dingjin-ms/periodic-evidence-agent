@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runTestRequest, runTestRequestQueue } from './test-request-flow.js';
+import { executeRequestCli } from './request-cli.js';
 import { recordCapabilityAssessment, publishCapabilityComment, reconcileCapabilityComment, reconcileHarnessAssociation } from './ado-harness-request.js';
 import { dirname, resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, lstatSync } from 'node:fs';
@@ -718,14 +718,7 @@ try {
         break;
       case 'run-test-request-queue':
       case 'run-test-request':
-        result = await (action === 'run-test-request-queue'
-          ? (settings, state, _id, grants) => runTestRequestQueue(settings, state, grants)
-          : runTestRequest)(config, ledger, Number(option('--id')), {
-          authorizeReview: args.includes('--authorize-review'), execute: args.includes('--execute'),
-          authorizeCommit: args.includes('--authorize-commit'), authorizePush: args.includes('--authorize-push'),
-          authorizeDraftPR: args.includes('--authorize-draft-pr'), authorizeComment: args.includes('--authorize-comment'),
-          phase: option('--phase')
-        });
+        result = await executeRequestCli(config, ledger, action, args);
         break;
       case 'ado-test-request':
         result = await collectTestRequest(config, ledger, Number(option('--id')));

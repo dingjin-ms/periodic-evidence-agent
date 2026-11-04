@@ -41,11 +41,28 @@ receipt. Changed or interrupted state fails closed. Completed CLI invocations ma
 return their old terminal receipt as `replayed`; this is historical output, not a
 new freshness check or permission to run another phase. No automatic retry exists.
 
-Initial supported phase lane: ordinary local ADO requests, zero model-repair and
-infrastructure retries, fixed native command gates, no profile-based staged/live
-gates, changefile generation, RSI or remote builds. Those unsupported combinations
-are rejected, not silently skipped. A future live gate needs an independently
-bounded integration; do not relabel offline qualification as live readiness.
+Supported phase lane: ordinary local ADO requests, zero model-repair and
+infrastructure retries. Each configured gate retains its existing `runValidation`
+route: fixed command, hash-bound profile command, `PILOT_VALIDATION_PLAN` staged
+profile, or canonical `1js-declarative-e2e-v1`. No gate is converted into an offline
+substitute. Changefile generation, RSI and remote builds remain out of scope.
+
+Staged profiles keep fingerprint/authentication (when declared), dependencies,
+compile, policy and test, including existing prepared-output verification and
+cleanup. The same parser is used by admission and execution; malformed staged
+markers cannot fall through as ordinary commands. Profiles are pinned before
+review, at every boundary, in foreground reservations and after execution. A
+completed CLI receipt cannot be reused after profile drift. The native runner
+still owns test evidence; a successful synthetic profile is not live evidence.
+
+Admission reserves the cold staged path, not an assumed cache hit: six native
+invocations (seven with authentication) plus four timeout units for checkout,
+materialization and restoration, each using the unchanged gate timeout. Every
+complete gate remains indivisible. A plan that exceeds the600s foreground owner
+is rejected before FILTER; it is not truncated, detached or granted fresh time.
+The built-in declarative profile also retains registration in the commit phase.
+See `REQUEST-PROFILE-MAPPING.md` for the specific cross-app versus Excel-agent
+contract distinction and the current source-bound mapping.
 
 ### Tool manifest
 

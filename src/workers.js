@@ -20,6 +20,7 @@ import { skillDeliveryReceipt } from './skill-delivery.js';
 import { requestExecutionPolicy, requestHookEnvironment, preflightRequestExecution, formatAcceptedMarkdown } from './request-execution.js';
 import { materializeRequestTools, verifyRequestTools } from './request-tools.js';
 import { readRequestPhase, startRequestPhase, completeRequestPhase } from './request-phases.js';
+import { validationPlan, requestProfileContract } from './request-profile-contract.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification, renderCoverageReview,
   externalSkillReadPrefix, readExternalSkill,
@@ -963,37 +964,6 @@ async function resolvedBaseRevision(repo, qualification = null) {
     await git(repo.referenceCheckout, ['cat-file', '-e', `${revision}^{commit}`]);
   return revision;
 }
-function validationPlan(profile) {
-  if (!profile) return null;
-  const text = profile.bytes.toString('utf8');
-  const match = text.match(/^[^\S\r\n]*[#/;]+\s*PILOT_VALIDATION_PLAN:\s*(\{[^\r\n]+\})\s*$/m);
-  if (!match) return null;
-  let plan;
-  try { plan = JSON.parse(match[1]); }
-  catch { return null; }
-  const paths = value => Array.isArray(value) && value.length > 0 &&
-    value.every(path => typeof path === 'string' && path && !isAbsolute(path) &&
-      !path.includes('..') && !path.includes(':'));
-  const authentication = plan?.authentication;
-  const officeAuthentication = authentication?.type === 'azure-artifacts-npm' &&
-    authentication.provider === 'artifacts-npm-credprovider';
-  const repositoryBrokerAuthentication =
-    authentication?.type === 'repository-broker' &&
-    authentication.provider === '1js-node-azure-auth';
-  const validAuthentication = plan?.version === 2 && authentication === undefined ||
-    plan?.version === 3 && (officeAuthentication || repositoryBrokerAuthentication) &&
-      /^\d+\.\d+\.\d+$/.test(authentication.providerVersion ?? '') &&
-      Array.isArray(authentication.feeds) && authentication.feeds.length > 0 &&
-      authentication.feeds.every(feed =>
-        /^https:\/\/[^/]+(?:\/[^/]+){0,2}\/_packaging\/[^/]+\/npm\/registry\/$/.test(feed?.registry ?? '') &&
-        (feed.scope === null || /^[a-z0-9][a-z0-9-]*$/.test(feed.scope ?? '')));
-  if (![2, 3].includes(plan?.version) || !validAuthentication ||
-    json(plan.stages) !== json(['dependencies', 'compile', 'policy', 'test']) ||
-    !paths(plan.testOnlyPrefixes) || !paths(plan.lockfilePaths) ||
-    !paths(plan.buildConfigPaths) || !paths(plan.dependencySnapshotPaths) ||
-    !paths(plan.preparedOutputPaths)) return null;
-  return plan;
-}
 async function revisionPathFingerprint(workspace, revision, paths) {
   const entries = [];
   for (const path of paths) {
@@ -1071,6 +1041,7 @@ function blockedAuthentication(error, stage) {
 }
 async function executeValidation(gate, args, workspace, stage, execute,
   temporaryDirectory = null, environment = {}) {
+  gate.phaseAdmission?.();
   const run = execute === command ? nativeCommand : execute;
   const auth = validationPackageAuth(gate);
   // Native build tools spawn their own Git; command-line -c settings do not reach them.
@@ -1129,8 +1100,10 @@ async function executeProfileStage(gate, profile, stage, workspace, execute,
     .replaceAll('{profile}', privateProfile));
   const startedAt = now();
   try {
+    gate.phaseAdmission?.();
     const output = await executeValidation(
       gate, args, workspace, stage, execute, temporaryDirectory, environment);
+    gate.phaseAdmission?.();
     return { output, telemetry: stageTelemetry(stage, startedAt, 'miss', output) };
   } catch (error) {
     error.stageTelemetry = stageTelemetry(stage, startedAt, 'miss', {
@@ -3647,6 +3620,16 @@ export async function runValidation(config, ledger, job, repo, revision, execute
   const gateEnvironment = repositoryEnvironment(repo);
   for (const configuredGate of repo.validationGates) {
     const gate = { ...configuredGate, environment: gateEnvironment };
+    if (repo.requestExecution?.phases) {
+      gate.phaseAdmission = () => {
+        requireExecutionAuthorization(config, repo, 'commit');
+        requestProfileContract(gate);
+        const policy = repo.requestExecution.phases;
+        requireThat(Date.now() + gate.timeoutMs < Date.parse(policy.expiresAt),
+          'Validation stage cannot finish within current phase authority', 'blocked-authorization');
+      };
+      gate.phaseAdmission();
+    }
     requireThat(gate.approved === true && isAbsolute(gate.executable)
       && Array.isArray(gate.args) && gate.args.every(a => typeof a === 'string'),
     `Gate ${gate.id} needs an approved repo-native runner and fixed argument list`, 'blocked-validation');

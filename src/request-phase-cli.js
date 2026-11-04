@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { configAt, hash, requireThat } from './common.js';
 import { admitRequestPhase, requestPhases } from './request-phases.js';
 import { runPhase } from './request-phase-owner.js';
+import { requestProfilePins } from './request-profile-contract.js';
 
 export async function ownRequestPhase(args) {
   if (args[0] !== 'run-test-request' || process.env.PILOT_REQUEST_PHASE_CHILD === '1') return false;
@@ -18,6 +19,7 @@ export async function ownRequestPhase(args) {
   if (name === 'review') {
     requireThat(!args.includes('--execute'), 'Use review-only, then explicit maintained request phases', 'blocked-config');
     const policy = repo.requestExecution.phases;
+    for (const phase of requestPhases(repo)) admitRequestPhase(config, repo, phase);
     budget = config.localFilter.timeoutMs + 30000;
     requireThat(policy.scopeApproved === true && budget + 90000 <= policy.foregroundMs &&
       policy.foregroundMs <= 600000 && Date.now() + budget + 60000 < Date.parse(policy.expiresAt),
@@ -27,7 +29,7 @@ export async function ownRequestPhase(args) {
   const sourceRoot = fileURLToPath(new URL('.', import.meta.url));
   const sourcePins = readdirSync(sourceRoot).filter(name => lstatSync(join(sourceRoot, name)).isFile())
     .map(name => ({ path: join(sourceRoot, name), sha256: hash(readFileSync(join(sourceRoot, name))) }));
-  sourcePins.push({ path: configFile, sha256: hash(readFileSync(configFile)) });
+  sourcePins.push({ path: configFile, sha256: hash(readFileSync(configFile)) }, ...requestProfilePins(repo));
   // Same request/config/phase is one invocation. A missing terminal record cannot authorize replay.
   const runKey = hash(JSON.stringify([value('--id'), hash(readFileSync(configFile))]));
   const runRoot = join(root, runKey); mkdirSync(runRoot, { recursive: true });

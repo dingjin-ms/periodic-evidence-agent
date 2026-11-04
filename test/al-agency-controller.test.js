@@ -24,6 +24,10 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
   assert.equal(request.metadata.maximumJobMinutes, '90');
   assert.equal(request.metadata.maximumControllerMinutes, '180');
   assert.match(request.prompt, /Do not design or regenerate validation infrastructure/);
+  assert.match(request.prompt, /do not run any focused product test, build or validation command first/);
+  assert.match(request.prompt, /ordinary powershell tool using mode "sync" and initial_wait 600/);
+  assert.match(request.prompt, /do not request interactive approval or special permissions/);
+  assert.match(request.prompt, /Run the controller once only/);
   assert.match(request.prompt, new RegExp(request.metadata.runnerSha256));
   assert.match(request.prompt, new RegExp(request.metadata.preloadSha256));
   assert.match(request.prompt, new RegExp(request.metadata.skillSha256));

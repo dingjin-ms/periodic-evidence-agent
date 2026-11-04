@@ -696,6 +696,17 @@ test('missing review context blocks the worker before commit, push or draft crea
   assert.equal(ledger.status().operations.some(operation =>
     ['commit', 'push', 'draft-pr'].includes(operation.kind)), false);
 });
+test('non-publishing authoring tools retain their separate finish contract', async t => {
+  const { config, assignment, repo } = await fixture(t, 'authenticated-source', 'defect-fix');
+  for (const permissions of [{ editCode: true },
+    { ...assignment.permissions, createDraftPR: false }]) {
+    const toolkit = new WorkerTools(config, { ...assignment, permissions }, repo.referenceCheckout);
+    toolkit.finish({ outcome: 'propose-change', findings: 'Synthetic authoring only',
+      title: 'Synthetic candidate', description: 'No Draft publication is granted to this tool.' });
+    assert.equal(toolkit.proposal.outcome, 'propose-change');
+    assert.equal(toolkit.proposal.reviewContext, undefined);
+  }
+});
 test('multi-repository scheduler uses isolated real commits, gates and pushes with same-repository exclusion',
   { timeout: 60000 }, async t => {
     const { config, ledger, job, repo, root } =

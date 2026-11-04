@@ -3592,7 +3592,8 @@ export class WorkerTools {
           'Failed or incomplete repository skill work must return a blocked proposal',
           'blocked-result');
     }
-    if (proposal.outcome === 'propose-change') requireReviewContext(proposal.reviewContext);
+    if (proposal.outcome === 'propose-change' && this.assignment.permissions.createDraftPR === true)
+      requireReviewContext(proposal.reviewContext);
     this.proposal = structuredClone(proposal);
     return 'Proposal accepted; coordinator owns commit, validation and draft creation.';
   }

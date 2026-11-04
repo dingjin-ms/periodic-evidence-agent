@@ -2207,12 +2207,15 @@ current revision. Exhausted repair rounds, missing or stale gate results, and
 post-validation source changes remain blocked locally; failed drafts are not
 published.
 
-Every new `propose-change` submission must also include `reviewContext`:
+Every new `propose-change` submission from a Draft-enabled worker must include `reviewContext`:
 `coverageGap`, `testsAndAssertions`, `boundaries`, and `reviewFocus` are nonempty
 strings of at most 1000 characters each. These are author-reported explanations,
 not independent proof of coverage. Describe observable assertions, real versus
 mocked components, uncovered variants and remaining uncertainty; do not claim
 validation success or include raw captures, credentials or local artifact paths.
+Non-publishing tool consumers, including RSI's separate authoring protocol,
+retain their existing finish contract. The normal worker publication path always
+requires the context before push, including when resuming preserved proposals.
 
 The controller builds the Draft description from that context, the author's
 summary, every assigned source identity/link and captured revision (or payload

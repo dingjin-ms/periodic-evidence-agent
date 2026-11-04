@@ -184,3 +184,34 @@ entry point are present. Bind it to the same profile and acceptance strength,
 then compare wall-clock stage durations, model/API usage, tool-call count,
 cache receipts and artifact bytes. A first-pass success may demonstrate latency
 improvement; it still does not exercise the product repair path.
+
+## 2026-11-04 full-chain benchmark
+
+Run 12 completed the full fresh-evidence-to-Draft chain against source
+`730607d06f9e8544f843bac33066086b6ecbf3bf`. The Controller accepted candidate
+`9e9762a0d489fe0b22bc414c06ac5d8cb9b7e5d6` and published Draft PR `5958637`.
+The sanitized result is recorded in
+[the full-chain proof](1js-full-live-e2e-draft-20261104.json).
+
+| Stage | UTC window | Duration |
+|---|---|---:|
+| Controller start to fresh evidence receipt | 14:35:24-14:35:29 | about 5 s |
+| Orchestrator queue | 14:35:30-14:36:25 | about 55 s |
+| Orchestrator start to Agency job creation | 14:36:25-14:38:15 | 1 min 50 s |
+| Agency dispatch to completed job | 14:38:20-15:02:30 | 24 min 10 s |
+| Job completion to runner completion | 15:02:30-15:03:12 | about 42 s |
+| Runner completion to Controller acceptance | 15:03:12-15:03:36 | about 24 s |
+| Acceptance to Draft publication | 15:03:36-15:03:45 | about 9 s |
+| **Evidence collection through Draft publication** | **14:35:29-15:03:45** | **28 min 16 s** |
+| **Controller wall clock** | **14:35:24-15:03:45** | **28 min 21 s** |
+
+Compared with the previous approximately 40 min 28 s remote baseline, the
+successful full chain is about 12 min 7 s faster, a roughly 30% reduction,
+despite adding Controller acceptance and Draft publication to the measured
+endpoint. The remaining dominant stage is still the 24 min 10 s Agency job;
+queueing, acceptance and publication together account for only a few minutes.
+
+The accepted native result contains one passing real-product test and an
+independently parsed `A1:D5` workbook with five rows, four columns, one header
+row and four populated data rows. The accepted run passed its first product
+execution, so the product repair loop remains unexercised.

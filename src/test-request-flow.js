@@ -219,6 +219,7 @@ function prepareReviewRequest(config, ledger, id, request, { connect = withClien
   requireThat(bytes <= config.localFilter.maxRequestBytes, 'Request exceeds complete model input budget', 'blocked-budget');
   requireExecutionAuthorization(config, repo, 'model');
   return async () => {
+    const started = Date.now();
     await connect(config, config.stateDirectory, async client => {
       requireExecutionAuthorization(config, repo, 'model');
       const session = await client.createSession(sessionOptions);
@@ -241,7 +242,7 @@ function prepareReviewRequest(config, ledger, id, request, { connect = withClien
         requireThat(result && activity, 'Request FILTER did not complete through its tool', 'blocked-result');
       } finally { unsubscribe(); await session.disconnect(); }
     }, config.localFilter.useExistingLogin === true);
-    return { request, result, sessionId, calls, sourceBytes: bytes, modelActivity: activity, events };
+    return { request, result, sessionId, calls, sourceBytes: bytes, modelActivity: activity, events, elapsedMs: Date.now() - started };
   };
 }
 
@@ -262,6 +263,7 @@ export async function runTestRequestQueue(config, ledger, options = {}, dependen
 // One explicit-ID pass. A service may call this repeatedly with its own bounded scheduler.
 export async function runTestRequest(config, ledger, workItemId, options = {}, dependencies = {}) {
   const { policy, flow, repo, binding, pin } = settings(config);
+  requireThat(!options.phase || options.execute === true, 'A request phase requires --execute', 'blocked-config');
   requireThat(options.authorizeReview === true, 'Request automation requires explicit model-review authorization', 'blocked-authorization');
   requireThat(Number.isSafeInteger(workItemId) && workItemId > 0, 'Invalid ADO request ID');
   if (options.execute) requireThat(options.authorizeCommit && options.authorizePush && options.authorizeDraftPR,
@@ -283,7 +285,7 @@ export async function runTestRequest(config, ledger, workItemId, options = {}, d
     const id = `${intake.id}:flow:${hash(json([pin.revision, request.configurationSha256]))}`;
     let existing = row(ledger, id), reviewed;
     if (existing) {
-      requireThat(['review-complete', 'delivered', 'complete'].includes(existing.state),
+      requireThat(['review-complete', 'phase-complete', 'delivered', 'complete'].includes(existing.state),
         'Previous request run is incomplete or uncertain; reconcile it, never replay the model', 'blocked-reconciliation');
       reviewed = JSON.parse(existing.detail);
       requireThat(hash(json(reviewed.request)) === hash(json(request)), 'Request flow pins changed', 'blocked-reconciliation');
@@ -318,6 +320,7 @@ export async function runTestRequest(config, ledger, workItemId, options = {}, d
         observedRevision: evidence.source.revision, priorOutcomeOnly: true };
       requireThat(!ledger.status().operations.some(value => value.kind === kind && value.job_id === intake.id),
         'A request attempt already exists under different pins; explicit reconciliation required', 'blocked-reconciliation');
+      requireThat(!options.phase, 'Run the bounded review-only command before phase execution', 'blocked-reconciliation');
       const invokeReview = prepareReviewRequest(config, ledger, id, request, dependencies);
       ledger.transaction(() => {
         requireThat(ledger.status().operations.filter(value => value.kind === kind).length < Math.min(flow.maxRequests, config.localFilter.maxRequests),
@@ -347,9 +350,15 @@ export async function runTestRequest(config, ledger, workItemId, options = {}, d
     if (assessment.decision === 'supported' && handoff) {
       let delivered;
       try {
+        if (options.phase && repo.requestExecution?.phases) {
+          const usage = ledger.status().operations.filter(row => row.kind === 'request-phase').map(row => JSON.parse(row.detail));
+          const budget = repo.requestExecution.phases.budgets[options.phase.startsWith('validate-') ? 'validate' : options.phase];
+          requireThat(Number.isFinite(reviewed.elapsedMs) && reviewed.elapsedMs + usage.reduce((sum, row) => sum + (row.elapsedMs ?? 0), 0) + budget <= repo.requestExecution.phases.maxTotalMs,
+            'FILTER plus worker phases exceed the total allocation', 'blocked-budget');
+        }
         delivered = await acceptTestRequest(config, ledger, handoff, { ...options, read: dependencies.read,
           beforeDispatch: () => ledger.finishOperation(id, 'dispatching', reviewed),
-          dispatchDependencies: dependencies.dispatchDependencies });
+          dispatchDependencies: { ...dependencies.dispatchDependencies, requestPhase: options.phase } });
       } catch (error) {
         const review = row(ledger, intake.id + ':review');
         const assignmentId = review && JSON.parse(review.detail).assignmentId;
@@ -359,6 +368,10 @@ export async function runTestRequest(config, ledger, workItemId, options = {}, d
       }
       outcome = { ...outcome, state: delivered.state, assignmentId: delivered.assignment.id,
         result: delivered.result ?? null, publication: delivered.result?.draftPR?.url ?? 'none' };
+      if (delivered.result?.state === 'phase-complete') {
+        ledger.finishOperation(id, 'phase-complete', reviewed);
+        return { ...outcome, phase: delivered.result.phase, nextPhase: delivered.result.nextPhase };
+      }
       if (!options.execute) {
         ledger.finishOperation(id, 'review-complete', reviewed);
         return outcome;

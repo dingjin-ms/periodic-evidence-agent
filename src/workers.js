@@ -18,6 +18,8 @@ import { operationRowsHash } from './operation-evidence.js';
 import { withClient, authoringSession, defineTool } from './runtime.js';
 import { skillDeliveryReceipt } from './skill-delivery.js';
 import { requestExecutionPolicy, requestHookEnvironment, preflightRequestExecution, formatAcceptedMarkdown } from './request-execution.js';
+import { materializeRequestTools, verifyRequestTools } from './request-tools.js';
+import { readRequestPhase, startRequestPhase, completeRequestPhase } from './request-phases.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification, renderCoverageReview,
   externalSkillReadPrefix, readExternalSkill,
@@ -99,7 +101,7 @@ export async function commitRepositoryChanges(config, workspace, repo, title,
   const admission = publicationAdmission(config, dependencies.ledger, dependencies.assignmentId);
   admission.check('commit');
   requireExecutionAuthorization(config, repo, 'commit');
-  const timeout = repositoryCloneTimeout(config, repo);
+  const timeout = repo.requestExecution?.commitTimeoutMs ?? repositoryCloneTimeout(config, repo);
   const env = requestHookEnvironment(repo, repositoryEnvironment(repo));
   const hooks = requestExecutionPolicy(repo)?.nativeHooks ?? (repo.changeFile ? '.githooks' : '.git/hooks');
   const run = args => (execute === command ? nativeCommand : execute)('git', [
@@ -743,6 +745,15 @@ async function copyRepositoryObjects(source, workspace, environment, timeout) {
     if (entry.isDirectory() && /^(?:pack|[a-f0-9]{2})$/.test(entry.name))
       cpSync(join(objects, entry.name), join(workspace, '.git', 'objects', entry.name),
         { recursive: true, force: false });
+  }
+  // Partial source clones may themselves use local immutable object alternates.
+  // Preserve reads through that store; never copy its worktree or mutate its objects.
+  const alternates = join(objects, 'info', 'alternates');
+  if (existsSync(alternates)) {
+    const paths = readFileSync(alternates, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+      .map(path => realpathSync(resolve(objects, path)));
+    mkdirSync(join(workspace, '.git', 'objects', 'info'), { recursive: true });
+    writeFileSync(join(workspace, '.git', 'objects', 'info', 'alternates'), paths.join('\n') + '\n', { flag: 'wx' });
   }
   const shallow = await git(source, ['rev-parse', '--path-format=absolute', '--git-path', 'shallow'],
     environment, timeout);
@@ -3766,6 +3777,7 @@ export async function runValidation(config, ledger, job, repo, revision, execute
           if (repo.sparseCheckout)
             await expandSparseCheckout(validationWorkspace, repositorySparseCheckout(repo), timeout);
           await hydrateValidationLfs(config, repo, gate, validationWorkspace, revision);
+          await materializeRequestTools(config, ledger, { ...job, workspace: validationWorkspace }, repo, hash(id));
         }
         if (request && dependencySeed) request.options.installDependencies = false;
         if (privateProfile) {
@@ -3983,7 +3995,7 @@ function publicationAdmission(config, ledger, assignmentId, read) {
 export async function pushDraftBranch(config, workspace, repo, refspec, dependencies = {}) {
   requireExecutionAuthorization(config, repo, 'push');
   const execute = dependencies.execute ?? git;
-  const timeout = Math.max(120000, config.runtime?.timeoutMs ?? 0,
+  const timeout = repo.requestExecution?.pushTimeoutMs ?? Math.max(120000, config.runtime?.timeoutMs ?? 0,
     ...(repo.validationGates ?? []).map(gate => gate.timeoutMs ?? 0));
   const admission = publicationAdmission(config, dependencies.ledger, dependencies.assignmentId, dependencies.readTestRequest);
   let env = process.env;
@@ -4681,7 +4693,9 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const recovery = dependencies[precommitRecoveryPermit] ?? committedRecovery;
   requireThat(!(dependencies[precommitRecoveryPermit] && committedRecovery),
     'Recovery modes cannot be combined', 'blocked-reconciliation');
-  requireThat(job?.state === (recovery ? 'blocked' : 'prepared'),
+  const phaseName = dependencies.requestPhase;
+  const phaseResume = phaseName && phaseName !== 'prepare';
+  requireThat(job?.state === (phaseResume ? 'phase-complete' : recovery ? 'blocked' : 'prepared'),
     'Only a never-dispatched prepared assignment can launch; reconcile all other states', 'blocked-reconciliation');
   requireThat(!['deleting', 'removed'].includes(ledger.workspaceCleanup(id)?.state),
     'Cleaned workspace cannot be reused; prepare a new assignment', 'blocked-reconciliation');
@@ -4766,8 +4780,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
   const qualification = assignment.skillBindingId
     ? ledger.qualification(skillQualificationId(assignment.repoId, assignment.skillBindingId))
     : null;
+  const phase = readRequestPhase(config, ledger, job, repo, phaseName);
+  requireThat(!phase || (!recovery && !continuation && !runtimeContinuation && !toolContinuation && !successorOperation &&
+    dependencies[adoTestRequestPermit] === true && assignment.execution === 'local'),
+  'Phased dispatch only supports the ordinary local request path', 'blocked-config');
   const authoringProvider = config.authoringProviders?.[assignment.authoringProvider];
   const remoteAuthoring = authoringProvider?.type === 'agency-remote';
+  requireThat(!phase || !remoteAuthoring, 'Phased request cannot use remote authoring', 'blocked-config');
   if (assignment.execution === 'hosted') {
     requireThat(typeof dependencies.agencyTransport === 'function',
       'An approved Agency transport is required; no local fallback is permitted', 'blocked-config');
@@ -4795,6 +4814,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
     : (dependencies.prepareValidation ?? prepareValidation);
   try {
     requireOrdinaryDispatch();
+    startRequestPhase(config, ledger, job, phase);
+    if (phaseResume) {
+      await verifyRequestTools(repo, job.workspace);
+      if (phase.receipt.payload.toolUsage) Object.assign(toolUsage, phase.receipt.payload.toolUsage);
+    }
     if (continuation?.nativeTestProfile)
       Object.assign(toolUsage, structuredClone(continuation.priorResult.toolUsage));
     if (committedRecovery) {
@@ -4838,7 +4862,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       positive(config.limits.maxWorkersPerRepository ?? 1,
         'maxWorkersPerRepository'),
     `Repository worker limit reached for ${assignment.repoId}`, 'overlap');
-    if (assignment.execution !== 'hosted' && !repo.remoteValidation) {
+    if (!phase && assignment.execution !== 'hosted' && !repo.remoteValidation) {
       const baseRevision = await resolvedBaseRevision(repo, qualification);
       let authenticationActions =
         await (dependencies.preflightValidationAuthentication ??
@@ -4885,7 +4909,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         positive(config.limits.maxWorkersPerRepository ?? 1,
           'maxWorkersPerRepository'),
       `Repository worker limit reached for ${assignment.repoId}`, 'overlap');
-      ledger.moveJob(id, recovery ? 'blocked' : 'prepared', 'dispatching');
+      ledger.moveJob(id, phaseResume ? 'phase-complete' : recovery ? 'blocked' : 'prepared', 'dispatching');
       if (assignment.execution === 'hosted')
         reserveAgencyRequest(config, ledger, agencyTaskId(assignment), dependencies.agencyRequest);
     });
@@ -4908,7 +4932,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         .replace(/\/$/, '').toLowerCase() === repo.remote.replace(/\/$/, '').toLowerCase(),
       'Preparation recovery workspace origin changed', 'blocked-reconciliation');
     }
-    const isolated = recovery
+    const isolated = recovery || phaseResume
       ? { workspace: job.workspace, baseRevision: job.base_revision }
       : continuation?.nativeSourceCorrection
       ? { workspace: continuation.priorJob.workspace, baseRevision: continuation.priorJob.base_revision }
@@ -4926,11 +4950,13 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         `Workspace was provisioned at ${isolated.workspace}, but its ownership receipt could not be persisted; reconcile it without cloning or dispatching again. ${safeError(error).message}`);
     }
     const current = ledger.job(id);
-    if (!recovery && repo.requestExecution && fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
+    if (!recovery && !phaseResume && repo.requestExecution && fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
       await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+      await materializeRequestTools(config, ledger, current, repo);
       await preflightRequestExecution(config, ledger, current, repo);
       requireCurrentAssignment(config, ledger, investigation, assignment);
     }
+    if (phaseName === 'prepare') return completeRequestPhase(config, ledger, current, phase, { toolUsage });
     const loadedSkill = assignment.skillBindingId
       ? loadRepositorySkill(config, assignment, current.workspace, current.base_revision, qualification)
       : null;
@@ -4960,7 +4986,7 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       });
     }
     revision = await git(current.workspace, ['rev-parse', 'HEAD']);
-    const preparationPromise = repo.remoteValidation
+    const preparationPromise = repo.remoteValidation || phase
       ? Promise.resolve({})
       : continuation?.nativeBusinessRevalidation || continuation?.nativeCampaignRevalidation
       ? Promise.resolve({ [repo.validationGates[0].id]: { preflight: continuation.authorization.preflight } })
@@ -5013,6 +5039,28 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       : null;
     const maxRepairRounds = config.limits.maxValidationRepairRounds ?? 10;
     while (true) {
+      if (phaseName === 'publish') {
+        ({ proposal, validation: finalValidation, validationAttempts: validationAttempts } = structuredClone(phase.receipt.payload));
+        validation = finalValidation;
+        outcome = 'propose-change';
+        break;
+      }
+      if (phaseName?.startsWith('validate-')) {
+        proposal = structuredClone(phase.receipt.payload.proposal);
+        outcome = 'propose-change';
+        const gateId = phaseName.slice('validate-'.length);
+        const selected = repo.validationGates.filter(gate => gate.id === gateId);
+        requireThat(selected.length === 1, 'Unknown phase validation gate', 'blocked-config');
+        finalValidation = [...(phase.receipt.payload.validation ?? []), ...await (dependencies.runValidation ?? runValidation)(
+          config, ledger, current, { ...repo, validationGates: selected }, revision, command, removeValidationPath, {}, { skillExecution: proposal.skillExecution })];
+        validation = finalValidation;
+        validationAttempts = [{ round: 0, sourceRevision: revision, validation: finalValidation }];
+        if (finalValidation.every(gate => gate.status === 'passed')) {
+          await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+          return completeRequestPhase(config, ledger, current, phase, { proposal, toolUsage, validation: finalValidation, validationAttempts });
+        }
+        outcome = 'blocked'; blockerReason = 'Required native phase validation failed; no continuation or push'; break;
+      }
       if (committedRecovery) {
         proposal = structuredClone(committedRecovery.proposal);
         proposal.skillExecution.changedFiles = committedRecovery.files.map(file => file.path).sort();
@@ -5025,7 +5073,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         delete proposal.skillResult;
         outcome = 'propose-change';
       } else {
-        if ((recovery || ownerRecovery) && authoring.round === 0) {
+        if (phaseName === 'commit') {
+          proposal = structuredClone(phase.receipt.payload.proposal);
+          requireThat(proposal?.outcome === 'propose-change', 'Author phase has no accepted change', 'blocked-reconciliation');
+        } else if ((recovery || ownerRecovery) && authoring.round === 0) {
           proposal = structuredClone((recovery || ownerRecovery).proposal);
           if (ownerRecovery) {
             ledger.operation(`${id}:reuse-owner-reviewed-proposal`, id, 'reuse-owner-reviewed-proposal',
@@ -5074,6 +5125,11 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
           'Authoring successor must update the exact preserved case', 'blocked-reconciliation');
           successorCore.verifySetupOnlyChange(original.toString('utf8'),
             readFileSync(boundedPath(current.workspace, successor.testPath), 'utf8'));
+        }
+        if (phaseName === 'author') {
+          await preparationPromise;
+          await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+          return completeRequestPhase(config, ledger, current, phase, { proposal, toolUsage });
         }
         if (repo.requestExecution && fixtureEvidence.some(e => e?.source.kind === 'ado-test-request')) {
           await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
@@ -5126,6 +5182,10 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
         }
         revision = await git(current.workspace, ['rev-parse', 'HEAD']);
         ledger.finishOperation(commitOperation, 'completed', { revision, round: authoring.round });
+        if (phaseName === 'commit') {
+          await verifyCurrentTestRequest(config, ledger, id, dependencies.readTestRequest);
+          return completeRequestPhase(config, ledger, current, phase, { proposal, toolUsage, validation: [], validationAttempts: [] });
+        }
       }
       if (continuation?.nativeSourceCorrection)
         await verifyNativeContinuation(
@@ -5296,10 +5356,15 @@ export async function dispatch(config, ledger, id, dependencies = {}) {
       nextAction: draftPR ? 'Human review of draft; never merge automatically.' : 'Review the recorded findings.'
     };
     validateRecord(result); ledger.put(result);
+    if (phase) ledger.finishOperation(phase.id, outcome === 'blocked' ? 'blocked' : 'complete', {
+      phase: phaseName, resultId: result.id, elapsedMs: Date.now() - phase.started,
+      configurationSha256: hash(json(config)), totalUsedMs: phase.usedMs + Date.now() - phase.started, finishedAt: now()
+    });
     ledger.moveJob(id, 'running', outcome === 'blocked' ? 'blocked' : 'completed');
     deliveredResult = result;
     completeRunEvidence(config, id, outcome === 'blocked' ? 'blocked' : 'completed');
   } catch (error) {
+    if (phase) ledger.finishOperation(phase.id, 'uncertain', { phase: phaseName, elapsedMs: Date.now() - phase.started, error: safeError(error) });
     const current = ledger.job(id);
     if (current && ['dispatching', 'running'].includes(current.state)) {
       const detail = safeError(error);

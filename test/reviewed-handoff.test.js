@@ -82,6 +82,7 @@ async function setup(t, { inputFormat = null, sourceCode = 'export const value =
       writeFileSync(join(reference, 'ooui', `${name}.txt`), `Synthetic ${name} source\n`);
   }
   if (nativeRequest) {
+    writeFileSync(join(reference, '.gitignore'), 'node_modules/\n');
     mkdirSync(join(reference, '.githooks'));
     writeFileSync(join(reference, '.githooks/pre-commit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     writeFileSync(join(reference, '.githooks/pre-push'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -327,7 +328,7 @@ test('sample request exercises intake through real validation and local push, wi
   assert.match(failure.stdout, /deduplication preserves formulas/);
 });
 
-for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication'])
+for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 'uncertain-publication', 'phased', 'phased-uncertain', 'phased-drift', 'phased-missing-tool', 'phased-interrupted'])
   test(`automated request FILTER maintained ${executionCase} path without an operator handoff`, async t => {
   const ctx = await requestFixture(t, { nativeRequest: true });
   const repo = ctx.config.repositories[0];
@@ -339,8 +340,28 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   repo.requestExecution = { enabled: true, scopeApproved: true, approvalRef: 'fixture-maintained-route', nativeHooks: '.githooks',
     requiredCapabilities: ['typed-cells'], preflight: step(readiness), formatMarkdown: { ...step(formatter), args: [formatter, '--write'] } };
   if (executionCase === 'failed-validation') ctx.config.limits.maxValidationRepairRounds = 0;
+  const phased = executionCase.startsWith('phased');
+  if (phased) {
+    ctx.config.limits.maxValidationRepairRounds = 0;
+    ctx.config.limits.maxValidationInfrastructureRetries = 0;
+    repo.provisionTimeoutMs = 10000;
+    repo.baseRef = ctx.baseRevision;
+    await command('git', ['update-ref', 'refs/remotes/origin/main', ctx.baseRevision], repo.referenceCheckout);
+    const tool = join(ctx.root, 'local-tool.js'); writeFileSync(tool, 'export const ready = true;');
+    const manifest = { format: 'request-local-tools-v1', sourceRevision: ctx.baseRevision, targetRef: repo.pr.targetRef,
+      targetRevision: ctx.baseRevision, provenance: 'synthetic local cache', roots: ['node_modules'], links: [],
+      runtimePins: [{ path: process.execPath, sha256: hash(readFileSync(process.execPath)) }],
+      sourcePins: [{ path: '.gitignore', sha256: hash('node_modules/\n'), checkoutSha256: hash('node_modules/\n') }],
+      files: [{ path: 'node_modules/local-tool.js', source: tool, sha256: hash(readFileSync(tool)), mode: 0o644 }] };
+    const manifestPath = join(ctx.root, 'tools.json'); writeFileSync(manifestPath, json(manifest));
+    repo.requestExecution.tools = { scopeApproved: true, approvalRef: 'fixture', timeoutMs: 10000,
+      manifest: { path: manifestPath, sha256: hash(readFileSync(manifestPath)) } };
+    repo.requestExecution.phases = { scopeApproved: true, approvalRef: 'synthetic-phase-authority',
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), foregroundMs: 600000, maxTotalMs: 1200000,
+      budgets: { prepare: 60000, author: 60000, commit: 180000, validate: 180000, publish: 240000 } };
+  }
   const contract = repositoryValidationContract(repo), key = skillQualificationId(repo.id, repo.skillBindings[0].id);
-  ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), validationContractVersion: contract.version, validationContractSha256: contract.sha256 });
+  ctx.ledger.qualify(key, { ...ctx.ledger.qualification(key), baseRef: repo.baseRef, validationContractVersion: contract.version, validationContractSha256: contract.sha256 });
   ctx.config.executionMode = 'standalone-sdk';
   ctx.config.activation.review = true; ctx.config.activation.dispatch = true;
   ctx.config.filterExecutor = 'local-sdk'; ctx.config.limits.maxAiCreditsPerSession = 30;
@@ -409,7 +430,7 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
       ),
       createDraft: async (_config, _ledger, _job, _repo, revision) => {
         drafts++;
-        if (executionCase === 'uncertain-publication') throw new Error('Synthetic unknown publication acknowledgement');
+        if (['uncertain-publication', 'phased-uncertain'].includes(executionCase)) throw new Error('Synthetic unknown publication acknowledgement');
         return { url: 'https://example.invalid/automated-request/draft/1', isDraft: true, headRevision: revision };
       }
     }
@@ -435,7 +456,37 @@ for (const executionCase of ['ready', 'missing-readiness', 'failed-validation', 
   assert.equal(ledger.status().operations.find(r => r.kind === 'ado-test-request-flow').state, 'review-complete');
   assert.equal(filters, 1); assert.equal(proposers, 0);
   ledger.qualify(qualificationId, qualification);
-  if (executionCase !== 'ready') {
+  if (phased) {
+    if (executionCase === 'phased-missing-tool') {
+      rmSync(join(ctx.root, 'local-tool.js'));
+      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'prepare' }, dependencies));
+      assert.deepEqual([proposers, drafts], [0, 0]); return;
+    }
+    for (const phase of ['prepare', 'author', 'commit', 'validate-fixture-test']) {
+      const checkpoint = await runTestRequest(ctx.config, ledger, 123, { ...options, phase }, dependencies);
+      assert.equal(checkpoint.state, 'phase-complete', json(checkpoint));
+      assert.equal(ledger.job(prepared.assignmentId).state, 'phase-complete');
+      assert.equal(drafts, 0);
+      assert.equal(proposers, phase === 'prepare' ? 0 : 1);
+      if (phase === 'prepare' && executionCase === 'phased-interrupted') {
+        ledger.operation(`${prepared.assignmentId}:phase:author`, prepared.assignmentId, 'request-phase', { phase: 'author' });
+        await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'author' }, dependencies), /Interrupted/);
+        assert.deepEqual([proposers, drafts], [0, 0]); return;
+      }
+      if (phase === 'author' && executionCase === 'phased-drift') {
+        writeFileSync(join(ledger.job(prepared.assignmentId).workspace, 'test/behavior-card.md'), 'changed checkpoint');
+        await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'commit' }, dependencies), /checkpoint.*changed/);
+        assert.equal(proposers, 1); return;
+      }
+    }
+    if (executionCase === 'phased-uncertain') {
+      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /unknown publication/);
+      await assert.rejects(runTestRequest(ctx.config, ledger, 123, { ...options, phase: 'publish' }, dependencies), /incomplete|uncertain/);
+      assert.deepEqual([filters, proposers, drafts], [1, 1, 1]); return;
+    }
+    options.phase = 'publish';
+  }
+  if (executionCase !== 'ready' && !phased) {
     if (executionCase === 'failed-validation') {
       const failed = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
       assert.equal(failed.result.outcome, 'blocked');

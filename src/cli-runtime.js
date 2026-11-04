@@ -112,7 +112,7 @@ try {
       'Test-request assessment/feedback requires explicit inputs and comment authorization', 'blocked-authorization');
   }
   if (['run-test-request', 'run-test-request-queue'].includes(action)) {
-    const values = action === 'run-test-request' ? ['--config', '--id'] : ['--config'];
+    const values = action === 'run-test-request' ? ['--config', '--id', '--phase'] : ['--config'];
     const switches = ['--authorize-review', '--execute', '--authorize-commit', '--authorize-push', '--authorize-draft-pr', '--authorize-comment'];
     const seen = new Set();
     for (let index = 0; index < args.length; index++) {
@@ -121,7 +121,8 @@ try {
       seen.add(key);
       if (values.includes(key)) requireThat(args[++index] && !args[index].startsWith('--'), 'Request-flow option needs a value');
     }
-    requireThat(values.every(key => seen.has(key)) && seen.has('--authorize-review') &&
+    requireThat(values.filter(key => key !== '--phase').every(key => seen.has(key)) && seen.has('--authorize-review') &&
+      (!seen.has('--phase') || (seen.has('--execute') && /^(prepare|author|commit|publish|validate-[A-Za-z0-9._-]+)$/.test(option('--phase')))) &&
       (action === 'run-test-request-queue' || /^\d+$/.test(option('--id') ?? '')),
       'Request flow requires explicit config, ID and model review authorization', 'blocked-authorization');
   }
@@ -722,7 +723,8 @@ try {
           : runTestRequest)(config, ledger, Number(option('--id')), {
           authorizeReview: args.includes('--authorize-review'), execute: args.includes('--execute'),
           authorizeCommit: args.includes('--authorize-commit'), authorizePush: args.includes('--authorize-push'),
-          authorizeDraftPR: args.includes('--authorize-draft-pr'), authorizeComment: args.includes('--authorize-comment')
+          authorizeDraftPR: args.includes('--authorize-draft-pr'), authorizeComment: args.includes('--authorize-comment'),
+          phase: option('--phase')
         });
         break;
       case 'ado-test-request':

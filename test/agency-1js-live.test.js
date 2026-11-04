@@ -85,21 +85,30 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
     child: { id: 11, result: 'succeeded' }, job: { jobId: 'office-fixture', state: 'Completed', result: 'Success',
       agent: { name: 'wxp-copilot-tester' } }, authentication: { mechanism: 'TRIPS FIC' } };
   const calls = [];
-  const transport = async operation => { calls.push(operation); if (operation === 'submit') return { parentRunId: 10 };
-    if (operation === 'inspect') return observation; return join(root, 'artifact'); };
+  const transport = async operation => { calls.push(operation);
+    if (operation === 'collect') return { schema: 'pea-1js-live-evidence-v1', workItemId: 11590949,
+      sourceRevision: base, collectedAt: new Date().toISOString() };
+    if (operation === 'submit') return { parentRunId: 10 };
+    if (operation === 'inspect') return observation;
+    if (operation === 'publish') return { url: 'https://example.invalid/draft/1', id: 1, isDraft: true,
+      autoComplete: false, merged: false, headRevision: candidate };
+    return join(root, 'artifact'); };
   const ledger = new Ledger(join(root, 'ledger'));
   execFileSync('git', ['checkout', base], { cwd: repo });
   const config = { activation: { dispatch: true }, statePolicy: { accessApproved: true },
     stateDirectory: join(root, 'state'), oneJsLive: { productRepositoryPath: repo } };
-  const accepted = await runOneJsLiveController(config, ledger, request, {}, { transport });
+  config.oneJsLive.publicationApproved = true;
+  const accepted = await runOneJsLiveController(config, ledger, request, { publishDraft: true }, { transport });
   assert.equal(accepted.status, 'passed'); assert.equal(accepted.candidate, candidate);
-  assert.deepEqual(calls, ['submit', 'inspect', 'download']);
+  assert.equal(accepted.draftPR.isDraft, true);
+  assert.deepEqual(calls, ['collect', 'submit', 'inspect', 'download', 'publish']);
   await assert.rejects(runOneJsLiveController(config, ledger, request, {}, { transport }), /resume/);
   const operation = ledger.db.prepare("SELECT id,detail FROM operations WHERE kind='agency-1js-live'").get();
   const expired = JSON.parse(operation.detail); expired.reservedAt = '2000-01-01T00:00:00.000Z';
   ledger.db.prepare('UPDATE operations SET detail=? WHERE id=?').run(JSON.stringify(expired), operation.id);
   const resumed = await runOneJsLiveController(config, ledger, request, { resume: true }, { transport });
   assert.equal(resumed.status, 'passed');
+  assert.equal(calls.filter(value => value === 'collect').length, 1);
   assert.equal(calls.filter(value => value === 'submit').length, 1);
   assert.equal(calls.filter(value => value === 'inspect').length, 1);
 });

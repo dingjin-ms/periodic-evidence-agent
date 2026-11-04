@@ -25,7 +25,7 @@ export function oneJsLiveRequest(overrides = {}) {
     expected: { fileName: 'AgencyLive.xlsx', worksheet: 'AgencyLive', rows: 5, columns: 4,
       headerRows: 1, dataRows: 4 },
     maximumMinutes: 75,
-    pollSeconds: 30,
+    pollSeconds: 10,
     payload: {
       templateParameters: {
         workItemId: 11590949, maxConcurrentJobs: 1, nativeCrossOfficeScenario: 'None',
@@ -192,6 +192,11 @@ export async function runOneJsLiveController(config, ledger, request, options = 
   if (!row) {
     ledger.operation(operationId, '1js-agency-live', 'agency-1js-live', detail);
     try {
+      const collection = await transport('collect', { request }, directory);
+      requireThat(collection?.schema === 'pea-1js-live-evidence-v1' && collection.workItemId === 11590949 &&
+        revision.test(collection.sourceRevision) && collection.sourceRevision === request.sourceRevision,
+      'Fresh 1JS evidence receipt is missing or outside the pinned source', 'blocked-result');
+      detail.collection = collection;
       const created = await transport('submit', { request }, directory);
       requireThat(Number.isSafeInteger(created.parentRunId), 'Orchestrator run identity missing', 'blocked-reconciliation');
       detail.parentRunId = created.parentRunId;
@@ -218,6 +223,16 @@ export async function runOneJsLiveController(config, ledger, request, options = 
   const artifactRoot = await transport('download', { request, observation }, directory);
   const acceptance = verifyOneJsLiveArtifact(artifactRoot, request, observation,
     config.oneJsLive?.productRepositoryPath);
+  acceptance.collection = detail.collection;
+  if (options.publishDraft === true) {
+    requireThat(config.oneJsLive?.publicationApproved === true,
+      '1JS Draft publication requires explicit private configuration approval', 'blocked-authorization');
+    acceptance.draftPR = await transport('publish', { request, observation, acceptance }, directory);
+    requireThat(acceptance.draftPR?.isDraft === true && acceptance.draftPR.headRevision === acceptance.candidate &&
+      acceptance.draftPR.autoComplete === false && acceptance.draftPR.merged === false,
+    'Published 1JS PR is not the expected active exact-candidate Draft', 'blocked-pr');
+    acceptance.boundaries.productPRCreated = true;
+  }
   const acceptancePath = join(directory, 'controller-acceptance.json');
   writeFileSync(acceptancePath, `${JSON.stringify(acceptance, null, 2)}\n`, { flag: existsSync(acceptancePath) ? 'w' : 'wx' });
   ledger.finishOperation(operationId, 'passed', { ...detail, acceptancePath, acceptanceSha256: hash(readFileSync(acceptancePath)) });
@@ -248,6 +263,15 @@ export function createOneJsLiveTransport(config, dependencies = {}) {
   }
   const ado = path => `https://dev.azure.com/office/Office/_apis/${path}`;
   return async (operation, input, directory) => {
+    if (operation === 'collect') {
+      const item = await request(ado('wit/workitems/11590949?$select=System.Id,System.Rev,System.State,System.Reason,System.Title&api-version=7.1'), adoScope);
+      const fields = item?.fields ?? {};
+      requireThat(item?.id === 11590949 && Number.isSafeInteger(item.rev),
+        'Approved 1JS evidence work item is unavailable', 'blocked-result');
+      return { schema: 'pea-1js-live-evidence-v1', collectedAt: now(), workItemId: item.id,
+        revision: item.rev, state: fields['System.State'] ?? null, reason: fields['System.Reason'] ?? null,
+        titleSha256: hash(String(fields['System.Title'] ?? '')), sourceRevision: input.request.sourceRevision };
+    }
     if (operation === 'submit') {
       const run = await request(ado('pipelines/37948/runs?api-version=7.1'), adoScope,
         { method: 'POST', body: JSON.stringify(input.request.payload) });
@@ -279,6 +303,35 @@ export function createOneJsLiveTransport(config, dependencies = {}) {
       parent: { id: parent.id, status: parent.status, result: parent.result },
       child: child && { id: child.id, status: child.status, result: child.result }, job,
       authentication: { mechanism: 'TRIPS FIC' } };
+    }
+    if (operation === 'publish') {
+      const publication = config.oneJsLive?.publication;
+      requireThat(publication?.targetRef === `refs/heads/${input.request.branch}` &&
+        /^refs\/heads\/user\/dingjin\/[A-Za-z0-9._/-]+$/.test(publication.sourceRef ?? ''),
+      '1JS Draft publication refs are outside the approved branch scope', 'blocked-config');
+      const repo = config.oneJsLive.productRepositoryPath;
+      const remote = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: repo, encoding: 'utf8' }).trim();
+      requireThat(remote.toLowerCase() === 'https://dev.azure.com/office/office/_git/1js',
+        '1JS publication checkout remote mismatch', 'blocked-scope');
+      execFileSync('git', ['push', 'origin', `${input.acceptance.candidate}:${publication.sourceRef}`],
+        { cwd: repo, stdio: 'pipe', timeout: 10 * 60000 });
+      const suffix = `git/repositories/1JS/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(publication.sourceRef)}&searchCriteria.status=all&api-version=7.1`;
+      const found = await request(ado(suffix), adoScope);
+      requireThat(Array.isArray(found?.value) && found.value.length <= 1,
+        'Ambiguous existing 1JS Draft PRs', 'blocked-reconciliation');
+      let pr = found.value[0];
+      if (!pr) pr = await request(ado('git/repositories/1JS/pullrequests?api-version=7.1'), adoScope, {
+        method: 'POST', body: JSON.stringify({ sourceRefName: publication.sourceRef,
+          targetRefName: publication.targetRef, title: publication.title,
+          description: publication.description, isDraft: true })
+      });
+      requireThat(pr?.isDraft === true && pr.status === 'active' && pr.sourceRefName === publication.sourceRef &&
+        pr.targetRefName === publication.targetRef && pr.lastMergeSourceCommit?.commitId === input.acceptance.candidate,
+      '1JS PR is not an active Draft at the accepted candidate', 'blocked-reconciliation');
+      return { url: `https://dev.azure.com/office/Office/_git/1JS/pullrequest/${pr.pullRequestId}`,
+        id: pr.pullRequestId, isDraft: true, autoComplete: false, merged: false,
+        headRevision: input.acceptance.candidate, sourceRef: publication.sourceRef,
+        targetRef: publication.targetRef, publishedAt: now() };
     }
     requireThat(operation === 'download', 'Unsupported 1JS live transport operation');
     const artifact = join(directory, 'runner-artifact');

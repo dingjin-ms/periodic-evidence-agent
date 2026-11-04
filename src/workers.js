@@ -4219,6 +4219,8 @@ export async function createAdoDraft(config, ledger, job, repo, revision, propos
   let pr = found.value[0];
   if (!pr) {
     requireThat(allowCreate, 'No matching draft found; uncertain creation is not retried', 'blocked-reconciliation');
+    requireThat(!ledger.status().operations.some(operation => operation.id === operationId),
+      'Operation already started; reconcile, do not duplicate or retry', 'blocked-reconciliation');
     requireDraftDescriptionLength(proposal.description, job.id);
     if (requestOverride) {
       await admission.refresh();

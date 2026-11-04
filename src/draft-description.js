@@ -31,8 +31,9 @@ export function requireReviewContext(context) {
 const text = value => String(value).replace(/[\\`*_[\]<>]/g, '\\$&').replace(/[\r\n]+/g, ' ');
 
 export function requireDraftDescriptionLength(description, assignmentId) {
-  requireThat(typeof description === 'string' && description.trim().length > 0 &&
-    `${description}\n\nPilot assignment: ${assignmentId}`.length <= 4000,
+  requireThat(typeof description === 'string' && description.trim().length > 0,
+    'Draft description must be nonempty', 'blocked-pr-description');
+  requireThat(`${description}\n\nPilot assignment: ${assignmentId}`.length <= 4000,
   'Draft description exceeds the 4000-character provider limit; shorten authoring context ' +
     'without dropping evidence or validation. No content was truncated.', 'blocked-pr-description');
 }

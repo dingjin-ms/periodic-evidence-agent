@@ -12,7 +12,7 @@ import {
 } from '../src/reviewed-handoff.js';
 import {
   dispatch, dispatchReviewedHandoff, dispatchAdoTestRequest, command, provision, queueAdoDraftBuild, runValidation,
-  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment, commitRepositoryChanges, requireCurrentAssignment
+  createAdoDraft, pushDraftBranch, makePlannedImprovementAssignment, commitRepositoryChanges, requireCurrentAssignment, runModel
 } from '../src/workers.js';
 import { prepareLocalPreModelContinuation } from '../src/local-continuation.js';
 import { prepareRuntimeContinuation, claimRuntimeWorkspace } from '../src/runtime-continuation.js';
@@ -327,7 +327,8 @@ test('automated request FILTER hands its plan to the real worker and publication
     maxToolCalls: 10, timeoutMs: 10000, maxSourceBytes: 12000, maxRequestBytes: 100000,
     sources: [{ repoId: 'office-agent', revision: ctx.baseRevision }] };
   ctx.config.adoTestRequests.automation = { enabled: true, scopeApproved: true, approvalRef: 'fixture-flow',
-    model: 'fixture', maxRequests: 1, sourcePaths: ['src'] };
+    model: 'fixture', maxRequests: 1, requireSupportMatrix: true,
+    sourcePaths: ['src', '.github/skills/integration-test-authoring'] };
   // New policy is collected into a fresh ledger, not retrofitted onto old receipts.
   const ledger = new Ledger(join(ctx.root, 'flow-state'));
   ctx.additionalLedgers.push(ledger);
@@ -345,25 +346,41 @@ test('automated request FILTER hands its plan to the real worker and publication
       filters++; let event;
       return { sessionId: 'fixture-filter-session', on: callback => { event = callback; return () => {}; },
         rpc: { options: { update: async () => {} }, tools: { initializeAndValidate: async () => {} } },
-        sendAndWait: async () => {
+        sendAndWait: async ({ prompt }) => {
+          const request = JSON.parse(prompt);
+          assert.equal(request.repositorySkill.content, '# Fixture integration-test skill\nAdd focused tests.\n');
+          assert.equal(request.repositorySkill.sha256, hash(request.repositorySkill.content));
+          assert.equal(request.repositorySkill.revision, ctx.baseRevision);
           event({ type: 'assistant.turn_start' });
           await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: 'src/value.js' });
+          await options.tools.find(tool => tool.name === 'pilot_request_source').handler({ action: 'read', path: request.skillPath });
           const result = JSON.parse(await options.tools.find(tool => tool.name === 'pilot_request_finish').handler({
             decision: 'supported', missingCapabilities: [], sourcePaths: ['src/value.js'],
             rationale: 'Fixture implementation supports the invariant.', verificationEvidence: [],
+            support: { skill: 'supported', environment: 'ready', requirements: [{ requirement: 'formula preservation',
+              status: 'supported', sourcePaths: ['src/value.js', request.skillPath], reason: 'Fixture harness is qualified for this deterministic contract.' }] },
             handoff: { review: ctx.handoff.review, planning: ctx.handoff.planning }
           }));
           assert.equal(result.error, undefined, json(result));
         }, disconnect: async () => {} };
     } }),
     dispatchDependencies: {
-      runModel: async (_config, _ledger, _job, _assignment, _investigation, toolkit) => {
-        proposers++; toolkit.write('test/behavior.test.js', formulaTest);
-        toolkit.write('test/behavior-card.md', '# Formula preservation\nSynthetic contract.\n');
-        toolkit.finish({ outcome: 'propose-change', findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
-          skillResult: { status: 'succeeded', classification: 'missing-test-coverage', changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
-            testsAddedOrUpdated: ['formula preservation'], behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
-      },
+      runModel: async (config, state, job, assignment, investigation, toolkit, skill) => runModel(
+        config, state, job, assignment, investigation, toolkit, skill, undefined,
+        async (_config, _cwd, invoke) => invoke({ createSession: async options => ({
+          disconnect: async () => {}, sendAndWait: async ({ prompt }) => {
+            proposers++;
+            assert.match(prompt, /--- repository skill ---\n# Fixture integration-test skill\nAdd focused tests\./);
+            assert.match(prompt, new RegExp(ctx.baseRevision));
+            const write = options.tools.find(tool => tool.name === 'pilot_write');
+            await write.handler({ path: 'test/behavior.test.js', content: formulaTest });
+            await write.handler({ path: 'test/behavior-card.md', content: '# Formula preservation\nSynthetic contract.\n' });
+            await options.tools.find(tool => tool.name === 'pilot_finish').handler({ outcome: 'propose-change',
+              findings: 'Added regression.', title: 'Formula preservation', description: 'Synthetic qualification.',
+              skillResult: { status: 'succeeded', classification: 'missing-test-coverage', changedFiles: ['test/behavior.test.js', 'test/behavior-card.md'],
+                testsAddedOrUpdated: ['formula preservation'], behaviorCardsAddedOrUpdated: ['test/behavior-card.md'], unknowns: [], needsHumanDecision: false } });
+          } }) })
+      ),
       createDraft: async (_config, _ledger, _job, _repo, revision) => {
         drafts++; return { url: 'https://example.invalid/automated-request/draft/1', isDraft: true, headRevision: revision };
       }
@@ -401,6 +418,10 @@ test('automated request FILTER hands its plan to the real worker and publication
   const revisionReplay = await runTestRequest(ctx.config, ledger, 123, options, dependencies);
   assert.equal(revisionReplay.priorOutcomeOnly, true);
   assert.deepEqual([filters, proposers, drafts, comments], [1, 1, 1, 1]);
+  const deliveredSkills = ledger.status().operations.filter(row => row.kind === 'repository-skill-delivery').map(row => JSON.parse(row.detail));
+  assert.deepEqual(deliveredSkills.map(row => row.stage).sort(), ['FILTER', 'PROPOSER']);
+  assert.equal(new Set(deliveredSkills.map(row => row.skillSha256)).size, 1);
+  assert.ok(deliveredSkills.every(row => row.sourceRevision === ctx.baseRevision));
   publicationBinding.sideEffects.push = false;
   assert.throws(() => requireTestRequestPublication(ctx.config, ledger, originalAssignment, 'push'), /does not authorize/);
 });

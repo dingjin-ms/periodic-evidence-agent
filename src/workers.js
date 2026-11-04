@@ -16,6 +16,7 @@ import { boundedPath, hash, json, now, positive, requireThat, safeError, uuid, v
 import { cleanupWorkspace } from './workspace-gc.js';
 import { operationRowsHash } from './operation-evidence.js';
 import { withClient, authoringSession, defineTool } from './runtime.js';
+import { skillDeliveryReceipt } from './skill-delivery.js';
 import {
   loadRepositorySkill, normalizeSkillInput, normalizeSkillResult, pinSkillQualification, renderCoverageReview,
   externalSkillReadPrefix, readExternalSkill,
@@ -4376,17 +4377,21 @@ export function loadAuthoringFeedback(config) {
   requireThat(hash(bytes) === reference.sha256, 'Authoring feedback changed', 'blocked-reconciliation');
   return { reference, evidence: JSON.parse(bytes.toString('utf8')) };
 }
-async function runModel(config, ledger, current, assignment, investigation, toolkit, loadedSkill = null,
-  authoring = { round: 0, validationFeedback: [] }) {
+export async function runModel(config, ledger, current, assignment, investigation, toolkit, loadedSkill = null,
+  authoring = { round: 0, validationFeedback: [] }, connect = withClient) {
   const instructions = repositoryWorkerInstructions();
   const predecessorFeedback = loadAuthoringFeedback(config);
-  return withClient(config, current.workspace, async client => {
+  return connect(config, current.workspace, async client => {
     requireExecutionAuthorization(config, repoFor(config, assignment.repoId), 'model');
     const session = await authoringSession(client, toolkit.tools(), {
       sessionId: current.session_id, workingDirectory: current.workspace, prompt: instructions,
       model: config.runtime?.authoringModel
     }, authoring.round);
     try {
+      if (loadedSkill) skillDeliveryReceipt(ledger, current.id, 'PROPOSER', current.session_id, {
+        path: loadedSkill.skillPath, revision: loadedSkill.skillRevision,
+        sha256: hash(loadedSkill.instructions), content: loadedSkill.instructions
+      }, authoring.round);
       await session.sendAndWait({
         prompt: authoringPrompt(ledger, assignment, investigation, loadedSkill,
           predecessorFeedback ? { ...authoring, predecessorFeedback } : authoring)

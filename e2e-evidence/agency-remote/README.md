@@ -27,6 +27,10 @@ session's unreviewed result, or combining two individually tested capabilities
 does not establish an E2E run of their composition. A genuinely verified run
 can be added when its authoritative evidence is available.
 
+The 1JS same-workspace run's latency categories, measured bottlenecks and
+optimization plan are documented in the
+[performance report](1js-same-workspace-live-e2e-performance-20261104.md).
+
 ## 1JS SDX native live E2E: 2026-10-30
 
 Agency job `office-31b2c17d-5bac-46b7-9780-7d5409ac1174`, ADO build

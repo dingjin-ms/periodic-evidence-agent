@@ -108,6 +108,12 @@ async function runController(input) {
     outcome: 'propose-change', findings: 'Added the pinned synthetic assertions',
     title: 'Add synthetic native assertions',
     description: 'Synthetic qualification only; validation not yet claimed',
+    reviewContext: {
+      coverageGap: 'The synthetic fixture has no native input content or integrity assertions.',
+      testsAndAssertions: 'The pinned native cases assert input content, byte length and digest.',
+      boundaries: 'Synthetic qualification only; publication is intercepted and no live service is exercised.',
+      reviewFocus: 'Check the pinned native assertions and expected guard refusals.'
+    },
     skillResult: {
       status: 'succeeded', classification: 'missing-coverage', changedFiles: [testPath],
       testsAddedOrUpdated: workload.coverage.required.map(item => item.caseId),

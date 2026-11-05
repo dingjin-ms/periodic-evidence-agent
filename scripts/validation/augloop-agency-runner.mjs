@@ -257,6 +257,11 @@ async function main() {
         clearInterval(heartbeat);
       }
       report(`${gateId} finished with exit code ${result.exitCode}`);
+      if (result.exitCode !== 0 || result.timedOut) {
+        const diagnostic = `${result.stdout}\n${result.stderr}`.slice(-65536);
+        report(`${gateId} bounded failure diagnostic follows`);
+        process.stdout.write(`${diagnostic}\n`);
+      }
       await restoreGeneratedChanges(root, evidence, candidateFiles, initialTrackedStatus);
       const text = `${result.stdout}\n${result.stderr}`;
       const testPopulation = step === 'test' ? population(owner, text) : null;

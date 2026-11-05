@@ -22,6 +22,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const preloadPath = join(dirname(scriptPath), 'augloop-agency-node-preload.cjs');
 const readJson = path => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+const report = message => process.stdout.write(`[al-controller] ${new Date().toISOString()} ${message}\n`);
 
 function requireValue(value, message) {
   if (!value) throw new Error(message);
@@ -233,6 +234,7 @@ async function main() {
   };
   delete env.LAGE_GIT_IGNORED_FILES;
   const startedAt = new Date().toISOString(), gates = [];
+  report('validation started');
   for (const owner of owners) {
     for (const step of steps) {
       const gateId = `${owner.id}-${step}`, [executable, args] = command(owner, step, root, evidence);
@@ -241,10 +243,19 @@ async function main() {
       const start = new Date().toISOString();
       const remainingMs = Date.parse(input.controllerDeadlineAt) - Date.now() - 20 * 60000;
       requireValue(remainingMs > 0, 'AL runner reached the required twenty-minute stop reserve');
-      const result = await run(executable, args, {
-        cwd: root, env, timeoutMs: Math.min(80 * 60000, remainingMs), stdoutPath, stderrPath,
-        detectInteractiveLogin: step === 'cli-build'
-      });
+      report(`${gateId} started`);
+      const heartbeat = setInterval(() => report(`${gateId} still running`), 60000);
+      heartbeat.unref();
+      let result;
+      try {
+        result = await run(executable, args, {
+          cwd: root, env, timeoutMs: Math.min(80 * 60000, remainingMs), stdoutPath, stderrPath,
+          detectInteractiveLogin: step === 'cli-build'
+        });
+      } finally {
+        clearInterval(heartbeat);
+      }
+      report(`${gateId} finished with exit code ${result.exitCode}`);
       await restoreGeneratedChanges(root, evidence, candidateFiles, initialTrackedStatus);
       const text = `${result.stdout}\n${result.stderr}`;
       const testPopulation = step === 'test' ? population(owner, text) : null;
@@ -292,6 +303,7 @@ async function main() {
   };
   writeJson(join(evidence, 'receipt.json'), receipt);
   appendFileSync(join(evidence, 'runner.complete'), `${receipt.status}\n`);
+  report(`validation ${receipt.status}`);
   if (!passed || !nativePassed) process.exitCode = 1;
 }
 

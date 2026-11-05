@@ -36,6 +36,9 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
   assert.match(request.prompt, /Do not combine input creation, checks, variables, assignments/);
   assert.match(request.prompt, /do not request interactive approval or special permissions/);
   assert.match(request.prompt, /Run the controller once only/);
+  assert.match(request.prompt, /periodic heartbeats/);
+  assert.match(request.prompt, /Never call stop_powershell merely because the controller remains running/);
+  assert.match(request.prompt, /use read_powershell on that same shell until it completes/);
   assert.match(request.prompt, new RegExp(request.metadata.runnerSha256));
   assert.match(request.prompt, new RegExp(request.metadata.preloadSha256));
   assert.match(request.prompt, new RegExp(request.metadata.skillSha256));

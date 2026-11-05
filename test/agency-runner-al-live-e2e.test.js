@@ -57,13 +57,16 @@ function runnerFixture(t) {
     maxRepairAttempts: 2, expectedSkillSha256: hash(readFileSync(skillPath)),
     expectedRunnerSha256: hash(readFileSync(runnerPath)),
     expectedPreloadSha256: hash(readFileSync(preloadPath)) }));
-  command(process.execPath, [runnerPath, inputPath], workspace);
-  return { directory, workspace, evidence, baseRevision, candidate };
+  const runnerOutput = command(process.execPath, [runnerPath, inputPath], workspace);
+  return { directory, workspace, evidence, baseRevision, candidate, runnerOutput };
 }
 
 test('prebuilt AL runner executes Excel first and all sixteen native gate commands', t => {
   const f = runnerFixture(t), receipt = JSON.parse(readFileSync(join(f.evidence, 'receipt.json')));
   assert.equal(receipt.status, 'passed');
+  assert.match(f.runnerOutput, /\[al-controller\].* validation started/);
+  assert.match(f.runnerOutput, /excel-agent-in-container-proxy-cli-build started/);
+  assert.match(f.runnerOutput, /validation passed/);
   assert.equal(receipt.gateCount, 16);
   assert.deepEqual(receipt.gateOrder, owners);
   assert.equal(receipt.gates[0].gateId, 'excel-agent-in-container-proxy-cli-build');

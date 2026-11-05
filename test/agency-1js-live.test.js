@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Ledger } from '../src/ledger.js';
 import { hash } from '../src/common.js';
-import { oneJsLiveRequest, runOneJsLiveController } from '../src/agency-1js-live.js';
+import { isOneJsLiveTerminal, oneJsLiveRequest, runOneJsLiveController } from '../src/agency-1js-live.js';
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -85,23 +85,35 @@ test('1JS live controller submits once, resumes, and accepts only bound same-wor
     child: { id: 11, result: 'succeeded' }, job: { jobId: 'office-fixture', state: 'Completed', result: 'Success',
       agent: { name: 'wxp-copilot-tester' } }, authentication: { mechanism: 'TRIPS FIC' } };
   const calls = [];
-  const transport = async operation => { calls.push(operation); if (operation === 'submit') return { parentRunId: 10 };
-    if (operation === 'inspect') return observation; return join(root, 'artifact'); };
+  let inspections = 0;
+  const transport = async operation => { calls.push(operation);
+    if (operation === 'collect') return { schema: 'pea-1js-live-evidence-v1', workItemId: 11590949,
+      sourceRevision: base, collectedAt: new Date().toISOString() };
+    if (operation === 'submit') return { parentRunId: 10 };
+    if (operation === 'inspect') return inspections++ === 0
+      ? { terminal: false, parent: { id: 10, status: 'inProgress' } }
+      : observation;
+    if (operation === 'publish') return { url: 'https://example.invalid/draft/1', id: 1, isDraft: true,
+      autoComplete: false, merged: false, headRevision: candidate };
+    return join(root, 'artifact'); };
   const ledger = new Ledger(join(root, 'ledger'));
   execFileSync('git', ['checkout', base], { cwd: repo });
   const config = { activation: { dispatch: true }, statePolicy: { accessApproved: true },
     stateDirectory: join(root, 'state'), oneJsLive: { productRepositoryPath: repo } };
-  const accepted = await runOneJsLiveController(config, ledger, request, {}, { transport });
+  config.oneJsLive.publicationApproved = true;
+  const accepted = await runOneJsLiveController(config, ledger, request, { publishDraft: true }, { transport });
   assert.equal(accepted.status, 'passed'); assert.equal(accepted.candidate, candidate);
-  assert.deepEqual(calls, ['submit', 'inspect', 'download']);
+  assert.equal(accepted.draftPR.isDraft, true);
+  assert.deepEqual(calls, ['collect', 'submit', 'inspect', 'inspect', 'download', 'publish']);
   await assert.rejects(runOneJsLiveController(config, ledger, request, {}, { transport }), /resume/);
   const operation = ledger.db.prepare("SELECT id,detail FROM operations WHERE kind='agency-1js-live'").get();
   const expired = JSON.parse(operation.detail); expired.reservedAt = '2000-01-01T00:00:00.000Z';
   ledger.db.prepare('UPDATE operations SET detail=? WHERE id=?').run(JSON.stringify(expired), operation.id);
   const resumed = await runOneJsLiveController(config, ledger, request, { resume: true }, { transport });
   assert.equal(resumed.status, 'passed');
+  assert.equal(calls.filter(value => value === 'collect').length, 1);
   assert.equal(calls.filter(value => value === 'submit').length, 1);
-  assert.equal(calls.filter(value => value === 'inspect').length, 1);
+  assert.equal(calls.filter(value => value === 'inspect').length, 2);
 });
 
 test('1JS live request rejects parallel or fixed-scenario dispatch before submission', async () => {
@@ -111,4 +123,14 @@ test('1JS live request rejects parallel or fixed-scenario dispatch before submis
   await assert.rejects(runOneJsLiveController({ activation: { dispatch: true }, statePolicy: { accessApproved: true } },
     {}, request, {}, { transport: async operation => calls.push(operation) }), /fixed single-job/);
   assert.deepEqual(calls, []);
+});
+
+test('1JS live terminal detection fails fast without weakening success completion', () => {
+  const runningParent = { status: 'inProgress' };
+  const runningJob = { state: 'Pending' };
+  assert.equal(isOneJsLiveTerminal(runningParent, { status: 'completed', result: 'failed' }, runningJob), true);
+  assert.equal(isOneJsLiveTerminal({ status: 'completed', result: 'canceled' }), true);
+  assert.equal(isOneJsLiveTerminal(runningParent, { status: 'completed', result: 'succeeded' }, runningJob), false);
+  assert.equal(isOneJsLiveTerminal({ status: 'completed', result: 'succeeded' },
+    { status: 'completed', result: 'succeeded' }, { state: 'Completed' }), true);
 });

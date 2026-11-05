@@ -11,7 +11,7 @@ const config = JSON.parse(readFileSync(resolve(configPath), 'utf8'));
 const ledger = new Ledger(config.stateDirectory);
 try {
   const result = await runOneJsLiveController(config, ledger, oneJsLiveRequest(),
-    { resume: args.get('--resume') === 'true' });
+    { resume: args.get('--resume') === 'true', publishDraft: args.get('--publish-draft') === 'true' });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 } finally {
   ledger.close();

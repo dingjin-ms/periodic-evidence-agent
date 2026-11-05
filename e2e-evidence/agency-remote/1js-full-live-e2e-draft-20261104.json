@@ -1,0 +1,69 @@
+{
+  "schema": "agency-remote-full-live-e2e-proof-v1",
+  "id": "1js-bizchat-excel-five-by-four-draft-20261104-run12",
+  "result": "passed",
+  "controllerAcceptance": true,
+  "controllerRevision": "7fcf36556a1391d587f4c0d3bca5466f4381c56f",
+  "controllerAcceptanceSha256": "ad97249917c993db5f9a30093e822082e914c691aef6c2ed772e1787e20ae2a6",
+  "sourceRevision": "730607d06f9e8544f843bac33066086b6ecbf3bf",
+  "candidate": "9e9762a0d489fe0b22bc414c06ac5d8cb9b7e5d6",
+  "profile": "bizchat-excel-five-by-four-v1",
+  "evidenceCollectedAt": "2026-11-04T14:35:29.142Z",
+  "acceptedAt": "2026-11-04T15:03:36.835Z",
+  "publishedAt": "2026-11-04T15:03:45.577Z",
+  "wallClockSeconds": 1701.05,
+  "pipeline": {
+    "orchestratorDefinitionId": 37948,
+    "orchestratorRunId": 58914063,
+    "runnerDefinitionId": 35960,
+    "runnerRunId": 58914206,
+    "agencyJobId": "office-ed6aa17f-c56f-49fe-b0cd-2daa5be0e212",
+    "agent": "wxp-copilot-tester"
+  },
+  "authentication": {
+    "mechanism": "TRIPS FIC",
+    "attempts": 1,
+    "status": "passed"
+  },
+  "nativeResult": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "workbook": {
+    "fileName": "AgencyLive.xlsx",
+    "sha256": "9ed2e07a42775ce60a36f9e4d450d0225b540efc3b6d6a0c2fa6229564d37e78",
+    "byteLength": 5718,
+    "worksheet": "AgencyLive",
+    "table": "AgencyLiveTable",
+    "range": "A1:D5",
+    "rows": 5,
+    "columns": 4,
+    "headerRows": 1,
+    "dataRows": 4,
+    "reader": "independent OpenXML ZIP/XML"
+  },
+  "draftPR": {
+    "id": 5958637,
+    "url": "https://dev.azure.com/office/Office/_git/1JS/pullrequest/5958637",
+    "isDraft": true,
+    "autoComplete": false,
+    "merged": false,
+    "headRevision": "9e9762a0d489fe0b22bc414c06ac5d8cb9b7e5d6"
+  },
+  "boundaries": {
+    "periodicTaskEnabled": false,
+    "localBrowserFallback": false,
+    "productPRMerged": false
+  },
+  "repair": {
+    "productRepairOccurred": false,
+    "statement": "The accepted run passed its first product execution; the product repair loop was not exercised in this run."
+  },
+  "limitations": [
+    "This proof is scoped to the pinned source, runner definitions, agent, profile, authentication configuration and recorded Draft PR.",
+    "Private configuration, authentication state, prompts, runner logs and browser traces remain outside the repository.",
+    "Earlier failed qualification runs informed harness and contract repairs but are not combined with this successful proof."
+  ]
+}

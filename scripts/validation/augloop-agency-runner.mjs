@@ -28,7 +28,7 @@ function requireValue(value, message) {
   if (!value) throw new Error(message);
 }
 
-function command(owner, step, root, evidence) {
+function command(owner, step, root, evidence, cacheRoot) {
   const node = process.execPath;
   const yarn = join(root, '.yarn', 'releases', 'yarn-3.2.1.cjs');
   const cli = join(root, 'tools', 'node_modules', '@augloop-tools', 'cli', 'lib', 'src', 'cli.js');
@@ -36,7 +36,7 @@ function command(owner, step, root, evidence) {
   if (step === 'workspace-build') return [node, [yarn, 'workspace', owner.package, 'build']];
   if (step === 'eslint') return [node, [yarn, 'workspace', owner.package, 'exec', 'gulp', 'eslint']];
   const args = [yarn, 'workspace', owner.package, 'test'];
-  if (owner.runner === 'jest') args.push('--cacheDirectory', join(evidence, 'jest-cache', owner.id));
+  if (owner.runner === 'jest') args.push('--runInBand', '--cacheDirectory', join(cacheRoot, owner.id));
   return [node, args];
 }
 
@@ -234,10 +234,11 @@ async function main() {
   };
   delete env.LAGE_GIT_IGNORED_FILES;
   const startedAt = new Date().toISOString(), gates = [];
+  const cacheRoot = join(root, '.agency-controller', 'jest-cache', basename(evidence));
   report('validation started');
   for (const owner of owners) {
     for (const step of steps) {
-      const gateId = `${owner.id}-${step}`, [executable, args] = command(owner, step, root, evidence);
+      const gateId = `${owner.id}-${step}`, [executable, args] = command(owner, step, root, evidence, cacheRoot);
       const stdoutPath = join(evidence, 'logs', `${gateId}.stdout.log`);
       const stderrPath = join(evidence, 'logs', `${gateId}.stderr.log`);
       const start = new Date().toISOString();

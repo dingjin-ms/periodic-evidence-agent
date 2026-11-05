@@ -70,6 +70,10 @@ test('prebuilt AL runner executes Excel first and all sixteen native gate comman
   assert.equal(receipt.gateCount, 16);
   assert.deepEqual(receipt.gateOrder, owners);
   assert.equal(receipt.gates[0].gateId, 'excel-agent-in-container-proxy-cli-build');
+  for (const gate of receipt.gates.filter(gate => gate.step === 'test' && gate.runner === 'jest')) {
+    assert.equal(gate.args.includes('--runInBand'), true);
+    assert.match(gate.args[gate.args.indexOf('--cacheDirectory') + 1], /\.agency-controller[\\/]jest-cache/);
+  }
   assert.equal(receipt.gates.find(gate => gate.owner === 'session-protocol' && gate.step === 'test').testPopulation, 115);
   assert.equal(receipt.gates.filter(gate => gate.step === 'test').every(gate => gate.testPopulation > 0), true);
   assert.equal(receipt.gates.filter(gate => gate.runner === 'jest' && gate.step === 'test')

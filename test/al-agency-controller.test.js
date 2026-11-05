@@ -17,12 +17,18 @@ function fixture() {
 test('builds an explicit source- and asset-bound AL same-workspace request', () => {
   const request = createAlAgencyLiveE2eRequest(fixture());
   assert.equal(request.modelConfiguration.model, 'gpt-6-luna');
+  assert.deepEqual(request.plugins, [{
+    name: `ado-git:office/ISS/augloop-workflows:utils/excel-agent-in-container-proxy@${'a'.repeat(40)}`,
+    type: 'Spec'
+  }]);
   assert.equal(request.additionalOptions.pluginOptions.includeDefaults, false);
   assert.equal(request.metadata.maxModelSessions, '1');
   assert.equal(request.metadata.softCreditLimit, '30');
   assert.equal(request.metadata.maxRepairAttempts, '2');
   assert.equal(request.metadata.maximumJobMinutes, '90');
   assert.equal(request.metadata.maximumControllerMinutes, '180');
+  assert.equal(request.metadata.skillName, 'excel-agent-in-container-proxy-integration-tests');
+  assert.equal(request.metadata.skillPlugin, request.plugins[0].name);
   assert.match(request.prompt, /Do not design or regenerate validation infrastructure/);
   assert.match(request.prompt, /do not run any focused product test, build or validation command first/);
   assert.match(request.prompt, /separate ordinary powershell tool call with mode "sync" and initial_wait 600/);

@@ -99,7 +99,8 @@ function acceptanceFixture(t) {
   const events = [
     { type: 'user.message', data: { content: prompt } },
     { type: 'skill.invoked', data: { name: 'excel-agent-in-container-proxy-integration-tests',
-      path: 'utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md' } },
+      path: 'acquired/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md',
+      content: 'skill\n', pluginName: 'excel-agent-in-container-proxy' } },
     { type: 'tool.execution_start', data: { toolCallId: 'one', toolName: 'powershell', arguments: { command: shellCommand } } },
     { type: 'tool.execution_complete', data: { toolCallId: 'one', success: true, shellExecution: { exitCode: 0 } } }
   ];

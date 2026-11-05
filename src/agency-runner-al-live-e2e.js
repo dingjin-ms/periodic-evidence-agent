@@ -5,6 +5,7 @@ import { requireThat } from './common.js';
 
 const digest = /^[a-f0-9]{64}$/;
 const revision = /^[a-f0-9]{40}$/;
+const skillName = 'excel-agent-in-container-proxy-integration-tests';
 const expectedOwners = [
   'excel-agent-in-container-proxy',
   'session-protocol',
@@ -66,9 +67,9 @@ export function verifyAgencyRunnerAlLiveE2e(contract, observation, agencyRoot, d
     'AL live E2E exceeded its controller deadline', 'blocked-result');
 
   const events = managedEvents(agencyRoot);
-  requireThat(events.some(event => event.type === 'skill.invoked' &&
-    String(event.data?.path ?? '').replaceAll('\\', '/').endsWith(
-      'utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md')),
+  requireThat(events.some(event => event.type === 'skill.invoked' && event.data?.name === skillName &&
+    hash(event.data?.content ?? '') === contract.skillSha256 &&
+    typeof event.data?.pluginName === 'string' && event.data.pluginName.length > 0),
   'The repository-native AL authoring skill was not invoked', 'blocked-result');
   const starts = new Map(events.filter(event => event.type === 'tool.execution_start')
     .map(event => [event.data?.toolCallId, event.data]));

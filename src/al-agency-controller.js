@@ -5,6 +5,7 @@ import { hash, requireThat } from './common.js';
 
 const revision = /^[a-f0-9]{40}$/;
 const branch = /^[a-zA-Z0-9._/-]+$/;
+const skillName = 'excel-agent-in-container-proxy-integration-tests';
 const asset = path => {
   const bytes = readFileSync(path);
   return { sha256: hash(bytes), gzipBase64: gzipSync(bytes).toString('base64') };
@@ -25,6 +26,8 @@ export function createAlAgencyLiveE2eRequest(input) {
     Number.isSafeInteger(input.pipelineId) && input.pipelineId > 0,
   'Invalid explicit AL Agency live E2E request', 'blocked-config');
   const runner = asset(input.runnerPath), preload = asset(input.preloadPath);
+  const skillPlugin = `ado-git:${input.organization}/${input.project}/${input.repository}:` +
+    `utils/excel-agent-in-container-proxy@${input.baseRevision}`;
   const prompt = `This is the explicitly opted-in AL same-workspace live E2E from exact tested PEA revision ${input.peaRevision}. Work only in the existing augloop-workflows checkout at exact base ${input.baseRevision}. Do not push, create a branch, PR, work item or merge. Root .npmrc may be pipeline-owned and dirty; do not edit or commit it. Stop for any other initial tracked change.
 
 Invoke and follow utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md and references/suites.md. Before authoring, verify the SKILL.md SHA-256 is ${input.skillSha256}; stop on mismatch. Author one small deterministic meaningful integration test in exactly one approved owner test directory, then create one authoring commit. Production, shared harness, configuration, manifests, lockfiles, generated files and flaky-tests/flaky-tests.json are read-only.
@@ -43,6 +46,7 @@ Keep model gpt-6-luna, one model session, 30 soft credits, two product repairs, 
     modelConfiguration: { model: 'gpt-6-luna', reasoningEffort: 'medium' },
     context: { repository: { $type: 'ado', organization: input.organization,
       project: input.project, repository: input.repository, branch: input.branch } },
+    plugins: [{ name: skillPlugin, type: 'Spec' }],
     additionalOptions: { pluginOptions: { includeDefaults: false } },
     compute: { $type: 'pipeline', pipelineId: input.pipelineId,
       pipelineRefOverride: input.pipelineRef },
@@ -50,6 +54,7 @@ Keep model gpt-6-luna, one model session, 30 soft credits, two product repairs, 
       model: 'gpt-6-luna', maxModelSessions: '1', softCreditLimit: '30',
       maxRepairAttempts: '2', maximumJobMinutes: '90', maximumControllerMinutes: '180',
       runnerSha256: runner.sha256, preloadSha256: preload.sha256, skillSha256: input.skillSha256,
+      skillName, skillPlugin,
       productPush: 'forbidden', productPullRequest: 'forbidden', productMerge: 'forbidden' }
   };
 }

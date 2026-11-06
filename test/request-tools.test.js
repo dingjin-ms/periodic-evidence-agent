@@ -12,7 +12,8 @@ import { admitRequestPhase } from '../src/request-phases.js';
 for (const mode of ['ready', 'changed-source', 'missing-source', 'changed-manifest', 'target-drift', 'existing-target']) {
   test(`fresh request tools ${mode}`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'request-tools-')), workspace = join(root, 'work'); mkdirSync(workspace);
-    const git = args => execFileSync('git', ['-C', workspace, '-c', 'core.hooksPath=.git/no-hooks', ...args], { encoding: 'utf8' }).trim();
+    const git = args => execFileSync('git', ['-C', workspace, '-c', 'core.hooksPath=.git/no-hooks',
+      '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args], { encoding: 'utf8' }).trim();
     writeFileSync(join(workspace, '.gitignore'), 'node_modules/\n'); writeFileSync(join(workspace, 'lock.json'), '{}');
     git(['init', '--quiet']); git(['add', '.']); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'base']);
     const revision = git(['rev-parse', 'HEAD']); git(['update-ref', 'refs/remotes/origin/main', revision]);

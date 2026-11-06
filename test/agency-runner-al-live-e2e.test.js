@@ -115,7 +115,8 @@ function acceptanceFixture(t) {
   ];
   writeFileSync(join(session, 'events.jsonl'), events.map(event => JSON.stringify(event)).join('\n') + '\n');
   const contract = { schema: 'agency-runner-al-live-e2e-v1', jobId: 'job-one',
-    baseRevision: f.baseRevision, promptSha256, skillSha256, runnerSha256, preloadSha256,
+    baseRevision: f.baseRevision, promptSha256, skillSha256, skillContentSha256: skillSha256,
+    evidenceDirectory: 'al-live-e2e', runnerSha256, preloadSha256,
     pipelineDefinitionId: 38919, model: 'gpt-6-luna', softCreditLimit: 30,
     maxModelSessions: 1, maxRepairAttempts: 2, maximumJobMinutes: 90,
     maximumControllerMinutes: 180 };

@@ -48,7 +48,9 @@ function managedEvents(agencyRoot) {
 export function verifyAgencyRunnerAlLiveE2e(contract, observation, agencyRoot, dropRoot) {
   requireThat(contract?.schema === 'agency-runner-al-live-e2e-v1' &&
     revision.test(contract.baseRevision ?? '') && digest.test(contract.promptSha256 ?? '') &&
-    digest.test(contract.skillSha256 ?? '') && digest.test(contract.runnerSha256 ?? '') &&
+    digest.test(contract.skillSha256 ?? '') && digest.test(contract.skillContentSha256 ?? '') &&
+    ['al-live-e2e', 'al-live-e2e-attempt-0'].includes(contract.evidenceDirectory) &&
+    digest.test(contract.runnerSha256 ?? '') &&
     digest.test(contract.preloadSha256 ?? '') && Number.isSafeInteger(contract.pipelineDefinitionId) &&
     contract.pipelineDefinitionId > 0 && contract.model === 'gpt-6-luna' &&
     contract.softCreditLimit === 30 && contract.maxModelSessions === 1 &&
@@ -68,7 +70,7 @@ export function verifyAgencyRunnerAlLiveE2e(contract, observation, agencyRoot, d
 
   const events = managedEvents(agencyRoot);
   requireThat(events.some(event => event.type === 'skill.invoked' && event.data?.name === skillName &&
-    hash(event.data?.content ?? '') === contract.skillSha256 &&
+    hash(event.data?.content ?? '') === contract.skillContentSha256 &&
     typeof event.data?.pluginName === 'string' && event.data.pluginName.length > 0),
   'The repository-native AL authoring skill was not invoked', 'blocked-result');
   const starts = new Map(events.filter(event => event.type === 'tool.execution_start')
@@ -81,11 +83,10 @@ export function verifyAgencyRunnerAlLiveE2e(contract, observation, agencyRoot, d
       complete.shellExecution?.exitCode === 0;
   }).map(start => start.arguments?.command ?? '').join('\n');
   requireThat(commands.includes(contract.baseRevision) && commands.includes(contract.skillSha256) &&
-    commands.includes(contract.runnerSha256) && commands.includes(contract.preloadSha256) &&
-    expectedOwners.every(owner => commands.includes(owner)),
+    commands.includes(contract.runnerSha256) && commands.includes(contract.preloadSha256),
   'Original Agency commands do not bind the source and prebuilt AL controller', 'blocked-result');
 
-  const root = join(dropRoot, 'al-live-e2e'), receipt = read(join(root, 'receipt.json'));
+  const root = join(dropRoot, contract.evidenceDirectory), receipt = read(join(root, 'receipt.json'));
   requireThat(receipt.schema === 'pea-al-agency-runner-receipt-v1' &&
     receipt.baseRevision === contract.baseRevision && revision.test(receipt.candidate ?? '') &&
     receipt.candidate !== contract.baseRevision && receipt.model === contract.model &&

@@ -72,7 +72,7 @@ export function repositoryValidationContract(repo) {
     ...(gate.packageAuth !== undefined ? { packageAuth: validationPackageAuth(gate) } : {}),
     ...(gate.lfsPaths !== undefined ? { lfsPaths: validationLfsPaths(gate) } : {})
   }));
-  return { version, sha256: hash(json(gates)) };
+  return { version, sha256: hash(json(repo.requestExecution ? { gates, requestExecution: repo.requestExecution } : gates)) };
 }
 
 async function execute(executable, args, cwd, timeout = 120000, env = process.env) {

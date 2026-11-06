@@ -1,3 +1,4 @@
+import { reviewContext } from '../scripts/test-fixtures/draft-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -94,7 +95,7 @@ async function fixture(t, { rejectPreparation = false } = {}) {
   const assignment = makePlannedImprovementAssignment(config, ledger, investigation, plan.id);
   const job = ledger.prepare(assignment);
   const proposal = {
-    outcome: 'propose-change', findings: 'Added fixture assertion', title: 'Add fixture assertion',
+    outcome: 'propose-change', reviewContext, findings: 'Added fixture assertion', title: 'Add fixture assertion',
     description: 'Fixture-only native coverage, validation not yet claimed',
     skillResult: { status: 'succeeded', classification: 'missing-coverage',
       changedFiles: ['test/case.test.js'], testsAddedOrUpdated: ['fixture case'],

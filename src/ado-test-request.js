@@ -8,6 +8,7 @@ import { planImprovement } from './improvements.js';
 import { resolveSkillBinding, skillQualificationId } from './repository-skills.js';
 import { makePlannedImprovementAssignment, dispatchAdoTestRequest, requireCurrentAssignment } from './workers.js';
 import { withRsiWorker } from './rsi-flow.js';
+import { readRequestPhase } from './request-phases.js';
 import { harnessPolicy, requireHarnessRequest, requireCoverageCapability } from './ado-harness-request.js';
 
 export const requestFields = [
@@ -457,6 +458,10 @@ export async function acceptTestRequest(config, ledger, input, {
   const prepared = prepareTestRequest(config, ledger, input);
   if (!execute) return prepared;
   reconcilePreparedPublicationGrants(config, ledger, prepared.assignment);
+  if (dispatchDependencies.requestPhase) {
+    const repo = config.repositories.find(row => row.id === prepared.assignment.repoId);
+    readRequestPhase(config, ledger, ledger.job(prepared.assignment.id), repo, dispatchDependencies.requestPhase);
+  }
   beforeDispatch();
   const { result, rsi } = await withRsiWorker(config, ledger, prepared.assignment.id,
     () => dispatchAdoTestRequest(config, ledger, prepared.assignment.id,

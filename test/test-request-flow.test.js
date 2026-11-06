@@ -117,6 +117,15 @@ test('model invocation and publication require independent explicit grants', asy
   assert.equal(ctx.calls, 0); assert.equal(ctx.comments, 0);
 });
 
+test('ordinary request automation cannot bypass upstream generated-case approval', async t => {
+  const ctx = setup(t), deps = dependencies(ctx);
+  ctx.item.fields['System.Description'] += '<p>GeneratedCaseOrigin:untrusted-marker</p>';
+  await assert.rejects(runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps),
+    /trusted local lineage/);
+  assert.equal(ctx.calls, 0);
+  assert.equal(ctx.ledger.all('assignment').length, 0);
+});
+
 test('changed configuration cannot create a second model attempt for the same intake', async t => {
   const ctx = setup(t), deps = dependencies(ctx);
   await runTestRequest(ctx.config, ctx.ledger, 123, { authorizeReview: true }, deps);

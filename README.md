@@ -35,6 +35,24 @@ service or qualified unattended end-to-end run.
 
 ## Crew-authored ADO test requests
 
+Use the [generate-test-cases skill](.github/skills/generate-test-cases/SKILL.md):
+
+> Please generate ADO test cases with content from the JSON config.
+
+Maintain real source URLs in the checked-in `generateE2E.config.json`. The agent
+reads `generateE2E.md`, automatically collects bounded ADO sources and connects
+configured Teams/SharePoint/Figma sources through available authenticated tools. It
+designs cases first, generates their synthetic test files, and returns a real
+Excel workbook and coverage report. Users do not download source exports or
+write run/admission JSON; those are private internal records.
+
+The [source-driven case pipeline](scaffold/CASE-GENERATION.md) keeps exact-batch
+independent QA and separately authorized ADO publication. Login/MFA, real access
+failures and missing originals remain explicit gates. Live provider integration
+and host skill discovery require qualification; fixture-dependent native
+execution remains held. Generation/publication grant no product execution,
+scheduling or PR authority.
+
 Use the [five-field template and explicit-ID intake](scaffold/ADO-TEST-REQUESTS.md)
 for the owner-selected `OC\Excel\Intelligence\Copilot\Excel Agent\Automation`
 area. This opt-in lane preserves the resolved-bug cohort and reuses reviewed

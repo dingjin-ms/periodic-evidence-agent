@@ -1,4 +1,18 @@
 export const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js case-start --authorize-collection --authorize-generation [--refresh] [--config pilot.local.json]
+  node src\\cli.js case-context --run ID
+  node src\\cli.js case-source-begin --run ID --source ID --authorize-collection
+  node src\\cli.js case-source-recover --run ID --source ID --authorize-collection --authorize-recovery
+  node src\\cli.js case-source-result --run ID --file AGENT_RECEIPT --authorize-collection
+  node src\\cli.js case-submit --run ID --file AGENT_DESIGN --authorize-generation
+  node src\\cli.js case-publish-reviewed --run ID --batch-sha256 HASH --reviewer NAME --approval-ref REF --authorize-approval --authorize-source-review --authorize-publication
+  node src\\cli.js case-sources --config cases.local.json --file sources.local.json --authorize-import
+  node src\\cli.js case-generate --config cases.local.json --bundle ID --authorize-generation
+  node src\\cli.js case-import-draft --config cases.local.json --file draft.local.json --authorize-import
+  node src\\cli.js case-approve --config cases.local.json --file approval.local.json --authorize-approval
+  node src\\cli.js case-status|case-render --config cases.local.json --batch ID
+  node src\\cli.js case-publish --config cases.local.json --batch ID --authorize-publication
+  node src\\cli.js case-run-request --config cases.local.json --batch ID --case ID --authorize-review [--execute --authorize-commit --authorize-push --authorize-draft-pr] [--phase NAME]
   node src\\cli.js validate-revision --file validation.local.json --config pilot.local.json --execute|--resume
   node src\\cli.js reconcile-remote-validation --file recovery.local.json --config pilot.local.json
   node src\\cli.js qualify-remote-loop --file loop.local.json --config pilot.local.json --execute|--resume

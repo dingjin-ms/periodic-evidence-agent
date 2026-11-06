@@ -1,0 +1,33 @@
+{
+  "enabled": false,
+  "scopeApproved": false,
+  "approvalRef": null,
+  "inputRoot": "C:\\approved-case-inputs",
+  "maxInputBytes": 4194304,
+  "maxOutputBytes": 1048576,
+  "maxFixtureBytes": 10485760,
+  "maxCases": 15,
+  "model": {
+    "enabled": false,
+    "approvalRef": null,
+    "name": null,
+    "timeoutMs": 300000,
+    "acceptSoftCreditLimit": false,
+    "useExistingLogin": false
+  },
+  "publication": {
+    "enabled": false,
+    "scopeApproved": false,
+    "approvalRef": null,
+    "maxItems": 15,
+    "maxCalls": 200
+  },
+  "workflow2": {
+    "enabled": false,
+    "scopeApproved": false,
+    "approvalRef": null,
+    "repoId": null,
+    "capability": null,
+    "layer": "e2e"
+  }
+}

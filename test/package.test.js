@@ -37,11 +37,14 @@ test('package check accepts public execution docs and byte-preserved proof bundl
   const { root, git, inspect } = fixture(t);
   writeFileSync(join(root, 'AGENCY-EXECUTOR.md'), 'Generic offline executor contract\n');
   writeFileSync(join(root, 'EXECUTION-GUIDE.md'), 'Generic execution procedure\n');
+  writeFileSync(join(root, 'generateE2E.config.json'), '{"inputs":{}}\n');
+  writeFileSync(join(root, 'generateE2E.md'), 'Generic E2E generation procedure\n');
   mkdirSync(join(root, 'e2e-evidence', 'synthetic-run'), { recursive: true });
   writeFileSync(join(root, 'e2e-evidence', 'synthetic-run', 'run-manifest.json'), '{"format":"synthetic"}\n');
   writeFileSync(join(root, '.gitattributes'),
     'src/filter-capture-verifier.js -text\ne2e-evidence/** -text\n');
-  git(['add', 'AGENCY-EXECUTOR.md', 'EXECUTION-GUIDE.md', 'e2e-evidence', '.gitattributes']);
+  git(['add', 'AGENCY-EXECUTOR.md', 'EXECUTION-GUIDE.md', 'generateE2E.config.json', 'generateE2E.md',
+    'e2e-evidence', '.gitattributes']);
   assert.equal(inspect().status, 0);
 });
 

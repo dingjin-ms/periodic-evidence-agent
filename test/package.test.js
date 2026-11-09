@@ -77,6 +77,19 @@ test('analysis documentation is allowed but still scanned for sensitive content'
   assert.ok(JSON.parse(result.stderr).findings.some(f=>f.rule==='personal Microsoft email'));
 });
 
+test('case-generation guidance and URL configuration are allowed but still scanned for credentials', t => {
+  const { root, git, inspect } = fixture(t);
+  writeFileSync(join(root, 'generateE2E.md'), 'Generic QA design guidance');
+  writeFileSync(join(root, 'generateE2E.config.json'), '{"inputs":{"SAMPLE_URL":"https://example.invalid/source"}}');
+  git(['add', 'generateE2E.md', 'generateE2E.config.json']);
+  assert.equal(inspect().status, 0);
+  writeFileSync(join(root, 'generateE2E.config.json'), JSON.stringify({ token: ['ghp_', 'x'.repeat(36)].join('') }));
+  git(['add', 'generateE2E.config.json']);
+  const result = inspect();
+  assert.equal(result.status, 1);
+  assert.ok(JSON.parse(result.stderr).findings.some(f => f.rule === 'credential token literal'));
+});
+
 test('package check ignores history reachable only from unrelated refs', t => {
   const { root, git, inspect } = fixture(t);
   writeFileSync(join(root, 'README.md'), 'Safe package\n');

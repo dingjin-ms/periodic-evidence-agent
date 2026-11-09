@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "CHECKLIST_URL": "https://microsoft.sharepoint-df.com/:fl:/g/contentstorage/CSP_1d10a78c-cb21-49a7-b588-4a6ff866b926/IQDbeQdP-besRocB4ubRxvTAAamUFMt_9IqK5WebdWCPi-c?e=Vtuuea&nav=cz0lMkZjb250ZW50c3RvcmFnZSUyRkNTUF8xZDEwYTc4Yy1jYjIxLTQ5YTctYjU4OC00YTZmZjg2NmI5MjYmZD1iJTIxaktjUUhTSExwMG0xaUVwdi1HYTVKcGdZcGJ6TzNVQkNpbzRRWUJWZGRGeVFhal9aOWlsSVM2QXk3SmV0RWl6cCZmPTAxSllBTlpRTzNQRURVNzZOWFZSRElPQVBDNDNJNE41R0EmYz0lMkYmYT1Mb29wQXBwJnA9JTQwZmx1aWR4JTJGbG9vcC1wYWdlLWNvbnRhaW5lcg%3D%3D",
+    "CHECKLIST_URL": "https://teams.microsoft.com/l/message/48:notes/1793362309448?context=%7B%22contextType%22%3A%22chat%22%2C%22oid%22%3A%228%3Aorgid%3A80a6b64e-105c-48a2-afa8-609ed3f9e025%22%7D",
     "BUG_LIST_URL": "https://office.visualstudio.com/OC/_queries/query-edit/4e0a969c-1016-479c-8655-72003b2f335f/",
     "TEST_CASE_TEMPLATE_URL": "https://dev.azure.com/office/OC/_workitems/create/Bug?templateId=d5f6a18b-0951-4e92-8ba2-052bd60bb6e3&ownerId=ee150193-c7cc-4919-a364-259c6da2b421",
     "TEST_CASE_SAMPLE_URL": "https://dev.azure.com/office/OC/_workitems/edit/12652922",

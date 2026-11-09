@@ -289,6 +289,13 @@ try {
     });
     console.log(JSON.stringify(result, null, 2));
   }
+  else if (action.startsWith('case-')) {
+    requireThat(!roleInvocation, 'Case generation is not an evidence-role command', 'blocked-scope');
+    const { runCaseCommand } = await import('./case-cli.js');
+    const result = await runCaseCommand(action, args);
+    console.log(JSON.stringify(result, null, 2));
+    if (failedOutcome(result)) process.exitCode = 2;
+  }
   else {
     const config = configAt(resolve(configFile));
     if (['run-test-request', 'run-test-request-queue', 'assess-test-request', 'comment-test-request', 'reconcile-test-request-comment', 'reconcile-harness-association'].includes(action))

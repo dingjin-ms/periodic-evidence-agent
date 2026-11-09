@@ -79,6 +79,7 @@ async function drain(pid) {
 
 async function bypassInteractiveAzureLogin(pid) {
   if (process.platform !== 'win32') return false;
+  for (let attempt = 0; attempt < 30; attempt++) {
   const script = [
     `$all = @(Get-CimInstance Win32_Process)`,
     `$queue = [Collections.Generic.Queue[int]]::new(); $queue.Enqueue(${pid})`,
@@ -88,7 +89,8 @@ async function bypassInteractiveAzureLogin(pid) {
     `$matches = @($descendants | Where-Object {`,
     `$candidate = [int]$_.ProcessId; $hasChild = @($descendants | Where-Object { [int]$_.ParentProcessId -eq $candidate }).Count -gt 0;`,
     `$line = [string]$_.CommandLine; -not $hasChild -and $line -match '(?i)(az(\\.cmd|\\.exe)?\\s+login|python.*azure\\.cli.*login|azure[-_]?cli.*login|__main__\\.py\\s+login)' })`,
-    `if ($matches.Count -ne 1) { exit 2 }`,
+    `if ($matches.Count -eq 0) { exit 2 }`,
+    `if ($matches.Count -ne 1) { exit 3 }`,
     `Stop-Process -Id ([int]$matches[0].ProcessId) -Force; Write-Output $matches[0].ProcessId`
   ].join('; ');
   const result = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
@@ -97,7 +99,11 @@ async function bypassInteractiveAzureLogin(pid) {
     stderrPath: join(process.env.TEMP ?? process.cwd(), `agency-azure-login-${pid}.stderr.tmp`),
     detectInteractiveLogin: false
   });
-  return result.exitCode === 0;
+  if (result.exitCode === 0) return true;
+  if (result.exitCode !== 2) return false;
+  await new Promise(resolveDelay => setTimeout(resolveDelay, 1000));
+  }
+  return false;
 }
 
 async function run(executable, args, { cwd, env, timeoutMs, stdoutPath, stderrPath,

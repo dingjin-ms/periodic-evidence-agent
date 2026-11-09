@@ -288,8 +288,10 @@ async function main() {
   const alTraceLoggerNode = nativeAsset(root, 'ALTraceLogger.node');
   const perfCounters = nativeAsset(root, 'PerfCountersDll.dll');
   const excelNativeProof = {
-    traceLoggerBuild: /@augloop\/tracelogger build success/i.test(excelCliText),
-    sfNativeBuild: /@augloop\/sf-native build success/i.test(excelCliText),
+    traceLoggerBuild: /@augloop\/tracelogger build (?:success|skipped)/i.test(excelCliText) &&
+      alTraceLoggerNode.present,
+    sfNativeBuild: /@augloop\/sf-native build (?:success|skipped)/i.test(excelCliText) &&
+      perfCounters.present,
     alTraceLoggerNode: alTraceLoggerNode.present,
     perfCounters: perfCounters.present,
     assets: { alTraceLoggerNode, perfCounters }

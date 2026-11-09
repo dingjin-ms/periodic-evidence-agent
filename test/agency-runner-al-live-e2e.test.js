@@ -96,6 +96,8 @@ test('prebuilt AL runner retains porcelain prefixes and bounds Windows drain', (
   assert.match(source, /setTimeout\(resolveDelay, 1000\)/);
   assert.match(source, /detectInteractiveLogin: step === 'cli-build'/);
   assert.match(source, /interactiveAzureLoginBypassed: result\.interactiveLoginBypassed/);
+  assert.match(source, /tracelogger build \(\?:success\|skipped\)/);
+  assert.match(source, /sf-native build \(\?:success\|skipped\)/);
   assert.match(source, /slice\(-65536\)/);
   assert.match(source, /bounded failure diagnostic follows/);
 });

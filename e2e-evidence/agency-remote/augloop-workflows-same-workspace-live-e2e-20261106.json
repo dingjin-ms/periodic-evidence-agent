@@ -1,0 +1,93 @@
+{
+  "schema": "agency-remote-qualification-proof-v1",
+  "id": "augloop-workflows-native-test-authoring-20261106-r97",
+  "mode": "same-workspace-live-e2e",
+  "result": "passed-scoped",
+  "controllerAcceptance": true,
+  "observedAt": "2026-11-06T12:13:10.000Z",
+  "scope": "One Agency workspace loaded the repository-native AL integration-test authoring skill, authored and committed one focused test, retained the candidate in that workspace, ran all 16 unchanged gates for the four configured owners, and produced evidence independently accepted by the local PEA controller after source-bound local CI.",
+  "controllerCommit": "2bc6665b2f7a7cdeb23201f4b9cda4b39b01a83e",
+  "controllerTree": "c9c340b16ac8dcd5118a68649b1f0753a42bbb95",
+  "repository": {
+    "provider": "ado",
+    "organization": "office",
+    "project": "ISS",
+    "repositoryId": "augloop-workflows",
+    "repositoryName": "augloop-workflows"
+  },
+  "repoId": "augloop-workflows",
+  "sourceBase": "ae6202804ddb164279426e8e856f29fd66a094f1",
+  "candidate": "bde237d2449a4218662c46bb1017101cd58525b8",
+  "profile": "al-native-test-authoring-four-owner-v1",
+  "jobId": "office-9dd54ec5-826a-4174-9e82-5ef0ce7833cd",
+  "actualBuildId": 59131880,
+  "pipelineDefinitionId": 38919,
+  "requestSha256": "8d762d2cc7e5f3f67e7eec50edb4886911463bf6d33a35453ff4c502e36a652d",
+  "authoring": {
+    "skill": "excel-agent-in-container-proxy-integration-tests",
+    "skillPath": "utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md",
+    "skillSha256": "3656c1b97120c1e98b1622d027ac71fbc73ba9f25339645b802018662c33e335",
+    "changedFiles": ["utils/excel-agent-in-container-proxy/tests/excelAgentContainerProxy.chatLifecycle.integration.test.ts"],
+    "authoringCommits": 1,
+    "repairCommits": 0,
+    "productRepairExercised": false
+  },
+  "limits": {
+    "model": "gpt-6-luna",
+    "maxModelSessions": 1,
+    "softCreditLimit": 30,
+    "maxRepairAttempts": 2,
+    "maximumJobMinutes": 90,
+    "maximumControllerMinutes": 180
+  },
+  "validation": {
+    "gateOrder": ["excel-agent-in-container-proxy", "session-protocol", "doclab-serialization", "eval-vnext-config-resolver"],
+    "gateCount": 16,
+    "artifactCount": 39,
+    "runnerSha256": "328813f771829945a8651b06a9fa4db8acdb18fbdf12dd13dbdaedc093b481e8",
+    "runnerModifiedRemotely": false,
+    "testPopulations": {
+      "excel-agent-in-container-proxy": 2429,
+      "session-protocol": 115,
+      "doclab-serialization": 1042,
+      "eval-vnext-config-resolver": 182
+    },
+    "excelNativeProof": {
+      "traceLoggerBuild": true,
+      "sfNativeBuild": true,
+      "alTraceLoggerNode": true,
+      "perfCounters": true
+    }
+  },
+  "localCI": {
+    "sourceRevision": "2bc6665b2f7a7cdeb23201f4b9cda4b39b01a83e",
+    "pilot": {"tests": 241, "pass": 241, "fail": 0, "skipped": 0},
+    "remaining": {"tests": 1910, "pass": 1909, "fail": 0, "skipped": 1},
+    "demo": {"tests": 2, "pass": 2, "fail": 0, "skipped": 0},
+    "syntax": "passed",
+    "package": "passed",
+    "standaloneDemo": "passed"
+  },
+  "publication": {
+    "productPush": false,
+    "productPullRequest": false,
+    "productMerge": false,
+    "controllerPush": false,
+    "controllerPullRequest": false,
+    "controllerMerge": false
+  },
+  "privateEvidence": {
+    "retention": "Approved private AL r97 evidence archive outside the repository",
+    "binding": "final-evidence-binding.json",
+    "controllerAcceptance": "local-controller-acceptance.json",
+    "runnerReceipt": "artifact-az/al-live-e2e/receipt.json"
+  },
+  "limitations": [
+    "This qualifies only the recorded PEA controller revision, augloop-workflows base, repository-native skill revision, Agency pipeline, model and finite limits, one authored candidate, and the unchanged 16 gates for the four recorded owners.",
+    "The candidate passed on its first complete validation attempt; no product repair occurred, so bounded product repair remains untested.",
+    "The staged controller runner was not remotely modified; controller self-repair remains untested.",
+    "No product or controller push, pull request, merge, recurring task or production dispatch was performed or authorized.",
+    "The SDK-only default guard remains in place. This historical scoped proof does not enable Agency dispatch without explicit opt-in and exact qualification binding.",
+    "Raw logs, full artifacts, receipts and runtime state remain outside the repository in approved private storage."
+  ]
+}

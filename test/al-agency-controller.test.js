@@ -33,6 +33,8 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
   assert.equal(request.metadata.skillPlugin, request.plugins[0].name);
   assert.match(request.prompt, /Do not design or regenerate validation infrastructure/);
   assert.match(request.prompt, /Each line is index:SHA-256:base64-chunk/);
+  assert.match(request.prompt, /literal ASCII\/UTF-8 bytes of the base64-chunk string itself/);
+  assert.match(request.prompt, /never hash decoded chunk bytes/);
   assert.match(request.prompt, /at most four lines each/);
   assert.match(request.prompt, /Never manually repair, infer, delete or substitute a chunk/);
   assert.match(request.prompt, /do not run any focused product test, build or validation command first/);

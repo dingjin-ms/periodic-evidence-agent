@@ -10,6 +10,7 @@ import { makePlannedImprovementAssignment, dispatchAdoTestRequest, requireCurren
 import { withRsiWorker } from './rsi-flow.js';
 import { readRequestPhase } from './request-phases.js';
 import { harnessPolicy, requireHarnessRequest, requireCoverageCapability } from './ado-harness-request.js';
+import { requireGeneratedCaseLineage } from './case-lineage.js';
 
 export const requestFields = [
   ['Starting context', 'startingContext'],
@@ -196,6 +197,7 @@ export async function collectTestRequest(config, ledger, id, { read = readTestRe
   const raw = await read(config, id);
   requireThat(Buffer.byteLength(json(raw)) <= policy.maxResponseBytes, 'Test-request response exceeded its bound', 'partial');
   const item = selectedItem(raw, id, policy);
+  requireGeneratedCaseLineage(config, ledger, item);
   const snapshotAt = utc(raw.snapshotAt);
   requireThat(Date.parse(snapshotAt) <= Date.now(), 'Test-request snapshot cannot be in the future');
   const request = parseTestRequest(item.fields['System.Description'] ?? '');
@@ -246,6 +248,9 @@ export function requireTestRequestAssignment(config, ledger, assignment) {
   requireThat(evidence.length === 1 && assignment.intent === 'improvement' && assignment.testCoveragePlanId,
     'Test requests may only create one source-bound test improvement', 'blocked-scope');
   const record = evidence[0];
+  requireGeneratedCaseLineage(config, ledger, { id: Number(record.source.recordId),
+    rev: Number(record.source.revision), fields: record.fields }, { execution: true,
+    sourceRevision: assignment.skillQualification?.baseRevision });
   const intake = intakeOperation(ledger, record.scopeId);
   const policy = testRequestPolicy(config);
   const route = intake.harness ? requireHarnessRequest(config, ledger, intake).policy : policy;
@@ -315,6 +320,9 @@ function prepareRequest(config, ledger, input, harness = false) {
   requireThat(receipt.policySha256 === testRequestPolicySha256(policy) && handoff.intakeSha256 === hash(json(receipt)) &&
     receipt.state === 'needs-review', 'Test request is incomplete or its intake/policy changed', 'blocked-reconciliation');
   const evidence = ledger.get('evidence', receipt.evidenceId);
+  if (evidence) requireGeneratedCaseLineage(config, ledger, { id: Number(evidence.source.recordId),
+    rev: Number(evidence.source.revision), fields: evidence.fields }, { execution: true,
+    sourceRevision: handoff.planning.testCoverage.sourceRevision });
   requireThat(evidence && ledger.latestEvidence().some(e => e.id === evidence.id),
     'Test request was superseded', 'blocked-reconciliation');
   utc(handoff.reviewedAt);
@@ -438,6 +446,7 @@ export async function verifyCurrentTestRequest(config, ledger, id, read = readCu
   const raw = await read(config, itemId);
   requireThat(Buffer.byteLength(json(raw)) <= policy.maxResponseBytes, 'Test-request response exceeded its bound', 'partial');
   const current = selectedItem(raw, itemId, policy);
+  requireGeneratedCaseLineage(config, ledger, current, { execution: true });
   requireThat(hash(json(current)) === receipt.captureSha256,
     'Test request changed or was withdrawn; collect and reconcile before dispatch', 'blocked-reconciliation');
 }

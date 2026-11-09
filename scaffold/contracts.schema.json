@@ -26,6 +26,210 @@
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
+    "caseText": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "caseId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$" },
+    "caseIds": { "type": "array", "maxItems": 200, "uniqueItems": true, "items": { "$ref": "#/$defs/caseId" } },
+    "caseSourceRefs": {
+      "type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true,
+      "items": { "type": "object", "additionalProperties": false, "required": ["sourceId", "section"],
+        "properties": { "sourceId": { "$ref": "#/$defs/caseId" }, "section": { "$ref": "#/$defs/caseText" } } }
+    },
+    "caseGenerationAdmission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "baselineId", "previousBatchId", "scope", "product", "environment",
+        "repoId", "repositoryRevision", "promptPath", "sources", "fixtures", "destination"],
+      "properties": {
+        "format": { "const": "case-generation-admission-v1" },
+        "baselineId": { "$ref": "#/$defs/caseId" },
+        "previousBatchId": { "$ref": "#/$defs/nullableText" },
+        "scope": { "$ref": "#/$defs/caseText" },
+        "product": { "$ref": "#/$defs/caseText" },
+        "environment": { "$ref": "#/$defs/caseText" },
+        "repoId": { "$ref": "#/$defs/caseId" },
+        "repositoryRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "promptPath": { "$ref": "#/$defs/caseText" },
+        "destination": {
+          "type": "object", "additionalProperties": false,
+          "required": ["organization", "project", "workItemType", "areaPath", "tag", "template"],
+          "properties": {
+            "organization": { "$ref": "#/$defs/caseId" }, "project": { "$ref": "#/$defs/caseId" },
+            "workItemType": { "$ref": "#/$defs/caseText" }, "areaPath": { "$ref": "#/$defs/caseText" },
+            "tag": { "$ref": "#/$defs/caseId" },
+            "template": {
+              "type": "object", "additionalProperties": false,
+              "required": ["id", "teamId", "sourceId", "verifiedAt", "fields"],
+              "properties": {
+                "id": { "type": "string", "format": "uuid" }, "teamId": { "type": "string", "format": "uuid" },
+                "sourceId": { "$ref": "#/$defs/caseId" },
+                "verifiedAt": { "type": ["string", "null"], "format": "date-time" },
+                "fields": { "type": "object", "maxProperties": 40,
+                  "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_.]{0,149}$" },
+                  "additionalProperties": { "type": ["string", "number", "boolean"] } }
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array", "minItems": 5, "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "type", "url", "title", "revision", "modifiedAt", "retrievedAt",
+              "approval", "applicability", "access", "limitations", "path", "sha256", "itemIds"],
+            "properties": {
+              "id": { "$ref": "#/$defs/caseId" },
+              "type": { "enum": ["checklist", "bugs", "template", "sample", "figma", "requirements", "design", "repository"] },
+              "url": { "type": "string", "format": "uri", "maxLength": 8000 },
+              "title": { "$ref": "#/$defs/caseText" },
+              "revision": { "$ref": "#/$defs/nullableText" },
+              "modifiedAt": { "type": ["string", "null"], "format": "date-time" },
+              "retrievedAt": { "type": "string", "format": "date-time" },
+              "approval": { "enum": ["approved", "draft", "unknown"] },
+              "applicability": { "enum": ["applicable", "superseded", "unknown"] },
+              "access": { "enum": ["complete", "partial", "blocked"] },
+              "limitations": { "$ref": "#/$defs/caseText" },
+              "path": { "$ref": "#/$defs/nullableText" },
+              "sha256": { "anyOf": [{ "$ref": "#/$defs/rsiHash" }, { "type": "null" }] },
+              "itemIds": { "$ref": "#/$defs/caseIds" }
+            }
+          }
+        },
+        "fixtures": {
+          "type": "array", "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "path", "name", "purpose", "provenance", "version", "size", "sha256", "handling", "shareApprovalRef", "availability", "blocker"],
+            "properties": {
+              "id": { "$ref": "#/$defs/caseId" }, "path": { "$ref": "#/$defs/nullableText" },
+              "name": { "$ref": "#/$defs/caseText" }, "purpose": { "$ref": "#/$defs/caseText" },
+              "provenance": { "$ref": "#/$defs/caseText" }, "version": { "$ref": "#/$defs/caseText" },
+              "size": { "type": ["integer", "null"], "minimum": 0, "maximum": 10485760 },
+              "sha256": { "anyOf": [{ "$ref": "#/$defs/rsiHash" }, { "type": "null" }] }, "handling": { "$ref": "#/$defs/caseText" },
+              "shareApprovalRef": { "$ref": "#/$defs/nullableText" },
+              "availability": { "enum": ["available", "missing"] }, "blocker": { "$ref": "#/$defs/nullableText" }
+            }
+          }
+        }
+      }
+    },
+    "canonicalCaseBatch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "bundleId", "baselineId", "previousBatchId", "generator", "draft", "changes"],
+      "properties": {
+        "format": { "const": "canonical-case-batch-v1" },
+        "bundleId": { "type": "string", "pattern": "^case-sources-[a-f0-9]{64}$" },
+        "baselineId": { "$ref": "#/$defs/caseId" },
+        "previousBatchId": { "anyOf": [{ "type": "string", "pattern": "^case-batch-[a-f0-9]{64}$" }, { "type": "null" }] },
+        "generator": { "$ref": "#/$defs/caseText" },
+        "draft": { "$ref": "#/$defs/caseGenerationDraft" },
+        "changes": { "type": "array", "maxItems": 100,
+          "items": { "type": "object", "additionalProperties": false, "required": ["caseId", "change"],
+            "properties": { "caseId": { "$ref": "#/$defs/caseId" }, "revision": { "type": "integer", "minimum": 1 },
+              "change": { "enum": ["added", "changed", "unchanged", "retired"] } } } }
+      }
+    },
+    "caseGenerationDraft": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requirements", "cases", "retiredCaseIds", "decisions", "conflicts"],
+      "properties": {
+        "requirements": {
+          "type": "array", "minItems": 1, "maxItems": 200,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "kind", "behavior", "sourceRefs", "disposition", "depth", "caseIds", "reason", "residualRisk", "owner", "nextAction"],
+            "properties": {
+              "id": { "$ref": "#/$defs/caseId" }, "kind": { "enum": ["requirement", "checklist", "bug"] },
+              "behavior": { "$ref": "#/$defs/caseText" }, "sourceRefs": { "$ref": "#/$defs/caseSourceRefs" },
+              "disposition": { "enum": ["selected", "reused", "deferred", "excluded", "not-applicable", "unassessed"] },
+              "depth": { "enum": ["full", "partial", "none", "unknown"] },
+              "caseIds": { "$ref": "#/$defs/caseIds" },
+              "reason": { "$ref": "#/$defs/caseText" }, "residualRisk": { "$ref": "#/$defs/caseText" },
+              "owner": { "$ref": "#/$defs/caseText" }, "nextAction": { "$ref": "#/$defs/caseText" }
+            }
+          }
+        },
+        "cases": {
+          "type": "array", "maxItems": 50,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "revision", "title", "objective", "journey", "risk", "e2eRationale", "priority",
+              "categories", "owner", "readiness", "blockers", "cadence", "cadenceReason", "sourceRefs", "request",
+              "steps", "fixtureIds", "noFilesReason", "existingTest", "executionPlan"],
+            "properties": {
+              "id": { "$ref": "#/$defs/caseId" }, "revision": { "type": "integer", "minimum": 1 },
+              "title": { "$ref": "#/$defs/caseText" }, "objective": { "$ref": "#/$defs/caseText" },
+              "journey": { "$ref": "#/$defs/caseText" }, "risk": { "$ref": "#/$defs/caseText" },
+              "e2eRationale": { "$ref": "#/$defs/caseText" }, "priority": { "$ref": "#/$defs/caseText" },
+              "categories": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/caseText" } },
+              "owner": { "$ref": "#/$defs/caseText" },
+              "readiness": { "enum": ["designed", "automation-ready", "blocked"] },
+              "blockers": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/caseText" } },
+              "cadence": { "enum": ["hourly", "daily", "weekly", "release-triggered", "not-scheduled"] },
+              "cadenceReason": { "$ref": "#/$defs/caseText" }, "sourceRefs": { "$ref": "#/$defs/caseSourceRefs" },
+              "request": {
+                "type": "object", "additionalProperties": false,
+                "required": ["startingContext", "inputFiles", "steps", "expectedResult", "constraints"],
+                "properties": {
+                  "startingContext": { "$ref": "#/$defs/caseText" }, "inputFiles": { "$ref": "#/$defs/caseText" },
+                  "steps": { "$ref": "#/$defs/caseText" }, "expectedResult": { "$ref": "#/$defs/caseText" },
+                  "constraints": { "$ref": "#/$defs/caseText" }
+                }
+              },
+              "steps": {
+                "type": "array", "minItems": 3, "maxItems": 100,
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["number", "phase", "action", "input", "expected", "evidence", "sourceRefs", "timeoutMs"],
+                  "properties": {
+                    "number": { "type": "integer", "minimum": 1 }, "phase": { "enum": ["setup", "action", "assertion", "cleanup"] },
+                    "action": { "$ref": "#/$defs/caseText" }, "input": { "$ref": "#/$defs/caseText" },
+                    "expected": { "$ref": "#/$defs/caseText" }, "evidence": { "$ref": "#/$defs/caseText" },
+                    "sourceRefs": { "$ref": "#/$defs/caseSourceRefs" },
+                    "timeoutMs": { "type": ["integer", "null"], "minimum": 1, "maximum": 3600000 }
+                  }
+                }
+              },
+              "fixtureIds": { "$ref": "#/$defs/caseIds" }, "noFilesReason": { "$ref": "#/$defs/nullableText" },
+              "existingTest": {
+                "anyOf": [{ "type": "null" }, { "type": "object", "additionalProperties": false,
+                  "required": ["sourceId", "path", "layer"],
+                  "properties": { "sourceId": { "$ref": "#/$defs/caseId" }, "path": { "$ref": "#/$defs/caseText" },
+                    "layer": { "enum": ["unit", "component", "api", "integration", "e2e"] } } }]
+              },
+              "executionPlan": {
+                "type": "object", "additionalProperties": false,
+                "required": ["configurationCount", "parameterRows", "projectedExecutions", "environment", "identityRole", "versions",
+                  "dependencies", "proposedTrigger", "timeZone", "estimatedRuntimeMs", "measuredRuntimeMs", "timeoutMs",
+                  "retries", "isolation", "cleanup", "diagnostics", "triageOwner", "readinessEvidence"],
+                "properties": {
+                  "configurationCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+                  "parameterRows": { "type": "integer", "minimum": 1, "maximum": 100 },
+                  "projectedExecutions": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                  "environment": { "$ref": "#/$defs/caseText" }, "identityRole": { "$ref": "#/$defs/caseText" },
+                  "versions": { "$ref": "#/$defs/caseText" }, "dependencies": { "$ref": "#/$defs/caseText" },
+                  "proposedTrigger": { "$ref": "#/$defs/caseText" }, "timeZone": { "$ref": "#/$defs/caseText" },
+                  "estimatedRuntimeMs": { "type": ["integer", "null"], "minimum": 1 },
+                  "measuredRuntimeMs": { "type": "null" },
+                  "timeoutMs": { "type": ["integer", "null"], "minimum": 1 },
+                  "retries": { "type": "integer", "minimum": 0, "maximum": 3 },
+                  "isolation": { "$ref": "#/$defs/caseText" }, "cleanup": { "$ref": "#/$defs/caseText" },
+                  "diagnostics": { "$ref": "#/$defs/caseText" }, "triageOwner": { "$ref": "#/$defs/caseText" },
+                  "readinessEvidence": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/caseText" } }
+                }
+              }
+            }
+          }
+        },
+        "retiredCaseIds": { "$ref": "#/$defs/caseIds" },
+        "decisions": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/caseText" } },
+        "conflicts": {
+          "type": "array", "maxItems": 50,
+          "items": { "type": "object", "additionalProperties": false,
+            "required": ["requirementIds", "sourceRefs", "reason", "owner", "nextAction"],
+            "properties": { "requirementIds": { "$ref": "#/$defs/caseIds" }, "sourceRefs": { "$ref": "#/$defs/caseSourceRefs" },
+              "reason": { "$ref": "#/$defs/caseText" }, "owner": { "$ref": "#/$defs/caseText" }, "nextAction": { "$ref": "#/$defs/caseText" } } }
+        }
+      }
+    },
     "text": { "type": "string", "minLength": 1 },
     "nullableText": { "type": ["string", "null"], "minLength": 1 },
     "texts": { "type": "array", "items": { "$ref": "#/$defs/text" }, "uniqueItems": true },

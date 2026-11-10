@@ -174,8 +174,8 @@ test('AL same-workspace live E2E proof remains scoped and does not enable dispat
     assert.equal(live.status, 'historical-scoped-proof');
     assert.equal(live.configured, false);
     assert.equal(live.configurationVerified, false);
-    assert.equal(live.evidence.candidate, 'bde237d2449a4218662c46bb1017101cd58525b8');
-    assert.equal(live.evidence.buildId, 59131880);
+    assert.equal(live.evidence.candidate, '75d1c12ad0ed11666b80cfaf9751daf64207ff4c');
+    assert.equal(live.evidence.buildId, 59386161);
     assert.match(live.evidence.limitations.join('\n'), /repair remains untested/);
     assert.equal(report.acceptanceAuthority, false);
   }

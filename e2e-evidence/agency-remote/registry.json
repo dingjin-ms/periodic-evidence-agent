@@ -16,7 +16,7 @@
         {
           "mode": "same-workspace-live-e2e",
           "file": "augloop-workflows-same-workspace-live-e2e-20261106.json",
-          "sha256": "d91c9d4edbf067d3bafab6ebe0a7f0b975c45bc64f74ed004fb882754e0bfa47"
+          "sha256": "003c4286a9168f295b691cbd9a72a1dcc1eb02e29d99b592eb430c94a1ed1bcd"
         }
       ],
       "preflights": []

@@ -1230,7 +1230,8 @@ for (const drift of ['none', 'source-refresh', 'push-auth'])
     const advance = async () => {
       if (advanced) return;
       writeFileSync(join(workspace, 'unvalidated.txt'), 'This content has not passed validation.\n');
-      await command('git', ['add', '--', 'unvalidated.txt'], workspace);
+      await command('git', ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false',
+        'add', '--', 'unvalidated.txt'], workspace);
       await command('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '--quiet', '-m', 'Unvalidated checkout advance'], workspace);
       advanced = (await command('git', ['rev-parse', 'HEAD'], workspace)).stdout.trim();

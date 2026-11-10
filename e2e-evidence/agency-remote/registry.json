@@ -2,6 +2,26 @@
   "schema": "agency-remote-qualification-registry-v1",
   "repositories": [
     {
+      "repoId": "augloop-workflows",
+      "repository": {
+        "provider": "ado",
+        "organization": "office",
+        "project": "ISS",
+        "repositoryIds": [
+          "augloop-workflows",
+          "5fd57e57-e20b-446c-877b-21db5464d04e"
+        ]
+      },
+      "qualifications": [
+        {
+          "mode": "same-workspace-live-e2e",
+          "file": "augloop-workflows-same-workspace-live-e2e-20261106.json",
+          "sha256": "003c4286a9168f295b691cbd9a72a1dcc1eb02e29d99b592eb430c94a1ed1bcd"
+        }
+      ],
+      "preflights": []
+    },
+    {
       "repoId": "1js",
       "repository": {
         "provider": "ado",

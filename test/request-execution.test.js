@@ -9,7 +9,8 @@ import { Ledger } from '../src/ledger.js';
 import { preflightRequestExecution, formatAcceptedMarkdown, requestHookEnvironment } from '../src/request-execution.js';
 function fixture(t) {
   const root=mkdtempSync(join(tmpdir(),'request-exec-')), workspace=join(root,'work');mkdirSync(workspace);
-  const git=args=>execFileSync('git',['-C',workspace,'-c','core.hooksPath=.git/no-hooks',...args],{encoding:'utf8'}).trim();
+  const git=args=>execFileSync('git',['-C',workspace,'-c','core.hooksPath=.git/no-hooks',
+    '-c','core.autocrlf=false','-c','core.safecrlf=false',...args],{encoding:'utf8'}).trim();
   git(['init','--quiet']);mkdirSync(join(workspace,'.githooks'));writeFileSync(join(workspace,'.githooks/pre-commit'),'#!/bin/sh\nexit 0\n');writeFileSync(join(workspace,'.githooks/pre-push'),'#!/bin/sh\nexit 0\n');
   git(['add','.']);git(['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','fixture']);
   const tool=join(root,'tool.mjs');writeFileSync(tool,'// pinned fixture');

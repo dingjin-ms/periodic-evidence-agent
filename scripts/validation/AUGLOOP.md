@@ -607,6 +607,14 @@ allocation/dispatch; no model-pin or deadline equivalence is claimed for them.
 Do not transplant completed config
 files or rewrite their receipts to make reconciliation pass.
 
+The separate `agency-request` operation is only for bounded same-workspace
+qualification. It embeds pinned prebuilt runner bytes in the request instead of
+asking the model to recreate controller helpers. It does not select an
+`authoringProvider` and therefore does not weaken the SDK-only Proposer path.
+Accept its result only after downloading the exact managed session and build
+artifact and applying `verifyAgencyRunnerAlLiveE2e`; a prompt, job result or
+receipt self-report is insufficient.
+
 For an explicitly configured bounded successor, `filter` accepts `retainedResults`
 (content references). Each must independently match a completed original native
 batch receipt before it can be reused. Only the remaining batches reserve/open new

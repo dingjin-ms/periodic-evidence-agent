@@ -162,6 +162,25 @@ test('1JS same-workspace live E2E proof remains scoped and does not enable dispa
   assert.equal(report.acceptanceAuthority, false);
 });
 
+test('AL same-workspace live E2E proof remains scoped and does not enable dispatch', () => {
+  for (const repositoryId of ['augloop-workflows', '5fd57e57-e20b-446c-877b-21db5464d04e']) {
+    const report = remoteAgencyQualification(fixture({
+      id: 'augloop-workflows',
+      pr: {
+        provider: 'ado', organization: 'office', project: 'ISS', repositoryId
+      }
+    }));
+    const live = mode(report, 'same-workspace-live-e2e');
+    assert.equal(live.status, 'historical-scoped-proof');
+    assert.equal(live.configured, false);
+    assert.equal(live.configurationVerified, false);
+    assert.equal(live.evidence.candidate, '75d1c12ad0ed11666b80cfaf9751daf64207ff4c');
+    assert.equal(live.evidence.buildId, 59386161);
+    assert.match(live.evidence.limitations.join('\n'), /repair remains untested/);
+    assert.equal(report.acceptanceAuthority, false);
+  }
+});
+
 test('default SDK and Local Agency remain warning-free and config is not mutated', () => {
   for (const type of ['copilot-sdk', 'agency-local']) {
     const config = fixture();

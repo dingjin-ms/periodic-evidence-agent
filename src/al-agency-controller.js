@@ -1,4 +1,3 @@
-import { gzipSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { hash, requireThat } from './common.js';
@@ -6,15 +5,9 @@ import { hash, requireThat } from './common.js';
 const revision = /^[a-f0-9]{40}$/;
 const branch = /^[a-zA-Z0-9._/-]+$/;
 const skillName = 'excel-agent-in-container-proxy-integration-tests';
-const assetChunkLength = 480;
 const asset = path => {
   const bytes = readFileSync(path);
-  const gzipBase64 = gzipSync(bytes).toString('base64');
-  const chunks = Array.from({ length: Math.ceil(gzipBase64.length / assetChunkLength) }, (_, index) => {
-    const value = gzipBase64.slice(index * assetChunkLength, (index + 1) * assetChunkLength);
-    return `${index}:${hash(Buffer.from(value))}:${value}`;
-  });
-  return { sha256: hash(bytes), chunks };
+  return { sha256: hash(bytes) };
 };
 
 export function createAlAgencyLiveE2eRequest(input) {
@@ -38,11 +31,7 @@ export function createAlAgencyLiveE2eRequest(input) {
 
 Invoke and follow utils/excel-agent-in-container-proxy/.github/skills/excel-agent-in-container-proxy-integration-tests/SKILL.md and references/suites.md. Before authoring, verify the SKILL.md SHA-256 is ${input.skillSha256}; stop on mismatch. Author one small deterministic meaningful integration test in exactly one approved owner test directory, then create one authoring commit. Production, shared harness, configuration, manifests, lockfiles, generated files and flaky-tests/flaky-tests.json are read-only.
 
-Do not design or regenerate validation infrastructure. Materialize the following prebuilt controller assets verbatim into untracked .agency-controller/augloop-agency-runner.mjs and .agency-controller/augloop-agency-node-preload.cjs. Each line is index:SHA-256:base64-chunk. The per-line SHA-256 is over the literal ASCII/UTF-8 bytes of the base64-chunk string itself, before Base64 decoding; never hash decoded chunk bytes. In separate ordinary PowerShell calls of at most four lines each, append only the chunk value to the corresponding untracked base64 file after verifying its index and that literal-string SHA-256; stop on any mismatch. Concatenate in index order, Base64-decode, then use GZipStream to materialize the asset. Runner chunks begin:
-${runner.chunks.join('\n')}
-Runner chunks end. Preload chunks begin:
-${preload.chunks.join('\n')}
-Preload chunks end. Verify final SHA-256 ${runner.sha256} and ${preload.sha256}; stop on mismatch. These assets were implemented and tested in PEA before this job. Never manually repair, infer, delete or substitute a chunk.
+Do not design or regenerate validation infrastructure. In one ordinary PowerShell call, use Invoke-WebRequest to download the two prebuilt controller assets from the exact immutable PEA commit ${input.peaRevision}: https://raw.githubusercontent.com/dingjin-ms/periodic-evidence-agent/${input.peaRevision}/scripts/validation/augloop-agency-runner.mjs and https://raw.githubusercontent.com/dingjin-ms/periodic-evidence-agent/${input.peaRevision}/scripts/validation/augloop-agency-node-preload.cjs. Save them as untracked .agency-controller/augloop-agency-runner.mjs and .agency-controller/augloop-agency-node-preload.cjs. Do not copy, transcribe, generate, edit or reconstruct their bytes. Verify their whole-file SHA-256 values are ${runner.sha256} and ${preload.sha256}; stop on any download, redirect, revision, path or hash mismatch. These assets were implemented and tested in PEA before this job.
 
 After the authoring commit, do not run any focused product test, build or validation command first; the prebuilt controller exclusively owns validation. In one ordinary powershell tool call, create an untracked runner input JSON with schema pea-al-agency-runner-input-v1, workspaceRoot from git rev-parse --show-toplevel, evidenceDirectory under $env:BUILD_ARTIFACTSTAGINGDIRECTORY\\agency-logs\\al-live-e2e-attempt-0, baseRevision ${input.baseRevision}, candidate from git rev-parse HEAD, repairAttempt 0, maximumJobMinutes 90, maximumControllerMinutes 180, maxRepairAttempts 2, controllerDeadlineAt exactly 180 minutes after job start, expectedSkillSha256 ${input.skillSha256}, expectedRunnerSha256 ${runner.sha256}, and expectedPreloadSha256 ${preload.sha256}; finish that tool call without launching the runner. Then use a separate ordinary powershell tool call with mode "sync" and initial_wait 600. Its command must contain only a direct invocation in this form: & '<absolute real node.exe>' '<absolute augloop-agency-runner.mjs>' '<absolute runner-input.json>'. Do not combine input creation, checks, variables, assignments, error preferences, exit handling or any other statement with this launch call. Do not use async mode, a background process, a privileged or sandbox-bypass tool, and do not request interactive approval or special permissions. This exact bare synchronous launch form already succeeded in the same Agency pipeline. Run the controller once only. The controller emits periodic heartbeats while a gate is active; after the initial wait, use read_powershell on that same shell until it completes. Never call stop_powershell merely because the controller remains running or a gate is quiet, and never submit a second launch. Stop and report an indeterminate result only if the shell disappears or the platform returns a terminal result that cannot establish completion. The controller owns Excel-first ordering, all unchanged 16 owner gates, process drain, exact LAGE_GIT_IGNORED_FILES removal, VS environment, tracked-output restoration, nonzero native population parsing, Excel native proof, logs and receipt.
 

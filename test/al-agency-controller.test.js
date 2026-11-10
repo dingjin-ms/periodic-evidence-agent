@@ -1,7 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
 import { resolve } from 'node:path';
 import { createAlAgencyLiveE2eRequest } from '../src/al-agency-controller.js';
 
@@ -32,11 +30,9 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
   assert.equal(request.metadata.skillName, 'excel-agent-in-container-proxy-integration-tests');
   assert.equal(request.metadata.skillPlugin, request.plugins[0].name);
   assert.match(request.prompt, /Do not design or regenerate validation infrastructure/);
-  assert.match(request.prompt, /Each line is index:SHA-256:base64-chunk/);
-  assert.match(request.prompt, /literal ASCII\/UTF-8 bytes of the base64-chunk string itself/);
-  assert.match(request.prompt, /never hash decoded chunk bytes/);
-  assert.match(request.prompt, /at most four lines each/);
-  assert.match(request.prompt, /Never manually repair, infer, delete or substitute a chunk/);
+  assert.match(request.prompt, /exact immutable PEA commit/);
+  assert.match(request.prompt, /raw\.githubusercontent\.com\/dingjin-ms\/periodic-evidence-agent/);
+  assert.match(request.prompt, /Do not copy, transcribe, generate, edit or reconstruct their bytes/);
   assert.match(request.prompt, /do not run any focused product test, build or validation command first/);
   assert.match(request.prompt, /separate ordinary powershell tool call with mode "sync" and initial_wait 600/);
   assert.match(request.prompt, /command must contain only a direct invocation/);
@@ -52,15 +48,8 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
   assert.match(request.prompt, new RegExp(request.metadata.skillSha256));
   assert.equal(Buffer.byteLength(JSON.stringify(request)) < 28000, true);
 
-  const sections = request.prompt.matchAll(/(?:Runner|Preload) chunks begin:\n([\s\S]*?)\n(?:Runner|Preload) chunks end/g);
-  const assets = [...sections].map(section => section[1].split('\n').map(line => {
-    const [index, sha256, value] = line.split(':');
-    assert.equal(createHash('sha256').update(value).digest('hex'), sha256);
-    return { index: Number(index), value };
-  }).sort((left, right) => left.index - right.index));
-  assert.deepEqual(assets.map(chunks => createHash('sha256').update(gunzipSync(Buffer.from(
-    chunks.map(chunk => chunk.value).join(''), 'base64'))).digest('hex')),
-  [request.metadata.runnerSha256, request.metadata.preloadSha256]);
+  assert.match(request.prompt, new RegExp(`${request.metadata.peaRevision}/scripts/validation/augloop-agency-runner\\.mjs`));
+  assert.match(request.prompt, new RegExp(`${request.metadata.peaRevision}/scripts/validation/augloop-agency-node-preload\\.cjs`));
 });
 
 test('rejects unpinned sources and non-pipeline requests', () => {

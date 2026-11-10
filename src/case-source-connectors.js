@@ -1,11 +1,8 @@
 import { adoAccessToken } from './ado-auth.js';
 import { hash, json, now, requireThat } from './common.js';
 import { httpsUrl } from './case-generation.js';
-
-export const caseSourceInputs = {
-  checklist: 'CHECKLIST_URL', bugs: 'BUG_LIST_URL', template: 'TEST_CASE_TEMPLATE_URL',
-  sample: 'TEST_CASE_SAMPLE_URL', figma: 'FIGMA_URL'
-};
+import { caseSourceInputs } from './case-source-inventory.js';
+export { caseSourceInputs } from './case-source-inventory.js';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 export function caseDestination(value) {
   const url = httpsUrl(value), parts = url.pathname.split('/').filter(Boolean);
@@ -33,8 +30,14 @@ export function hostSourceTask(id, url) {
     instructions: 'Use an available authenticated host connector scoped to this exact URL. Save the actual tool response, not an invented export. Search hits are partial, not complete source reads. Record inaccessible content explicitly.' };
 }
 export function caseSourceConnectors(config, inputs, {
-  fetchResponse = fetch, getToken = adoAccessToken, environment = process.env, responseJournal
+  fetchResponse = fetch, getToken = adoAccessToken, environment = process.env, responseJournal, inventory
 } = {}) {
+  const sources = inventory ?? Object.entries(caseSourceInputs).map(([id, key]) => ({ id, type: id, url: inputs[key] }));
+  const sourceFor = id => {
+    const source = sources.find(item => item.id === id);
+    requireThat(source, 'Unknown configured source', 'blocked-scope');
+    return source;
+  };
   const destination = caseDestination(inputs.TEST_CASE_TEMPLATE_URL);
   const base = `https://dev.azure.com/${destination.organization}/${destination.project}/`;
   let calls = 0, bytes = 0, token;
@@ -70,22 +73,22 @@ export function caseSourceConnectors(config, inputs, {
     return request(`${base}${path}`, { Authorization: `Bearer ${await token}` }, sourceId);
   };
   const capture = (id, value, itemIds, revision, limitations = 'Captured configured source only; linked sources are not implicitly collected.') =>
-    ({ sourceId: id, url: inputs[caseSourceInputs[id]], content: json(value), itemIds,
+    ({ sourceId: id, url: sourceFor(id).url, content: json(value), itemIds,
       revision: revision == null ? null : String(revision), retrievedAt: now(), access: 'complete',
       limitations, provenance: 'controller-http-read', responseSha256: hash(json(value)) });
   return {
     destination,
     async collect(id) {
       const ado = path => adoRequest(path, id);
-      const url = inputs[caseSourceInputs[id]];
-      if (id === 'template') {
+      const source = sourceFor(id), url = source.url, type = source.type;
+      if (type === 'template') {
         const value = await ado(`${destination.teamId}/_apis/wit/templates/${destination.templateId}?api-version=7.1`);
         requireThat(value.id === destination.templateId && value.workItemTypeName === destination.workItemType &&
           value.fields && typeof value.fields['System.AreaPath'] === 'string' && value.fields['System.AreaPath'].trim(),
         'Live template must provide its actual type, defaults and Area Path; ownerId is not Area Path', 'blocked-source');
         return capture(id, value, [], value.revision ?? null);
       }
-      if (id === 'sample') {
+      if (type === 'sample') {
         const parts = adoPath(url, destination);
         requireThat(parts.length === 3 && parts[0] === '_workitems' && parts[1] === 'edit' &&
           /^[1-9]\d*$/.test(parts[2]), 'Unsupported ADO sample URL', 'blocked-scope');
@@ -94,7 +97,21 @@ export function caseSourceConnectors(config, inputs, {
           'ADO sample identity/project mismatch', 'blocked-source');
         return capture(id, value, [], value.rev);
       }
-      if (id === 'bugs') {
+      const parsedSource = httpsUrl(url);
+      if (source.qualification?.provider === 'ado' &&
+        !parsedSource.pathname.startsWith(`/${destination.organization}/${destination.project}/`)) {
+        return { ...hostSourceTask(id, url), qualification: source.qualification };
+      }
+      if (['bugs', 'requirements'].includes(type) && parsedSource.hostname === 'dev.azure.com' &&
+        parsedSource.pathname.startsWith(`/${destination.organization}/${destination.project}/_workitems/edit/`)) {
+        const parts = adoPath(url, destination);
+        requireThat(parts.length === 3 && /^[1-9]\d*$/.test(parts[2]), 'Unsupported exact ADO work-item URL', 'blocked-scope');
+        const value = await ado(`_apis/wit/workitems/${parts[2]}?$expand=Relations&api-version=7.1`);
+        requireThat(value.id === Number(parts[2]) && value.fields?.['System.TeamProject'] === destination.project,
+          'ADO evidence item identity/project mismatch', 'blocked-source');
+        return capture(id, value, [`ado-${value.id}`], value.rev);
+      }
+      if (type === 'bugs' && /\/_queries\//.test(parsedSource.pathname)) {
         const parts = adoPath(url, destination);
         requireThat(parts.length === 3 && parts[0] === '_queries' && ['query', 'query-edit'].includes(parts[1]) &&
           uuid.test(parts[2]), 'Unsupported saved ADO query URL', 'blocked-scope');
@@ -126,7 +143,7 @@ export function caseSourceConnectors(config, inputs, {
         access: new Set(returnedIds).size > 100 || (flat ? query.workItems : query.workItemRelations).length > 100 ? 'partial' : 'complete',
         limitations: 'Saved query snapshot only; maximum 100 hydrated unique items. Returned query relations are retained; attachments and links outside the query are not followed.' };
       }
-      if (id === 'figma' && environment.FIGMA_ACCESS_TOKEN) {
+      if (type === 'figma' && environment.FIGMA_ACCESS_TOKEN && !parsedSource.pathname.includes('/branch/')) {
         const parsed = httpsUrl(url), parts = parsed.pathname.split('/').filter(Boolean);
         requireThat(parsed.hostname === 'www.figma.com' && ['design', 'file'].includes(parts[0]) &&
           /^[A-Za-z0-9_-]+$/.test(parts[1]), 'Unsupported configured Figma file URL', 'blocked-scope');
@@ -145,7 +162,8 @@ export function caseSourceConnectors(config, inputs, {
         return { ...capture(id, { ...value, whoami }, [`node-${node.replace(':', '-')}`], value.version ?? null),
           access: 'partial', limitations: 'Configured Figma subtree only; comments, other nodes and linked documents are not collected.' };
       }
-      return hostSourceTask(id, url);
+      return { ...hostSourceTask(id, url), ...(type === 'repository' ? { connector: 'repository' } : {}),
+        ...(type === 'figma' ? { connector: 'figma' } : {}), qualification: source.qualification ?? null };
     }
   };
 }

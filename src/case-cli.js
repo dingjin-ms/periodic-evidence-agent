@@ -24,6 +24,10 @@ export function caseRequestOptions(parsed) {
 }
 
 export async function runCaseCommand(action, args) {
+  if (action.startsWith('case-discover-')) {
+    const { runCaseDiscoveryCommand } = await import('./case-discovery-cli.js');
+    return runCaseDiscoveryCommand(action, args);
+  }
   if (['case-start', 'case-context', 'case-source-begin', 'case-source-recover', 'case-source-result', 'case-submit', 'case-publish-reviewed'].includes(action)) {
     const { runCaseUrlCommand } = await import('./case-url-flow.js');
     return runCaseUrlCommand(action, args);

@@ -26,6 +26,113 @@
     { "$ref": "#/$defs/examples" }
   ],
   "$defs": {
+    "caseDiscoverySurface": { "enum": ["Bizchat", "GHCP", "CPNB", "Code"] },
+    "caseDiscoverySurfaces": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/caseDiscoverySurface" } },
+    "caseDiscoverySource": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "url", "surfaces"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^src-[a-f0-9]{24}$" },
+        "type": { "enum": ["checklist", "bugs", "figma", "requirements", "design", "repository"] },
+        "url": { "type": "string", "format": "uri", "maxLength": 8000 },
+        "surfaces": { "$ref": "#/$defs/caseDiscoverySurfaces" }
+      }
+    },
+    "caseDiscoverySources": { "type": "array", "minItems": 1, "maxItems": 30,
+      "items": { "$ref": "#/$defs/caseDiscoverySource" } },
+    "caseDiscoveryConfig": {
+      "type": "object", "additionalProperties": false, "required": ["format", "runId", "manifestSha256"],
+      "properties": {
+        "format": { "const": "case-discovery-config-v1" },
+        "runId": { "type": "string", "pattern": "^discovery-[a-f0-9]{24}$" },
+        "manifestSha256": { "$ref": "#/$defs/rsiHash" }
+      }
+    },
+    "caseDiscoveryRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "approvalRef", "scope", "surfaces", "allowedUrlPrefixes", "tools", "model", "limits"],
+      "properties": {
+        "format": { "const": "case-discovery-request-v1" },
+        "approvalRef": { "$ref": "#/$defs/caseText" }, "scope": { "$ref": "#/$defs/caseText" },
+        "surfaces": { "type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/caseDiscoverySurface" } },
+        "allowedUrlPrefixes": { "type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true,
+          "items": { "type": "string", "format": "uri", "maxLength": 8000 } },
+        "tools": { "type": "array", "minItems": 1, "maxItems": 30,
+          "items": { "type": "object", "additionalProperties": false, "required": ["name", "version"],
+            "properties": { "name": { "$ref": "#/$defs/caseId" }, "version": { "$ref": "#/$defs/nullableText" } } } },
+        "model": { "$ref": "#/$defs/nullableText" },
+        "limits": { "type": "object", "additionalProperties": false,
+          "required": ["maxCalls", "maxMinutes", "maxResponseBytes", "maxTotalBytes", "maxCandidates", "maxSelected"],
+          "properties": {
+            "maxCalls": { "type": "integer", "minimum": 1, "maximum": 120 },
+            "maxMinutes": { "type": "integer", "minimum": 1, "maximum": 90 },
+            "maxResponseBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+            "maxTotalBytes": { "type": "integer", "minimum": 1, "maximum": 10485760 },
+            "maxCandidates": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "maxSelected": { "type": "integer", "minimum": 1, "maximum": 30 }
+          }
+        }
+      }
+    },
+    "caseDiscoveryTask": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "provider", "toolName", "url", "query", "surfaces", "identityRef"],
+      "properties": {
+        "id": { "$ref": "#/$defs/caseId" }, "kind": { "enum": ["identity", "search", "read"] },
+        "provider": { "enum": ["workiq", "ado", "figma", "repository"] },
+        "toolName": { "$ref": "#/$defs/caseId" }, "url": { "type": "string", "format": "uri", "maxLength": 8000 },
+        "query": { "$ref": "#/$defs/nullableText" }, "surfaces": { "$ref": "#/$defs/caseDiscoverySurfaces" },
+        "identityRef": { "$ref": "#/$defs/nullableText" }
+      }
+    },
+    "caseDiscoveryCandidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "title", "exactLocation", "sourceVersion", "authority", "authorityBasis", "applicability", "limitations"],
+      "properties": {
+        "type": { "enum": ["checklist", "bugs", "figma", "requirements", "design", "repository"] },
+        "title": { "$ref": "#/$defs/caseText" }, "exactLocation": { "$ref": "#/$defs/caseText" },
+        "sourceVersion": { "$ref": "#/$defs/nullableText" },
+        "authority": { "enum": ["approved", "draft", "unknown"] },
+        "authorityBasis": { "$ref": "#/$defs/nullableText" },
+        "applicability": { "enum": ["applicable", "superseded", "unknown"] },
+        "limitations": { "$ref": "#/$defs/caseText" }
+      }
+    },
+    "caseDiscoveryReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operationId", "observedAt", "response", "access", "identity", "candidate", "limitations"],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/caseId" }, "observedAt": { "type": "string", "format": "date-time" },
+        "response": { "type": "object", "minProperties": 1 },
+        "access": { "enum": ["full", "partial", "metadata-only", "blocked"] },
+        "failureKind": { "enum": ["auth", "access", "source", "capability", null] },
+        "identity": { "type": ["object", "null"], "additionalProperties": false,
+          "properties": { "id": { "$ref": "#/$defs/caseText" }, "userPrincipalName": { "$ref": "#/$defs/caseText" },
+            "email": { "$ref": "#/$defs/caseText" } } },
+        "candidate": { "anyOf": [{ "$ref": "#/$defs/caseDiscoveryCandidate" }, { "type": "null" }] },
+        "limitations": { "$ref": "#/$defs/caseText" }
+      }
+    },
+    "caseDiscoverySelection": {
+      "type": "object", "additionalProperties": false, "required": ["decisions", "coverage", "gaps", "stopReason"],
+      "properties": {
+        "decisions": { "type": "array", "maxItems": 100,
+          "items": { "type": "object", "additionalProperties": false, "required": ["sourceId", "decision", "reason"],
+            "properties": { "sourceId": { "type": "string", "pattern": "^src-[a-f0-9]{24}$" },
+              "decision": { "enum": ["selected", "held", "rejected"] }, "reason": { "$ref": "#/$defs/caseText" } } } },
+        "coverage": { "type": "array", "minItems": 4, "maxItems": 4,
+          "items": { "type": "object", "additionalProperties": false, "required": ["surface", "status", "operationIds", "reason"],
+            "properties": { "surface": { "$ref": "#/$defs/caseDiscoverySurface" },
+              "status": { "enum": ["searched", "partial", "not-found", "unavailable"] },
+              "operationIds": { "$ref": "#/$defs/caseIds" }, "reason": { "$ref": "#/$defs/caseText" } } } },
+        "gaps": { "type": "array", "maxItems": 100,
+          "items": { "type": "object", "additionalProperties": false, "required": ["id", "surfaces", "reason"],
+            "properties": { "id": { "$ref": "#/$defs/caseId" }, "surfaces": { "$ref": "#/$defs/caseDiscoverySurfaces" },
+              "reason": { "$ref": "#/$defs/caseText" } } } },
+        "stopReason": { "$ref": "#/$defs/caseText" }
+      }
+    },
     "caseText": { "type": "string", "minLength": 1, "maxLength": 8000 },
     "caseId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$" },
     "caseIds": { "type": "array", "maxItems": 200, "uniqueItems": true, "items": { "$ref": "#/$defs/caseId" } },
@@ -70,7 +177,7 @@
           }
         },
         "sources": {
-          "type": "array", "minItems": 5, "maxItems": 100,
+          "type": "array", "minItems": 2, "maxItems": 100,
           "items": {
             "type": "object", "additionalProperties": false,
             "required": ["id", "type", "url", "title", "revision", "modifiedAt", "retrievedAt",

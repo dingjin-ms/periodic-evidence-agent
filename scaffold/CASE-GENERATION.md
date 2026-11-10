@@ -6,6 +6,25 @@ native qualification, source-revision admission, worker recovery or Draft gates.
 The generation request authorizes its scoped reads and local synthetic-file
 generation, not ADO writes, product execution, schedules or PR publication.
 
+## Optional discovery-first stage
+
+The separate [evidence discovery component](CASE-DISCOVERY.md) can investigate
+approved namespaces and apply a selected source catalog before generation.
+Discovery, config update and generation grants remain independent. Existing
+five-URL generation does not silently enable broad searches.
+
+With discovery metadata present, `case-start` verifies the retained local
+selection/publication and exact config hash, collects template/sample plus every
+selected catalog source, and preserves four-surface coverage/gaps in the design
+context. Retained legacy checklist/bug/Figma hints are not implicitly collected.
+Missing source roles are explicit discovery gaps, not fabricated mandatory URLs.
+An unresolved selected source blocks capture/design; unselected held slices
+remain visible exclusions. Repository captures must match the selected commit
+and exact file location. URL qualification never substitutes for source approval.
+
+Apply the catalog before a **new** case run. Existing runs retain their root
+configuration-drift blocker, including when a discovery catalog is later changed.
+
 ## Skill entrypoint
 
 Use the [generate-test-cases skill](../.github/skills/generate-test-cases/SKILL.md)

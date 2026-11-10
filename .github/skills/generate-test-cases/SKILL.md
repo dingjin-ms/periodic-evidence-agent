@@ -20,6 +20,15 @@ Do not respond by asking the user to prepare `sources.local.json`,
 The agent drives the steps below and owns all internal JSON preparation.
 Do not spawn another agent simply because this skill was selected.
 
+For an explicitly requested discovery-first workflow, first follow the
+[discover-test-evidence procedure](../discover-test-evidence/SKILL.md) within
+approved search scope. Discovery and local config updates need their own grants.
+After the guarded update, start a new generation run from the exact selected
+catalog; do not rewrite an old run or collect retained, unselected legacy URLs.
+Ordinary generation from configured URLs does not authorize broad discovery.
+Partial surface coverage and unknown product authority stay visible through
+design and independent QA.
+
 ## Defaults and authority
 
 Resolve the periodic-evidence-agent project root three directory levels above
@@ -29,6 +38,10 @@ this skill directory and run commands there.
 - Read the adjacent [generateE2E.config.json](../../../generateE2E.config.json)
   as the configured source URLs. Do not ask for these paths again or use cached
   URLs when the configuration is invalid.
+- When `discovery`/`sources` are present, let the controller verify their local
+  publication and manifest binding. The selected catalog plus template/sample
+  replaces the legacy behavioral inventory. A hash-valid URL selection is not
+  proof of approved expectations or complete coverage.
 - Use the existing `pilot.local.json` deployment for approved private storage
   and designated source identity. This is one-time environment setup, not a
   per-run user form. Never edit it, enable its daily collectors, reuse its daily

@@ -6,7 +6,7 @@ const revision = /^[a-f0-9]{40}$/;
 const branch = /^[a-zA-Z0-9._/-]+$/;
 const skillName = 'excel-agent-in-container-proxy-integration-tests';
 const asset = path => {
-  const bytes = readFileSync(path);
+  const bytes = Buffer.from(readFileSync(path, 'utf8').replaceAll('\r\n', '\n'));
   return { sha256: hash(bytes) };
 };
 

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createAlAgencyLiveE2eRequest } from '../src/al-agency-controller.js';
 
@@ -50,6 +52,8 @@ test('builds an explicit source- and asset-bound AL same-workspace request', () 
 
   assert.match(request.prompt, new RegExp(`${request.metadata.peaRevision}/scripts/validation/augloop-agency-runner\\.mjs`));
   assert.match(request.prompt, new RegExp(`${request.metadata.peaRevision}/scripts/validation/augloop-agency-node-preload\\.cjs`));
+  assert.equal(request.metadata.runnerSha256, createHash('sha256').update(
+    readFileSync(fixture().runnerPath, 'utf8').replaceAll('\r\n', '\n')).digest('hex'));
 });
 
 test('rejects unpinned sources and non-pipeline requests', () => {

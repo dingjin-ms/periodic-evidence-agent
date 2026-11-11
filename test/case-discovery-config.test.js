@@ -44,6 +44,7 @@ function fixture(t) {
       reason: 'Synthetic applicable behavioral source.' }], stopReason: 'Synthetic bounded stop.' },
     candidates: [{ ...sources[0], provider: 'repository', exactLocation: 'docs\\synthetic-requirements.md',
       sourceVersion: 'a'.repeat(40), authority: 'approved', applicability: 'applicable',
+      authorityBasis: 'Synthetic requirement R1 approval recorded at revision 1.',
       limitations: 'Synthetic qualification only.', response: { private: 'Must not escape.' } },
     { id: `src-${'b'.repeat(24)}`, provider: 'repository', exactLocation: 'not-selected.md' }],
     acceptance: { synthetic: true },
@@ -230,6 +231,7 @@ test('partial selected sources can be applied while preserving honest gaps in th
     assurance: ctx.selection.manifest.assurance, qualifications: [{
       id: ctx.sources[0].id, provider: 'repository', exactLocation: 'docs\\synthetic-requirements.md',
       sourceVersion: 'a'.repeat(40), authority: 'approved', applicability: 'applicable',
+      authorityBasis: 'Synthetic requirement R1 approval recorded at revision 1.',
       limitations: 'Synthetic qualification only.'
     }] });
   assert.equal(ctx.read(), before.bytes);
@@ -238,6 +240,19 @@ test('partial selected sources can be applied while preserving honest gaps in th
   assert.deepEqual(ctx.ledger.status().operations, before.operations);
   assert.equal(Object.hasOwn(result, 'target'), false);
   assert.equal(Object.hasOwn(result, 'configuration'), false);
+});
+
+test('legacy handoff without an approval basis preserves an explicit unknown instead of inventing provenance', async t => {
+  const ctx = fixture(t);
+  ctx.replaceSelection(value => {
+    value.manifest.candidates[0].authority = 'unknown';
+    delete value.manifest.candidates[0].authorityBasis;
+  });
+  const receipt = await ctx.apply();
+  const result = verifyDiscoveryHandoff(ctx.base, ctx.parsed(), receipt.configurationSha256);
+  const qualification = JSON.parse(json(result)).qualifications[0];
+  assert.equal(qualification.authority, 'unknown');
+  assert.equal(qualification.authorityBasis, null);
 });
 
 test('handoff rejects discovery without a local trusted publication, and never creates that receipt', t => {

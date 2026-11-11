@@ -155,8 +155,9 @@ export function verifyDiscoveryHandoff(base, configuration, configurationSha256)
     caseSourceInventory(configuration);
     const selectedIds = new Set(selected.manifest.sources.map(source => source.id));
     const qualifications = selected.manifest.candidates.filter(candidate => selectedIds.has(candidate.id))
-      .map(({ id, provider, exactLocation, sourceVersion, authority, applicability, limitations }) =>
-        ({ id, provider, exactLocation, sourceVersion, authority, applicability, limitations }));
+      .map(({ id, provider, exactLocation, sourceVersion, authority, authorityBasis, applicability, limitations }) =>
+        ({ id, provider, exactLocation, sourceVersion, authority, authorityBasis: authorityBasis ?? null,
+          applicability, limitations }));
     return { runId: run.id, manifestSha256: selected.manifestSha256,
       coverage: selected.manifest.selection.coverage, gaps: selected.manifest.selection.gaps,
       assurance: selected.manifest.assurance, qualifications };

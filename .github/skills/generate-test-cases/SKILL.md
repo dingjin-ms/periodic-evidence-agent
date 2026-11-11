@@ -28,6 +28,15 @@ catalog; do not rewrite an old run or collect retained, unselected legacy URLs.
 Ordinary generation from configured URLs does not authorize broad discovery.
 Partial surface coverage and unknown product authority stay visible through
 design and independent QA.
+For discovery-backed inputs, distinguish record integrity, research coverage and
+generation readiness. Several helper/test files may describe one source family,
+not independent journeys or oracle confirmation. Preserve the recorded approval
+basis, and ground expectations in the collected originals rather than an
+authority label or discovery summary alone. If private research notes are used,
+bind them to the verified run/manifest/source versions; the current handoff does
+not automatically transfer a typed journey/evidence matrix. Do not invent that
+artifact, ask the user to author it, or treat a missing matrix as proof of
+coverage. Keep characterization-only and unresolved expectations explicit.
 
 ## Defaults and authority
 

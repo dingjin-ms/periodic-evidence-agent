@@ -186,7 +186,14 @@ test('held ambiguity is excluded while an unaffected selected slice remains expl
 });
 
 test('discovery-backed selected inventory reaches real case context and canonical admission', async t => {
-  const ctx = await discoveryFixture(t); ctx.ready(); ctx.qualify('second-source');
+  const ctx = await discoveryFixture(t); ctx.ready();
+  const authorityBasis = 'Synthetic requirement R2 approval at revision 1, section Approval.';
+  ctx.reserve(ctx.task('second-source', { kind: 'read', toolName: 'workiq-fetch',
+    url: 'https://example.sharepoint.com/sites/agent/second-source', query: null }));
+  ctx.capture('second-source', { response: { text: `${authorityBasis} Save and reopen preserves the value.` },
+    candidate: { type: 'requirements', title: 'Synthetic approved persistence contract',
+      exactLocation: 'R2 / Approval', sourceVersion: '1', authority: 'approved', authorityBasis,
+      applicability: 'applicable', limitations: 'Synthetic source; independent source/case QA remains required.' } });
   const selection = ctx.seal();
   await applyDiscoveryConfig(ctx.base, ctx.discoveryLedger, ctx.runId, { authorizeConfigUpdate: true });
   const inventory = caseSourceInventory(ctx.configuration());
@@ -218,6 +225,9 @@ test('discovery-backed selected inventory reaches real case context and canonica
   assert.equal(context.state, 'ready-for-design');
   const body = JSON.parse(readFileSync(context.contextPath, 'utf8'));
   assert.equal(body.discovery.manifestSha256, selection.manifestSha256);
+  const approved = selection.manifest.candidates.find(candidate => candidate.operationId === 'second-source');
+  assert.equal(body.discovery.qualifications.find(source => source.id === approved.id).authorityBasis, authorityBasis);
+  assert.equal(body.discovery.qualifications.find(source => source.id !== approved.id).authorityBasis, null);
   const selected = selection.manifest.sources[0];
   assert.ok(body.sources.some(item => item.sourceId === selected.id && item.type === 'requirements'));
   const draft = structuredClone(ctx.draft), refs = selection.manifest.sources.map(source => ({
@@ -234,7 +244,7 @@ test('discovery-backed selected inventory reaches real case context and canonica
   try {
     const { bundle } = loadCaseBatch(config, child, submitted.batchId);
     assert.deepEqual(bundle.admission.sources.map(source => source.id).sort(), inventory.map(source => source.id).sort());
-    assert.equal(bundle.admission.sources.find(source => source.id === selected.id).approval, 'unknown');
+    assert.equal(bundle.admission.sources.find(source => source.id === approved.id).approval, 'unknown');
   } finally { child.close(); }
   assert.equal(ctx.ledger.all('assignment').length, 0);
 });

@@ -1,4 +1,8 @@
 export const help = `Local evidence pilot (live operations disabled by default)
+  node src\\cli.js case-discover-start --file PRIVATE_REQUEST --authorize-discovery [--refresh] [--config pilot.local.json]
+  node src\\cli.js case-discover-context --run ID
+  node src\\cli.js case-discover-reserve|case-discover-capture|case-discover-finalize --run ID --file PRIVATE_INPUT --authorize-discovery
+  node src\\cli.js case-discover-apply --run ID --authorize-config-update
   node src\\cli.js case-start --authorize-collection --authorize-generation [--refresh] [--config pilot.local.json]
   node src\\cli.js case-context --run ID
   node src\\cli.js case-source-begin --run ID --source ID --authorize-collection

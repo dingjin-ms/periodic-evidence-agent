@@ -35,6 +35,19 @@ service or qualified unattended end-to-end run.
 
 ## Crew-authored ADO test requests
 
+For an explicitly requested discovery-first run, use the
+[discover-test-evidence skill](.github/skills/discover-test-evidence/SKILL.md).
+Each new discovery request performs a fresh independent deep search for the
+requested integration (Bizchat, GHCP, CPNB or Code) within approved namespaces.
+Configured URLs are not discovery seeds or search boundaries, and users
+need not supply source URLs. Prior results do not replace fresh searching;
+explicit resume/status requests reuse the recorded run without recollection.
+It records qualified URLs and evidence-category coverage/gaps, and can update
+the local URL catalog under a separate configuration-write grant. The
+[discovery contract and acceptance examples](scaffold/CASE-DISCOVERY.md) explain
+exact examined-ID checks, negative tests, resume and publication conflicts.
+Finding URLs is not approval of expectations or permission to publish ADO items.
+
 Use the [generate-test-cases skill](.github/skills/generate-test-cases/SKILL.md):
 
 > Please generate ADO test cases with content from the JSON config.

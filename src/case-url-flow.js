@@ -11,9 +11,13 @@ import { renderCaseArtifacts } from './case-artifacts.js';
 import { publishCaseBatch } from './case-publication.js';
 import { materializeCaseFixtures } from './case-fixtures.js';
 import { caseDestination, caseSourceConnectors, caseSourceInputs, hostSourceTask } from './case-source-connectors.js';
+import { caseSourceInventory } from './case-source-inventory.js';
+import { verifyDiscoveryHandoff } from './case-discovery-config.js';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const runPattern = /^case-run-[a-f0-9]{24}$/;
+const runInventory = run => run.inventory ??
+  Object.entries(caseSourceInputs).map(([id, key]) => ({ id, type: id, url: run.inputs[key], surfaces: [] }));
 const writeOnce = (path, value) => {
   const content = typeof value === 'string' ? value : JSON.stringify(value, null, 2) + '\n';
   if (existsSync(path)) requireThat(readFileSync(path, 'utf8') === content, 'Recorded run file changed', 'blocked-reconciliation');
@@ -70,7 +74,8 @@ export async function recoverCaseSource(base, ledger, runId, sourceId, options =
   requireThat(options.authorizeCollection === true && options.authorizeRecovery === true,
     'Source recovery requires explicit collection and recovery authorization', 'blocked-authorization');
   const { run } = loadRun(base, ledger, runId);
-  requireThat(Object.hasOwn(caseSourceInputs, sourceId) && !operationRow(ledger, `${runId}:submission`),
+  const selected = runInventory(run).find(source => source.id === sourceId);
+  requireThat(selected && !operationRow(ledger, `${runId}:submission`),
     'Recover only an exact configured source before design submission', 'blocked-scope');
   const lock = `${runId}:recover:${sourceId}`, owner = ledger.acquire(lock);
   try {
@@ -79,18 +84,20 @@ export async function recoverCaseSource(base, ledger, runId, sourceId, options =
     const attempt = operationRow(ledger, `${runId}:recovery:${sourceId}:1`) ? 2 : 1;
     const id = `${runId}:recovery:${sourceId}:${attempt}`;
     requireThat(!operationRow(ledger, id), 'Source recovery limit reached; preserve the remaining blocker', 'blocked-budget');
-    const host = ['checklist', 'figma'].includes(sourceId);
+    const host = previous.provenance === 'app-host-tool-reported' ||
+      !['template', 'sample', 'bugs'].includes(selected.type) ||
+      previous.connector !== undefined;
     ledger.operation(id, runId, host ? 'case-host-source' : 'case-url-source', {
-      sourceId, url: run.inputs[caseSourceInputs[sourceId]], reservedAt: now(), previousSha256: hash(json(previous)),
+      sourceId, url: selected.url, reservedAt: now(), previousSha256: hash(json(previous)),
       scope: 'Explicit bounded recovery; prior receipts are unchanged. Persisted HTTP responses are replayed, never reread.' });
-    if (host) return { ...hostSourceTask(sourceId, run.inputs[caseSourceInputs[sourceId]]),
+    if (host) return { ...hostSourceTask(sourceId, selected.url), qualification: selected.qualification ?? null,
       state: 'source-read-reserved', runId, operationId: id };
     try {
-      const connectors = caseSourceConnectors(base, run.inputs, { ...dependencies,
+      const connectors = caseSourceConnectors(base, run.inputs, { ...dependencies, inventory: runInventory(run),
         responseJournal: sourceResponseJournal(ledger, runId, sourceId) });
       ledger.finishOperation(id, 'complete', await connectors.collect(sourceId));
     } catch (error) {
-      ledger.finishOperation(id, 'complete', { sourceId, url: run.inputs[caseSourceInputs[sourceId]],
+      ledger.finishOperation(id, 'complete', { sourceId, url: selected.url,
         state: 'blocked', error: safeError(error) });
     }
     return caseUrlContext(base, ledger, runId);
@@ -104,6 +111,8 @@ function loadRun(config, ledger, runId) {
   for (const [file, expected] of [['generateE2E.md', run.promptSha256], ['generateE2E.config.json', run.configurationSha256]])
     requireThat(hash(readFileSync(boundedPath(run.projectRoot, file))) === expected,
       'Checked-in guidance or URL configuration changed; start an explicitly refreshed run', 'blocked-reconciliation');
+  if (run.discovery) verifyDiscoveryHandoff(config,
+    JSON.parse(readFileSync(boundedPath(run.projectRoot, 'generateE2E.config.json'), 'utf8')), run.configurationSha256);
   return { run, files: filesFor(config, runId) };
 }
 export async function beginCaseUrlRun(base, ledger, options = {}, dependencies = {}) {
@@ -113,8 +122,10 @@ export async function beginCaseUrlRun(base, ledger, options = {}, dependencies =
   const root = resolve(dependencies.projectRoot ?? projectRoot);
   const prompt = readFileSync(boundedPath(root, 'generateE2E.md'), 'utf8');
   const configuration = readFileSync(boundedPath(root, 'generateE2E.config.json'), 'utf8');
-  const inputs = JSON.parse(configuration).inputs;
-  for (const key of Object.values(caseSourceInputs)) httpsUrl(inputs?.[key]);
+  const parsed = JSON.parse(configuration), inputs = parsed.inputs;
+  const discovery = parsed.discovery ? verifyDiscoveryHandoff(base, parsed, hash(configuration)) : null;
+  const inventory = caseSourceInventory(parsed).map(source => ({ ...source,
+    ...(discovery ? { qualification: discovery.qualifications.find(item => item.id === source.id) ?? null } : {}) }));
   const destination = caseDestination(inputs.TEST_CASE_TEMPLATE_URL);
   const binding = hash(json({ root, prompt: hash(prompt), configuration: hash(configuration),
     identity: base.identity, state: base.stateDirectory }));
@@ -149,7 +160,7 @@ export async function beginCaseUrlRun(base, ledger, options = {}, dependencies =
     writeOnce(join(files.inputs, 'generateE2E.config.json'), configuration);
     writeOnce(files.config, generated);
     const run = { id, format: 'case-url-run-v1', createdAt: now(), projectRoot: root,
-      promptSha256: hash(prompt), configurationSha256: hash(configuration), inputs, destination,
+      promptSha256: hash(prompt), configurationSha256: hash(configuration), inputs, destination, inventory, discovery,
       repositoryRevision: revision, generatedConfigSha256: hash(readFileSync(files.config)),
       identitySha256: hash(json(base.identity)),
       generationMode: 'app-host', provenance: 'Controller commit only; no product checkout or existing-test coverage is inferred.' };
@@ -162,15 +173,16 @@ export async function beginCaseUrlRun(base, ledger, options = {}, dependencies =
     ledger.finishOperation(id, 'complete', run);
     if (!operationRow(ledger, slot)) ledger.operation(slot, id, 'case-url-active', {});
     ledger.finishOperation(slot, 'complete', { runId: id });
-    const connectors = caseSourceConnectors(base, inputs, { ...dependencies,
+    const connectors = caseSourceConnectors(base, inputs, { ...dependencies, inventory,
       responseJournal: sourceId => sourceResponseJournal(ledger, id, sourceId) });
-    for (const sourceId of Object.keys(caseSourceInputs)) {
+    for (const source of inventory) {
+      const sourceId = source.id;
       const operationId = `${id}:source:${sourceId}`;
       ledger.operation(operationId, id, 'case-url-source', {});
       try {
         ledger.finishOperation(operationId, 'complete', await connectors.collect(sourceId));
       } catch (error) {
-        ledger.finishOperation(operationId, 'complete', { sourceId, url: inputs[caseSourceInputs[sourceId]],
+        ledger.finishOperation(operationId, 'complete', { sourceId, url: source.url,
           state: 'blocked', error: safeError(error) });
       }
     }
@@ -183,14 +195,17 @@ export function caseUrlContext(base, ledger, runId) {
   if (published?.state === 'complete') return completedOperation(ledger, published.id, 'case-url-publication');
   const submitted = operationRow(ledger, `${runId}:submission`);
   if (submitted?.state === 'complete') return completedOperation(ledger, submitted.id, 'case-url-submission');
-  const sources = Object.keys(caseSourceInputs).map(id => recordedSource(ledger, runId, id));
+  const sources = runInventory(run).map(source => ({ ...recordedSource(ledger, runId, source.id),
+    type: source.type, surfaces: source.surfaces }));
   const pending = sources.filter(item => ['connector-required', 'uncertain'].includes(item.state));
   const blocked = sources.filter(item => item.state === 'blocked');
   if (pending.length || blocked.length) return { state: pending.length ? 'awaiting-source-connectors' : 'blocked-sources',
     runId, tasks: pending, blockers: blocked,
     nextAction: 'The agent must connect the requested host sources or report their specific access blocker. No user-authored exports/configuration are required.' };
   const context = { runId, instructions: readFileSync(join(files.inputs, 'generateE2E.md'), 'utf8'),
-    sources, caseCeiling: 15, designSchema: resolve(run.projectRoot, 'scaffold', 'contracts.schema.json'),
+    sources, discovery: run.discovery ?? null,
+    assurance: 'Captured URLs and usable content are not approval of expectations, complete coverage or runnable automation.',
+    caseCeiling: 15, designSchema: resolve(run.projectRoot, 'scaffold', 'contracts.schema.json'),
     sourceInventory: 'Controller ADO items/node IDs are preserved. Host captures are source-document inventory only; enumerate atomic requirements in the draft and retain incomplete coverage explicitly.',
     repository: run.provenance, fixtureInstructions: 'Design cases first, then submit exactly their fixtureRequests. Builders support synthetic text, JSON, CSV and XLSX literal cells; missing originals remain explicit blockers. No scripts, macros or formulas.',
     submission: { generator: 'Actual app-host identity, not a fabricated session', draft: 'caseGenerationDraft',
@@ -212,8 +227,9 @@ export function reserveCaseHostSource(base, ledger, runId, sourceId, authorizeCo
 export function captureCaseHostSource(base, ledger, runId, receipt, authorizeCollection) {
   requireThat(authorizeCollection === true, 'Host capture requires explicit authorization', 'blocked-authorization');
   const { run } = loadRun(base, ledger, runId);
-  requireThat(receipt && Object.hasOwn(caseSourceInputs, receipt.sourceId) &&
-    receipt.url === run.inputs[caseSourceInputs[receipt.sourceId]] &&
+  const selected = runInventory(run).find(source => source.id === receipt?.sourceId);
+  requireThat(receipt && selected &&
+    receipt.url === selected.url &&
     typeof receipt.toolName === 'string' && receipt.toolName.trim() &&
     (receipt.toolCallId === null || typeof receipt.toolCallId === 'string') &&
     ['complete', 'partial', 'blocked'].includes(receipt.access) &&
@@ -222,13 +238,18 @@ export function captureCaseHostSource(base, ledger, runId, receipt, authorizeCol
   'Host capture needs exact source URL, actual bounded tool response and truthful coverage/provenance', 'invalid-record');
   utc(receipt.observedAt);
   requireThat(Date.parse(receipt.observedAt) <= Date.now(), 'Host observation time is in the future');
-  if (/workiq/i.test(receipt.toolName) && receipt.access !== 'blocked') requireThat(
+  if ((/workiq/i.test(receipt.toolName) || ['workiq', 'ado'].includes(selected.qualification?.provider)) &&
+    receipt.access !== 'blocked') requireThat(
     receipt.identity?.id === base.identity.objectId &&
     receipt.identity?.userPrincipalName?.toLowerCase() === base.identity.designatedUser?.toLowerCase(),
   'Executing WorkIQ host identity must match the designated account', 'blocked-auth');
-  if (/figma/i.test(receipt.toolName) && receipt.access !== 'blocked') requireThat(
+  if ((/figma/i.test(receipt.toolName) || selected.type === 'figma') && receipt.access !== 'blocked') requireThat(
     receipt.response?.whoami?.email?.toLowerCase() === base.identity.designatedUser?.toLowerCase(),
   'Executing Figma connector identity must match the designated account using native whoami', 'blocked-auth');
+  if (selected.type === 'repository' && receipt.access !== 'blocked') requireThat(
+    receipt.response?.repository?.commit === selected.qualification?.sourceVersion &&
+    receipt.response?.repository?.location === selected.qualification?.exactLocation,
+  'Repository capture must match its discovered commit and exact file location', 'blocked-reconciliation');
   requireThat(!/retrieve|search|ask/i.test(receipt.toolName) || receipt.access !== 'complete',
     'Search or summarized retrieval cannot establish a complete source read', 'invalid-record');
   requireThat(receipt.access === 'blocked' || receipt.response !== null && !receipt.response.error &&
@@ -285,11 +306,13 @@ export async function submitCaseUrlDraft(base, ledger, runId, input, authorizeGe
     requireThat(hash(readFileSync(files.config)) === run.generatedConfigSha256, 'Internal controller configuration changed', 'blocked-reconciliation');
     const config = configAt(files.config), child = new Ledger(config.stateDirectory);
     try {
-      const sources = Object.keys(caseSourceInputs).map(id => recordedSource(ledger, runId, id));
+      const sources = runInventory(run).map(source => ({ ...recordedSource(ledger, runId, source.id), type: source.type }));
       const fixtures = await materializeCaseFixtures(config, child, runId, input.fixtureRequests, input.draft);
       const template = JSON.parse(sources.find(source => source.sourceId === 'template').content);
       const admission = { format: 'case-generation-admission-v1', baselineId: runId, previousBatchId: null,
-        scope: 'Design cases from the configured URLs only; inaccessible populations and unverified product context are not covered.',
+        scope: 'Design cases from the configured URLs only; inaccessible populations and unverified product context are not covered.' +
+          (run.discovery ? ` Discovery ${run.discovery.runId}: ${run.discovery.coverage.map(row =>
+            `${row.surface}=${row.status}`).join('; ')}. Gap references: ${run.discovery.gaps.map(gap => gap.id).join(', ') || 'none'}.` : ''),
         product: 'Product/build not independently verified', environment: 'Design only; product execution environment not qualified',
         repoId: 'case-design', repositoryRevision: run.repositoryRevision, promptPath: 'generateE2E.md', fixtures,
         destination: { organization: run.destination.organization, project: run.destination.project,
@@ -299,7 +322,7 @@ export async function submitCaseUrlDraft(base, ledger, runId, input, authorizeGe
         sources: sources.map(source => {
           const path = `${source.sourceId}.txt`;
           writeOnce(join(files.inputs, path), source.content);
-          return { id: source.sourceId, type: source.sourceId, url: source.url, title: `Configured ${source.sourceId} source`,
+          return { id: source.sourceId, type: source.type, url: source.url, title: `Configured ${source.sourceId} source`,
             revision: source.revision, modifiedAt: null, retrievedAt: source.retrievedAt,
             approval: 'unknown', applicability: 'unknown', access: source.access,
             limitations: source.limitations, path, sha256: hash(source.content), itemIds: source.itemIds };

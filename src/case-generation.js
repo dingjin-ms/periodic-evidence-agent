@@ -5,9 +5,8 @@ import { boundedPath, hash, json, now, requireThat, safeError, utc, validateReco
 import { command } from './command.js';
 import { defineTool, restrictedSession, withClient } from './runtime.js';
 import { requireExecutionAuthorization, authorizedModelTimeout } from './execution-authorization.js';
+import { caseSourceInventory, sourceHttpsUrl } from './case-source-inventory.js';
 
-const inputs = { checklist: 'CHECKLIST_URL', bugs: 'BUG_LIST_URL', template: 'TEST_CASE_TEMPLATE_URL',
-  sample: 'TEST_CASE_SAMPLE_URL', figma: 'FIGMA_URL' };
 export const operationRow = (ledger, id) => ledger.status().operations.find(row => row.id === id);
 export const caseReviewerIdentity = value =>
   value.trim().replace(/^(?:(?:import|local-sdk|app-host):\s*)+/, '').trim();
@@ -41,14 +40,7 @@ export function casePolicy(config) {
     policy.caseLimitApproval.reason?.trim(), 'More than 15 cases needs an explicit risk-backed ceiling approval', 'blocked-authorization');
   return structuredClone(policy);
 }
-export function httpsUrl(value) {
-  let url;
-  try { url = new URL(value); } catch {}
-  requireThat(url?.protocol === 'https:' && !url.username && !url.password &&
-    ![...url.searchParams.keys()].some(key => /token|secret|password|signature|^sig$|^code$/i.test(key)),
-  'Sources must use credential-free absolute HTTPS URLs', 'blocked-scope');
-  return url;
-}
+export const httpsUrl = sourceHttpsUrl;
 function readBounded(root, path, limit) {
   const file = boundedPath(root, path);
   requireThat(statSync(file).isFile() && statSync(file).size <= limit, 'Input exceeds its approved file bound', 'blocked-budget');
@@ -72,7 +64,7 @@ function verifyInputs(config, admission) {
   const configPath = resolve(dirname(boundedPath(policy.inputRoot, admission.promptPath)), 'generateE2E.config.json');
   const configuration = readBounded(policy.inputRoot, relative(policy.inputRoot, configPath), policy.maxInputBytes);
   const parsed = JSON.parse(configuration.toString('utf8'));
-  for (const key of Object.values(inputs)) httpsUrl(parsed.inputs?.[key]);
+  const inventory = caseSourceInventory(parsed);
   const target = httpsUrl(parsed.inputs.TEST_CASE_TEMPLATE_URL);
   const destination = admission.destination;
   requireThat(target.hostname === 'dev.azure.com' &&
@@ -80,8 +72,11 @@ function verifyInputs(config, admission) {
     target.searchParams.get('templateId') === destination.template.id &&
     target.searchParams.get('ownerId') === destination.template.teamId,
   'Destination must match the configured template URL', 'blocked-scope');
-  for (const [type, key] of Object.entries(inputs)) requireThat(admission.sources.some(source =>
-    source.type === type && source.url === parsed.inputs[key]), `Source inventory is missing configured ${type}`);
+  for (const selected of inventory) requireThat(admission.sources.some(source =>
+    source.type === selected.type && source.url === selected.url && (!parsed.discovery || source.id === selected.id)),
+  `Source inventory is missing configured ${selected.type}`);
+  if (parsed.discovery) requireThat(admission.sources.length === inventory.length,
+    'Discovery admission must contain exactly the selected inventory', 'invalid-record');
   return { prompt: prompt.toString('utf8'), promptSha256: hash(prompt),
     configPath, configSha256: hash(configuration), inputConfiguration: parsed };
 }

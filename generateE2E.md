@@ -16,6 +16,16 @@ You are a principal QA engineer and end-to-end test-case designer. Create the sm
 
 Resolve the config path relative to this Markdown file, not the current working directory. Before generating or publishing, read the JSON and require all `inputs` values listed below to be nonempty absolute HTTPS URLs. If the file is missing, invalid, or incomplete, report the configuration blocker; do not fall back to embedded or previously cached URLs. Keep credentials, cookies, tokens, and tracking wrappers out of the config.
 
+For an explicitly authorized [discovery-first run](scaffold/CASE-DISCOVERY.md),
+the controller verifies the local discovery manifest/publication and consumes
+`sources` as the selected behavioral inventory, alongside the template and sample
+URLs. In this mode, the checklist/bug/Figma primary fields below are retained
+continuity hints, not mandatory evidence or permission to collect unselected
+content. Missing roles and held surface slices remain explicit coverage gaps;
+never invent a replacement URL. The ordinary five-URL mode remains strict.
+Selection-qualified URLs and captured context do not establish approved product
+expectations, independent oracles or automation readiness.
+
 | Starting source | Config property |
 | --- | --- |
 | Coverage checklist | `inputs.CHECKLIST_URL` |

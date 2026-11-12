@@ -1,0 +1,69 @@
+{
+  "schema": "oa-cli-agency-comparison-evidence-index-v1",
+  "status": "terminal-index-with-followup",
+  "entries": [
+    {
+      "role": "remote-qualification-only",
+      "path": "../agency-remote/oa-native-business-20261029-r8.json",
+      "jobId": "office-335b524d-43c2-4fcc-a7a2-c73a4b51008c",
+      "buildId": 58391519
+    },
+    {
+      "role": "local-arm-root",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/artifacts/local",
+      "candidate": "6eb7d5520e3950610217332c5dee10f53651162d"
+    },
+    {
+      "role": "remote-arm-root",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-paired-20261030-r3",
+      "jobId": "office-06d4e8a9-fe8b-41a6-aee5-a58a0bb945c2",
+      "buildId": 58515116
+    },
+    {
+      "role": "remote-controller-observation",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-paired-20261030-r3/state/app-native/live/remote-validation/56608ee348b941d5cf225dafd95821b6447bb513188ff87b0299b314c8b3b02f/observation-1793351338168.json"
+    },
+    {
+      "role": "remote-native-state",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-paired-20261030-r3/state/app-native/live/remote-validation/56608ee348b941d5cf225dafd95821b6447bb513188ff87b0299b314c8b3b02f/job-artifact/workspace-loop/loop-state.json"
+    },
+    {
+      "role": "remote-model-usage",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-paired-20261030-r3/state/app-native/live/remote-validation/56608ee348b941d5cf225dafd95821b6447bb513188ff87b0299b314c8b3b02f/job-artifact/session_20261030_084312_7344/events.jsonl"
+    },
+    {
+      "role": "remote-zero-job-setup-deviation",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-paired-20261030-r2",
+      "use": "setup-only; excluded from paired sample"
+    },
+    {
+      "role": "remote-followup-root",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-followup-20261030-r4",
+      "jobId": "office-783d6055-5acc-409d-8c21-0dff6cc1291b",
+      "buildId": 58522418,
+      "candidate": "2c9b70722bd01c895f8267ecf82e1cfe6058f417"
+    },
+    {
+      "role": "remote-followup-observation",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-followup-20261030-r4/state/app-native/live/remote-validation/1497d3f7df310510f3c5df882b583ab90e304ecf3bfa4e4257ee63adaf1738fc/observation-1793359579408.json"
+    },
+    {
+      "role": "remote-followup-loop-result",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-followup-20261030-r4/state/app-native/live/remote-validation/1497d3f7df310510f3c5df882b583ab90e304ecf3bfa4e4257ee63adaf1738fc/job-artifact/workspace-loop/loop-result.json"
+    },
+    {
+      "role": "remote-followup-controller-acceptance",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-followup-20261030-r4/state/app-native/live/remote-validation/1497d3f7df310510f3c5df882b583ab90e304ecf3bfa4e4257ee63adaf1738fc/controller-acceptance-1793361692997.json",
+      "sha256": "bd1d0ed0b47e712f0dc697d7068746e8499d22a7d86a1c998335b4db243a687f"
+    },
+    {
+      "role": "remote-followup-model-usage",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/remote-artifacts/native-excel-followup-20261030-r4/state/app-native/live/remote-validation/1497d3f7df310510f3c5df882b583ab90e304ecf3bfa4e4257ee63adaf1738fc/job-artifact/session_20261030_105754_7848/events.jsonl"
+    },
+    {
+      "role": "controller-node-runtime",
+      "path": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/tools/node-v24.22.1/node-v24.22.1-win-x64/node.exe",
+      "archiveSha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+    }
+  ]
+}

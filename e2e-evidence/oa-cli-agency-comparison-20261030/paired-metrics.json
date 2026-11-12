@@ -1,0 +1,136 @@
+{
+  "schema": "oa-cli-agency-remote-paired-metrics-v1",
+  "sampleCount": 1,
+  "units": {
+    "time": "seconds",
+    "tokens": "tokens"
+  },
+  "local": {
+    "machine": "user-local-Windows",
+    "authoring": {
+      "candidateRepairs": 0,
+      "modelRequests": 33,
+      "reportedCredits": 5
+    },
+    "initialGates": {
+      "compile": 1023.289,
+      "layout": 3.738,
+      "score": 0.443,
+      "integration": 142.241,
+      "mutationFitness": 316.337,
+      "refactorFitness": 95.623,
+      "result": "passed"
+    },
+    "freshReview": {
+      "duration": 118.099,
+      "reportedAiCredits": 83.09,
+      "result": "passed"
+    },
+    "finalGates": {
+      "compile": 92.067,
+      "layout": 3.865,
+      "score": 0.509,
+      "integration": 143.95,
+      "result": "passed"
+    },
+    "userVisibleEndToEnd": "unknown-not-reconstructed-from-overlapping-phases",
+    "money": "unknown"
+  },
+  "remote": {
+    "runner": "ADO Agency Windows runner F:\\1\\s",
+    "queue": 43.214,
+    "runnerWall": 2107.944,
+    "checkoutSync": 121.953,
+    "preparation": 296.957,
+    "agencyAuthoringAndRepairs": 1299.74,
+    "artifactPublication": 53.34,
+    "candidateRepairs": 2,
+    "rounds": [
+      {
+        "candidate": "11ccfcccf301c9365cb1648ca9a000cacf1edaf8",
+        "compile": 278.257,
+        "policy": 4.612,
+        "test": 50.106,
+        "testResult": "2/4"
+      },
+      {
+        "candidate": "4fa236965567de3934c0f60afccb3e23f7b3f84a",
+        "compile": 36.174,
+        "policy": 4.742,
+        "test": 34.065,
+        "testResult": "2/4"
+      },
+      {
+        "candidate": "45361a524a30731fa4336eef0a5eeaabc036c60f",
+        "compile": 35.151,
+        "policy": 4.93,
+        "test": 33.398,
+        "testResult": "2/4"
+      }
+    ],
+    "freshReview": "not-run",
+    "fitness": "not-run",
+    "finalAcceptance": "not-reached",
+    "usage": {
+      "model": "gpt-5.6-sol",
+      "requests": 102,
+      "uncachedInput": 551594,
+      "cacheRead": 8930304,
+      "output": 34010,
+      "reasoning": 11888,
+      "reportedPremiumRequestCost": 1,
+      "reportedNanoAiu": 645869760000
+    },
+    "money": "unknown",
+    "classification": "original-paired-terminal-failure"
+  },
+  "comparison": {
+    "workflowOutcome": "Original paired sample: Local complete pass, Remote r3 terminal failure. Separate diagnosis-informed Remote r4: complete pass with zero repairs.",
+    "speedWinner": "not-claimed-r3-incomplete-and-r4-not-a-blind-paired-replacement",
+    "costWinner": "unknown",
+    "generalization": "none-single-paired-sample-plus-one-diagnosis-informed-follow-up"
+  },
+  "followUpSampleCount": 1,
+  "remoteFollowUp": {
+    "classification": "diagnosis-informed-follow-up",
+    "runner": "ADO Agency Windows runner F:\\1\\s",
+    "queue": 22.081,
+    "runnerWall": 2257.557,
+    "checkoutSync": 114.887,
+    "preparation": 284.433,
+    "agencyAuthoringAndValidation": 1443.31,
+    "artifactPublication": 13.737,
+    "candidateRepairs": 0,
+    "rounds": [
+      {
+        "candidate": "2c9b70722bd01c895f8267ecf82e1cfe6058f417",
+        "compile": 276.345,
+        "policy": 4.591,
+        "test": 49.91,
+        "testResult": "4/4",
+        "mutationFitness": 208.33,
+        "refactorFitness": 199.416,
+        "freshReview": 193.583
+      }
+    ],
+    "finalGates": {
+      "compile": 29.454,
+      "policy": 4.156,
+      "test": 30.059,
+      "result": "passed-4-of-4"
+    },
+    "controllerAcceptance": "passed",
+    "userVisibleEndToEnd": "unknown-controller-resume-overlapped-local-diagnosis",
+    "usage": {
+      "model": "gpt-5.6-sol",
+      "requests": 105,
+      "uncachedInput": 431583,
+      "cacheRead": 12361216,
+      "output": 26157,
+      "reasoning": 6479,
+      "reportedPremiumRequestCost": 1,
+      "reportedNanoAiu": 719395840000
+    },
+    "money": "unknown"
+  }
+}

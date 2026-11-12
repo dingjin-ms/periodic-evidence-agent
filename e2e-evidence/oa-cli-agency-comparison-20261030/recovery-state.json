@@ -1,0 +1,29 @@
+{
+  "schema": "oa-cli-agency-comparison-recovery-state-v1",
+  "state": "terminal-complete-no-resume-needed",
+  "peaFrozenRevision": "72a2dfb59c5d3a2726bf09dca251d3a91dd53ff1",
+  "peaCompatibilityRevision": "74a4eedb84c09abf610545b0a9f07f9e685d262b",
+  "localCandidate": "6eb7d5520e3950610217332c5dee10f53651162d",
+  "pairedRemoteFailure": {
+    "runId": "oa-cli-agency-pair-20261030-r3-cdeb757",
+    "jobId": "office-06d4e8a9-fe8b-41a6-aee5-a58a0bb945c2",
+    "buildId": 58515116,
+    "repairBudgetUsed": 2,
+    "lastCandidate": "45361a524a30731fa4336eef0a5eeaabc036c60f",
+    "knownFailure": "Both tests inspected rawGlobalMessages instead of the dispatchInboundMessage request ticket frames.",
+    "resumeRule": "Terminal failed sample; do not resume or replace under the r3 manifest."
+  },
+  "remoteFollowUp": {
+    "runId": "oa-agency-followup-20261030-r4-72a2dfb",
+    "jobId": "office-783d6055-5acc-409d-8c21-0dff6cc1291b",
+    "buildId": 58522418,
+    "pipelineRevision": "0c84ca8efb3ac3343fe58e43969e12d459a37e85",
+    "candidate": "2c9b70722bd01c895f8267ecf82e1cfe6058f417",
+    "candidateRepairs": 0,
+    "jobResult": "Success",
+    "controllerAcceptance": "passed",
+    "acceptanceReceiptSha256": "bd1d0ed0b47e712f0dc697d7068746e8499d22a7d86a1c998335b4db243a687f",
+    "resumeRule": "Terminal accepted; no resume or replacement job is needed."
+  },
+  "nextRecommendation": "Use r3 as the original failed paired arm and r4 as a diagnosis-informed follow-up. Add fresh blind paired samples only under new frozen manifests if broader performance claims are needed."
+}

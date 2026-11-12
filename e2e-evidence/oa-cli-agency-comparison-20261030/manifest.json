@@ -1,0 +1,105 @@
+{
+  "schema": "oa-cli-agency-remote-paired-experiment-v1",
+  "status": "completed-with-diagnosis-informed-remote-followup",
+  "createdAt": "2026-10-30T00:00:00+08:00",
+  "completedAt": "2026-10-30T20:01:32+08:00",
+  "pairedSamples": 1,
+  "controller": {
+    "repository": "periodic-evidence-agent",
+    "revision": "72a2dfb59c5d3a2726bf09dca251d3a91dd53ff1",
+    "tree": "354129f3e1d7d0da50d2b936da5a83571aa27f44",
+    "packageLockSha256": "5de66013b87066dcdebd9c18c11bd8f2245371266dad39936147a250e508de2b",
+    "change": "Pinned reviewer identity plus accurate failed-build reporting",
+    "validation": {
+      "tests": 1824,
+      "passed": 1823,
+      "failed": 0,
+      "skipped": 1
+    },
+    "compatibilityRevision": "74a4eedb84c09abf610545b0a9f07f9e685d262b"
+  },
+  "qualification": {
+    "proof": "../agency-remote/oa-native-business-20261029-r8.json",
+    "result": "reused-passed-scoped",
+    "rerun": false,
+    "boundary": "Qualification only; excluded from paired performance statistics"
+  },
+  "scenario": {
+    "repository": "OfficeAgent",
+    "baseRevision": "46299221b14698dbe21ac87167b21083612279cc",
+    "evidenceSha256": "3e270aa8fbc09859e1ba22f7d8417f3e32dd63e09be598d4a58940b50f76d98b",
+    "gateId": "oa-excel-user-skill-ingress",
+    "writePaths": [
+      "agents/office-agent/tests/integration/scenarios/apps/excel/omni-excel-slot-redirect.test.ts",
+      "agents/office-agent/tests/integration/behavior-cards/apps/excel/omni-excel-app-composition.behavior-card.md"
+    ],
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "medium",
+    "context": "default",
+    "maximumRepairs": 2
+  },
+  "arms": {
+    "local": {
+      "transport": "github-copilot-cli",
+      "cliVersion": "1.0.103",
+      "workspace": "original-machine-artifact://OA-CLI-Agency-Comparison-20261030/local",
+      "candidate": "6eb7d5520e3950610217332c5dee10f53651162d",
+      "authorSession": "77d3782c-613e-4a83-91c5-36d2358c1bfd",
+      "candidateRepairs": 0,
+      "firstGates": "passed",
+      "fitness": "passed",
+      "freshReview": "passed",
+      "finalGates": "passed",
+      "controllerAcceptance": "passed"
+    },
+    "remote": {
+      "transport": "agency-remote-same-workspace",
+      "runId": "oa-cli-agency-pair-20261030-r3-cdeb757",
+      "jobId": "office-06d4e8a9-fe8b-41a6-aee5-a58a0bb945c2",
+      "buildId": 58515116,
+      "pipelineRevision": "9ff43bbe38c2f872f1420c22e47a2a230d241676",
+      "candidates": [
+        "11ccfcccf301c9365cb1648ca9a000cacf1edaf8",
+        "4fa236965567de3934c0f60afccb3e23f7b3f84a",
+        "45361a524a30731fa4336eef0a5eeaabc036c60f"
+      ],
+      "candidateRepairs": 2,
+      "firstGates": "failed-test-2-of-4",
+      "finalGates": "failed-test-2-of-4",
+      "fitness": "not-run",
+      "freshReview": "not-run",
+      "controllerAcceptance": "rejected",
+      "stopReason": "Natural candidate-test-assertions failure remained after both permitted repairs",
+      "classification": "original-paired-terminal-failure"
+    },
+    "remoteFollowUp": {
+      "classification": "diagnosis-informed-follow-up-excluded-from-original-paired-statistics",
+      "transport": "agency-remote-same-workspace",
+      "runId": "oa-agency-followup-20261030-r4-72a2dfb",
+      "jobId": "office-783d6055-5acc-409d-8c21-0dff6cc1291b",
+      "buildId": 58522418,
+      "pipelineRevision": "0c84ca8efb3ac3343fe58e43969e12d459a37e85",
+      "candidate": "2c9b70722bd01c895f8267ecf82e1cfe6058f417",
+      "candidateRepairs": 0,
+      "firstGates": "passed-4-of-4",
+      "fitness": "passed",
+      "freshReview": "passed",
+      "finalGates": "passed-4-of-4",
+      "controllerAcceptance": "passed",
+      "feedbackBoundary": "Prior r3 harness-observation diagnosis supplied; Local candidate and patch were not supplied"
+    }
+  },
+  "deviations": [
+    "Local CLI 1.0.98 rejected the Windows prompt before model execution; 1.0.103 was re-frozen and used.",
+    "Local authoring required bounded resumes of the same session after the initial soft credit ceiling; these were not candidate repairs.",
+    "Remote r2 setup published isolated zero-job refs but was stopped before submission because request id/tag still named r8; r3 rebuilt independent state and was the only submitted sample.",
+    "Remote terminal build failure was initially surfaced by the controller's success-only identity guard; downloaded evidence independently establishes the matching job/build/source and the real gate failure."
+  ],
+  "prohibitionsObserved": {
+    "productPullRequestCreated": false,
+    "productMergePerformed": false,
+    "replacementRemoteJobSubmitted": false,
+    "recurringTaskEnabled": false,
+    "sdxOrAlStateModified": false
+  }
+}
